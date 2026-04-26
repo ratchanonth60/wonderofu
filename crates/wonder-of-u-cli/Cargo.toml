@@ -1,0 +1,15 @@
+[package]
+name = "wonder-of-u-cli"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[[bin]]
+name = "wonder-of-u"
+path = "src/main.rs"
+
+[dependencies]
+clap.workspace = true
+wonder-of-u-core.workspace = true
+wonder-of-u-storage.workspace = true
