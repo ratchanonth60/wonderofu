@@ -1,0 +1,10 @@
+[package]
+name = "wonder-of-u-tui"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+crossterm.workspace = true
+wonder-of-u-core.workspace = true

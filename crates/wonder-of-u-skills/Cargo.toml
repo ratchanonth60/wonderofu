@@ -1,0 +1,16 @@
+[package]
+name = "wonder-of-u-skills"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+wonder-of-u-core.workspace = true
+wonder-of-u-plugins.workspace = true
+wonder-of-u-storage.workspace = true
+
+[dev-dependencies]
+wonder-of-u-test-support.workspace = true

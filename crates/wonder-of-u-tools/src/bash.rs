@@ -1,0 +1,260 @@
+use std::{
+    fs,
+    path::PathBuf,
+    process::{Command, Stdio},
+    time::Duration,
+};
+
+use async_trait::async_trait;
+use serde::{Deserialize, Serialize};
+use serde_json::{Value, json};
+use wait_timeout::ChildExt;
+use wonder_of_u_core::{
+    Result, Tool, ToolContext, ToolKind, ToolResult, ToolSchema, ToolSpec, ToolUseId, WonderError,
+    resolve_path,
+};
+
+use crate::{base_spec, display_path, parse_input, require_non_empty_path, require_non_empty_text};
+
+const DEFAULT_TIMEOUT_SECS: u64 = 30;
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BashInput {
+    pub command: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cwd: Option<PathBuf>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout_secs: Option<u64>,
+}
+
+impl BashInput {
+    fn validate(&self) -> Result<()> {
+        require_non_empty_text("bash", "command", &self.command)?;
+        if let Some(cwd) = &self.cwd {
+            require_non_empty_path("bash", "cwd", cwd)?;
+        }
+        if self.timeout_secs == Some(0) {
+            return Err(WonderError::validation(
+                "bash timeout_secs must be greater than zero",
+            ));
+        }
+        Ok(())
+    }
+
+    fn timeout(&self) -> u64 {
+        self.timeout_secs.unwrap_or(DEFAULT_TIMEOUT_SECS)
+    }
+}
+
+#[derive(Debug, Default)]
+pub struct BashTool;
+
+#[async_trait]
+impl Tool for BashTool {
+    fn spec(&self) -> ToolSpec {
+        let mut spec = base_spec("bash", "Run a local shell command", ToolKind::Shell)
+            .with_input_schema(
+                ToolSchema::object()
+                    .property("command", ToolSchema::string("shell command to execute"))
+                    .property(
+                        "cwd",
+                        ToolSchema::string(
+                            "optional working directory relative to the session cwd",
+                        ),
+                    )
+                    .property(
+                        "timeout_secs",
+                        ToolSchema::integer("optional command timeout in seconds"),
+                    )
+                    .required("command"),
+            );
+        spec.destructive = true;
+        spec
+    }
+
+    fn validate_input(&self, input: &Value) -> Result<()> {
+        parse_input::<BashInput>("bash", input)?.validate()
+    }
+
+    async fn execute(
+        &self,
+        context: ToolContext,
+        use_id: ToolUseId,
+        input: Value,
+    ) -> Result<ToolResult> {
+        let input = parse_input::<BashInput>("bash", &input)?;
+        input.validate()?;
+
+        let cwd = input
+            .cwd
+            .as_deref()
+            .map(|path| resolve_path(path, &context.cwd))
+            .unwrap_or_else(|| context.cwd.clone());
+        let metadata = fs::metadata(&cwd).map_err(|error| match error.kind() {
+            std::io::ErrorKind::NotFound => {
+                WonderError::not_found("directory", cwd.display().to_string())
+            }
+            _ => error.into(),
+        })?;
+        if !metadata.is_dir() {
+            return Err(WonderError::validation(format!(
+                "bash cwd is not a directory: {}",
+                cwd.display()
+            )));
+        }
+
+        let mut child = shell_command(&input.command);
+        child
+            .current_dir(&cwd)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        let mut child = child.spawn()?;
+        let timed_out = child
+            .wait_timeout(Duration::from_secs(input.timeout()))?
+            .is_none();
+        if timed_out {
+            match child.kill() {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::InvalidInput => {}
+                Err(error) => return Err(error.into()),
+            }
+        }
+
+        let output = child.wait_with_output()?;
+        let exit_code = output.status.code();
+        let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+        let mut content = render_output(&stdout, &stderr, exit_code);
+        if timed_out {
+            let timeout_message = format!(
+                "command timed out after {}s in {}",
+                input.timeout(),
+                display_path(&cwd, &context.cwd)
+            );
+            content = if content.is_empty() {
+                timeout_message
+            } else {
+                format!("{timeout_message}\n\n{content}")
+            };
+        }
+
+        let mut result = if !timed_out && output.status.success() {
+            ToolResult::success(use_id, content)
+        } else {
+            ToolResult::failure(use_id, content)
+        };
+        result.metadata = json!({
+            "cwd": cwd.display().to_string(),
+            "exit_code": exit_code,
+            "timed_out": timed_out,
+        });
+        Ok(result)
+    }
+}
+
+#[cfg(not(windows))]
+fn shell_command(command: &str) -> Command {
+    let mut cmd = Command::new("sh");
+    cmd.arg("-lc").arg(command);
+    cmd
+}
+
+#[cfg(windows)]
+fn shell_command(command: &str) -> Command {
+    let mut cmd = Command::new("cmd");
+    cmd.arg("/C").arg(command);
+    cmd
+}
+
+fn render_output(stdout: &str, stderr: &str, exit_code: Option<i32>) -> String {
+    let mut sections = Vec::new();
+    if !stdout.is_empty() {
+        sections.push(format!("stdout:\n{}", stdout.trim_end_matches('\n')));
+    }
+    if !stderr.is_empty() {
+        sections.push(format!("stderr:\n{}", stderr.trim_end_matches('\n')));
+    }
+    sections.push(match exit_code {
+        Some(code) => format!("exit_code: {code}"),
+        None => "exit_code: terminated by signal".into(),
+    });
+    sections.join("\n\n")
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+
+    use futures::executor::block_on;
+    use serde_json::json;
+    use wonder_of_u_core::{
+        FeatureSet, PermissionDecision, PermissionMode, SessionId, ToolContext, ToolUseId,
+    };
+    use wonder_of_u_test_support::unique_test_dir;
+
+    use super::*;
+
+    fn tool_context(cwd: PathBuf) -> ToolContext {
+        ToolContext {
+            session_id: SessionId::new(),
+            cwd,
+            permission_mode: PermissionMode::Default,
+            additional_working_directories: Vec::new(),
+            permission_rules: Vec::new(),
+            features: FeatureSet::first_release(),
+        }
+    }
+
+    #[test]
+    fn bash_validation_rejects_empty_command() {
+        let tool = BashTool;
+        let error = tool
+            .validate_input(&json!({ "command": "   " }))
+            .expect_err("empty command");
+
+        assert!(error.to_string().contains("non-empty `command`"));
+    }
+
+    #[test]
+    fn bash_permission_blocks_obfuscated_commands() {
+        let tool = BashTool;
+        let context = tool_context(PathBuf::from("/workspace"));
+        let decision = tool.permission_decision(&context, &json!({ "command": "echo ${cmd@P}" }));
+
+        assert!(matches!(decision, PermissionDecision::Deny { .. }));
+    }
+
+    #[test]
+    fn bash_execute_captures_output_and_exit_code() {
+        let dir = unique_test_dir("tools-bash-success");
+        let tool = BashTool;
+        let result = block_on(tool.execute(
+            tool_context(dir),
+            ToolUseId::new(),
+            json!({ "command": "printf 'hello world'" }),
+        ))
+        .expect("run bash tool");
+
+        assert!(result.success);
+        assert!(result.content.contains("hello world"));
+        assert_eq!(result.metadata["exit_code"], json!(0));
+    }
+
+    #[test]
+    fn bash_execute_reports_failures() {
+        let dir = unique_test_dir("tools-bash-failure");
+        let tool = BashTool;
+        let result = block_on(tool.execute(
+            tool_context(dir),
+            ToolUseId::new(),
+            json!({ "command": "printf 'oops' >&2; exit 7" }),
+        ))
+        .expect("run bash tool");
+
+        assert!(!result.success);
+        assert!(result.content.contains("stderr:"));
+        assert_eq!(result.metadata["exit_code"], json!(7));
+    }
+}
