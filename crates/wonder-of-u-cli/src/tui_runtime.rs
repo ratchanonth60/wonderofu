@@ -3051,6 +3051,7 @@ fn prompt_cursor_position(width: u16, height: u16, prompt: &str, cursor: usize) 
             prompt: prompt.into(),
             status: String::new(),
             footer: String::new(),
+            queued_panel: None,
             task_panel: None,
             dialog: None,
         }
@@ -5833,6 +5834,100 @@ mod tests {
             matches!(
                 &message.payload,
                 MessagePayload::AssistantText { content } if content == "queued plan reply"
+            )
+        }));
+    }
+
+    #[test]
+    fn queued_commands_view_updates_as_prompts_drain() {
+        let dir = unique_test_dir("tui-queued-visibility");
+        let (api_base, handle) = spawn_json_sequence_server(
+            |index, _headers, body| {
+                let prompt = body
+                    .pointer("/messages/0/content/0/text")
+                    .and_then(Value::as_str)
+                    .expect("prompt text");
+                match index {
+                    0 => assert_eq!(prompt, "first queued prompt"),
+                    1 => assert!(prompt.contains("user: second queued prompt")),
+                    _ => panic!("unexpected request index {index}"),
+                }
+            },
+            vec![
+                json!({
+                    "id": "msg_queue_prompt_1",
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [{
+                        "type": "text",
+                        "text": "first queued reply"
+                    }],
+                    "stop_reason": "end_turn",
+                    "usage": {
+                        "input_tokens": 8,
+                        "output_tokens": 4
+                    }
+                })
+                .to_string(),
+                json!({
+                    "id": "msg_queue_prompt_2",
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [{
+                        "type": "text",
+                        "text": "second queued reply"
+                    }],
+                    "stop_reason": "end_turn",
+                    "usage": {
+                        "input_tokens": 8,
+                        "output_tokens": 4
+                    }
+                })
+                .to_string(),
+            ],
+        );
+        write_provider_config_for(&dir, "anthropic", "claude-3-7-sonnet-latest", &api_base);
+        let registry = commands::registry(Some(dir.clone())).expect("registry");
+        let mut controller = TuiController::new(
+            test_context(&dir),
+            &registry,
+            Some(dir.as_path()),
+            TuiLaunchOptions { session_id: None },
+        )
+        .expect("controller");
+        controller
+            .state
+            .queue_command("first queued prompt", wonder_of_u_core::QueuePlacement::Now);
+        controller.state.queue_command(
+            "second queued prompt",
+            wonder_of_u_core::QueuePlacement::Later,
+        );
+
+        let mut queued_snapshots = Vec::new();
+        controller
+            .drain_queued_commands(&mut |controller| {
+                queued_snapshots.push(controller.view().queued_panel.clone());
+                Ok(())
+            })
+            .expect("drain queued prompts");
+
+        handle.join().expect("server join");
+
+        assert!(queued_snapshots.iter().any(|panel| {
+            panel.as_ref().is_some_and(|panel| {
+                panel.lines
+                    == vec![wonder_of_u_tui::message::MessageLineView::new(
+                        "1. second queued prompt",
+                        wonder_of_u_tui::message::MessageRole::Progress,
+                    )]
+            })
+        }));
+        assert!(queued_snapshots.iter().any(Option::is_none));
+        assert!(controller.state.queued_commands.is_empty());
+        assert!(controller.state.messages.iter().any(|message| {
+            matches!(
+                &message.payload,
+                MessagePayload::AssistantText { content } if content == "second queued reply"
             )
         }));
     }

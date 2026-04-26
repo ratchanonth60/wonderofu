@@ -1,5 +1,5 @@
 use wonder_of_u_core::{
-    AppState, MessageEnvelope, MessagePayload, TaskKind, TaskState, TaskStatus,
+    AppState, MessageEnvelope, MessagePayload, QueuedCommand, TaskKind, TaskState, TaskStatus,
     session_footer_text, session_status_text,
 };
 
@@ -105,6 +105,43 @@ pub fn task_panel_view(app: &AppState) -> Option<TaskPanelView> {
 
     Some(TaskPanelView {
         title: "Tasks".into(),
+        lines,
+    })
+}
+
+#[must_use]
+pub fn queued_panel_view(app: &AppState) -> Option<TaskPanelView> {
+    const MAX_VISIBLE_COMMANDS: usize = 3;
+
+    if app.queued_commands.is_empty() {
+        return None;
+    }
+
+    let hidden_commands = app
+        .queued_commands
+        .len()
+        .saturating_sub(MAX_VISIBLE_COMMANDS);
+    let mut lines = app
+        .queued_commands
+        .iter()
+        .take(MAX_VISIBLE_COMMANDS)
+        .enumerate()
+        .map(|(index, queued)| {
+            MessageLineView::new(
+                format!("{}. {}", index + 1, queued_command_preview(queued)),
+                MessageRole::Progress,
+            )
+        })
+        .collect::<Vec<_>>();
+    if hidden_commands > 0 {
+        lines.push(MessageLineView::new(
+            format!("+{hidden_commands} more queued"),
+            MessageRole::System,
+        ));
+    }
+
+    Some(TaskPanelView {
+        title: "Queued".into(),
         lines,
     })
 }
@@ -243,6 +280,21 @@ fn render_message(message: &MessageEnvelope, output: &mut Vec<MessageLineView>) 
     }
 }
 
+fn queued_command_preview(queued: &QueuedCommand) -> String {
+    const MAX_PREVIEW_CHARS: usize = 32;
+
+    let normalized = queued
+        .command
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    if normalized.is_empty() {
+        return "(empty command)".into();
+    }
+
+    truncate_with_ellipsis(&normalized, MAX_PREVIEW_CHARS)
+}
+
 fn push_prefixed_lines(
     output: &mut Vec<MessageLineView>,
     prefix: &str,
@@ -259,6 +311,21 @@ fn push_prefixed_lines(
     for line in lines {
         output.push(MessageLineView::new(format!("{continuation}{line}"), role));
     }
+}
+
+fn truncate_with_ellipsis(text: &str, max_chars: usize) -> String {
+    let char_count = text.chars().count();
+    if char_count <= max_chars {
+        return text.to_string();
+    }
+
+    if max_chars <= 1 {
+        return "…".into();
+    }
+
+    let mut truncated = text.chars().take(max_chars - 1).collect::<String>();
+    truncated.push('…');
+    truncated
 }
 
 fn task_kind_label(kind: TaskKind) -> &'static str {
@@ -302,7 +369,9 @@ const fn status_rank(status: TaskStatus) -> u8 {
 mod tests {
     use std::path::PathBuf;
 
-    use wonder_of_u_core::{AppState, MessagePayload, SessionId, TaskState, TokenUsage};
+    use wonder_of_u_core::{
+        AppState, MessagePayload, QueuePlacement, SessionId, TaskState, TokenUsage,
+    };
 
     use super::*;
 
@@ -365,5 +434,27 @@ mod tests {
         assert!(footer_text(&app).contains("cwd=/workspace"));
         let panel = task_panel_view(&app).expect("task panel");
         assert_eq!(panel.lines[0].text, "[running] shell: run tests");
+    }
+
+    #[test]
+    fn queued_panel_reflects_visible_commands_and_overflow() {
+        let mut app = AppState::new(PathBuf::from("/workspace"));
+        app.queue_command("/status", QueuePlacement::Now);
+        app.queue_command("draft the migration plan", QueuePlacement::Next);
+        app.queue_command("/theme midnight", QueuePlacement::Later);
+        app.queue_command("summarize the open tasks in detail", QueuePlacement::Later);
+
+        let panel = queued_panel_view(&app).expect("queue panel");
+
+        assert_eq!(panel.title, "Queued");
+        assert_eq!(
+            panel.lines,
+            vec![
+                MessageLineView::new("1. /status", MessageRole::Progress),
+                MessageLineView::new("2. draft the migration plan", MessageRole::Progress),
+                MessageLineView::new("3. /theme midnight", MessageRole::Progress),
+                MessageLineView::new("+1 more queued", MessageRole::System),
+            ]
+        );
     }
 }
