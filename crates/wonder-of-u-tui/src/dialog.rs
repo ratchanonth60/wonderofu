@@ -50,7 +50,11 @@ impl DialogView {
         let reason = reason.into();
         Self {
             title: format!("Permission: {tool}"),
-            body: vec![reason, "Review before continuing.".into()],
+            body: vec![
+                format!("Tool `{tool}` needs approval to continue."),
+                reason,
+                "Allow to continue, or deny to continue without running it.".into(),
+            ],
             actions: vec![
                 DialogActionView::new("Allow", true),
                 DialogActionView::new("Deny", false),
@@ -106,6 +110,8 @@ mod tests {
         let dialog = DialogView::permission("bash", "Needs approval.");
 
         assert_eq!(dialog.kind(), DialogKind::Permission);
+        assert_eq!(dialog.body[0], "Tool `bash` needs approval to continue.");
+        assert_eq!(dialog.body[1], "Needs approval.");
         assert_eq!(dialog.actions[0], DialogActionView::new("Allow", true));
         assert!(dialog.action_hint().contains("[Allow]"));
     }

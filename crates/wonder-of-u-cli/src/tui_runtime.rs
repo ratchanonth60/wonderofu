@@ -726,7 +726,7 @@ impl<'a> TuiController<'a> {
         if let Some(tool) = registry.resolve_enabled(&call.provider_call.tool_name, &query) {
             self.turn_state = TurnState::ToolExecuting;
             self.state.input_mode = InputMode::Bash;
-            self.status_note = Some(format!("approved tool {}", call.provider_call.tool_name));
+            self.status_note = Some(format!("running tool {}", call.provider_call.tool_name));
             self.needs_render = true;
             before_blocking(self)?;
             let result = match block_on(tool.execute(
@@ -778,10 +778,9 @@ impl<'a> TuiController<'a> {
                 reason: format!("denied in tui: {reason}"),
             },
         )?;
-        self.status_note = Some(format!(
-            "permission denied: {}",
-            call.provider_call.tool_name
-        ));
+        self.turn_state = TurnState::Completed;
+        self.state.input_mode = InputMode::Prompt;
+        self.status_note = Some(format!("denied tool {}", call.provider_call.tool_name));
         self.finalize_tool_result(
             vec![permission_message],
             &call.provider_call,
@@ -1733,7 +1732,7 @@ impl<'a> TuiController<'a> {
                         },
                     )?;
                     self.persist_messages(&[permission_message])?;
-                    self.status_note = Some(format!("permission ask: {}", call.tool_name));
+                    self.status_note = Some(permission_required_status(&call.tool_name));
                     self.needs_render = true;
                     on_progress(self)?;
                     Ok(ToolExecutionOutcome::Paused { reason })
@@ -3058,6 +3057,10 @@ fn task_notification_lines(task: &TaskState) -> Vec<String> {
     lines
 }
 
+fn permission_required_status(tool: &str) -> String {
+    format!("approval required: {tool}")
+}
+
 fn restored_permission_dialog(
     messages: &[MessageEnvelope],
     has_pending_approval: bool,
@@ -3071,31 +3074,41 @@ fn restored_permission_dialog(
                 decision,
                 reason,
             } => {
-                let dialog = match decision.as_str() {
-                    "ask" if has_pending_approval => {
-                        DialogView::permission(tool.clone(), reason.clone())
-                    }
-                    "ask" => DialogView::notice(
-                        "Permission required",
-                        [
-                            format!("Tool `{tool}` requires approval."),
-                            reason.clone(),
-                            "Pending execution state is no longer available.".into(),
-                        ],
+                let (dialog, status_note) = match decision.as_str() {
+                    "ask" if has_pending_approval => (
+                        DialogView::permission(tool.clone(), reason.clone()),
+                        permission_required_status(tool),
                     ),
-                    "deny" => DialogView::notice(
-                        "Permission denied",
-                        [format!("Tool `{tool}` was denied."), reason.clone()],
+                    "ask" => (
+                        DialogView::notice(
+                            "Permission required",
+                            [
+                                format!("Tool `{tool}` requires approval."),
+                                reason.clone(),
+                                "Pending execution state is no longer available.".into(),
+                            ],
+                        ),
+                        format!("pending approval unavailable: {tool}"),
                     ),
-                    other => DialogView::notice(
-                        "Permission update",
-                        [
-                            format!("Tool `{tool}` permission is `{other}`."),
-                            reason.clone(),
-                        ],
+                    "deny" => (
+                        DialogView::notice(
+                            "Permission denied",
+                            [format!("Tool `{tool}` was denied."), reason.clone()],
+                        ),
+                        format!("permission denied: {tool}"),
+                    ),
+                    other => (
+                        DialogView::notice(
+                            "Permission update",
+                            [
+                                format!("Tool `{tool}` permission is `{other}`."),
+                                reason.clone(),
+                            ],
+                        ),
+                        format!("permission update: {tool}"),
                     ),
                 };
-                Some((dialog, format!("permission {decision}: {tool}")))
+                Some((dialog, status_note))
             }
             _ => None,
         })
@@ -5554,6 +5567,15 @@ mod tests {
         assert!(controller.state.pending_tool_approval.is_some());
         let dialog = controller.view().dialog.expect("permission dialog");
         assert_eq!(dialog.title, "Permission: file_write");
+        assert_eq!(
+            controller.status_note.as_deref(),
+            Some("approval required: file_write")
+        );
+        assert_eq!(
+            dialog.body[0],
+            "Tool `file_write` needs approval to continue."
+        );
+        assert!(!dialog.body[1].trim().is_empty());
 
         controller
             .handle_key_event(
@@ -5577,6 +5599,7 @@ mod tests {
         assert_eq!(controller.turn_state, TurnState::Completed);
         assert_eq!(controller.state.input_mode, InputMode::Prompt);
         assert!(controller.state.pending_tool_approval.is_none());
+        assert!(controller.view().dialog.is_none());
         assert!(render_calls >= 5);
         assert!(matches!(
             &controller.state.messages[2].payload,
@@ -5598,6 +5621,136 @@ mod tests {
             Some(MessagePayload::AssistantText { content })
                 if content == "The note has been written."
         ));
+        assert_eq!(
+            controller.status_note.as_deref(),
+            Some("tool loop response recorded")
+        );
+    }
+
+    #[test]
+    fn controller_denies_permission_and_resumes_tool_loop() {
+        let dir = unique_test_dir("tui-tool-permission-deny");
+        let (api_base, handle) = spawn_json_sequence_server(
+            |request_index, _headers, body| match request_index {
+                0 => {
+                    assert_eq!(body["messages"][0]["content"], "write the note");
+                }
+                1 => {
+                    assert_eq!(
+                        body["messages"][1]["tool_calls"][0]["function"]["name"],
+                        "file_write"
+                    );
+                    assert_eq!(body["messages"][2]["role"], "tool");
+                    let content = body["messages"][2]["content"]
+                        .as_str()
+                        .expect("tool content");
+                    assert!(content.contains("ERROR:"));
+                    assert!(content.contains("denied by user"));
+                }
+                other => panic!("unexpected request index {other}"),
+            },
+            vec![
+                serde_json::to_string(&serde_json::json!({
+                    "choices": [{
+                        "finish_reason": "tool_calls",
+                        "message": {
+                            "content": null,
+                            "tool_calls": [{
+                                "id": "call_write_deny",
+                                "type": "function",
+                                "function": {
+                                    "name": "file_write",
+                                    "arguments": "{\"path\":\"note.txt\",\"content\":\"should not be written\\n\"}"
+                                }
+                            }]
+                        }
+                    }],
+                    "usage": {
+                        "prompt_tokens": 10,
+                        "completion_tokens": 3
+                    }
+                }))
+                .expect("serialize tool response"),
+                serde_json::to_string(&serde_json::json!({
+                    "choices": [{
+                        "finish_reason": "stop",
+                        "message": {
+                            "content": "Okay, I did not write the note."
+                        }
+                    }],
+                    "usage": {
+                        "prompt_tokens": 16,
+                        "completion_tokens": 5
+                    }
+                }))
+                .expect("serialize final response"),
+            ],
+        );
+        write_provider_config(&dir, &api_base);
+        let registry = commands::registry(Some(dir.clone())).expect("registry");
+        let mut controller = TuiController::new(
+            test_context(&dir),
+            &registry,
+            Some(dir.as_path()),
+            TuiLaunchOptions { session_id: None },
+        )
+        .expect("controller");
+
+        controller.prompt.insert_text("write the note");
+        controller
+            .submit_prompt(&mut |_| Ok(()))
+            .expect("submit prompt");
+
+        let dialog = controller.view().dialog.expect("permission dialog");
+        assert_eq!(dialog.title, "Permission: file_write");
+        assert_eq!(
+            controller.status_note.as_deref(),
+            Some("approval required: file_write")
+        );
+
+        controller
+            .handle_key_event(
+                wonder_of_u_tui::KeyEvent {
+                    code: wonder_of_u_tui::KeyCode::Esc,
+                    modifiers: wonder_of_u_tui::KeyModifiers::default(),
+                },
+                &mut |_| Ok(()),
+            )
+            .expect("deny permission");
+
+        handle.join().expect("server join");
+
+        assert!(!dir.join("note.txt").exists());
+        assert_eq!(controller.turn_state, TurnState::Completed);
+        assert_eq!(controller.state.input_mode, InputMode::Prompt);
+        assert!(controller.state.pending_tool_approval.is_none());
+        assert!(controller.view().dialog.is_none());
+        assert!(matches!(
+            &controller.state.messages[2].payload,
+            MessagePayload::Permission { tool, decision, .. }
+                if tool == "file_write" && decision == "ask"
+        ));
+        assert!(matches!(
+            &controller.state.messages[3].payload,
+            MessagePayload::Permission { tool, decision, .. }
+                if tool == "file_write" && decision == "deny"
+        ));
+        assert!(matches!(
+            &controller.state.messages[4].payload,
+            MessagePayload::ToolResult { tool, success, content, .. }
+                if tool == "file_write"
+                    && !success
+                    && content.contains("tool execution denied by user")
+        ));
+        assert!(matches!(
+            controller.state.messages.last().map(|message| &message.payload),
+            Some(MessagePayload::AssistantText { content })
+                if content == "Okay, I did not write the note."
+        ));
+        assert_eq!(
+            controller.status_note.as_deref(),
+            Some("tool loop response recorded")
+        );
     }
 
     #[test]
@@ -5685,10 +5838,17 @@ mod tests {
         assert_eq!(restored.turn_state, TurnState::ToolPermissionPending);
         assert_eq!(restored.state.input_mode, InputMode::PermissionPending);
         assert!(restored.state.pending_tool_approval.is_some());
+        let dialog = restored.view().dialog.expect("permission dialog");
+        assert_eq!(dialog.title, "Permission: file_write");
         assert_eq!(
-            restored.view().dialog.expect("permission dialog").title,
-            "Permission: file_write"
+            restored.status_note.as_deref(),
+            Some("approval required: file_write")
         );
+        assert_eq!(
+            dialog.body[0],
+            "Tool `file_write` needs approval to continue."
+        );
+        assert!(!dialog.body[1].trim().is_empty());
 
         restored
             .handle_key_event(
@@ -5707,7 +5867,9 @@ mod tests {
             "hello after resume\n"
         );
         assert_eq!(restored.turn_state, TurnState::Completed);
+        assert_eq!(restored.state.input_mode, InputMode::Prompt);
         assert!(restored.state.pending_tool_approval.is_none());
+        assert!(restored.view().dialog.is_none());
         assert!(matches!(
             restored.state.messages.last().map(|message| &message.payload),
             Some(MessagePayload::AssistantText { content })
@@ -6012,15 +6174,15 @@ mod tests {
         assert_eq!(controller.turn_state, TurnState::ToolPermissionPending);
         assert_eq!(
             controller.status_note.as_deref(),
-            Some("permission ask: bash")
+            Some("approval required: bash")
         );
         let dialog = controller.view().dialog.expect("permission dialog");
         assert_eq!(dialog.title, "Permission: bash");
-        assert!(
-            dialog
-                .body
-                .iter()
-                .any(|line| line.contains("workspace write"))
+        assert_eq!(dialog.body[0], "Tool `bash` needs approval to continue.");
+        assert_eq!(dialog.body[1], "workspace write requires approval");
+        assert_eq!(
+            dialog.body[2],
+            "Allow to continue, or deny to continue without running it."
         );
     }
 
