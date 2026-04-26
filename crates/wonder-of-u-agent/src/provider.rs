@@ -372,6 +372,28 @@ impl ProviderResolver {
         self.resolve_with_env(&settings, &credentials, std::env::vars())
     }
 
+    pub fn load_report_for_selection(
+        &self,
+        storage_dir: Option<&Path>,
+        selection: &ProviderSelection,
+    ) -> Result<ProviderStatusReport> {
+        let settings = match storage_dir {
+            Some(path) => SettingsStore::new(path).read()?,
+            None => AgentSettings::default(),
+        };
+        let credentials = match storage_dir {
+            Some(path) => CredentialStore::new(path).read()?,
+            None => StoredCredentials::default(),
+        };
+
+        self.resolve_report_for_selection_with_env(
+            &settings,
+            &credentials,
+            std::env::vars(),
+            selection,
+        )
+    }
+
     pub fn load_execution(
         &self,
         storage_dir: Option<&Path>,
@@ -422,6 +444,62 @@ impl ProviderResolver {
             WonderError::validation(format!("unknown provider selection: {provider_id}"))
         })?;
         let model = self.resolve_model(descriptor, settings, None, None)?;
+        let auth = self.resolve_auth(descriptor, credentials, &env)?;
+        let readiness = if auth.is_ready() {
+            ProviderReadiness::Ready
+        } else {
+            ProviderReadiness::MissingAuth
+        };
+
+        Ok(ProviderStatusReport {
+            provider: Some(provider_id),
+            model: Some(model),
+            auth,
+            readiness,
+            available_providers,
+        })
+    }
+
+    pub fn resolve_report_for_selection_with_env<I, K, V>(
+        &self,
+        settings: &AgentSettings,
+        credentials: &StoredCredentials,
+        env: I,
+        selection: &ProviderSelection,
+    ) -> Result<ProviderStatusReport>
+    where
+        I: IntoIterator<Item = (K, V)>,
+        K: AsRef<str>,
+        V: Into<String>,
+    {
+        let env = env
+            .into_iter()
+            .map(|(key, value)| (key.as_ref().to_string(), value.into()))
+            .collect::<BTreeMap<_, _>>();
+
+        let provider =
+            self.select_provider(settings, credentials, &env, selection.provider.as_deref())?;
+        let available_providers = self.registry.providers().cloned().collect::<Vec<_>>();
+
+        let Some(provider_id) = provider.clone() else {
+            return Ok(ProviderStatusReport {
+                provider: None,
+                model: None,
+                auth: AuthState::default(),
+                readiness: ProviderReadiness::Unconfigured,
+                available_providers,
+            });
+        };
+
+        let descriptor = self.registry.get(&provider_id).ok_or_else(|| {
+            WonderError::validation(format!("unknown provider selection: {provider_id}"))
+        })?;
+        let model = self.resolve_model(
+            descriptor,
+            settings,
+            selection.provider.as_deref(),
+            selection.model.as_deref(),
+        )?;
         let auth = self.resolve_auth(descriptor, credentials, &env)?;
         let readiness = if auth.is_ready() {
             ProviderReadiness::Ready
