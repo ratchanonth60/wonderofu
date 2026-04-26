@@ -29,8 +29,8 @@ pub use keymap::{
 };
 pub use layout::ShellLayout;
 pub use message::{
-    MessageLineView, MessageRole, TaskPanelView, footer_text, message_lines, status_text,
-    task_panel_view,
+    MessageLineView, MessageRole, TaskPanelView, footer_text, message_lines, queued_panel_view,
+    status_text, task_panel_view,
 };
 pub use render::{ShellView, render_shell, render_snapshot};
 pub use style::{Color, TextStyle, Theme};

@@ -5,8 +5,8 @@ use crate::{
     frame::{FrameBuffer, Rect},
     layout::ShellLayout,
     message::{
-        MessageLineView, MessageRole, TaskPanelView, footer_text, message_lines, status_text,
-        task_panel_view,
+        MessageLineView, MessageRole, TaskPanelView, footer_text, message_lines, queued_panel_view,
+        status_text, task_panel_view,
     },
     style::{Color, TextStyle, Theme},
 };
@@ -18,6 +18,7 @@ pub struct ShellView {
     pub prompt: String,
     pub status: String,
     pub footer: String,
+    pub queued_panel: Option<TaskPanelView>,
     pub task_panel: Option<TaskPanelView>,
     pub dialog: Option<DialogView>,
 }
@@ -39,6 +40,7 @@ impl ShellView {
             prompt: prompt.into(),
             status: status_text(app),
             footer: footer_text(app),
+            queued_panel: queued_panel_view(app),
             task_panel: task_panel_view(app),
             dialog: None,
         }
@@ -74,6 +76,10 @@ pub fn render_shell(frame: &mut FrameBuffer, view: &ShellView, theme: &Theme) {
 
     if let Some(task_panel) = &view.task_panel {
         draw_task_panel(frame, layout.messages, task_panel, theme);
+    }
+
+    if let Some(queued_panel) = &view.queued_panel {
+        draw_queue_panel(frame, layout.messages, queued_panel, theme);
     }
 
     if let Some(dialog) = &view.dialog {
@@ -155,6 +161,40 @@ fn draw_task_panel(frame: &mut FrameBuffer, area: Rect, panel: &TaskPanelView, t
     let rect = Rect::new(
         overlay.right().saturating_sub(width),
         overlay.y,
+        width,
+        height,
+    );
+
+    draw_panel(
+        frame,
+        rect,
+        Some(&panel.title),
+        &message_lines_to_styled(&panel.lines, theme),
+        theme,
+    );
+}
+
+fn draw_queue_panel(frame: &mut FrameBuffer, area: Rect, panel: &TaskPanelView, theme: &Theme) {
+    let overlay = area.inset(1);
+    if overlay.width < 20 || overlay.height < 4 {
+        return;
+    }
+
+    let content_width = panel
+        .lines
+        .iter()
+        .map(|line| line.text.chars().count())
+        .chain(std::iter::once(panel.title.chars().count()))
+        .max()
+        .unwrap_or(0);
+    let desired_width = u16::try_from(content_width.saturating_add(4)).unwrap_or(overlay.width);
+    let width = desired_width.min(overlay.width.min(36)).max(20);
+    let height = u16::try_from(panel.lines.len().saturating_add(2))
+        .unwrap_or(overlay.height)
+        .min(overlay.height);
+    let rect = Rect::new(
+        overlay.x,
+        overlay.bottom().saturating_sub(height),
         width,
         height,
     );
@@ -296,6 +336,7 @@ mod tests {
             prompt: String::new(),
             status: "prompt | 0 messages".into(),
             footer: "ctrl-c interrupt".into(),
+            queued_panel: None,
             task_panel: None,
             dialog: None,
         };
@@ -330,6 +371,7 @@ mod tests {
             prompt: "/status".into(),
             status: "prompt | 2 messages".into(),
             footer: "cwd=/workspace | ctrl-c interrupt".into(),
+            queued_panel: None,
             task_panel: Some(TaskPanelView {
                 title: "Tasks".into(),
                 lines: vec![MessageLineView::new(
@@ -393,6 +435,7 @@ mod tests {
                 ..TaskState::pending("index workspace")
             },
         );
+        app.queue_command("/status", wonder_of_u_core::QueuePlacement::Later);
 
         let view = ShellView::from_app_state(&app, "/help");
 
@@ -400,7 +443,53 @@ mod tests {
         assert_eq!(view.messages[0].text, "system> ready");
         assert!(view.status.contains("copilot:gpt-5"));
         assert!(view.footer.contains("cwd=/workspace"));
+        assert!(view.queued_panel.is_some());
         assert!(view.task_panel.is_some());
+    }
+
+    #[test]
+    fn shell_snapshot_renders_queued_commands_overlay() {
+        let view = ShellView {
+            title: "Session: Demo".into(),
+            messages: vec![MessageLineView::new(
+                "assistant> ready",
+                MessageRole::Assistant,
+            )],
+            prompt: "/plan".into(),
+            status: "prompt | 1 messages".into(),
+            footer: "cwd=/workspace | ctrl-c interrupt".into(),
+            queued_panel: Some(TaskPanelView {
+                title: "Queued".into(),
+                lines: vec![
+                    MessageLineView::new("1. /status", MessageRole::Progress),
+                    MessageLineView::new("2. draft migration plan", MessageRole::Progress),
+                    MessageLineView::new("+2 more queued", MessageRole::System),
+                ],
+            }),
+            task_panel: None,
+            dialog: None,
+        };
+
+        let frame = render_snapshot(42, 12, &view, &Theme::default());
+
+        assert_eq!(
+            frame.to_plain_text(),
+            [
+                "+-Session: Demo--------------------------+",
+                "|+-Queued------------------+             |",
+                "||1. /status               |             |",
+                "||2. draft migration plan  |             |",
+                "||+2 more queued           |             |",
+                "|+-------------------------+             |",
+                "+----------------------------------------+",
+                "+-Prompt---------------------------------+",
+                "|/plan                                   |",
+                "+----------------------------------------+",
+                "prompt | 1 messages",
+                "cwd=/workspace | ctrl-c interrupt",
+            ]
+            .join("\n")
+        );
     }
 
     #[test]
@@ -411,6 +500,7 @@ mod tests {
             prompt: "continue?".into(),
             status: "permission | 1 messages".into(),
             footer: "cwd=/workspace | ctrl-c interrupt".into(),
+            queued_panel: None,
             task_panel: None,
             dialog: Some(DialogView::confirm(
                 "Confirm action",
