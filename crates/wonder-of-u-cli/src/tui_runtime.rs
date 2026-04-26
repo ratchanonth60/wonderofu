@@ -1338,6 +1338,9 @@ impl<'a> TuiController<'a> {
                 || dialog.title == "Feedback"
                 || dialog.title == "Insights"
                 || dialog.title == "Upgrade"
+                || dialog.title == "Desktop"
+                || dialog.title == "Mobile"
+                || dialog.title == "Chrome"
                 || dialog.title == "Release Notes"
                 || dialog.title == "Version"
                 || dialog.title == "Hooks"
@@ -3636,6 +3639,9 @@ fn parse_known_notice(text: &str) -> Option<(String, Vec<String>, &'static str)>
         ("## Feedback", "Feedback", "feedback"),
         ("## Insights", "Insights", "insights"),
         ("## Upgrade", "Upgrade", "upgrade"),
+        ("## Desktop", "Desktop", "desktop"),
+        ("## Mobile", "Mobile", "mobile"),
+        ("## Chrome", "Chrome", "chrome"),
         ("## Release Notes", "Release Notes", "release notes"),
         ("## Version", "Version", "version"),
         ("## Hooks", "Hooks", "hooks"),
@@ -4536,6 +4542,99 @@ mod tests {
                     && output
                         .as_deref()
                         .is_some_and(|text| text.contains("## Version"))
+        ));
+    }
+
+    #[test]
+    fn controller_shows_desktop_notice_dialog() {
+        let dir = unique_test_dir("tui-desktop-notice");
+        let registry = commands::registry(Some(dir.clone())).expect("registry");
+        let mut controller = TuiController::new(
+            test_context(&dir),
+            &registry,
+            Some(dir.as_path()),
+            TuiLaunchOptions { session_id: None },
+        )
+        .expect("controller");
+
+        controller
+            .execute_slash_command("/desktop")
+            .expect("show desktop");
+
+        assert_eq!(controller.status_note.as_deref(), Some("desktop"));
+        assert!(matches!(
+            controller.dialog.as_ref(),
+            Some(dialog) if dialog.title == "Desktop"
+        ));
+        assert!(matches!(
+            controller.state.messages.last().map(|message| &message.payload),
+            Some(MessagePayload::Command { input, output })
+                if input == "/desktop"
+                    && output
+                        .as_deref()
+                        .is_some_and(|text| text.contains("## Desktop") && text.contains("desktop_docs_url="))
+        ));
+    }
+
+    #[test]
+    fn controller_shows_mobile_notice_dialog_from_alias() {
+        let dir = unique_test_dir("tui-mobile-notice");
+        let registry = commands::registry(Some(dir.clone())).expect("registry");
+        let mut controller = TuiController::new(
+            test_context(&dir),
+            &registry,
+            Some(dir.as_path()),
+            TuiLaunchOptions { session_id: None },
+        )
+        .expect("controller");
+
+        controller
+            .execute_slash_command("/ios")
+            .expect("show mobile");
+
+        assert_eq!(controller.status_note.as_deref(), Some("mobile"));
+        assert!(matches!(
+            controller.dialog.as_ref(),
+            Some(dialog) if dialog.title == "Mobile"
+        ));
+        assert!(matches!(
+            controller.state.messages.last().map(|message| &message.payload),
+            Some(MessagePayload::Command { input, output })
+                if input == "/ios"
+                    && output
+                        .as_deref()
+                        .is_some_and(|text| text.contains("## Mobile") && text.contains("qr_rendered=false"))
+        ));
+    }
+
+    #[test]
+    fn controller_shows_chrome_notice_dialog() {
+        let dir = unique_test_dir("tui-chrome-notice");
+        let registry = commands::registry(Some(dir.clone())).expect("registry");
+        let mut controller = TuiController::new(
+            test_context(&dir),
+            &registry,
+            Some(dir.as_path()),
+            TuiLaunchOptions { session_id: None },
+        )
+        .expect("controller");
+
+        controller
+            .execute_slash_command("/chrome")
+            .expect("show chrome");
+
+        assert_eq!(controller.status_note.as_deref(), Some("chrome"));
+        assert!(matches!(
+            controller.dialog.as_ref(),
+            Some(dialog) if dialog.title == "Chrome"
+        ));
+        assert!(matches!(
+            controller.state.messages.last().map(|message| &message.payload),
+            Some(MessagePayload::Command { input, output })
+                if input == "/chrome"
+                    && output
+                        .as_deref()
+                        .is_some_and(|text| text.contains("## Chrome") && text.contains("extension_url="))
         ));
     }
 

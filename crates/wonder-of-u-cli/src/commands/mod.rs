@@ -42,8 +42,9 @@ use session::{
 };
 use skills::SkillsCommand;
 use status::{
-    CostCommand, FeedbackCommand, InsightsCommand, OutputStyleCommand, ReleaseNotesCommand,
-    StatsCommand, StatusCommand, UpgradeCommand, UsageCommand, VersionCommand,
+    ChromeCommand, CostCommand, DesktopCommand, FeedbackCommand, InsightsCommand, MobileCommand,
+    OutputStyleCommand, ReleaseNotesCommand, StatsCommand, StatusCommand, UpgradeCommand,
+    UsageCommand, VersionCommand,
 };
 use tui::TuiCommand;
 use workflow::{
@@ -63,6 +64,9 @@ pub fn registry(storage_dir: Option<PathBuf>) -> Result<CommandRegistry> {
         ReleaseNotesCommand::command_spec(),
         FeedbackCommand::command_spec(),
         UpgradeCommand::command_spec(),
+        DesktopCommand::command_spec(),
+        MobileCommand::command_spec(),
+        ChromeCommand::command_spec(),
         InsightsCommand::command_spec(),
         UsageCommand::command_spec(),
         CostCommand::command_spec(),
@@ -130,6 +134,9 @@ pub fn registry(storage_dir: Option<PathBuf>) -> Result<CommandRegistry> {
     registry.register(Arc::new(ReleaseNotesCommand::new()))?;
     registry.register(Arc::new(FeedbackCommand::new()))?;
     registry.register(Arc::new(UpgradeCommand::new()))?;
+    registry.register(Arc::new(DesktopCommand::new()))?;
+    registry.register(Arc::new(MobileCommand::new()))?;
+    registry.register(Arc::new(ChromeCommand::new()))?;
     registry.register(Arc::new(InsightsCommand::new(storage_dir.clone())))?;
     registry.register(Arc::new(UsageCommand::new(storage_dir.clone())))?;
     registry.register(Arc::new(CostCommand::new(storage_dir.clone())))?;
