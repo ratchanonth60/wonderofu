@@ -44,6 +44,12 @@ pub struct FeedbackCommand;
 
 pub struct UpgradeCommand;
 
+pub struct DesktopCommand;
+
+pub struct MobileCommand;
+
+pub struct ChromeCommand;
+
 pub struct InsightsCommand {
     storage_dir: Option<PathBuf>,
 }
@@ -155,6 +161,50 @@ impl UpgradeCommand {
         CommandSpec::new(
             "upgrade",
             "Open the Claude upgrade page and show account upgrade guidance",
+            CommandKind::Local,
+        )
+    }
+}
+
+impl DesktopCommand {
+    pub const fn new() -> Self {
+        Self
+    }
+
+    pub fn command_spec() -> CommandSpec {
+        CommandSpec::new(
+            "desktop",
+            "Open Claude Desktop handoff/download guidance for the current platform",
+            CommandKind::Local,
+        )
+    }
+}
+
+impl MobileCommand {
+    pub const fn new() -> Self {
+        Self
+    }
+
+    pub fn command_spec() -> CommandSpec {
+        let mut spec = CommandSpec::new(
+            "mobile",
+            "Show Claude mobile download links for iOS and Android",
+            CommandKind::Local,
+        );
+        spec.aliases.extend(["ios".into(), "android".into()]);
+        spec
+    }
+}
+
+impl ChromeCommand {
+    pub const fn new() -> Self {
+        Self
+    }
+
+    pub fn command_spec() -> CommandSpec {
+        CommandSpec::new(
+            "chrome",
+            "Open Claude in Chrome setup guidance and extension links",
             CommandKind::Local,
         )
     }
@@ -551,6 +601,55 @@ impl Command for UpgradeCommand {
 }
 
 #[async_trait]
+impl Command for DesktopCommand {
+    fn spec(&self) -> CommandSpec {
+        Self::command_spec()
+    }
+
+    async fn execute(
+        &self,
+        _context: CommandContext,
+        _invocation: CommandInvocation,
+    ) -> Result<CommandOutput> {
+        Ok(CommandOutput::Text(render_desktop_summary(
+            try_open_browser(DESKTOP_DOCS_URL),
+        )))
+    }
+}
+
+#[async_trait]
+impl Command for MobileCommand {
+    fn spec(&self) -> CommandSpec {
+        Self::command_spec()
+    }
+
+    async fn execute(
+        &self,
+        _context: CommandContext,
+        _invocation: CommandInvocation,
+    ) -> Result<CommandOutput> {
+        Ok(CommandOutput::Text(render_mobile_summary()))
+    }
+}
+
+#[async_trait]
+impl Command for ChromeCommand {
+    fn spec(&self) -> CommandSpec {
+        Self::command_spec()
+    }
+
+    async fn execute(
+        &self,
+        _context: CommandContext,
+        _invocation: CommandInvocation,
+    ) -> Result<CommandOutput> {
+        Ok(CommandOutput::Text(render_chrome_summary(
+            try_open_browser(CHROME_EXTENSION_URL),
+        )))
+    }
+}
+
+#[async_trait]
 impl Command for InsightsCommand {
     fn spec(&self) -> CommandSpec {
         Self::command_spec()
@@ -590,6 +689,13 @@ struct AggregateCostTotals {
 }
 
 const UPGRADE_URL: &str = "https://claude.ai/upgrade/max";
+const DESKTOP_DOCS_URL: &str = "https://clau.de/desktop";
+const MOBILE_IOS_URL: &str = "https://apps.apple.com/app/claude-by-anthropic/id6473753684";
+const MOBILE_ANDROID_URL: &str =
+    "https://play.google.com/store/apps/details?id=com.anthropic.claude";
+const CHROME_EXTENSION_URL: &str = "https://claude.ai/chrome";
+const CHROME_PERMISSIONS_URL: &str = "https://clau.de/chrome/permissions";
+const CHROME_DOCS_URL: &str = "https://code.claude.com/docs/en/chrome";
 
 #[derive(Default)]
 struct AggregateStats {
@@ -880,6 +986,55 @@ fn render_upgrade_summary(browser_launch_attempted: bool) -> String {
     .join("\n")
 }
 
+fn render_desktop_summary(browser_launch_attempted: bool) -> String {
+    // Keep the fallback explicit until the Rust port can perform a real deep-link session handoff.
+    [
+        "## Desktop".into(),
+        format!("desktop_docs_url={DESKTOP_DOCS_URL}"),
+        format!(
+            "platform_download_url={}",
+            desktop_platform_download_url()
+        ),
+        format!("browser_launch_attempted={browser_launch_attempted}"),
+        String::new(),
+        "The Rust port does not yet transfer the live session into Claude Desktop.".into(),
+        "Use the docs/download flow to install or update the app, then continue from Claude Desktop separately.".into(),
+        "This keeps the command honest until deep-link handoff parity exists.".into(),
+    ]
+    .join("\n")
+}
+
+fn render_mobile_summary() -> String {
+    // The reference renders QR codes; for now we expose the same destinations without pretending
+    // the ratatui path already has QR rendering parity.
+    [
+        "## Mobile".into(),
+        format!("ios_url={MOBILE_IOS_URL}"),
+        format!("android_url={MOBILE_ANDROID_URL}"),
+        "qr_rendered=false".into(),
+        String::new(),
+        "The reference command shows a QR code for the Claude mobile app.".into(),
+        "The Rust port does not yet render QR handoff in the TUI, so it exposes direct App Store and Play Store links instead.".into(),
+        "Use the links above from your phone or copy them into a browser.".into(),
+    ]
+    .join("\n")
+}
+
+fn render_chrome_summary(browser_launch_attempted: bool) -> String {
+    [
+        "## Chrome".into(),
+        format!("extension_url={CHROME_EXTENSION_URL}"),
+        format!("permissions_url={CHROME_PERMISSIONS_URL}"),
+        format!("docs_url={CHROME_DOCS_URL}"),
+        format!("browser_launch_attempted={browser_launch_attempted}"),
+        String::new(),
+        "The Rust port does not yet implement the Claude in Chrome extension status picker or default-on config flow.".into(),
+        "Open the extension page to install or reconnect Claude in Chrome, then manage site permissions in the extension settings.".into(),
+        "Use the docs link for the full browser-control setup guide.".into(),
+    ]
+    .join("\n")
+}
+
 fn render_insights_enqueue(storage_dir: Option<&Path>, focus: &str) -> Result<String> {
     let Some(storage_dir) = storage_dir else {
         return Ok(vec![
@@ -966,6 +1121,18 @@ fn render_insights_enqueue(storage_dir: Option<&Path>, focus: &str) -> Result<St
         format!("enqueue_prompt={prompt}"),
     ]
     .join("\n"))
+}
+
+fn desktop_platform_download_url() -> &'static str {
+    #[cfg(target_os = "windows")]
+    {
+        "https://claude.ai/api/desktop/win32/x64/exe/latest/redirect"
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        "https://claude.ai/api/desktop/darwin/universal/dmg/latest/redirect"
+    }
 }
 
 fn try_open_browser(url: &str) -> bool {
@@ -1262,6 +1429,53 @@ mod tests {
         assert!(rendered.contains("browser_launch_attempted=false"));
         assert!(rendered.contains("rerun /login"));
         assert!(rendered.contains("subscription introspection flow"));
+    }
+
+    #[test]
+    fn desktop_summary_points_to_docs_and_download_flow() {
+        let rendered = render_desktop_summary(false);
+
+        assert!(rendered.contains("## Desktop"));
+        assert!(rendered.contains("desktop_docs_url=https://clau.de/desktop"));
+        assert!(rendered.contains("platform_download_url="));
+        assert!(rendered.contains("browser_launch_attempted=false"));
+        assert!(rendered.contains("does not yet transfer the live session"));
+    }
+
+    #[test]
+    fn mobile_summary_exposes_store_links_without_qr() {
+        let rendered = render_mobile_summary();
+
+        assert!(rendered.contains("## Mobile"));
+        assert!(
+            rendered
+                .contains("ios_url=https://apps.apple.com/app/claude-by-anthropic/id6473753684")
+        );
+        assert!(rendered.contains(
+            "android_url=https://play.google.com/store/apps/details?id=com.anthropic.claude"
+        ));
+        assert!(rendered.contains("qr_rendered=false"));
+        assert!(rendered.contains("does not yet render QR handoff"));
+    }
+
+    #[test]
+    fn mobile_command_spec_includes_platform_aliases() {
+        let spec = MobileCommand::command_spec();
+
+        assert_eq!(spec.name, "mobile");
+        assert_eq!(spec.aliases, vec!["ios".to_string(), "android".to_string()]);
+    }
+
+    #[test]
+    fn chrome_summary_points_to_extension_setup_links() {
+        let rendered = render_chrome_summary(false);
+
+        assert!(rendered.contains("## Chrome"));
+        assert!(rendered.contains("extension_url=https://claude.ai/chrome"));
+        assert!(rendered.contains("permissions_url=https://clau.de/chrome/permissions"));
+        assert!(rendered.contains("docs_url=https://code.claude.com/docs/en/chrome"));
+        assert!(rendered.contains("browser_launch_attempted=false"));
+        assert!(rendered.contains("extension status picker"));
     }
 
     #[test]
