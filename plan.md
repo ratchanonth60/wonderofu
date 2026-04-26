@@ -98,7 +98,14 @@ The target TUI is **visual-close**: layout, flow, colors, dialogs, status/footer
   - For each new feature slice, branch from `dev` into `feat/<slice>`, finish the slice, then merge back into `dev`.
   - Keep files grouped by domain (`commands/status.rs` for informational commands, `commands/workflow.rs` for interactive workflow commands, `tui_runtime.rs` for shell/controller behavior) and avoid scattering feature logic across unrelated modules.
 - Current high-priority parity queue:
+  - Completed in the current merged flow:
+    - `/fast`
+    - TUI permission parity
+    - TUI overlay/picker parity
+    - TUI resume/live-state parity
+    - command-audit parity (`/security-review`, `/terminal-setup`)
   - Continue the broader `parity-hardening-release` work from clean `dev`; the branch sequence above is complete.
+  - Remaining top-level work is now broader hardening rather than the completed branch sequence above.
   - Re-audit the remaining less-central command surfaces and moved-to-plugin/browser-handoff flows that still have no honest Rust equivalent.
   - Keep tightening ratatui interaction feel where the shell still diverges from the reference beyond the slices already merged.
   - Only claim feature parity when the Rust path has real runtime behavior or an explicit fallback that matches the reference command semantics.
