@@ -79,6 +79,11 @@ The target TUI is **visual-close**: layout, flow, colors, dialogs, status/footer
     - provider resolution remaps default model selection to real built-in fast models when a provider exposes one (`mini`/`haiku` style mappings today),
     - explicit model overrides still win,
     - the leak's entitlement/quota/cooldown/billing-aware fast-mode semantics are still explicitly out of scope until the Rust runtime can implement them honestly.
+  - Merged the follow-up ratatui parity slices into `dev`:
+    - `feat/tui-permission-parity`: clearer inline approval dialogs, coherent allow/deny/resume state cleanup, and stronger permission-loop regression coverage.
+    - `feat/tui-overlay-parity`: more consistent notice/picker transition feedback, stale notice cleanup, and better close/cancel status behavior.
+    - `feat/tui-resume-parity`: restored sessions now preserve more provider/model/permission/UI context immediately on launch/resume instead of waiting for later refreshes.
+    - `feat/command-audit-parity`: added truthful `/security-review` as a local queued security review flow and `/terminal-setup` as an honest TUI/keybinding fallback notice.
 - TUI parity note:
   - The reference UI uses **Ink/React**, while `wonder-of-u` uses a custom Rust state/controller loop on top of **ratatui/crossterm**.
   - Because of that, parity work must focus on reproducing flow/state/dialog behavior instead of assuming the same component lifecycle or repaint model.
@@ -88,15 +93,14 @@ The target TUI is **visual-close**: layout, flow, colors, dialogs, status/footer
   - Update progress in this project-level `plan.md` at each meaningful milestone.
   - Use `dev` as the integration branch.
   - `main` now reflects the merged parity snapshot from `dev`.
-  - `dev` now includes the merged `feat/fast-mode-parity` slice as the current integration baseline.
-  - Next feature branch to cut from `dev`: `feat/tui-permission-parity`.
+  - `dev` now includes the merged fast, permission, overlay, resume, and command-audit parity slices.
+  - The last completed feature sequence was: `feat/fast-mode-parity` -> `feat/tui-permission-parity` -> `feat/tui-overlay-parity` -> `feat/tui-resume-parity` -> `feat/command-audit-parity`.
   - For each new feature slice, branch from `dev` into `feat/<slice>`, finish the slice, then merge back into `dev`.
   - Keep files grouped by domain (`commands/status.rs` for informational commands, `commands/workflow.rs` for interactive workflow commands, `tui_runtime.rs` for shell/controller behavior) and avoid scattering feature logic across unrelated modules.
 - Current high-priority parity queue:
-  - Start `feat/tui-permission-parity` from clean `dev` and tighten inline permission approvals, blocked-tool flow, and post-approval continuation UX.
-  - Follow with `feat/tui-overlay-parity` for notice/picker behavior, repaint timing, and status/footer transitions that still feel off versus Ink.
-  - Follow with `feat/tui-resume-parity` so restored sessions preserve more interactive shell/controller context immediately on launch/resume.
-  - Finish with `feat/command-audit-parity` to audit the remaining user-facing slash-command surfaces from `claude-leak/commands/*` that can be implemented as honest local flows.
+  - Continue the broader `parity-hardening-release` work from clean `dev`; the branch sequence above is complete.
+  - Re-audit the remaining less-central command surfaces and moved-to-plugin/browser-handoff flows that still have no honest Rust equivalent.
+  - Keep tightening ratatui interaction feel where the shell still diverges from the reference beyond the slices already merged.
   - Only claim feature parity when the Rust path has real runtime behavior or an explicit fallback that matches the reference command semantics.
 
 ## 3. First-release scope and backlog
