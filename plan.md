@@ -88,13 +88,15 @@ The target TUI is **visual-close**: layout, flow, colors, dialogs, status/footer
   - Update progress in this project-level `plan.md` at each meaningful milestone.
   - Use `dev` as the integration branch.
   - `main` now reflects the merged parity snapshot from `dev`.
-  - Current feature branch: `feat/fast-mode-parity`.
+  - `dev` now includes the merged `feat/fast-mode-parity` slice as the current integration baseline.
+  - Next feature branch to cut from `dev`: `feat/tui-permission-parity`.
   - For each new feature slice, branch from `dev` into `feat/<slice>`, finish the slice, then merge back into `dev`.
   - Keep files grouped by domain (`commands/status.rs` for informational commands, `commands/workflow.rs` for interactive workflow commands, `tui_runtime.rs` for shell/controller behavior) and avoid scattering feature logic across unrelated modules.
 - Current high-priority parity queue:
-  - Tighten ratatui parity for inline permission approvals, notice/picker behavior, repaint timing, and status/footer transitions that still feel off versus Ink.
-  - Harden resume/live-state reconstruction so restored sessions preserve more interactive shell/controller context.
-  - Continue auditing the remaining user-facing slash-command surfaces from `claude-leak/commands/*`, especially the ones that can be implemented as honest local flows rather than remote-only placeholders.
+  - Start `feat/tui-permission-parity` from clean `dev` and tighten inline permission approvals, blocked-tool flow, and post-approval continuation UX.
+  - Follow with `feat/tui-overlay-parity` for notice/picker behavior, repaint timing, and status/footer transitions that still feel off versus Ink.
+  - Follow with `feat/tui-resume-parity` so restored sessions preserve more interactive shell/controller context immediately on launch/resume.
+  - Finish with `feat/command-audit-parity` to audit the remaining user-facing slash-command surfaces from `claude-leak/commands/*` that can be implemented as honest local flows.
   - Only claim feature parity when the Rust path has real runtime behavior or an explicit fallback that matches the reference command semantics.
 
 ## 3. First-release scope and backlog
