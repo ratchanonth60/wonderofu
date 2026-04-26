@@ -84,6 +84,24 @@ impl KeybindingsCommand {
     }
 }
 
+pub struct TerminalSetupCommand {
+    storage_dir: Option<PathBuf>,
+}
+
+impl TerminalSetupCommand {
+    pub const fn new(storage_dir: Option<PathBuf>) -> Self {
+        Self { storage_dir }
+    }
+
+    pub fn command_spec() -> CommandSpec {
+        CommandSpec::new(
+            "terminal-setup",
+            "Explain multiline prompt setup and keybinding options for the local TUI",
+            CommandKind::Local,
+        )
+    }
+}
+
 pub struct ThemeCommand;
 
 impl ThemeCommand {
@@ -163,6 +181,24 @@ impl ReviewCommand {
         let mut spec = CommandSpec::new(
             "review",
             "Queue a local pull-request review prompt",
+            CommandKind::Local,
+        );
+        spec.interactive_only = true;
+        spec
+    }
+}
+
+pub struct SecurityReviewCommand;
+
+impl SecurityReviewCommand {
+    pub const fn new() -> Self {
+        Self
+    }
+
+    pub fn command_spec() -> CommandSpec {
+        let mut spec = CommandSpec::new(
+            "security-review",
+            "Queue a local security review prompt for pending branch changes",
             CommandKind::Local,
         );
         spec.interactive_only = true;
@@ -475,6 +511,23 @@ impl Command for KeybindingsCommand {
 }
 
 #[async_trait]
+impl Command for TerminalSetupCommand {
+    fn spec(&self) -> CommandSpec {
+        Self::command_spec()
+    }
+
+    async fn execute(
+        &self,
+        _context: CommandContext,
+        _invocation: CommandInvocation,
+    ) -> Result<CommandOutput> {
+        Ok(CommandOutput::Text(render_terminal_setup_notice(
+            self.storage_dir.as_deref(),
+        )))
+    }
+}
+
+#[async_trait]
 impl Command for ThemeCommand {
     fn spec(&self) -> CommandSpec {
         Self::command_spec()
@@ -588,6 +641,23 @@ impl Command for ReviewCommand {
         invocation: CommandInvocation,
     ) -> Result<CommandOutput> {
         Ok(CommandOutput::Text(render_review_enqueue(
+            invocation.args.trim(),
+        )))
+    }
+}
+
+#[async_trait]
+impl Command for SecurityReviewCommand {
+    fn spec(&self) -> CommandSpec {
+        Self::command_spec()
+    }
+
+    async fn execute(
+        &self,
+        _context: CommandContext,
+        invocation: CommandInvocation,
+    ) -> Result<CommandOutput> {
+        Ok(CommandOutput::Text(render_security_review_enqueue(
             invocation.args.trim(),
         )))
     }
@@ -1816,6 +1886,38 @@ fn render_review_enqueue(args: &str) -> String {
     .join("\n")
 }
 
+fn render_security_review_enqueue(args: &str) -> String {
+    let focus = sanitize_single_line(args.trim());
+    let prompt = format!(
+        concat!(
+            "Perform a security-focused review of the current local branch changes. ",
+            "Inspect local git state with `git status --short`, `git diff --stat`, `git diff --cached`, and `git diff`. ",
+            "Compare commits against the upstream branch with `git log --oneline @{{upstream}}..HEAD` when available, and fall back to recent local commits if no upstream is configured. ",
+            "Report concrete findings first, then note residual risks and missing tests. ",
+            "Focus on secrets, auth/authz, input validation, command execution, filesystem access, network exposure, dependency or configuration risk, and unsafe data handling. ",
+            "If nothing looks wrong, explicitly say that no security issues were found in the inspected diff. ",
+            "Additional focus: {}."
+        ),
+        if focus.is_empty() {
+            "none provided"
+        } else {
+            focus.as_str()
+        }
+    );
+    [
+        "security_review_prompt_ready=true".into(),
+        "security_review_scope=local_branch_changes".into(),
+        format!(
+            "security_review_focus={}",
+            if focus.is_empty() { "default" } else { &focus }
+        ),
+        "status=security review prompt queued".into(),
+        "note=the Rust port queues a local security review prompt; it does not integrate with marketplace or plugin security services".into(),
+        format!("enqueue_prompt={}", sanitize_single_line(&prompt)),
+    ]
+    .join("\n")
+}
+
 fn render_statusline_enqueue(args: &str) -> String {
     let prompt = if args.trim().is_empty() {
         "Configure my status line from my shell PS1 configuration".to_string()
@@ -1827,6 +1929,22 @@ fn render_statusline_enqueue(args: &str) -> String {
         "status=statusline setup prompt queued".into(),
         "note=the Rust port queues a local setup prompt instead of the leak's remote statusline subagent".into(),
         format!("enqueue_prompt={}", sanitize_single_line(&prompt)),
+    ]
+    .join("\n")
+}
+
+fn render_terminal_setup_notice(storage_dir: Option<&Path>) -> String {
+    let path = resolve_keybindings_path(storage_dir);
+    [
+        "## Terminal Setup".into(),
+        "The Rust port does not install platform-specific Shift+Enter or terminal keybinding integrations.".into(),
+        "In the TUI prompt, Enter submits by default and the prompt buffer stays single-line unless you add a keybinding that triggers `insert_newline`.".into(),
+        "Use `/keybindings` to inspect the active shortcuts.".into(),
+        format!(
+            "Use `/keybindings open` to create or edit {} with the starter template, which includes a Shift+Enter -> insert_newline example.",
+            path.display()
+        ),
+        "This command is an informational local fallback, not the leak's full terminal installer.".into(),
     ]
     .join("\n")
 }
@@ -2792,24 +2910,47 @@ fn render_runtime_disabled(kind: &str, note: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::path::Path;
+
+    use futures::executor::block_on;
     use wonder_of_u_agent::{AgentSettings, ProviderResolver, SettingsStore};
     use wonder_of_u_core::{
-        CommandContext, CommandInvocation, FeatureSet, PermissionMode, SessionId,
+        Command, CommandContext, CommandInvocation, CommandOutput, FeatureSet, PermissionMode,
+        SessionId,
     };
     use wonder_of_u_test_support::{EnvVarGuard, unique_test_dir};
 
     use super::{
-        PlanAction, ensure_hooks_file, ensure_keybindings_file, load_keybinding_resolver,
-        normalize_color_invocation, normalize_effort_invocation, normalize_permissions_invocation,
-        normalize_theme_invocation, normalize_vim_invocation, parse_brief_action,
-        parse_effort_level_name, parse_fast_action, parse_plan_action, parse_session_color_name,
-        render_brief_status, render_brief_transition, render_color_status, render_color_transition,
-        render_effort_status, render_effort_transition, render_fast_status, render_fast_transition,
-        render_hooks_summary, render_keybindings_summary, render_plan_display,
-        render_privacy_settings_summary, render_review_enqueue, render_statusline_enqueue,
-        render_theme_status, resolve_hooks_path, resolve_keybindings_path, resolve_plan_path,
-        write_persisted_effort, write_persisted_fast,
+        PlanAction, SecurityReviewCommand, TerminalSetupCommand, ensure_hooks_file,
+        ensure_keybindings_file, load_keybinding_resolver, normalize_color_invocation,
+        normalize_effort_invocation, normalize_permissions_invocation, normalize_theme_invocation,
+        normalize_vim_invocation, parse_brief_action, parse_effort_level_name, parse_fast_action,
+        parse_plan_action, parse_session_color_name, render_brief_status, render_brief_transition,
+        render_color_status, render_color_transition, render_effort_status,
+        render_effort_transition, render_fast_status, render_fast_transition, render_hooks_summary,
+        render_keybindings_summary, render_plan_display, render_privacy_settings_summary,
+        render_review_enqueue, render_security_review_enqueue, render_statusline_enqueue,
+        render_terminal_setup_notice, render_theme_status, resolve_hooks_path,
+        resolve_keybindings_path, resolve_plan_path, write_persisted_effort, write_persisted_fast,
     };
+
+    fn test_context(cwd: &Path) -> CommandContext {
+        CommandContext {
+            session_id: SessionId::new(),
+            cwd: cwd.to_path_buf(),
+            features: FeatureSet::first_release(),
+            authenticated: false,
+            interactive: true,
+            permission_mode: PermissionMode::Default,
+            theme: None,
+            session_color: None,
+            effort_level: None,
+            brief_mode: false,
+            fast_mode: false,
+            session_tags: Vec::new(),
+            additional_working_directories: Vec::new(),
+        }
+    }
 
     #[test]
     fn plan_defaults_to_enter_outside_plan_mode_and_show_inside() {
@@ -3155,6 +3296,37 @@ mod tests {
     }
 
     #[test]
+    fn security_review_enqueue_defaults_to_local_branch_scope() {
+        let rendered = render_security_review_enqueue("");
+
+        assert!(rendered.contains("security_review_prompt_ready=true"));
+        assert!(rendered.contains("security_review_scope=local_branch_changes"));
+        assert!(rendered.contains("security_review_focus=default"));
+        assert!(rendered.contains("status=security review prompt queued"));
+        assert!(rendered.contains("git status --short"));
+    }
+
+    #[test]
+    fn security_review_command_enqueues_custom_focus() {
+        let dir = unique_test_dir("workflow-security-review-command");
+        let output = block_on(SecurityReviewCommand::new().execute(
+            test_context(&dir),
+            CommandInvocation {
+                name: "security-review".into(),
+                args: "focus on secret handling".into(),
+                raw: "/security-review focus on secret handling".into(),
+            },
+        ))
+        .expect("security review output");
+
+        let CommandOutput::Text(text) = output else {
+            panic!("expected text output");
+        };
+        assert!(text.contains("security_review_focus=focus on secret handling"));
+        assert!(text.contains("Additional focus: focus on secret handling."));
+    }
+
+    #[test]
     fn statusline_enqueue_uses_default_setup_prompt() {
         let rendered = render_statusline_enqueue("");
 
@@ -3172,6 +3344,40 @@ mod tests {
         let rendered = render_statusline_enqueue("Match my tmux and starship layout");
 
         assert!(rendered.contains("enqueue_prompt=Match my tmux and starship layout"));
+    }
+
+    #[test]
+    fn terminal_setup_notice_points_to_keybindings_flow() {
+        let dir = unique_test_dir("workflow-terminal-setup-notice");
+        let rendered = render_terminal_setup_notice(Some(dir.as_path()));
+
+        assert!(rendered.starts_with("## Terminal Setup"));
+        assert!(rendered.contains("does not install platform-specific Shift+Enter"));
+        assert!(rendered.contains("Use `/keybindings` to inspect the active shortcuts."));
+        assert!(rendered.contains(&format!(
+            "Use `/keybindings open` to create or edit {}",
+            resolve_keybindings_path(Some(dir.as_path())).display()
+        )));
+    }
+
+    #[test]
+    fn terminal_setup_command_renders_notice() {
+        let dir = unique_test_dir("workflow-terminal-setup-command");
+        let output = block_on(TerminalSetupCommand::new(Some(dir.clone())).execute(
+            test_context(&dir),
+            CommandInvocation {
+                name: "terminal-setup".into(),
+                args: String::new(),
+                raw: "/terminal-setup".into(),
+            },
+        ))
+        .expect("terminal setup output");
+
+        let CommandOutput::Text(text) = output else {
+            panic!("expected text output");
+        };
+        assert!(text.contains("## Terminal Setup"));
+        assert!(text.contains("Shift+Enter -> insert_newline"));
     }
 
     #[test]

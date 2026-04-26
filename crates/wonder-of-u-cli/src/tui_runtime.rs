@@ -1343,6 +1343,7 @@ impl<'a> TuiController<'a> {
                 || dialog.title == "Hooks"
                 || dialog.title == "Keybindings"
                 || dialog.title == "Privacy Settings"
+                || dialog.title == "Terminal Setup"
         }) {
         } else if parse_vim_toggle_hint(text.as_deref().unwrap_or_default())
             || parse_vim_mode_hint(text.as_deref().unwrap_or_default()).is_some()
@@ -3644,6 +3645,7 @@ fn parse_known_notice(text: &str) -> Option<(String, Vec<String>, &'static str)>
             "Privacy Settings",
             "privacy settings",
         ),
+        ("## Terminal Setup", "Terminal Setup", "terminal setup"),
     ]
     .into_iter()
     .find_map(|(heading, title, note)| {
@@ -5004,6 +5006,37 @@ mod tests {
                     && output
                         .as_deref()
                         .is_some_and(|text| text.contains("## Privacy Settings"))
+        ));
+    }
+
+    #[test]
+    fn controller_shows_terminal_setup_notice_dialog() {
+        let dir = unique_test_dir("tui-terminal-setup-notice");
+        let registry = commands::registry(Some(dir.clone())).expect("registry");
+        let mut controller = TuiController::new(
+            test_context(&dir),
+            &registry,
+            Some(dir.as_path()),
+            TuiLaunchOptions { session_id: None },
+        )
+        .expect("controller");
+
+        controller
+            .execute_slash_command("/terminal-setup")
+            .expect("show terminal setup");
+
+        assert_eq!(controller.status_note.as_deref(), Some("terminal setup"));
+        assert!(matches!(
+            controller.dialog.as_ref(),
+            Some(dialog) if dialog.title == "Terminal Setup"
+        ));
+        assert!(matches!(
+            controller.state.messages.last().map(|message| &message.payload),
+            Some(MessagePayload::Command { input, output })
+                if input == "/terminal-setup"
+                    && output
+                        .as_deref()
+                        .is_some_and(|text| text.contains("## Terminal Setup"))
         ));
     }
 
