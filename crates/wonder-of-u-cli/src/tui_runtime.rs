@@ -215,6 +215,19 @@ enum ToolExecutionOutcome {
     Paused { reason: String },
 }
 
+enum RestoredPromptUiState {
+    PermissionPicker(PermissionPickerState),
+    MemoryPicker(MemoryPickerState),
+    TagRemoval(TagRemovalState),
+    ThemePicker(ThemePickerState),
+    ModelPicker(ModelPickerState),
+    Notice {
+        dialog: DialogView,
+        status_note: String,
+    },
+    Status(String),
+}
+
 impl<'a> TuiController<'a> {
     fn new(
         context: CommandContext,
@@ -1787,17 +1800,20 @@ impl<'a> TuiController<'a> {
     }
 
     fn refresh_runtime_state(&mut self) -> Result<bool> {
-        let provider_report =
-            ProviderResolver::builtin().load_report(self.storage_dir.as_deref())?;
+        let resolver = ProviderResolver::builtin();
+        let selection =
+            ProviderSelection::new(self.state.provider.clone(), self.state.model.clone());
+        let provider_report = if selection.provider.is_some() || selection.model.is_some() {
+            resolver
+                .load_report_for_selection(self.storage_dir.as_deref(), &selection)
+                .or_else(|_| resolver.load_report(self.storage_dir.as_deref()))?
+        } else {
+            resolver.load_report(self.storage_dir.as_deref())?
+        };
         let mut changed = false;
-        let should_preserve_selection =
-            matches!(provider_report.readiness, ProviderReadiness::Unconfigured)
-                && self.state.provider.is_some()
-                && self.state.model.is_some();
-        if !should_preserve_selection
-            && (self.state.provider != provider_report.provider
-                || self.state.model != provider_report.model
-                || self.state.auth != provider_report.auth)
+        if self.state.provider != provider_report.provider
+            || self.state.model != provider_report.model
+            || self.state.auth != provider_report.auth
         {
             self.state.set_provider_context(
                 provider_report.provider,
@@ -2488,9 +2504,15 @@ impl<'a> TuiController<'a> {
     }
 
     fn rebuild_ephemeral_state(&mut self) {
+        self.dialog = None;
+        self.pending_permission_picker = None;
+        self.pending_memory_picker = None;
+        self.pending_tag_removal = None;
+        self.pending_theme_picker = None;
+        self.pending_model_picker = None;
+        self.pending_external_editor = None;
         match self.state.input_mode {
             InputMode::Prompt => {
-                self.dialog = None;
                 self.turn_state = if self.prompt.text().trim().is_empty() {
                     if self.state.messages.is_empty() && self.state.background_tasks.is_empty() {
                         TurnState::Idle
@@ -2501,9 +2523,38 @@ impl<'a> TuiController<'a> {
                     TurnState::EditingInput
                 };
                 self.status_note = None;
+                if let Some(restored) = restored_prompt_ui_state(&self.state.messages) {
+                    match restored {
+                        RestoredPromptUiState::PermissionPicker(picker) => {
+                            self.open_permission_picker(picker);
+                        }
+                        RestoredPromptUiState::MemoryPicker(picker) => {
+                            self.open_memory_picker(picker);
+                        }
+                        RestoredPromptUiState::TagRemoval(pending) => {
+                            self.open_tag_removal_confirmation(pending);
+                        }
+                        RestoredPromptUiState::ThemePicker(picker) => {
+                            self.open_theme_picker(picker);
+                        }
+                        RestoredPromptUiState::ModelPicker(picker) => {
+                            self.open_model_picker(picker);
+                        }
+                        RestoredPromptUiState::Notice {
+                            dialog,
+                            status_note,
+                        } => {
+                            self.dialog = Some(dialog);
+                            self.status_note = Some(status_note);
+                            self.needs_render = true;
+                        }
+                        RestoredPromptUiState::Status(status_note) => {
+                            self.status_note = Some(status_note);
+                        }
+                    }
+                }
             }
             InputMode::Bash => {
-                self.dialog = None;
                 self.turn_state = TurnState::ToolExecuting;
                 self.status_note = Some("bash mode restored from snapshot".into());
             }
@@ -3073,6 +3124,77 @@ fn restored_permission_dialog(
             }
             _ => None,
         })
+}
+
+fn restored_prompt_ui_state(messages: &[MessageEnvelope]) -> Option<RestoredPromptUiState> {
+    let MessagePayload::Command {
+        input,
+        output: Some(output),
+    } = &messages.last()?.payload
+    else {
+        return None;
+    };
+
+    restored_command_ui_state(input, output)
+}
+
+fn restored_command_ui_state(input: &str, output: &str) -> Option<RestoredPromptUiState> {
+    if let Some(mut picker) = parse_permission_picker_state(output) {
+        picker.original_input = input.to_string();
+        return Some(RestoredPromptUiState::PermissionPicker(picker));
+    }
+    if let Some(mut picker) = parse_memory_picker_state(output) {
+        picker.original_input = input.to_string();
+        return Some(RestoredPromptUiState::MemoryPicker(picker));
+    }
+    if let Some(tag) = parse_tag_remove_confirmation(output) {
+        return Some(RestoredPromptUiState::TagRemoval(TagRemovalState {
+            original_input: input.to_string(),
+            tag,
+        }));
+    }
+    if let Some(mut picker) = parse_theme_picker_state(output) {
+        picker.original_input = input.to_string();
+        return Some(RestoredPromptUiState::ThemePicker(picker));
+    }
+    if let Some(mut picker) = parse_model_picker_state(output) {
+        picker.original_input = input.to_string();
+        return Some(RestoredPromptUiState::ModelPicker(picker));
+    }
+    if let Some((title, body, note)) = parse_known_notice(output) {
+        return Some(RestoredPromptUiState::Notice {
+            dialog: DialogView::notice(title, body),
+            status_note: note.into(),
+        });
+    }
+    if let Some(view_action) = parse_view_action_hint(Some(output)) {
+        return Some(RestoredPromptUiState::Status(match view_action {
+            ViewActionHint::Clear => "conversation cleared".into(),
+            ViewActionHint::Compact => "conversation compacted".into(),
+        }));
+    }
+    if parse_insights_hint(output) {
+        return Some(RestoredPromptUiState::Status("insights queued".into()));
+    }
+    if let Some(enabled) = parse_fast_mode_hint(output) {
+        return Some(RestoredPromptUiState::Status(format!(
+            "fast {}",
+            if enabled { "on" } else { "off" }
+        )));
+    }
+    if let Some(enabled) = parse_brief_mode_hint(output) {
+        return Some(RestoredPromptUiState::Status(format!(
+            "brief {}",
+            if enabled { "on" } else { "off" }
+        )));
+    }
+    if let Some(effort) = parse_effort_hint(output) {
+        return Some(RestoredPromptUiState::Status(format!("effort {effort}")));
+    }
+    if let Some(color) = parse_session_color_hint(output) {
+        return Some(RestoredPromptUiState::Status(format!("color {color}")));
+    }
+    None
 }
 
 fn pending_provider_call_from_runtime(call: &ProviderToolCall) -> PendingProviderToolCall {
@@ -6326,6 +6448,203 @@ mod tests {
                 .body
                 .iter()
                 .any(|line| line.contains("all tests passed"))
+        );
+    }
+
+    #[test]
+    fn controller_restores_notice_dialog_from_snapshot_resume() {
+        let dir = unique_test_dir("tui-resume-notice-dialog");
+        let registry = commands::registry(Some(dir.clone())).expect("registry");
+        let mut state = AppState::new(dir.clone());
+        let message = MessageEnvelope::new(
+            state.session.id,
+            MessagePayload::Command {
+                input: "/context".into(),
+                output: Some("## Context Usage\nTokens: 42\nWindow: 8 messages\n".into()),
+            },
+        );
+        state.push_message(message.clone()).expect("push command");
+        let store = TranscriptStore::new(&dir);
+        store
+            .write_metadata(
+                &wonder_of_u_storage::SessionMetadata::from_state_with_transcript(&state, 1),
+            )
+            .expect("write metadata");
+        store.append_message(&message).expect("append transcript");
+        store
+            .write_snapshot(&wonder_of_u_storage::SessionSnapshot::from_app_state(
+                &state, 1, 0,
+            ))
+            .expect("write snapshot");
+
+        let controller = TuiController::new(
+            test_context(&dir),
+            &registry,
+            Some(dir.as_path()),
+            TuiLaunchOptions {
+                session_id: Some(state.session.id.to_string()),
+            },
+        )
+        .expect("controller");
+
+        assert_eq!(controller.state.input_mode, InputMode::Prompt);
+        assert_eq!(controller.turn_state, TurnState::Completed);
+        assert_eq!(controller.status_note.as_deref(), Some("context usage"));
+        let dialog = controller.view().dialog.expect("restored notice dialog");
+        assert_eq!(dialog.title, "Context Usage");
+        assert!(dialog.body.iter().any(|line| line.contains("Tokens: 42")));
+    }
+
+    #[test]
+    fn controller_restores_status_note_from_snapshot_resume() {
+        let dir = unique_test_dir("tui-resume-status-note");
+        let registry = commands::registry(Some(dir.clone())).expect("registry");
+        let mut state = AppState::new(dir.clone());
+        state.set_session_color(Some("purple".into()));
+        let message = MessageEnvelope::new(
+            state.session.id,
+            MessagePayload::Command {
+                input: "/color purple".into(),
+                output: Some("color=purple\nstatus=color updated\n".into()),
+            },
+        );
+        state.push_message(message.clone()).expect("push command");
+        let store = TranscriptStore::new(&dir);
+        store
+            .write_metadata(
+                &wonder_of_u_storage::SessionMetadata::from_state_with_transcript(&state, 1),
+            )
+            .expect("write metadata");
+        store.append_message(&message).expect("append transcript");
+        store
+            .write_snapshot(&wonder_of_u_storage::SessionSnapshot::from_app_state(
+                &state, 1, 0,
+            ))
+            .expect("write snapshot");
+
+        let controller = TuiController::new(
+            test_context(&dir),
+            &registry,
+            Some(dir.as_path()),
+            TuiLaunchOptions {
+                session_id: Some(state.session.id.to_string()),
+            },
+        )
+        .expect("controller");
+
+        assert_eq!(controller.state.session_color.as_deref(), Some("purple"));
+        assert_eq!(controller.status_note.as_deref(), Some("color purple"));
+        assert!(controller.view().dialog.is_none());
+        assert!(controller.view().footer.contains("color=purple"));
+    }
+
+    #[test]
+    fn controller_preserves_restored_permission_mode_on_resume() {
+        let dir = unique_test_dir("tui-resume-permission-mode");
+        let registry = commands::registry(Some(dir.clone())).expect("registry");
+        let mut state = AppState::new(dir.clone());
+        state.permission_mode = PermissionMode::Plan;
+        let store = TranscriptStore::new(&dir);
+        store.ensure_layout().expect("ensure layout");
+        std::fs::write(store.paths().transcript_path(state.session.id), "")
+            .expect("write transcript");
+        store
+            .write_metadata(
+                &wonder_of_u_storage::SessionMetadata::from_state_with_transcript(&state, 0),
+            )
+            .expect("write metadata");
+        store
+            .write_snapshot(&wonder_of_u_storage::SessionSnapshot::from_app_state(
+                &state, 0, 0,
+            ))
+            .expect("write snapshot");
+
+        let controller = TuiController::new(
+            test_context(&dir),
+            &registry,
+            Some(dir.as_path()),
+            TuiLaunchOptions {
+                session_id: Some(state.session.id.to_string()),
+            },
+        )
+        .expect("controller");
+
+        assert_eq!(controller.state.permission_mode, PermissionMode::Plan);
+        assert!(controller.view().footer.contains("permission=plan"));
+    }
+
+    #[test]
+    fn controller_preserves_restored_provider_selection_on_resume() {
+        let dir = unique_test_dir("tui-resume-provider-selection");
+        SettingsStore::new(&dir)
+            .write(&AgentSettings {
+                selected_provider: Some("openai".into()),
+                selected_model: Some("gpt-4.1".into()),
+                ..AgentSettings::default()
+            })
+            .expect("write settings");
+        CredentialStore::new(&dir)
+            .write(&StoredCredentials {
+                providers: [
+                    (
+                        "openai".into(),
+                        AuthMaterial::ApiKey {
+                            key: "openai-key".into(),
+                        },
+                    ),
+                    (
+                        "anthropic".into(),
+                        AuthMaterial::ApiKey {
+                            key: "anthropic-key".into(),
+                        },
+                    ),
+                ]
+                .into(),
+            })
+            .expect("write credentials");
+        let registry = commands::registry(Some(dir.clone())).expect("registry");
+        let mut state = AppState::new(dir.clone());
+        state.set_provider_context(
+            Some("anthropic".into()),
+            Some("claude-3-7-sonnet-latest".into()),
+            AuthState::default(),
+        );
+        let store = TranscriptStore::new(&dir);
+        store.ensure_layout().expect("ensure layout");
+        std::fs::write(store.paths().transcript_path(state.session.id), "")
+            .expect("write transcript");
+        store
+            .write_metadata(
+                &wonder_of_u_storage::SessionMetadata::from_state_with_transcript(&state, 0),
+            )
+            .expect("write metadata");
+        store
+            .write_snapshot(&wonder_of_u_storage::SessionSnapshot::from_app_state(
+                &state, 0, 0,
+            ))
+            .expect("write snapshot");
+
+        let controller = TuiController::new(
+            test_context(&dir),
+            &registry,
+            Some(dir.as_path()),
+            TuiLaunchOptions {
+                session_id: Some(state.session.id.to_string()),
+            },
+        )
+        .expect("controller");
+
+        assert_eq!(controller.state.provider.as_deref(), Some("anthropic"));
+        assert_eq!(
+            controller.state.model.as_deref(),
+            Some("claude-3-7-sonnet-latest")
+        );
+        assert!(controller.state.auth.is_ready());
+        assert!(
+            controller
+                .view()
+                .status
+                .contains("anthropic:claude-3-7-sonnet-latest")
         );
     }
 

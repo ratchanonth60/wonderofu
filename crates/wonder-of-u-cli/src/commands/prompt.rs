@@ -12,8 +12,8 @@ use wonder_of_u_agent::{
 };
 use wonder_of_u_core::{
     AppState, Command, CommandContext, CommandInvocation, CommandKind, CommandOutput, CommandSpec,
-    FeatureFlag, MessageEnvelope, MessagePayload, PermissionDecision, Result, ToolContext,
-    ToolQuery, ToolResult, ToolUseId, WonderError,
+    FeatureFlag, MessageEnvelope, MessagePayload, PermissionDecision, PermissionMode, Result,
+    ToolContext, ToolQuery, ToolResult, ToolUseId, WonderError,
 };
 use wonder_of_u_storage::{
     CostStore, SessionCostLedger, SessionMetadata, SessionSnapshot, TranscriptStore,
@@ -354,7 +354,8 @@ pub(crate) fn load_or_create_state(
         let restored = store.restore_session(parse_session_id(session_id)?)?;
         let mut state = restored.state;
         state.features = context.features.clone();
-        state.permission_mode = context.permission_mode;
+        state.permission_mode =
+            restored_permission_mode(context.permission_mode, state.permission_mode);
         state.session.entrypoint = Some(entrypoint.into());
         state.session.app_version = Some(env!("CARGO_PKG_VERSION").into());
         return Ok((
@@ -384,6 +385,14 @@ pub(crate) fn load_or_create_state(
             persisted: storage_dir.is_some(),
         },
     ))
+}
+
+fn restored_permission_mode(requested: PermissionMode, restored: PermissionMode) -> PermissionMode {
+    if matches!(requested, PermissionMode::Default) {
+        restored
+    } else {
+        requested
+    }
 }
 
 pub(crate) fn append_contextual_message(
