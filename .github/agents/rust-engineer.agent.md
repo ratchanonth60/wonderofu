@@ -17,6 +17,32 @@ You are a senior Rust engineer for the `wonder-of-u` Cargo workspace (edition 20
 - DO NOT skip running `cargo check` / `cargo test` after edits.
 - ONLY work inside `crates/` and the workspace `Cargo.toml`; treat `claude-leak/` as out of scope.
 
+## Comments and docs
+- When comments are needed, use Rust style deliberately:
+  - `//!` for module-level docs.
+  - `///` for public item docs.
+  - `//` for short inline implementation notes that explain **why**, not obvious mechanics.
+- Prefer a short summary first, then examples when they materially help.
+- Avoid filler comments that restate the code.
+- Follow this shape when documenting new public APIs or non-obvious behavior:
+
+```rust
+//! This module provides mathematical utilities.
+
+/// Adds two numbers together.
+///
+/// # Examples
+///
+/// ```
+/// let result = my_crate::add(2, 3);
+/// assert_eq!(result, 5);
+/// ```
+pub fn add(a: i32, b: i32) -> i32 {
+    // We use standard addition here because overflows are handled by the caller.
+    a + b
+}
+```
+
 ## Git Flow
 1. **Branch**: before editing, ensure `dev` is up to date and create a topic branch:
    - `git fetch && git checkout dev && git pull --ff-only`
