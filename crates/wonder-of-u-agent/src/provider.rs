@@ -45,6 +45,16 @@ impl ProviderDescriptor {
     pub fn model(&self, model_id: &str) -> Option<&ModelDescriptor> {
         self.models.iter().find(|model| model.id == model_id)
     }
+
+    #[must_use]
+    pub fn preferred_fast_model(&self) -> Option<&ModelDescriptor> {
+        self.models.iter().find(|model| is_fast_model_id(&model.id))
+    }
+
+    #[must_use]
+    pub fn supports_fast_mode(&self) -> bool {
+        self.preferred_fast_model().is_some()
+    }
 }
 
 fn auth_material_label(material: &AuthMaterial) -> &'static str {
@@ -531,7 +541,7 @@ impl ProviderResolver {
         } else {
             settings.selected_model.clone()
         };
-        let configured = explicit_model
+        let mut configured = explicit_model
             .map(ToString::to_string)
             .or(stored_model)
             .or_else(|| {
@@ -541,6 +551,16 @@ impl ProviderResolver {
                     .and_then(|config| config.model.clone())
             })
             .unwrap_or_else(|| provider.default_model.clone());
+
+        if explicit_model.is_none() && settings.fast_mode {
+            configured = if is_fast_model_id(&configured) {
+                configured
+            } else if let Some(fast_model) = provider.preferred_fast_model() {
+                fast_model.id.clone()
+            } else {
+                configured
+            };
+        }
 
         provider.model(&configured).ok_or_else(|| {
             WonderError::validation(format!(
@@ -735,6 +755,11 @@ impl ProviderResolver {
             )),
         }
     }
+}
+
+fn is_fast_model_id(model_id: &str) -> bool {
+    let normalized = model_id.to_ascii_lowercase();
+    normalized.contains("mini") || normalized.contains("haiku")
 }
 
 fn oauth_access_token_expired(expires_at: Option<OffsetDateTime>) -> bool {
@@ -982,5 +1007,87 @@ mod tests {
 
         assert_eq!(resolved.provider_id(), "anthropic");
         assert_eq!(resolved.model(), "claude-3-7-sonnet-latest");
+    }
+
+    #[test]
+    fn fast_mode_prefers_provider_fast_model() {
+        let resolver = ProviderResolver::builtin();
+        let settings = AgentSettings {
+            selected_provider: Some("openai".into()),
+            selected_model: Some("gpt-4.1".into()),
+            fast_mode: true,
+            ..AgentSettings::default()
+        };
+        let credentials = StoredCredentials {
+            providers: BTreeMap::from([(
+                "openai".into(),
+                AuthMaterial::ApiKey {
+                    key: "openai-secret".into(),
+                },
+            )]),
+        };
+
+        let resolved = resolver
+            .resolve_execution_with_env(
+                &settings,
+                &credentials,
+                std::iter::empty::<(&str, String)>(),
+                &ProviderSelection::default(),
+            )
+            .expect("resolve openai execution");
+
+        assert_eq!(resolved.model(), "gpt-4o-mini");
+    }
+
+    #[test]
+    fn explicit_model_override_skips_fast_mode_remap() {
+        let resolver = ProviderResolver::builtin();
+        let settings = AgentSettings {
+            selected_provider: Some("openai".into()),
+            fast_mode: true,
+            ..AgentSettings::default()
+        };
+        let credentials = StoredCredentials {
+            providers: BTreeMap::from([(
+                "openai".into(),
+                AuthMaterial::ApiKey {
+                    key: "openai-secret".into(),
+                },
+            )]),
+        };
+
+        let resolved = resolver
+            .resolve_execution_with_env(
+                &settings,
+                &credentials,
+                std::iter::empty::<(&str, String)>(),
+                &ProviderSelection::new(Some("openai".into()), Some("gpt-4.1".into())),
+            )
+            .expect("resolve openai execution");
+
+        assert_eq!(resolved.model(), "gpt-4.1");
+    }
+
+    #[test]
+    fn provider_descriptor_reports_fast_mode_support() {
+        let registry = ProviderRegistry::builtin();
+        assert!(
+            registry
+                .get("openai")
+                .expect("openai provider")
+                .supports_fast_mode()
+        );
+        assert!(
+            registry
+                .get("anthropic")
+                .expect("anthropic provider")
+                .supports_fast_mode()
+        );
+        assert!(
+            !registry
+                .get("copilot")
+                .expect("copilot provider")
+                .supports_fast_mode()
+        );
     }
 }

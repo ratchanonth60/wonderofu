@@ -47,9 +47,9 @@ use status::{
 };
 use tui::TuiCommand;
 use workflow::{
-    AgentsCommand, BriefCommand, ColorCommand, EffortCommand, ExitCommand, HooksCommand,
-    KeybindingsCommand, PermissionsCommand, PlanCommand, PrivacySettingsCommand, ReviewCommand,
-    StatuslineCommand, TasksCommand, ThemeCommand, VimCommand,
+    AgentsCommand, BriefCommand, ColorCommand, EffortCommand, ExitCommand, FastCommand,
+    HooksCommand, KeybindingsCommand, PermissionsCommand, PlanCommand, PrivacySettingsCommand,
+    ReviewCommand, StatuslineCommand, TasksCommand, ThemeCommand, VimCommand,
 };
 
 pub fn registry(storage_dir: Option<PathBuf>) -> Result<CommandRegistry> {
@@ -95,6 +95,7 @@ pub fn registry(storage_dir: Option<PathBuf>) -> Result<CommandRegistry> {
         PrivacySettingsCommand::command_spec(),
         ColorCommand::command_spec(),
         BriefCommand::command_spec(),
+        FastCommand::command_spec(),
         ReviewCommand::command_spec(),
         StatuslineCommand::command_spec(),
         EffortCommand::command_spec(),
@@ -162,6 +163,7 @@ pub fn registry(storage_dir: Option<PathBuf>) -> Result<CommandRegistry> {
     registry.register(Arc::new(PrivacySettingsCommand::new()))?;
     registry.register(Arc::new(ColorCommand::new()))?;
     registry.register(Arc::new(BriefCommand::new()))?;
+    registry.register(Arc::new(FastCommand::new(storage_dir.clone())))?;
     registry.register(Arc::new(ReviewCommand::new()))?;
     registry.register(Arc::new(StatuslineCommand::new()))?;
     registry.register(Arc::new(EffortCommand::new(storage_dir.clone())))?;

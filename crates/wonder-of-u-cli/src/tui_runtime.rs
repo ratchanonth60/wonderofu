@@ -16,8 +16,8 @@ use crossterm::{
 use futures::executor::block_on;
 use wonder_of_u_agent::{
     CompletionRequest, ProviderResolver, ProviderRuntime, ProviderSelection, ProviderToolCall,
-    ProviderToolResultMessage, ProviderToolSpec, ToolConversationRound, ToolUseRequest,
-    ToolUseResponse, builtin_tool_registry,
+    ProviderToolResultMessage, ProviderToolSpec, SettingsStore, ToolConversationRound,
+    ToolUseRequest, ToolUseResponse, builtin_tool_registry,
 };
 use wonder_of_u_core::{
     AdditionalWorkingDirectory, AppState, AuthState, CommandContext, CommandOutput, CommandQuery,
@@ -73,6 +73,7 @@ pub(crate) fn run_tui<W: Write>(
         session_color: None,
         effort_level: None,
         brief_mode: false,
+        fast_mode: false,
         session_tags: Vec::new(),
         additional_working_directories: Vec::new(),
     };
@@ -248,10 +249,24 @@ impl<'a> TuiController<'a> {
             pending_memory_picker: None,
             pending_external_editor: None,
         };
+        controller.hydrate_initial_settings()?;
         controller.refresh_runtime_state()?;
         controller.rebuild_ephemeral_state();
         controller.persist_state_snapshot()?;
         Ok(controller)
+    }
+
+    fn hydrate_initial_settings(&mut self) -> Result<()> {
+        if !self.state.messages.is_empty() {
+            return Ok(());
+        }
+        let Some(storage_dir) = self.storage_dir.as_deref() else {
+            return Ok(());
+        };
+        let settings = SettingsStore::new(storage_dir).read()?;
+        self.state.effort_level = settings.effort_level;
+        self.state.fast_mode = settings.fast_mode;
+        Ok(())
     }
 
     fn handle_event<F>(&mut self, event: UiEvent, mut before_blocking: F) -> Result<()>
@@ -607,8 +622,7 @@ impl<'a> TuiController<'a> {
         self.needs_render = true;
 
         let runtime = ProviderRuntime::new();
-        let resolved =
-            runtime.resolve_execution(self.storage_dir.as_deref(), ProviderSelection::default())?;
+        let resolved = self.resolve_prompt_execution(&runtime)?;
         self.state.set_provider_context(
             Some(resolved.provider_id().to_string()),
             Some(resolved.model().to_string()),
@@ -977,8 +991,7 @@ impl<'a> TuiController<'a> {
     {
         let request_prompt = compose_conversation_prompt(&self.state.messages, input);
         let runtime = ProviderRuntime::new();
-        let resolved =
-            runtime.resolve_execution(self.storage_dir.as_deref(), ProviderSelection::default())?;
+        let resolved = self.resolve_prompt_execution(&runtime)?;
         self.state.set_provider_context(
             Some(resolved.provider_id().to_string()),
             Some(resolved.model().to_string()),
@@ -1223,6 +1236,35 @@ impl<'a> TuiController<'a> {
         Ok(())
     }
 
+    fn resolve_prompt_execution(
+        &self,
+        runtime: &ProviderRuntime,
+    ) -> Result<wonder_of_u_agent::ResolvedProviderExecution> {
+        if self.storage_dir.is_some() || !self.state.fast_mode {
+            return runtime
+                .resolve_execution(self.storage_dir.as_deref(), ProviderSelection::default());
+        }
+
+        let resolver = ProviderResolver::builtin();
+        let fallback_provider = resolver.load_report(None)?.provider;
+        let provider = self.state.provider.clone().or(fallback_provider);
+        let selection = provider
+            .as_deref()
+            .and_then(|provider_id| {
+                resolver
+                    .registry()
+                    .get(provider_id)
+                    .map(|descriptor| (provider_id.to_string(), descriptor))
+            })
+            .and_then(|(provider_id, descriptor)| {
+                descriptor
+                    .preferred_fast_model()
+                    .map(|model| ProviderSelection::new(Some(provider_id), Some(model.id.clone())))
+            })
+            .unwrap_or_default();
+        runtime.resolve_execution(None, selection)
+    }
+
     #[cfg(test)]
     fn execute_slash_command(&mut self, input: &str) -> Result<()> {
         self.execute_slash_command_with(input, &mut |_| Ok(()))
@@ -1281,6 +1323,7 @@ impl<'a> TuiController<'a> {
                 || dialog.title == "Usage"
                 || dialog.title == "Theme"
                 || dialog.title == "Color"
+                || dialog.title == "Fast"
                 || dialog.title == "Brief"
                 || dialog.title == "Effort"
                 || dialog.title == "Feedback"
@@ -1301,6 +1344,8 @@ impl<'a> TuiController<'a> {
             });
         } else if parse_insights_hint(text.as_deref().unwrap_or_default()) {
             self.status_note = Some("insights queued".into());
+        } else if let Some(enabled) = parse_fast_mode_hint(text.as_deref().unwrap_or_default()) {
+            self.status_note = Some(format!("fast {}", if enabled { "on" } else { "off" }));
         } else if let Some(enabled) = parse_brief_mode_hint(text.as_deref().unwrap_or_default()) {
             self.status_note = Some(format!("brief {}", if enabled { "on" } else { "off" }));
         } else if let Some(effort) = parse_effort_hint(text.as_deref().unwrap_or_default()) {
@@ -1432,6 +1477,9 @@ impl<'a> TuiController<'a> {
             self.state
                 .set_session_color((color != "default").then(|| color.to_string()));
         }
+        if let Some(enabled) = parse_fast_mode_hint(text) {
+            self.state.set_fast_mode(enabled);
+        }
         if let Some(enabled) = parse_brief_mode_hint(text) {
             self.state.set_brief_mode(enabled);
         }
@@ -1464,6 +1512,10 @@ impl<'a> TuiController<'a> {
         } else if let Some((title, body)) = parse_notice(text, "## Color", "Color") {
             self.dialog = Some(DialogView::notice(title, body));
             self.status_note = Some("color".into());
+            self.needs_render = true;
+        } else if let Some((title, body)) = parse_notice(text, "## Fast", "Fast") {
+            self.dialog = Some(DialogView::notice(title, body));
+            self.status_note = Some("fast".into());
             self.needs_render = true;
         } else if let Some((title, body)) = parse_notice(text, "## Brief", "Brief") {
             self.dialog = Some(DialogView::notice(title, body));
@@ -1876,6 +1928,7 @@ impl<'a> TuiController<'a> {
             session_color: self.state.session_color.clone(),
             effort_level: self.state.effort_level.clone(),
             brief_mode: self.state.brief_mode,
+            fast_mode: self.state.fast_mode,
             session_tags: self.state.session.tags.clone(),
             additional_working_directories: self.state.additional_working_directories.clone(),
         }
@@ -1934,6 +1987,8 @@ impl<'a> TuiController<'a> {
             Some("max") => "max",
             _ => "auto",
         });
+        footer.push_str(" | fast=");
+        footer.push_str(if self.state.fast_mode { "on" } else { "off" });
         footer.push_str(" | brief=");
         footer.push_str(if self.state.brief_mode { "on" } else { "off" });
         footer.push_str(" | enter submit");
@@ -3414,6 +3469,17 @@ fn parse_effort_hint(text: &str) -> Option<&str> {
     (!value.is_empty()).then_some(value)
 }
 
+fn parse_fast_mode_hint(text: &str) -> Option<bool> {
+    let value = text
+        .lines()
+        .find_map(|line| line.strip_prefix("fast_mode="))?;
+    match value.trim() {
+        "true" | "on" | "enabled" => Some(true),
+        "false" | "off" | "disabled" => Some(false),
+        _ => None,
+    }
+}
+
 fn parse_brief_mode_hint(text: &str) -> Option<bool> {
     let value = text
         .lines()
@@ -3634,6 +3700,7 @@ mod tests {
             session_color: None,
             effort_level: None,
             brief_mode: false,
+            fast_mode: false,
             session_tags: Vec::new(),
             additional_working_directories: Vec::new(),
         }
@@ -3922,6 +3989,32 @@ mod tests {
     }
 
     #[test]
+    fn controller_hydrates_persisted_fast_and_effort_on_launch() {
+        let dir = unique_test_dir("tui-hydrate-settings");
+        SettingsStore::new(&dir)
+            .write(&AgentSettings {
+                selected_provider: Some("openai".into()),
+                effort_level: Some("high".into()),
+                fast_mode: true,
+                ..AgentSettings::default()
+            })
+            .expect("write settings");
+        let registry = commands::registry(Some(dir.clone())).expect("registry");
+        let controller = TuiController::new(
+            test_context(&dir),
+            &registry,
+            Some(dir.as_path()),
+            TuiLaunchOptions { session_id: None },
+        )
+        .expect("controller");
+
+        assert_eq!(controller.state.effort_level.as_deref(), Some("high"));
+        assert!(controller.state.fast_mode);
+        assert!(controller.view().footer.contains("effort=high"));
+        assert!(controller.view().footer.contains("fast=on"));
+    }
+
+    #[test]
     fn controller_sets_session_color_from_command() {
         let dir = unique_test_dir("tui-color-set");
         let registry = commands::registry(Some(dir.clone())).expect("registry");
@@ -4038,6 +4131,66 @@ mod tests {
                     && output
                         .as_deref()
                         .is_some_and(|text| text.contains("## Brief"))
+        ));
+    }
+
+    #[test]
+    fn controller_toggles_fast_mode_from_command() {
+        let dir = unique_test_dir("tui-fast-toggle");
+        let registry = commands::registry(Some(dir.clone())).expect("registry");
+        let mut controller = TuiController::new(
+            test_context(&dir),
+            &registry,
+            Some(dir.as_path()),
+            TuiLaunchOptions { session_id: None },
+        )
+        .expect("controller");
+
+        controller
+            .execute_slash_command("/fast")
+            .expect("toggle fast");
+
+        assert!(controller.state.fast_mode);
+        assert_eq!(controller.status_note.as_deref(), Some("fast on"));
+        assert!(controller.view().footer.contains("fast=on"));
+        assert!(matches!(
+            controller.state.messages.last().map(|message| &message.payload),
+            Some(MessagePayload::Command { input, output })
+                if input == "/fast"
+                    && output
+                        .as_deref()
+                        .is_some_and(|text| text.contains("fast_mode=true"))
+        ));
+    }
+
+    #[test]
+    fn controller_shows_fast_notice_dialog() {
+        let dir = unique_test_dir("tui-fast-notice");
+        let registry = commands::registry(Some(dir.clone())).expect("registry");
+        let mut controller = TuiController::new(
+            test_context(&dir),
+            &registry,
+            Some(dir.as_path()),
+            TuiLaunchOptions { session_id: None },
+        )
+        .expect("controller");
+
+        controller
+            .execute_slash_command("/fast show")
+            .expect("show fast");
+
+        assert_eq!(controller.status_note.as_deref(), Some("fast"));
+        assert!(matches!(
+            controller.dialog.as_ref(),
+            Some(dialog) if dialog.title == "Fast"
+        ));
+        assert!(matches!(
+            controller.state.messages.last().map(|message| &message.payload),
+            Some(MessagePayload::Command { input, output })
+                if input == "/fast show"
+                    && output
+                        .as_deref()
+                        .is_some_and(|text| text.contains("## Fast"))
         ));
     }
 

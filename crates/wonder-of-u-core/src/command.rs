@@ -171,6 +171,7 @@ pub struct CommandContext {
     pub session_color: Option<String>,
     pub effort_level: Option<String>,
     pub brief_mode: bool,
+    pub fast_mode: bool,
     pub session_tags: Vec<String>,
     pub additional_working_directories: Vec<AdditionalWorkingDirectory>,
 }
