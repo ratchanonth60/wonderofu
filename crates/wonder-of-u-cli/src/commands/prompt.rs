@@ -371,6 +371,7 @@ pub(crate) fn load_or_create_state(
     state.features = context.features.clone();
     state.permission_mode = context.permission_mode;
     state.brief_mode = context.brief_mode;
+    state.fast_mode = context.fast_mode;
     state.session.title = session_title.into();
     state.session.git_branch = detect_git_branch(&context.cwd);
     state.session.entrypoint = Some(entrypoint.into());

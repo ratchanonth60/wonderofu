@@ -405,6 +405,8 @@ pub struct AppState {
     #[serde(default)]
     pub brief_mode: bool,
     #[serde(default)]
+    pub fast_mode: bool,
+    #[serde(default)]
     pub auth: AuthState,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pending_tool_approval: Option<PendingToolApprovalState>,
@@ -429,6 +431,7 @@ impl AppState {
             session_color: None,
             effort_level: None,
             brief_mode: false,
+            fast_mode: false,
             auth: AuthState::default(),
             pending_tool_approval: None,
             costs: CostState::new(),
@@ -487,6 +490,11 @@ impl AppState {
 
     pub fn set_brief_mode(&mut self, brief_mode: bool) {
         self.brief_mode = brief_mode;
+        self.session.updated_at = OffsetDateTime::now_utc();
+    }
+
+    pub fn set_fast_mode(&mut self, fast_mode: bool) {
+        self.fast_mode = fast_mode;
         self.session.updated_at = OffsetDateTime::now_utc();
     }
 
@@ -857,5 +865,15 @@ mod tests {
             .expect("combined prompt");
         assert!(combined.contains("Follow the project's Rust style guide."));
         assert!(combined.contains("Keep user-facing output concise and direct"));
+    }
+
+    #[test]
+    fn set_fast_mode_updates_state() {
+        let mut state = AppState::new(PathBuf::from("/workspace"));
+        assert!(!state.fast_mode);
+
+        state.set_fast_mode(true);
+
+        assert!(state.fast_mode);
     }
 }

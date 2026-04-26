@@ -968,6 +968,7 @@ mod tests {
             session_color: None,
             effort_level: None,
             brief_mode: false,
+            fast_mode: false,
             session_tags: Vec::new(),
             additional_working_directories: Vec::new(),
         }

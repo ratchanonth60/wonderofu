@@ -35,6 +35,8 @@ pub struct AgentSettings {
     pub selected_provider: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub selected_model: Option<String>,
+    #[serde(default)]
+    pub fast_mode: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub effort_level: Option<String>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]

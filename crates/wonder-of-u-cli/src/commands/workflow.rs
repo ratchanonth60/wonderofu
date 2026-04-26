@@ -134,6 +134,24 @@ impl BriefCommand {
     }
 }
 
+pub struct FastCommand {
+    storage_dir: Option<PathBuf>,
+}
+
+impl FastCommand {
+    pub const fn new(storage_dir: Option<PathBuf>) -> Self {
+        Self { storage_dir }
+    }
+
+    pub fn command_spec() -> CommandSpec {
+        CommandSpec::new(
+            "fast",
+            "Show or change fast-mode model remapping",
+            CommandKind::Local,
+        )
+    }
+}
+
 pub struct ReviewCommand;
 
 impl ReviewCommand {
@@ -522,6 +540,38 @@ impl Command for BriefCommand {
         match parse_brief_action(invocation.args.trim(), context.brief_mode)? {
             BriefAction::Show => Ok(CommandOutput::Text(render_brief_status(context.brief_mode))),
             BriefAction::Set(enabled) => Ok(CommandOutput::Text(render_brief_transition(enabled))),
+        }
+    }
+}
+
+#[async_trait]
+impl Command for FastCommand {
+    fn spec(&self) -> CommandSpec {
+        Self::command_spec()
+    }
+
+    async fn execute(
+        &self,
+        context: CommandContext,
+        invocation: CommandInvocation,
+    ) -> Result<CommandOutput> {
+        let report = ProviderResolver::builtin().load_report(self.storage_dir.as_deref())?;
+        match parse_fast_action(invocation.args.trim(), context.fast_mode)? {
+            FastAction::Show => Ok(CommandOutput::Text(render_fast_status(
+                context.fast_mode,
+                persisted_fast(self.storage_dir.as_deref())?,
+                self.storage_dir.as_deref(),
+                &report,
+            ))),
+            FastAction::Set(enabled) => {
+                let persisted = write_persisted_fast(self.storage_dir.as_deref(), enabled)?;
+                Ok(CommandOutput::Text(render_fast_transition(
+                    enabled,
+                    persisted,
+                    self.storage_dir.as_deref(),
+                    &report,
+                )))
+            }
         }
     }
 }
@@ -1418,6 +1468,12 @@ enum BriefAction {
     Set(bool),
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum FastAction {
+    Show,
+    Set(bool),
+}
+
 fn parse_brief_action(args: &str, current: bool) -> Result<BriefAction> {
     let trimmed = args.trim();
     if trimmed.is_empty() || trimmed == "toggle" {
@@ -1429,6 +1485,21 @@ fn parse_brief_action(args: &str, current: bool) -> Result<BriefAction> {
         "off" | "disable" | "disabled" => Ok(BriefAction::Set(false)),
         other => Err(WonderError::validation(format!(
             "unknown brief action: {other}"
+        ))),
+    }
+}
+
+fn parse_fast_action(args: &str, current: bool) -> Result<FastAction> {
+    let trimmed = args.trim();
+    if trimmed.is_empty() || trimmed == "toggle" {
+        return Ok(FastAction::Set(!current));
+    }
+    match trimmed {
+        "show" | "status" | "current" => Ok(FastAction::Show),
+        "on" | "enable" | "enabled" => Ok(FastAction::Set(true)),
+        "off" | "disable" | "disabled" => Ok(FastAction::Set(false)),
+        other => Err(WonderError::validation(format!(
+            "unknown fast action: {other}"
         ))),
     }
 }
@@ -1503,6 +1574,10 @@ fn effort_level_name(value: Option<&str>) -> &'static str {
 }
 
 fn brief_mode_label(enabled: bool) -> &'static str {
+    if enabled { "on" } else { "off" }
+}
+
+fn fast_mode_label(enabled: bool) -> &'static str {
     if enabled { "on" } else { "off" }
 }
 
@@ -1621,6 +1696,96 @@ fn render_brief_transition(enabled: bool) -> String {
     )
 }
 
+fn render_fast_status(
+    current_fast: bool,
+    persisted_fast: Option<bool>,
+    storage_dir: Option<&Path>,
+    report: &wonder_of_u_agent::ProviderStatusReport,
+) -> String {
+    let resolver = ProviderResolver::builtin();
+    let provider = report.provider.as_deref();
+    let preferred_fast = provider
+        .and_then(|provider_id| resolver.registry().get(provider_id))
+        .and_then(|descriptor| descriptor.preferred_fast_model())
+        .map(|model| model.id.as_str());
+
+    let mut lines = vec![
+        "## Fast".into(),
+        format!("fast_mode={current_fast}"),
+        format!("current_fast={}", fast_mode_label(current_fast)),
+        format!(
+            "persisted_fast={}",
+            persisted_fast.map(fast_mode_label).unwrap_or("session-only")
+        ),
+        format!(
+            "provider={}",
+            provider.unwrap_or("unconfigured")
+        ),
+        format!(
+            "current_model={}",
+            report.model.as_deref().unwrap_or("unconfigured")
+        ),
+        format!(
+            "fast_target={}",
+            preferred_fast.unwrap_or("unavailable")
+        ),
+        String::new(),
+        "Fast mode remaps the default provider model to the fastest built-in option this Rust port can identify.".into(),
+        "Right now that means mini/haiku-style models when the selected provider exposes one.".into(),
+        "It does not implement the leak's entitlement, quota, cooldown, or billing-aware fast-mode semantics.".into(),
+    ];
+    if storage_dir.is_none() {
+        lines.push("Storage is disabled, so changes only apply to the current TUI session.".into());
+    } else if preferred_fast.is_none() && provider.is_some() {
+        lines.push(
+            "The selected provider has no known fast-model mapping, so enabling fast mode will not change runtime model selection."
+                .into(),
+        );
+    }
+    lines.join("\n")
+}
+
+fn render_fast_transition(
+    enabled: bool,
+    persisted: bool,
+    storage_dir: Option<&Path>,
+    report: &wonder_of_u_agent::ProviderStatusReport,
+) -> String {
+    let resolver = ProviderResolver::builtin();
+    let provider = report.provider.as_deref();
+    let preferred_fast = provider
+        .and_then(|provider_id| resolver.registry().get(provider_id))
+        .and_then(|descriptor| descriptor.preferred_fast_model())
+        .map(|model| model.id.as_str());
+
+    let mut lines = vec![
+        format!("fast_mode={enabled}"),
+        format!("persisted={persisted}"),
+        format!("fast_target={}", preferred_fast.unwrap_or("unavailable")),
+        format!(
+            "status=fast mode {}",
+            if enabled { "enabled" } else { "disabled" }
+        ),
+    ];
+    if storage_dir.is_none() {
+        lines.push("note=storage disabled; fast mode is session-only".into());
+    } else if enabled {
+        lines.push(
+            "note=runtime will remap default model selection to the provider's built-in fast model when available"
+                .into(),
+        );
+    } else {
+        lines.push("note=runtime will use the configured default model selection again".into());
+    }
+    if enabled && preferred_fast.is_none() {
+        lines.push(
+            "warning=the current provider has no known fast-model mapping; runtime behavior will not change until you switch to a supported provider"
+                .into(),
+        );
+    }
+    lines.join("\n")
+}
+
 fn render_review_enqueue(args: &str) -> String {
     let review_target = if args.trim().is_empty() {
         "list-open-prs".to_string()
@@ -1673,6 +1838,13 @@ fn persisted_effort(storage_dir: Option<&Path>) -> Result<Option<String>> {
     Ok(SettingsStore::new(storage_dir).read()?.effort_level)
 }
 
+fn persisted_fast(storage_dir: Option<&Path>) -> Result<Option<bool>> {
+    let Some(storage_dir) = storage_dir else {
+        return Ok(None);
+    };
+    Ok(Some(SettingsStore::new(storage_dir).read()?.fast_mode))
+}
+
 fn write_persisted_effort(storage_dir: Option<&Path>, level: Option<&str>) -> Result<bool> {
     let Some(storage_dir) = storage_dir else {
         return Ok(false);
@@ -1680,6 +1852,17 @@ fn write_persisted_effort(storage_dir: Option<&Path>, level: Option<&str>) -> Re
     let store = SettingsStore::new(storage_dir);
     let mut settings = store.read()?;
     settings.effort_level = level.map(ToString::to_string);
+    store.write(&settings)?;
+    Ok(true)
+}
+
+fn write_persisted_fast(storage_dir: Option<&Path>, enabled: bool) -> Result<bool> {
+    let Some(storage_dir) = storage_dir else {
+        return Ok(false);
+    };
+    let store = SettingsStore::new(storage_dir);
+    let mut settings = store.read()?;
+    settings.fast_mode = enabled;
     store.write(&settings)?;
     Ok(true)
 }
@@ -2609,7 +2792,7 @@ fn render_runtime_disabled(kind: &str, note: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use wonder_of_u_agent::SettingsStore;
+    use wonder_of_u_agent::{AgentSettings, ProviderResolver, SettingsStore};
     use wonder_of_u_core::{
         CommandContext, CommandInvocation, FeatureSet, PermissionMode, SessionId,
     };
@@ -2619,12 +2802,13 @@ mod tests {
         PlanAction, ensure_hooks_file, ensure_keybindings_file, load_keybinding_resolver,
         normalize_color_invocation, normalize_effort_invocation, normalize_permissions_invocation,
         normalize_theme_invocation, normalize_vim_invocation, parse_brief_action,
-        parse_effort_level_name, parse_plan_action, parse_session_color_name, render_brief_status,
-        render_brief_transition, render_color_status, render_color_transition,
-        render_effort_status, render_effort_transition, render_hooks_summary,
-        render_keybindings_summary, render_plan_display, render_privacy_settings_summary,
-        render_review_enqueue, render_statusline_enqueue, render_theme_status, resolve_hooks_path,
-        resolve_keybindings_path, resolve_plan_path, write_persisted_effort,
+        parse_effort_level_name, parse_fast_action, parse_plan_action, parse_session_color_name,
+        render_brief_status, render_brief_transition, render_color_status, render_color_transition,
+        render_effort_status, render_effort_transition, render_fast_status, render_fast_transition,
+        render_hooks_summary, render_keybindings_summary, render_plan_display,
+        render_privacy_settings_summary, render_review_enqueue, render_statusline_enqueue,
+        render_theme_status, resolve_hooks_path, resolve_keybindings_path, resolve_plan_path,
+        write_persisted_effort, write_persisted_fast,
     };
 
     #[test]
@@ -2737,6 +2921,7 @@ mod tests {
             session_color: None,
             effort_level: None,
             brief_mode: false,
+            fast_mode: false,
             session_tags: Vec::new(),
             additional_working_directories: Vec::new(),
         };
@@ -2780,6 +2965,7 @@ mod tests {
             session_color: None,
             effort_level: None,
             brief_mode: false,
+            fast_mode: false,
             session_tags: Vec::new(),
             additional_working_directories: Vec::new(),
         };
@@ -2885,6 +3071,69 @@ mod tests {
 
         assert!(rendered.contains("brief_mode=false"));
         assert!(rendered.contains("status=brief mode disabled"));
+    }
+
+    #[test]
+    fn fast_defaults_to_toggle_and_accepts_show() {
+        assert_eq!(
+            parse_fast_action("", false).expect("toggle on"),
+            super::FastAction::Set(true)
+        );
+        assert_eq!(
+            parse_fast_action("toggle", true).expect("toggle off"),
+            super::FastAction::Set(false)
+        );
+        assert_eq!(
+            parse_fast_action("show", true).expect("show"),
+            super::FastAction::Show
+        );
+    }
+
+    #[test]
+    fn fast_status_reports_provider_mapping_limitations() {
+        let dir = unique_test_dir("workflow-fast-status");
+        let store = SettingsStore::new(&dir);
+        store
+            .write(&AgentSettings {
+                selected_provider: Some("openai".into()),
+                fast_mode: true,
+                ..AgentSettings::default()
+            })
+            .expect("write settings");
+        let report = ProviderResolver::builtin()
+            .load_report(Some(dir.as_path()))
+            .expect("load report");
+
+        let rendered = render_fast_status(true, Some(true), Some(dir.as_path()), &report);
+
+        assert!(rendered.contains("## Fast"));
+        assert!(rendered.contains("fast_mode=true"));
+        assert!(rendered.contains("current_fast=on"));
+        assert!(rendered.contains("fast_target=gpt-4o-mini"));
+        assert!(rendered.contains("does not implement the leak's entitlement"));
+    }
+
+    #[test]
+    fn fast_transition_reports_new_state_and_persists_flag() {
+        let dir = unique_test_dir("workflow-fast-persist");
+        let store = SettingsStore::new(&dir);
+        store
+            .write(&AgentSettings {
+                selected_provider: Some("openai".into()),
+                ..AgentSettings::default()
+            })
+            .expect("write settings");
+        let report = ProviderResolver::builtin()
+            .load_report(Some(dir.as_path()))
+            .expect("load report");
+
+        let persisted = write_persisted_fast(Some(dir.as_path()), true).expect("persist fast");
+        let rendered = render_fast_transition(true, persisted, Some(dir.as_path()), &report);
+
+        assert!(persisted);
+        assert!(rendered.contains("fast_mode=true"));
+        assert!(rendered.contains("status=fast mode enabled"));
+        assert_eq!(store.read().expect("read settings").fast_mode, true);
     }
 
     #[test]

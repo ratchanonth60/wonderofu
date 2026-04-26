@@ -63,6 +63,7 @@ The target TUI is **visual-close**: layout, flow, colors, dialogs, status/footer
   - Added `/review` as a local queued-prompt flow that mirrors the leak's gh-based PR review semantics.
   - Added `/statusline` as a local queued-prompt setup flow instead of pretending the leak's remote statusline subagent exists in the Rust port.
   - Added `/upgrade` with browser handoff plus a TUI notice flow pointing at the Claude upgrade page and telling users to rerun `/login` afterward.
+  - Added `/insights` as a local-storage-backed queued-prompt report flow using persisted session metadata instead of the leak's heavier remote/facet pipeline.
   - Added `/release-notes` with local `CHANGELOG.md` parsing when available and repository releases-page fallback otherwise.
   - Added `/feedback` plus `/bug` alias with repository-issues fallback notice flow.
   - Added `/effort` as real settings + session-state parity:
@@ -71,6 +72,13 @@ The target TUI is **visual-close**: layout, flow, colors, dialogs, status/footer
     - restores and shows it in the TUI footer/status path,
     - opens a live `Effort` notice dialog,
     - explicitly notes that provider-specific inference mapping is still not wired yet.
+  - Added truthful `/fast` parity:
+    - empty `/fast` toggles fast mode and `/fast show` opens a live `Fast` notice dialog,
+    - fast mode now persists in agent settings and session snapshots,
+    - the ratatui footer/status flow now shows fast-mode state,
+    - provider resolution remaps default model selection to real built-in fast models when a provider exposes one (`mini`/`haiku` style mappings today),
+    - explicit model overrides still win,
+    - the leak's entitlement/quota/cooldown/billing-aware fast-mode semantics are still explicitly out of scope until the Rust runtime can implement them honestly.
 - TUI parity note:
   - The reference UI uses **Ink/React**, while `wonder-of-u` uses a custom Rust state/controller loop on top of **ratatui/crossterm**.
   - Because of that, parity work must focus on reproducing flow/state/dialog behavior instead of assuming the same component lifecycle or repaint model.
@@ -79,13 +87,14 @@ The target TUI is **visual-close**: layout, flow, colors, dialogs, status/footer
 - Execution workflow from this point forward:
   - Update progress in this project-level `plan.md` at each meaningful milestone.
   - Use `dev` as the integration branch.
-  - Current active parity branch: `feat/tui-command-parity`.
+  - `main` now reflects the merged parity snapshot from `dev`.
+  - Current feature branch: `feat/fast-mode-parity`.
   - For each new feature slice, branch from `dev` into `feat/<slice>`, finish the slice, then merge back into `dev`.
   - Keep files grouped by domain (`commands/status.rs` for informational commands, `commands/workflow.rs` for interactive workflow commands, `tui_runtime.rs` for shell/controller behavior) and avoid scattering feature logic across unrelated modules.
 - Current high-priority parity queue:
-  - Continue auditing remaining missing slash-command surfaces from `claude-leak/commands/*`.
-  - Tighten TUI parity for notice dialogs, pickers, repaint/status behavior, and command flows that still do not feel like the Ink reference.
-  - Wire remaining provider/runtime settings so session-visible controls affect live execution where the reference does.
+  - Tighten ratatui parity for inline permission approvals, notice/picker behavior, repaint timing, and status/footer transitions that still feel off versus Ink.
+  - Harden resume/live-state reconstruction so restored sessions preserve more interactive shell/controller context.
+  - Continue auditing the remaining user-facing slash-command surfaces from `claude-leak/commands/*`, especially the ones that can be implemented as honest local flows rather than remote-only placeholders.
   - Only claim feature parity when the Rust path has real runtime behavior or an explicit fallback that matches the reference command semantics.
 
 ## 3. First-release scope and backlog
