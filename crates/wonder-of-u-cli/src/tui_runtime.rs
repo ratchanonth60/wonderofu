@@ -46,7 +46,8 @@ pub(crate) struct TuiLaunchOptions {
 }
 
 const MAX_TOOL_LOOP_ITERATIONS: usize = 6;
-const PICKER_CONTROLS_NOTE: &str = "use Up/Down to choose, Enter to select, Esc to cancel";
+const PICKER_CONTROLS_NOTE: &str =
+    "type to filter, use Up/Down to choose, Enter to select, Esc to cancel";
 
 pub(crate) fn run_tui<W: Write>(
     writer: &mut W,
@@ -144,6 +145,7 @@ struct ModelPickerState {
     original_input: String,
     options: Vec<ModelPickerOption>,
     selected_index: usize,
+    query: TextBuffer,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -159,6 +161,7 @@ struct ThemePickerState {
     original_input: String,
     options: Vec<ThemePickerOption>,
     selected_index: usize,
+    query: TextBuffer,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -180,6 +183,7 @@ struct PermissionPickerState {
     original_input: String,
     options: Vec<PermissionPickerOption>,
     selected_index: usize,
+    query: TextBuffer,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -196,6 +200,7 @@ struct MemoryPickerState {
     original_input: String,
     options: Vec<MemoryPickerOption>,
     selected_index: usize,
+    query: TextBuffer,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -482,6 +487,7 @@ impl<'a> TuiController<'a> {
                 Some(ResolvedKey::Edit(EditAction::InsertNewline)) => {
                     self.complete_permission_picker()
                 }
+                Some(resolved) if self.edit_permission_picker_query(resolved) => Ok(()),
                 Some(ResolvedKey::System(wonder_of_u_tui::SystemAction::Interrupt)) => {
                     self.cancel_permission_picker()
                 }
@@ -515,6 +521,7 @@ impl<'a> TuiController<'a> {
             KeyCode::Esc => self.cancel_model_picker(),
             _ => match resolved {
                 Some(ResolvedKey::Edit(EditAction::InsertNewline)) => self.complete_model_picker(),
+                Some(resolved) if self.edit_model_picker_query(resolved) => Ok(()),
                 Some(ResolvedKey::System(wonder_of_u_tui::SystemAction::Interrupt)) => {
                     self.cancel_model_picker()
                 }
@@ -544,6 +551,7 @@ impl<'a> TuiController<'a> {
             KeyCode::Esc => self.cancel_memory_picker(),
             _ => match resolved {
                 Some(ResolvedKey::Edit(EditAction::InsertNewline)) => self.complete_memory_picker(),
+                Some(resolved) if self.edit_memory_picker_query(resolved) => Ok(()),
                 Some(ResolvedKey::System(wonder_of_u_tui::SystemAction::Interrupt)) => {
                     self.cancel_memory_picker()
                 }
@@ -573,6 +581,7 @@ impl<'a> TuiController<'a> {
             KeyCode::Esc => self.cancel_theme_picker(),
             _ => match resolved {
                 Some(ResolvedKey::Edit(EditAction::InsertNewline)) => self.complete_theme_picker(),
+                Some(resolved) if self.edit_theme_picker_query(resolved) => Ok(()),
                 Some(ResolvedKey::System(wonder_of_u_tui::SystemAction::Interrupt)) => {
                     self.cancel_theme_picker()
                 }
@@ -1980,11 +1989,20 @@ impl<'a> TuiController<'a> {
         let Some(picker) = &self.pending_permission_picker else {
             return;
         };
-        let body = picker
-            .options
-            .iter()
-            .enumerate()
-            .map(|(index, option)| {
+        let filtered = filtered_picker_indices(&picker.query, &picker.options, |option| {
+            format!("{} {}", option.label, option.description)
+        });
+        let mut body = picker_dialog_header(
+            "Search",
+            &picker.query,
+            filtered.len(),
+            picker.options.len(),
+        );
+        if filtered.is_empty() {
+            body.push("No matching permission modes.".into());
+        } else {
+            body.extend(filtered.into_iter().map(|index| {
+                let option = &picker.options[index];
                 let cursor = if index == picker.selected_index {
                     ">"
                 } else {
@@ -1995,8 +2013,8 @@ impl<'a> TuiController<'a> {
                     "{cursor} {}{} - {}",
                     option.label, current, option.description
                 )
-            })
-            .collect::<Vec<_>>();
+            }));
+        }
         self.dialog = Some(DialogView {
             title: "Permission mode".into(),
             body,
@@ -2013,13 +2031,31 @@ impl<'a> TuiController<'a> {
         let Some(picker) = &mut self.pending_permission_picker else {
             return;
         };
-        let len = picker.options.len();
-        if len == 0 {
-            return;
-        }
-        let next = (picker.selected_index as isize + delta).rem_euclid(len as isize) as usize;
-        picker.selected_index = next;
+        picker.selected_index = step_picker_selection(
+            picker.selected_index,
+            delta,
+            &filtered_picker_indices(&picker.query, &picker.options, |option| {
+                format!("{} {}", option.label, option.description)
+            }),
+        );
         self.refresh_permission_picker_dialog();
+    }
+
+    fn edit_permission_picker_query(&mut self, resolved: ResolvedKey) -> bool {
+        let Some(picker) = &mut self.pending_permission_picker else {
+            return false;
+        };
+        if !apply_picker_query_edit(&mut picker.query, resolved) {
+            return false;
+        }
+        sync_picker_selection(
+            &mut picker.selected_index,
+            &filtered_picker_indices(&picker.query, &picker.options, |option| {
+                format!("{} {}", option.label, option.description)
+            }),
+        );
+        self.refresh_permission_picker_dialog();
+        true
     }
 
     fn complete_permission_picker(&mut self) -> Result<()> {
@@ -2027,8 +2063,19 @@ impl<'a> TuiController<'a> {
             self.dismiss_dialog();
             return Ok(());
         };
-        let Some(selection) = picker.options.get(picker.selected_index).cloned() else {
-            self.dismiss_dialog();
+        let filtered = filtered_picker_indices(&picker.query, &picker.options, |option| {
+            format!("{} {}", option.label, option.description)
+        });
+        let Some(selection_index) = selected_picker_index(picker.selected_index, &filtered) else {
+            self.pending_permission_picker = Some(picker);
+            self.refresh_permission_picker_dialog();
+            self.status_note = Some("permission mode: no matching option to select".into());
+            return Ok(());
+        };
+        let Some(selection) = picker.options.get(selection_index).cloned() else {
+            self.pending_permission_picker = Some(picker);
+            self.refresh_permission_picker_dialog();
+            self.status_note = Some("permission mode: no matching option to select".into());
             return Ok(());
         };
         self.dialog = None;
@@ -2085,11 +2132,25 @@ impl<'a> TuiController<'a> {
         let Some(picker) = &self.pending_memory_picker else {
             return;
         };
-        let body = picker
-            .options
-            .iter()
-            .enumerate()
-            .map(|(index, option)| {
+        let filtered = filtered_picker_indices(&picker.query, &picker.options, |option| {
+            format!(
+                "{} {} {}",
+                option.label,
+                option.description,
+                option.path.display()
+            )
+        });
+        let mut body = picker_dialog_header(
+            "Search",
+            &picker.query,
+            filtered.len(),
+            picker.options.len(),
+        );
+        if filtered.is_empty() {
+            body.push("No matching memory files.".into());
+        } else {
+            body.extend(filtered.into_iter().map(|index| {
+                let option = &picker.options[index];
                 let cursor = if index == picker.selected_index {
                     ">"
                 } else {
@@ -2100,8 +2161,8 @@ impl<'a> TuiController<'a> {
                     "{cursor} {}{} - {}",
                     option.label, current, option.description
                 )
-            })
-            .collect::<Vec<_>>();
+            }));
+        }
         self.dialog = Some(DialogView {
             title: "Memory".into(),
             body,
@@ -2118,13 +2179,41 @@ impl<'a> TuiController<'a> {
         let Some(picker) = &mut self.pending_memory_picker else {
             return;
         };
-        let len = picker.options.len();
-        if len == 0 {
-            return;
-        }
-        let next = (picker.selected_index as isize + delta).rem_euclid(len as isize) as usize;
-        picker.selected_index = next;
+        picker.selected_index = step_picker_selection(
+            picker.selected_index,
+            delta,
+            &filtered_picker_indices(&picker.query, &picker.options, |option| {
+                format!(
+                    "{} {} {}",
+                    option.label,
+                    option.description,
+                    option.path.display()
+                )
+            }),
+        );
         self.refresh_memory_picker_dialog();
+    }
+
+    fn edit_memory_picker_query(&mut self, resolved: ResolvedKey) -> bool {
+        let Some(picker) = &mut self.pending_memory_picker else {
+            return false;
+        };
+        if !apply_picker_query_edit(&mut picker.query, resolved) {
+            return false;
+        }
+        sync_picker_selection(
+            &mut picker.selected_index,
+            &filtered_picker_indices(&picker.query, &picker.options, |option| {
+                format!(
+                    "{} {} {}",
+                    option.label,
+                    option.description,
+                    option.path.display()
+                )
+            }),
+        );
+        self.refresh_memory_picker_dialog();
+        true
     }
 
     fn complete_memory_picker(&mut self) -> Result<()> {
@@ -2132,8 +2221,24 @@ impl<'a> TuiController<'a> {
             self.dismiss_dialog();
             return Ok(());
         };
-        let Some(selection) = picker.options.get(picker.selected_index).cloned() else {
-            self.dismiss_dialog();
+        let filtered = filtered_picker_indices(&picker.query, &picker.options, |option| {
+            format!(
+                "{} {} {}",
+                option.label,
+                option.description,
+                option.path.display()
+            )
+        });
+        let Some(selection_index) = selected_picker_index(picker.selected_index, &filtered) else {
+            self.pending_memory_picker = Some(picker);
+            self.refresh_memory_picker_dialog();
+            self.status_note = Some("memory: no matching option to select".into());
+            return Ok(());
+        };
+        let Some(selection) = picker.options.get(selection_index).cloned() else {
+            self.pending_memory_picker = Some(picker);
+            self.refresh_memory_picker_dialog();
+            self.status_note = Some("memory: no matching option to select".into());
             return Ok(());
         };
         self.dialog = None;
@@ -2249,11 +2354,20 @@ impl<'a> TuiController<'a> {
         let Some(picker) = &self.pending_theme_picker else {
             return;
         };
-        let body = picker
-            .options
-            .iter()
-            .enumerate()
-            .map(|(index, option)| {
+        let filtered = filtered_picker_indices(&picker.query, &picker.options, |option| {
+            format!("{} {} {}", option.theme, option.label, option.description)
+        });
+        let mut body = picker_dialog_header(
+            "Search",
+            &picker.query,
+            filtered.len(),
+            picker.options.len(),
+        );
+        if filtered.is_empty() {
+            body.push("No matching themes.".into());
+        } else {
+            body.extend(filtered.into_iter().map(|index| {
+                let option = &picker.options[index];
                 let cursor = if index == picker.selected_index {
                     ">"
                 } else {
@@ -2264,8 +2378,8 @@ impl<'a> TuiController<'a> {
                     "{cursor} {}{} - {}",
                     option.label, current, option.description
                 )
-            })
-            .collect::<Vec<_>>();
+            }));
+        }
         self.dialog = Some(DialogView {
             title: "Theme picker".into(),
             body,
@@ -2282,13 +2396,31 @@ impl<'a> TuiController<'a> {
         let Some(picker) = &mut self.pending_theme_picker else {
             return;
         };
-        let len = picker.options.len();
-        if len == 0 {
-            return;
-        }
-        let next = (picker.selected_index as isize + delta).rem_euclid(len as isize) as usize;
-        picker.selected_index = next;
+        picker.selected_index = step_picker_selection(
+            picker.selected_index,
+            delta,
+            &filtered_picker_indices(&picker.query, &picker.options, |option| {
+                format!("{} {} {}", option.theme, option.label, option.description)
+            }),
+        );
         self.refresh_theme_picker_dialog();
+    }
+
+    fn edit_theme_picker_query(&mut self, resolved: ResolvedKey) -> bool {
+        let Some(picker) = &mut self.pending_theme_picker else {
+            return false;
+        };
+        if !apply_picker_query_edit(&mut picker.query, resolved) {
+            return false;
+        }
+        sync_picker_selection(
+            &mut picker.selected_index,
+            &filtered_picker_indices(&picker.query, &picker.options, |option| {
+                format!("{} {} {}", option.theme, option.label, option.description)
+            }),
+        );
+        self.refresh_theme_picker_dialog();
+        true
     }
 
     fn complete_theme_picker(&mut self) -> Result<()> {
@@ -2296,8 +2428,19 @@ impl<'a> TuiController<'a> {
             self.dismiss_dialog();
             return Ok(());
         };
-        let Some(selection) = picker.options.get(picker.selected_index).cloned() else {
-            self.dismiss_dialog();
+        let filtered = filtered_picker_indices(&picker.query, &picker.options, |option| {
+            format!("{} {} {}", option.theme, option.label, option.description)
+        });
+        let Some(selection_index) = selected_picker_index(picker.selected_index, &filtered) else {
+            self.pending_theme_picker = Some(picker);
+            self.refresh_theme_picker_dialog();
+            self.status_note = Some("theme picker: no matching option to select".into());
+            return Ok(());
+        };
+        let Some(selection) = picker.options.get(selection_index).cloned() else {
+            self.pending_theme_picker = Some(picker);
+            self.refresh_theme_picker_dialog();
+            self.status_note = Some("theme picker: no matching option to select".into());
             return Ok(());
         };
         self.dialog = None;
@@ -2347,11 +2490,27 @@ impl<'a> TuiController<'a> {
         let Some(picker) = &self.pending_model_picker else {
             return;
         };
-        let body = picker
-            .options
-            .iter()
-            .enumerate()
-            .map(|(index, option)| {
+        let filtered = filtered_picker_indices(&picker.query, &picker.options, |option| {
+            format!(
+                "{} {} {} {} {}",
+                option.provider,
+                option.provider_display,
+                option.model,
+                option.model_display,
+                option.auth
+            )
+        });
+        let mut body = picker_dialog_header(
+            "Search",
+            &picker.query,
+            filtered.len(),
+            picker.options.len(),
+        );
+        if filtered.is_empty() {
+            body.push("No matching models.".into());
+        } else {
+            body.extend(filtered.into_iter().map(|index| {
+                let option = &picker.options[index];
                 let cursor = if index == picker.selected_index {
                     ">"
                 } else {
@@ -2370,8 +2529,8 @@ impl<'a> TuiController<'a> {
                     option.model_display,
                     badges.join(", ")
                 )
-            })
-            .collect::<Vec<_>>();
+            }));
+        }
         self.dialog = Some(DialogView {
             title: "Model picker".into(),
             body,
@@ -2388,13 +2547,45 @@ impl<'a> TuiController<'a> {
         let Some(picker) = &mut self.pending_model_picker else {
             return;
         };
-        let len = picker.options.len();
-        if len == 0 {
-            return;
-        }
-        let next = (picker.selected_index as isize + delta).rem_euclid(len as isize) as usize;
-        picker.selected_index = next;
+        picker.selected_index = step_picker_selection(
+            picker.selected_index,
+            delta,
+            &filtered_picker_indices(&picker.query, &picker.options, |option| {
+                format!(
+                    "{} {} {} {} {}",
+                    option.provider,
+                    option.provider_display,
+                    option.model,
+                    option.model_display,
+                    option.auth
+                )
+            }),
+        );
         self.refresh_model_picker_dialog();
+    }
+
+    fn edit_model_picker_query(&mut self, resolved: ResolvedKey) -> bool {
+        let Some(picker) = &mut self.pending_model_picker else {
+            return false;
+        };
+        if !apply_picker_query_edit(&mut picker.query, resolved) {
+            return false;
+        }
+        sync_picker_selection(
+            &mut picker.selected_index,
+            &filtered_picker_indices(&picker.query, &picker.options, |option| {
+                format!(
+                    "{} {} {} {} {}",
+                    option.provider,
+                    option.provider_display,
+                    option.model,
+                    option.model_display,
+                    option.auth
+                )
+            }),
+        );
+        self.refresh_model_picker_dialog();
+        true
     }
 
     fn complete_model_picker(&mut self) -> Result<()> {
@@ -2402,8 +2593,26 @@ impl<'a> TuiController<'a> {
             self.dismiss_dialog();
             return Ok(());
         };
-        let Some(selection) = picker.options.get(picker.selected_index).cloned() else {
-            self.dismiss_dialog();
+        let filtered = filtered_picker_indices(&picker.query, &picker.options, |option| {
+            format!(
+                "{} {} {} {} {}",
+                option.provider,
+                option.provider_display,
+                option.model,
+                option.model_display,
+                option.auth
+            )
+        });
+        let Some(selection_index) = selected_picker_index(picker.selected_index, &filtered) else {
+            self.pending_model_picker = Some(picker);
+            self.refresh_model_picker_dialog();
+            self.status_note = Some("model picker: no matching option to select".into());
+            return Ok(());
+        };
+        let Some(selection) = picker.options.get(selection_index).cloned() else {
+            self.pending_model_picker = Some(picker);
+            self.refresh_model_picker_dialog();
+            self.status_note = Some("model picker: no matching option to select".into());
             return Ok(());
         };
         self.dialog = None;
@@ -3424,6 +3633,7 @@ fn parse_permission_picker_state(text: &str) -> Option<PermissionPickerState> {
         original_input: "/permissions".into(),
         options,
         selected_index,
+        query: TextBuffer::new(false),
     })
 }
 
@@ -3462,6 +3672,7 @@ fn parse_memory_picker_state(text: &str) -> Option<MemoryPickerState> {
         original_input: "/memory".into(),
         options,
         selected_index,
+        query: TextBuffer::new(false),
     })
 }
 
@@ -3505,6 +3716,7 @@ fn parse_theme_picker_state(text: &str) -> Option<ThemePickerState> {
         original_input: "/theme".into(),
         options,
         selected_index,
+        query: TextBuffer::new(false),
     })
 }
 
@@ -3546,6 +3758,7 @@ fn parse_model_picker_state(text: &str) -> Option<ModelPickerState> {
         original_input: "/model".into(),
         options,
         selected_index,
+        query: TextBuffer::new(false),
     })
 }
 
@@ -3616,6 +3829,95 @@ fn parse_tag_remove_confirmation(text: &str) -> Option<String> {
         .find_map(|line| line.strip_prefix("tag_remove_confirmation="))?;
     let value = value.trim();
     (!value.is_empty()).then(|| value.to_string())
+}
+
+fn apply_picker_query_edit(query: &mut TextBuffer, resolved: ResolvedKey) -> bool {
+    match resolved {
+        ResolvedKey::InsertChar(ch) => {
+            query.insert_char(ch);
+            true
+        }
+        ResolvedKey::Edit(EditAction::InsertNewline) => false,
+        ResolvedKey::Edit(action) => {
+            query.apply_edit_action(action);
+            true
+        }
+        ResolvedKey::System(_) | ResolvedKey::Vim(_) => false,
+    }
+}
+
+fn filtered_picker_indices<T>(
+    query: &TextBuffer,
+    options: &[T],
+    searchable: impl Fn(&T) -> String,
+) -> Vec<usize> {
+    let Some(query) = normalized_picker_query(query) else {
+        return (0..options.len()).collect();
+    };
+    options
+        .iter()
+        .enumerate()
+        .filter_map(|(index, option)| {
+            searchable(option)
+                .to_ascii_lowercase()
+                .contains(&query)
+                .then_some(index)
+        })
+        .collect()
+}
+
+fn normalized_picker_query(query: &TextBuffer) -> Option<String> {
+    let query = query.text();
+    let trimmed = query.trim();
+    (!trimmed.is_empty()).then(|| trimmed.to_ascii_lowercase())
+}
+
+fn picker_query_label(query: &TextBuffer) -> String {
+    let query = query.text();
+    if query.trim().is_empty() {
+        "(all)".into()
+    } else {
+        query
+    }
+}
+
+fn picker_dialog_header(
+    label: &str,
+    query: &TextBuffer,
+    filtered_count: usize,
+    total_count: usize,
+) -> Vec<String> {
+    vec![
+        format!("{label}: {}", picker_query_label(query)),
+        format!("Matches: {filtered_count}/{total_count}"),
+    ]
+}
+
+fn selected_picker_index(selected_index: usize, filtered: &[usize]) -> Option<usize> {
+    filtered
+        .iter()
+        .find(|&&index| index == selected_index)
+        .copied()
+        .or_else(|| filtered.first().copied())
+}
+
+fn sync_picker_selection(selected_index: &mut usize, filtered: &[usize]) {
+    if let Some(index) = selected_picker_index(*selected_index, filtered) {
+        *selected_index = index;
+    }
+}
+
+fn step_picker_selection(selected_index: usize, delta: isize, filtered: &[usize]) -> usize {
+    let Some(current_position) = filtered
+        .iter()
+        .position(|&index| index == selected_index)
+        .or_else(|| (!filtered.is_empty()).then_some(0))
+    else {
+        return selected_index;
+    };
+    let next_position =
+        (current_position as isize + delta).rem_euclid(filtered.len() as isize) as usize;
+    filtered[next_position]
 }
 
 fn picker_status_note(title: &str) -> String {
@@ -3847,6 +4149,23 @@ mod tests {
         }
     }
 
+    fn picker_key(code: KeyCode) -> KeyEvent {
+        KeyEvent {
+            code,
+            modifiers: wonder_of_u_tui::KeyModifiers::default(),
+        }
+    }
+
+    fn send_dialog_key(
+        controller: &mut TuiController<'_>,
+        key: KeyEvent,
+        resolved: Option<ResolvedKey>,
+    ) {
+        controller
+            .handle_dialog_key(key, resolved, &mut |_| Ok(()))
+            .expect("handle dialog key");
+    }
+
     #[test]
     fn compose_conversation_prompt_includes_recent_history() {
         let session_id = SessionId::new();
@@ -3914,7 +4233,9 @@ mod tests {
 
         assert_eq!(
             controller.status_note.as_deref(),
-            Some("model picker: use Up/Down to choose, Enter to select, Esc to cancel")
+            Some(
+                "model picker: type to filter, use Up/Down to choose, Enter to select, Esc to cancel"
+            )
         );
         assert!(controller.pending_model_picker.is_some());
         assert!(matches!(
@@ -3927,6 +4248,53 @@ mod tests {
                 MessagePayload::Command { input, .. } if input == "/model"
             )
         }));
+    }
+
+    #[test]
+    fn controller_filters_model_picker_with_visible_query_and_match_count() {
+        let dir = unique_test_dir("tui-model-picker-filter");
+        let registry = commands::registry(Some(dir.clone())).expect("registry");
+        let mut controller = TuiController::new(
+            test_context(&dir),
+            &registry,
+            Some(dir.as_path()),
+            TuiLaunchOptions { session_id: None },
+        )
+        .expect("controller");
+
+        controller
+            .execute_slash_command("/model")
+            .expect("open model picker");
+        for ch in ['h', 'a', 'i', 'k', 'u'] {
+            send_dialog_key(
+                &mut controller,
+                picker_key(KeyCode::Char(ch)),
+                Some(ResolvedKey::InsertChar(ch)),
+            );
+        }
+
+        let picker = controller
+            .pending_model_picker
+            .as_ref()
+            .expect("model picker open");
+        let dialog = controller.dialog.as_ref().expect("dialog");
+        let expected_matches = format!("Matches: 1/{}", picker.options.len());
+        assert_eq!(
+            dialog.body.first().map(String::as_str),
+            Some("Search: haiku")
+        );
+        assert_eq!(
+            dialog.body.get(1).map(String::as_str),
+            Some(expected_matches.as_str())
+        );
+        assert!(dialog.body.iter().any(|line| line.contains("haiku")));
+        assert!(!dialog.body.iter().any(|line| line.contains("sonnet")));
+        assert_eq!(
+            controller.status_note.as_deref(),
+            Some(
+                "model picker: type to filter, use Up/Down to choose, Enter to select, Esc to cancel"
+            )
+        );
     }
 
     #[test]
@@ -3944,26 +4312,12 @@ mod tests {
         controller
             .execute_slash_command("/model")
             .expect("open picker");
-        controller
-            .handle_dialog_key(
-                KeyEvent {
-                    code: KeyCode::Down,
-                    modifiers: wonder_of_u_tui::KeyModifiers::default(),
-                },
-                None,
-                &mut |_| Ok(()),
-            )
-            .expect("move selection");
-        controller
-            .handle_dialog_key(
-                KeyEvent {
-                    code: KeyCode::Enter,
-                    modifiers: wonder_of_u_tui::KeyModifiers::default(),
-                },
-                Some(ResolvedKey::Edit(EditAction::InsertNewline)),
-                &mut |_| Ok(()),
-            )
-            .expect("select model");
+        send_dialog_key(&mut controller, picker_key(KeyCode::Down), None);
+        send_dialog_key(
+            &mut controller,
+            picker_key(KeyCode::Enter),
+            Some(ResolvedKey::Edit(EditAction::InsertNewline)),
+        );
 
         assert!(controller.pending_model_picker.is_none());
         assert!(controller.dialog.is_none());
@@ -4042,7 +4396,9 @@ mod tests {
 
         assert_eq!(
             controller.status_note.as_deref(),
-            Some("theme picker: use Up/Down to choose, Enter to select, Esc to cancel")
+            Some(
+                "theme picker: type to filter, use Up/Down to choose, Enter to select, Esc to cancel"
+            )
         );
         assert!(controller.pending_theme_picker.is_some());
         assert!(matches!(
@@ -4066,26 +4422,12 @@ mod tests {
         controller
             .execute_slash_command("/theme")
             .expect("open theme picker");
-        controller
-            .handle_dialog_key(
-                KeyEvent {
-                    code: KeyCode::Down,
-                    modifiers: wonder_of_u_tui::KeyModifiers::default(),
-                },
-                None,
-                &mut |_| Ok(()),
-            )
-            .expect("move selection");
-        controller
-            .handle_dialog_key(
-                KeyEvent {
-                    code: KeyCode::Enter,
-                    modifiers: wonder_of_u_tui::KeyModifiers::default(),
-                },
-                Some(ResolvedKey::Edit(EditAction::InsertNewline)),
-                &mut |_| Ok(()),
-            )
-            .expect("select theme");
+        send_dialog_key(&mut controller, picker_key(KeyCode::Down), None);
+        send_dialog_key(
+            &mut controller,
+            picker_key(KeyCode::Enter),
+            Some(ResolvedKey::Edit(EditAction::InsertNewline)),
+        );
 
         assert!(controller.pending_theme_picker.is_none());
         assert!(controller.dialog.is_none());
@@ -4726,7 +5068,7 @@ mod tests {
 
         assert_eq!(
             controller.status_note.as_deref(),
-            Some("memory: use Up/Down to choose, Enter to select, Esc to cancel")
+            Some("memory: type to filter, use Up/Down to choose, Enter to select, Esc to cancel")
         );
         assert!(controller.pending_memory_picker.is_some());
         assert!(matches!(
@@ -4739,6 +5081,101 @@ mod tests {
                 MessagePayload::Command { input, .. } if input == "/memory"
             )
         }));
+    }
+
+    #[test]
+    fn controller_keeps_theme_picker_open_when_search_has_no_matches() {
+        let dir = unique_test_dir("tui-theme-picker-no-matches");
+        let registry = commands::registry(Some(dir.clone())).expect("registry");
+        let mut controller = TuiController::new(
+            test_context(&dir),
+            &registry,
+            Some(dir.as_path()),
+            TuiLaunchOptions { session_id: None },
+        )
+        .expect("controller");
+
+        controller
+            .execute_slash_command("/theme")
+            .expect("open theme picker");
+        for ch in ['z', 'z', 'z'] {
+            send_dialog_key(
+                &mut controller,
+                picker_key(KeyCode::Char(ch)),
+                Some(ResolvedKey::InsertChar(ch)),
+            );
+        }
+        send_dialog_key(
+            &mut controller,
+            picker_key(KeyCode::Enter),
+            Some(ResolvedKey::Edit(EditAction::InsertNewline)),
+        );
+
+        let picker = controller
+            .pending_theme_picker
+            .as_ref()
+            .expect("theme picker still open");
+        let dialog = controller.dialog.as_ref().expect("dialog");
+        let expected_matches = format!("Matches: 0/{}", picker.options.len());
+        assert_eq!(dialog.body.first().map(String::as_str), Some("Search: zzz"));
+        assert_eq!(
+            dialog.body.get(1).map(String::as_str),
+            Some(expected_matches.as_str())
+        );
+        assert_eq!(
+            dialog.body.get(2).map(String::as_str),
+            Some("No matching themes.")
+        );
+        assert_eq!(
+            controller.status_note.as_deref(),
+            Some("theme picker: no matching option to select")
+        );
+    }
+
+    #[test]
+    fn controller_filters_memory_picker_with_search_query() {
+        let dir = unique_test_dir("tui-memory-picker-filter");
+        let registry = commands::registry(Some(dir.clone())).expect("registry");
+        let mut controller = TuiController::new(
+            test_context(&dir),
+            &registry,
+            Some(dir.as_path()),
+            TuiLaunchOptions { session_id: None },
+        )
+        .expect("controller");
+
+        controller
+            .execute_slash_command("/memory")
+            .expect("open memory picker");
+        for ch in ['u', 's', 'e', 'r'] {
+            send_dialog_key(
+                &mut controller,
+                picker_key(KeyCode::Char(ch)),
+                Some(ResolvedKey::InsertChar(ch)),
+            );
+        }
+
+        let picker = controller
+            .pending_memory_picker
+            .as_ref()
+            .expect("memory picker open");
+        let dialog = controller.dialog.as_ref().expect("dialog");
+        let expected_matches = format!("Matches: 1/{}", picker.options.len());
+        assert_eq!(
+            dialog.body.first().map(String::as_str),
+            Some("Search: user")
+        );
+        assert_eq!(
+            dialog.body.get(1).map(String::as_str),
+            Some(expected_matches.as_str())
+        );
+        assert!(dialog.body.iter().any(|line| line.contains("User memory")));
+        assert!(
+            !dialog
+                .body
+                .iter()
+                .any(|line| line.contains("Project memory"))
+        );
     }
 
     #[test]
@@ -4757,26 +5194,12 @@ mod tests {
         controller
             .execute_slash_command("/memory")
             .expect("open picker");
-        controller
-            .handle_dialog_key(
-                KeyEvent {
-                    code: KeyCode::Down,
-                    modifiers: wonder_of_u_tui::KeyModifiers::default(),
-                },
-                None,
-                &mut |_| Ok(()),
-            )
-            .expect("move selection");
-        controller
-            .handle_dialog_key(
-                KeyEvent {
-                    code: KeyCode::Enter,
-                    modifiers: wonder_of_u_tui::KeyModifiers::default(),
-                },
-                Some(ResolvedKey::Edit(EditAction::InsertNewline)),
-                &mut |_| Ok(()),
-            )
-            .expect("select memory target");
+        send_dialog_key(&mut controller, picker_key(KeyCode::Down), None);
+        send_dialog_key(
+            &mut controller,
+            picker_key(KeyCode::Enter),
+            Some(ResolvedKey::Edit(EditAction::InsertNewline)),
+        );
 
         assert!(controller.pending_memory_picker.is_none());
         assert!(controller.dialog.is_none());
@@ -5184,7 +5607,9 @@ mod tests {
 
         assert_eq!(
             controller.status_note.as_deref(),
-            Some("permission mode: use Up/Down to choose, Enter to select, Esc to cancel")
+            Some(
+                "permission mode: type to filter, use Up/Down to choose, Enter to select, Esc to cancel"
+            )
         );
         assert!(controller.pending_permission_picker.is_some());
         assert!(matches!(
@@ -5197,6 +5622,54 @@ mod tests {
                 MessagePayload::Command { input, .. } if input == "/permissions"
             )
         }));
+    }
+
+    #[test]
+    fn controller_clears_permission_picker_search_back_to_full_list() {
+        let dir = unique_test_dir("tui-permissions-picker-clear-search");
+        let registry = commands::registry(Some(dir.clone())).expect("registry");
+        let mut controller = TuiController::new(
+            test_context(&dir),
+            &registry,
+            Some(dir.as_path()),
+            TuiLaunchOptions { session_id: None },
+        )
+        .expect("controller");
+
+        controller
+            .execute_slash_command("/permissions")
+            .expect("open permissions picker");
+        for ch in ['p', 'l', 'a', 'n'] {
+            send_dialog_key(
+                &mut controller,
+                picker_key(KeyCode::Char(ch)),
+                Some(ResolvedKey::InsertChar(ch)),
+            );
+        }
+        for _ in 0..4 {
+            send_dialog_key(
+                &mut controller,
+                picker_key(KeyCode::Backspace),
+                Some(ResolvedKey::Edit(EditAction::Backspace)),
+            );
+        }
+
+        let picker = controller
+            .pending_permission_picker
+            .as_ref()
+            .expect("permission picker open");
+        let dialog = controller.dialog.as_ref().expect("dialog");
+        let expected_matches = format!("Matches: {0}/{0}", picker.options.len());
+        assert_eq!(
+            dialog.body.first().map(String::as_str),
+            Some("Search: (all)")
+        );
+        assert_eq!(
+            dialog.body.get(1).map(String::as_str),
+            Some(expected_matches.as_str())
+        );
+        assert!(dialog.body.iter().any(|line| line.contains("Default")));
+        assert!(dialog.body.iter().any(|line| line.contains("Plan")));
     }
 
     #[test]
@@ -5214,26 +5687,12 @@ mod tests {
         controller
             .execute_slash_command("/permissions")
             .expect("open permissions picker");
-        controller
-            .handle_dialog_key(
-                KeyEvent {
-                    code: KeyCode::Down,
-                    modifiers: wonder_of_u_tui::KeyModifiers::default(),
-                },
-                None,
-                &mut |_| Ok(()),
-            )
-            .expect("move selection");
-        controller
-            .handle_dialog_key(
-                KeyEvent {
-                    code: KeyCode::Enter,
-                    modifiers: wonder_of_u_tui::KeyModifiers::default(),
-                },
-                Some(ResolvedKey::Edit(EditAction::InsertNewline)),
-                &mut |_| Ok(()),
-            )
-            .expect("select permission mode");
+        send_dialog_key(&mut controller, picker_key(KeyCode::Down), None);
+        send_dialog_key(
+            &mut controller,
+            picker_key(KeyCode::Enter),
+            Some(ResolvedKey::Edit(EditAction::InsertNewline)),
+        );
 
         assert!(controller.pending_permission_picker.is_none());
         assert!(controller.dialog.is_none());
