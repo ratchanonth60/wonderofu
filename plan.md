@@ -20,13 +20,73 @@ The target TUI is **visual-close**: layout, flow, colors, dialogs, status/footer
 ## 2. Current repository state
 
 - Rust workspace:
-  - `Cargo.toml` is a workspace manifest using `wonder-of-u-*` crate/package identifiers.
-  - The initial Rust foundation is split into CLI, core, storage, and test-support crates.
-  - Additional crates from the plan are still to be implemented.
+  - `Cargo.toml` is a multi-crate workspace using `wonder-of-u-*` crate/package identifiers.
+  - Implemented crates now cover CLI, core, storage, test support, agent, tools, MCP, plugins, skills, and TUI foundations.
+  - Broad first-release slices already exist for command registry, session persistence, permissions, provider/auth selection, task persistence, MCP catalogs, plugin/skill catalogs, and TUI shell/status rendering.
+- Provider runtime checkpoint:
+  - `wonder-of-u-agent` now has real provider execution for `openai`, `anthropic`, and `copilot`; OpenAI/Anthropic use API keys, and Copilot uses OAuth plus a real `copilot_internal/v2/token` exchange before prompt execution.
+  - `wonder-of-u prompt ...` can send a real non-interactive prompt, print the response, persist transcript/snapshot/cost state when `--storage-dir` is set, and now supports opt-in `--tools` tool-use orchestration for providers that implement structured tool calling.
+  - `agents start local ...` now runs a real background prompt subprocess with persisted logs, pid/heartbeat tracking, reconcile, stop handling, and `--tools` enabled so provider-backed local agents can use the built-in tool registry.
+  - `skills run <skill> ...` now executes real prompt-based skill invocations and reuses the same transcript/snapshot/cost persistence path; `skills run --tools` enables manifest-restricted built-in tool execution using each skill's `allowed_tools` list.
+  - `plugin run <plugin> <command> ...` now executes trusted ready plugin command entries as one-shot subprocesses with auth/readiness checks, and plugin manifest commands can now also be resolved dynamically from slash-command lookup in the TUI/CLI slash transport.
+  - `wonder-of-u tui` now launches a live interactive shell with prompt editing, slash commands, streamed provider-backed prompt turns, persisted session updates, and a bounded built-in tool-use loop when the selected provider supports structured tool calling.
+  - Default no-command launch now enters the TUI in interactive terminals, while non-interactive runs still fall back to `doctor`.
+  - `resume <id>` now routes into the live TUI in interactive terminals and keeps summary output for non-interactive use.
+  - OpenAI now supports real structured tool-use orchestration in the live TUI with persisted `AssistantToolUse` and `ToolResult` messages executed through the native built-in tool registry.
+  - Anthropic native models now support structured tool-use orchestration in the shared provider runtime, including persisted assistant tool-use batches and tool-result continuation rounds.
+  - Copilot GPT-style and Claude-style models now both support the same structured tool-use loop in TUI and non-interactive prompt/agent flows, with Claude-style models using the Anthropic-compatible `/v1/messages` tool block protocol after the Copilot token exchange.
+  - `wonder-of-u login --provider copilot` now runs a real GitHub device OAuth flow, persists OAuth expiry/refresh metadata when the provider returns it, and the runtime now refreshes expiring Copilot OAuth credentials before prompt execution when a refresh token is available.
+  - Copilot prompt execution now supports both GPT-style and Claude-style Copilot models, including streaming in the live TUI.
+  - TUI parity was extended with notice dialogs for task completions and permission blockers, inline allow/deny/resume permission flow with snapshot-backed resume support, confirm-before-exit behavior when the session has unsent input/history/tasks, resume-time reconstruction of transient UI state, real vim editing, Ctrl-R prompt-history recall/cycling, dynamic plugin slash-command execution, richer `/plan` flow parity (`/plan` enter/show, `/plan <prompt>` queued execution, and live `/plan open` editor suspend/resume handling), live `/clear` and `/compact` view reload parity, and `/model [selection]` shorthand that no longer requires the explicit `set` subcommand.
+  - Session-scoped additional working directories now persist in `AppState`, flow into tool permission contexts, and are exposed through a real `/add-dir` command that mutates the live TUI session.
+  - The previously missing `/context` and `/memory` command surfaces now exist in Rust: `/context` renders a session/snapshot-based context summary and opens a live notice dialog in the TUI, while `/memory` now supports a live picker plus `/memory open {project|user}` external-editor flows from both CLI and TUI.
+  - Additional parity command surfaces now exist for `/cost`, `/stats`, `/vim`, `/copy`, `/init`, `/keybindings`, `/theme`, `/tag`, and `/version`; `/stats`, `/theme show`, `/version`, and `/keybindings` open live TUI notice/picker flows, `/copy` pulls recent assistant responses from snapshot/transcript storage with clipboard best-effort plus temp-file fallback, `/init` scaffolds project `CLAUDE.md`, `/keybindings open` creates a loadable override template, TUI theme selection is now session-persisted with real renderer theme changes, and `/tag` now toggles a persisted searchable session tag with live remove-confirmation flow in the TUI.
+  - Still deferred in this area: deeper interactive parity (richer dialog/picker flows and remaining task/plugin sandbox/daemon UX mismatches).
 - Reference source tree:
   - `claude-leak/` contains roughly 1,800+ TypeScript/TSX files.
   - Main areas: `commands`, `components`, `hooks`, `ink`, `tools`, `services`, `utils`, `state`, `tasks`, `bridge`, `server`, `skills`, `plugins`, `keybindings`, `screens`, `vim`, `voice`.
   - `package-lock.json` is effectively empty and no usable `package.json` was found, so this tree is reference material rather than a runnable package in the current repo.
+
+## 2.1 Progress update and execution workflow
+
+- Latest parity work completed:
+  - Added `/hooks` config/view parity plus `/hooks open` editor flow.
+  - Added `/privacy-settings` fallback/web flow.
+  - Added `/usage` and hidden deprecated `/output-style`.
+  - Added real session-scoped `/color` state wired into the Rust TUI footer/renderer.
+  - Added `/brief` session parity:
+    - empty `/brief` toggles concise-response mode for the current session,
+    - `/brief show` opens a live notice dialog,
+    - the setting persists in session snapshots and is visible in the TUI footer/status path,
+    - prompt execution now injects a concise system prompt when brief mode is on,
+    - the leak's stricter SendUserMessage-only / hidden-plain-text behavior is still called out as not fully replicated yet.
+  - Added `/review` as a local queued-prompt flow that mirrors the leak's gh-based PR review semantics.
+  - Added `/statusline` as a local queued-prompt setup flow instead of pretending the leak's remote statusline subagent exists in the Rust port.
+  - Added `/upgrade` with browser handoff plus a TUI notice flow pointing at the Claude upgrade page and telling users to rerun `/login` afterward.
+  - Added `/release-notes` with local `CHANGELOG.md` parsing when available and repository releases-page fallback otherwise.
+  - Added `/feedback` plus `/bug` alias with repository-issues fallback notice flow.
+  - Added `/effort` as real settings + session-state parity:
+    - normalizes shorthand like `/effort high`,
+    - persists the chosen effort level into agent settings,
+    - restores and shows it in the TUI footer/status path,
+    - opens a live `Effort` notice dialog,
+    - explicitly notes that provider-specific inference mapping is still not wired yet.
+- TUI parity note:
+  - The reference UI uses **Ink/React**, while `wonder-of-u` uses a custom Rust state/controller loop on top of **ratatui/crossterm**.
+  - Because of that, parity work must focus on reproducing flow/state/dialog behavior instead of assuming the same component lifecycle or repaint model.
+  - Any TUI that still feels "strange" should be treated as a parity bug, not as expected behavior.
+  - Validation hardening also matters for parity work: cwd-sensitive CLI tests are now serialized so command parity changes do not leave the suite with unrelated flaky failures.
+- Execution workflow from this point forward:
+  - Update progress in this project-level `plan.md` at each meaningful milestone.
+  - Use `dev` as the integration branch.
+  - Current active parity branch: `feat/tui-command-parity`.
+  - For each new feature slice, branch from `dev` into `feat/<slice>`, finish the slice, then merge back into `dev`.
+  - Keep files grouped by domain (`commands/status.rs` for informational commands, `commands/workflow.rs` for interactive workflow commands, `tui_runtime.rs` for shell/controller behavior) and avoid scattering feature logic across unrelated modules.
+- Current high-priority parity queue:
+  - Continue auditing remaining missing slash-command surfaces from `claude-leak/commands/*`.
+  - Tighten TUI parity for notice dialogs, pickers, repaint/status behavior, and command flows that still do not feel like the Ink reference.
+  - Wire remaining provider/runtime settings so session-visible controls affect live execution where the reference does.
+  - Only claim feature parity when the Rust path has real runtime behavior or an explicit fallback that matches the reference command semantics.
 
 ## 3. First-release scope and backlog
 
@@ -35,8 +95,8 @@ The target TUI is **visual-close**: layout, flow, colors, dialogs, status/footer
 - Full interactive REPL with streaming messages, prompt input, message history, status/footer, dialogs, background task UI, and command handling.
 - Main command registry and slash commands needed for everyday use:
   - `help`, `init`, `config`, `login`, `logout`, `model`, `status`, `doctor`, `exit`.
-  - `resume`, `session`, `rename`, `clear`, `compact`, `export`.
-  - `add-dir`, `context`, `files`, `memory`, `branch`, `diff`.
+  - `resume`, `session`, `rename`, `tag`, `clear`, `compact`, `export`.
+  - `add-dir`, `context`, `files`, `memory`, `copy`, `branch`, `diff`.
   - `plan`, `permissions`, `agents`, `tasks`, `skills`.
   - `mcp`, `plugin`, `reload-plugins`.
 - Provider/auth:
@@ -81,8 +141,8 @@ The target TUI is **visual-close**: layout, flow, colors, dialogs, status/footer
 - `claude-leak/utils/processUserInput/processSlashCommand.tsx`: slash command parsing and dispatch.
 - Command directories under `claude-leak/commands/`, especially:
   - `help`, `config`, `login`, `logout`, `model`, `status`, `doctor`.
-  - `resume`, `session`, `clear`, `compact`, `export`, `rename`.
-  - `context`, `files`, `memory`, `branch`, `diff`.
+  - `resume`, `session`, `clear`, `compact`, `export`, `rename`, `tag`.
+  - `context`, `files`, `memory`, `copy`, `branch`, `diff`.
   - `plan`, `permissions`, `agents`, `tasks`, `skills`.
   - `mcp`, `plugin`, `reload-plugins`.
 
@@ -289,7 +349,7 @@ Dedupe by name/alias with deterministic precedence.
 | Core            | `help`, `init`, `exit`, `doctor`, `status`                  | Must work before provider is configured where possible. |
 | Auth/model      | `login`, `logout`, `model`, `config`                        | Drives provider selection and command availability.     |
 | Session         | `resume`, `session`, `rename`, `clear`, `compact`, `export` | Depends on storage and message model.                   |
-| Context/project | `add-dir`, `context`, `files`, `memory`, `branch`, `diff`   | Requires path scope and file/search tools.              |
+| Context/project | `add-dir`, `context`, `files`, `memory`, `copy`, `branch`, `diff` | Requires path scope and file/search tools.              |
 | Workflow        | `plan`, `permissions`                                       | Tied to permission mode and plan-mode state.            |
 | Extension       | `mcp`, `plugin`, `reload-plugins`, `skills`                 | Requires extension registries.                          |
 | Agents/tasks    | `agents`, `tasks`                                           | Requires task manager and background UI.                |
@@ -499,7 +559,7 @@ Essential bindings:
 
 - Ctrl-C/Ctrl-D interrupt or exit.
 - Ctrl-L redraw.
-- Ctrl-R history search.
+- Ctrl-R prompt history recall/cycle.
 - Ctrl-O transcript/expanded view toggle if in scope.
 - Shift-Tab mode cycle if terminal supports.
 - Ctrl-T task/todo toggle if in scope.

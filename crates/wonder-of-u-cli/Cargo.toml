@@ -10,6 +10,23 @@ name = "wonder-of-u"
 path = "src/main.rs"
 
 [dependencies]
+async-trait.workspace = true
+futures.workspace = true
 clap.workspace = true
+crossterm.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+shell-words.workspace = true
+time.workspace = true
+libc.workspace = true
+walkdir.workspace = true
+wonder-of-u-agent.workspace = true
 wonder-of-u-core.workspace = true
+wonder-of-u-mcp.workspace = true
+wonder-of-u-plugins.workspace = true
+wonder-of-u-skills.workspace = true
 wonder-of-u-storage.workspace = true
+wonder-of-u-tui.workspace = true
+
+[dev-dependencies]
+wonder-of-u-test-support.workspace = true
