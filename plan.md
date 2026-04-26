@@ -88,6 +88,8 @@ The target TUI is **visual-close**: layout, flow, colors, dialogs, status/footer
       - `/desktop` now opens a live `Desktop` notice dialog, attempts browser handoff to Claude Desktop docs, and exposes the platform download URL while explicitly saying live session deep-link transfer is not implemented yet.
       - `/mobile` now opens a live `Mobile` notice dialog with real iOS/Android store links plus `/ios` and `/android` aliases instead of pretending the Rust TUI already renders the reference QR code flow.
       - `/chrome` now opens a live `Chrome` notice dialog with extension, permissions, and docs links instead of pretending the leak's extension-state picker and default-on config flow already exist locally.
+    - `feat/ratatui-picker-search`: picker overlays in the Rust TUI now support live search/filter queries with visible match counts and filtered navigation for model/theme/memory/permission flows.
+    - `feat/ratatui-queued-visibility`: the ratatui shell now shows pending queued commands in a dedicated queued panel with truncation and overflow summaries so upcoming work is visible before it drains.
 - TUI parity note:
   - The reference UI uses **Ink/React**, while `wonder-of-u` uses a custom Rust state/controller loop on top of **ratatui/crossterm**.
   - Because of that, parity work must focus on reproducing flow/state/dialog behavior instead of assuming the same component lifecycle or repaint model.
@@ -97,9 +99,9 @@ The target TUI is **visual-close**: layout, flow, colors, dialogs, status/footer
   - Update progress in this project-level `plan.md` at each meaningful milestone.
   - Use `dev` as the integration branch.
   - `main` now reflects the merged parity snapshot from `dev`.
-  - `dev` now includes the merged fast, permission, overlay, resume, command-audit, and companion-handoff parity slices.
+  - `dev` now includes the merged fast, permission, overlay, resume, command-audit, companion-handoff, picker-search, and queued-visibility parity slices.
   - Custom Rust code-writing agents are now expected to use Rust-native documentation/comment style when comments are needed (`//!` module docs, `///` public item docs, `//` concise why-comments).
-  - The last completed feature sequence was: `feat/fast-mode-parity` -> `feat/tui-permission-parity` -> `feat/tui-overlay-parity` -> `feat/tui-resume-parity` -> `feat/command-audit-parity` -> `feat/companion-handoff-parity`.
+  - The last completed feature sequence was: `feat/fast-mode-parity` -> `feat/tui-permission-parity` -> `feat/tui-overlay-parity` -> `feat/tui-resume-parity` -> `feat/command-audit-parity` -> `feat/companion-handoff-parity` -> `feat/ratatui-picker-search` -> `feat/ratatui-queued-visibility`.
   - For each new feature slice, branch from `dev` into `feat/<slice>`, finish the slice, then merge back into `dev`.
   - Keep files grouped by domain (`commands/status.rs` for informational commands, `commands/workflow.rs` for interactive workflow commands, `tui_runtime.rs` for shell/controller behavior) and avoid scattering feature logic across unrelated modules.
 - Current high-priority parity queue:
@@ -110,10 +112,12 @@ The target TUI is **visual-close**: layout, flow, colors, dialogs, status/footer
     - TUI resume/live-state parity
     - command-audit parity (`/security-review`, `/terminal-setup`)
     - companion/browser-handoff parity (`/desktop`, `/mobile`, `/ios`, `/android`, `/chrome`)
+    - ratatui picker search/filter parity across existing chooser dialogs
+    - ratatui queued-command visibility in the shell
   - Continue the broader `parity-hardening-release` work from clean `dev`; the branch sequence above is complete.
   - Remaining top-level work is now broader hardening rather than the completed branch sequence above.
   - Re-audit the remaining less-central command surfaces and moved-to-plugin/browser-handoff flows that still have no honest Rust equivalent, especially `ide` and any deeper companion bridge behavior beyond the new notice/browser fallbacks.
-  - Keep tightening ratatui interaction feel where the shell still diverges from the reference beyond the slices already merged.
+  - Keep tightening ratatui interaction feel where the shell still diverges from the reference beyond the slices already merged, with remaining likely candidates including richer history search, picker previews, task-panel polish, and deeper modal coordination.
   - Only claim feature parity when the Rust path has real runtime behavior or an explicit fallback that matches the reference command semantics.
 
 ## 3. First-release scope and backlog
