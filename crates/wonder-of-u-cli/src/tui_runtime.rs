@@ -46,6 +46,7 @@ pub(crate) struct TuiLaunchOptions {
 }
 
 const MAX_TOOL_LOOP_ITERATIONS: usize = 6;
+const PICKER_CONTROLS_NOTE: &str = "use Up/Down to choose, Enter to select, Esc to cancel";
 
 pub(crate) fn run_tui<W: Write>(
     writer: &mut W,
@@ -442,7 +443,7 @@ impl<'a> TuiController<'a> {
                 Ok(())
             }
             Some(wonder_of_u_tui::DialogKind::Notice) => {
-                self.dismiss_dialog();
+                self.dismiss_notice_dialog();
                 Ok(())
             }
             None => Ok(()),
@@ -472,8 +473,7 @@ impl<'a> TuiController<'a> {
                     self.cancel_permission_picker()
                 }
                 _ => {
-                    self.status_note =
-                        Some("use Up/Down to choose, Enter to select, Esc to cancel".into());
+                    self.status_note = Some(picker_status_note("permission mode"));
                     self.needs_render = true;
                     Ok(())
                 }
@@ -506,8 +506,7 @@ impl<'a> TuiController<'a> {
                     self.cancel_model_picker()
                 }
                 _ => {
-                    self.status_note =
-                        Some("use Up/Down to choose, Enter to select, Esc to cancel".into());
+                    self.status_note = Some(picker_status_note("model picker"));
                     self.needs_render = true;
                     Ok(())
                 }
@@ -536,8 +535,7 @@ impl<'a> TuiController<'a> {
                     self.cancel_memory_picker()
                 }
                 _ => {
-                    self.status_note =
-                        Some("use Up/Down to choose, Enter to select, Esc to cancel".into());
+                    self.status_note = Some(picker_status_note("memory"));
                     self.needs_render = true;
                     Ok(())
                 }
@@ -566,8 +564,7 @@ impl<'a> TuiController<'a> {
                     self.cancel_theme_picker()
                 }
                 _ => {
-                    self.status_note =
-                        Some("use Up/Down to choose, Enter to select, Esc to cancel".into());
+                    self.status_note = Some(picker_status_note("theme picker"));
                     self.needs_render = true;
                     Ok(())
                 }
@@ -1490,74 +1487,18 @@ impl<'a> TuiController<'a> {
             self.state.set_session_tags(tags);
         }
         self.pending_external_editor = parse_external_editor_request(text, &self.state.session.cwd);
-        if let Some((title, body)) = parse_notice(text, "## Context Usage", "Context Usage") {
+        if let Some((title, body, note)) = parse_known_notice(text) {
             self.dialog = Some(DialogView::notice(title, body));
-            self.status_note = Some("context usage".into());
+            self.status_note = Some(note.into());
             self.needs_render = true;
-        } else if let Some((title, body)) =
-            parse_notice(text, "## Activity Stats", "Activity Stats")
+        } else if self.state.input_mode == InputMode::Prompt
+            && !self.has_picker_overlay()
+            && self
+                .dialog
+                .as_ref()
+                .is_some_and(|dialog| dialog.kind() == wonder_of_u_tui::DialogKind::Notice)
         {
-            self.dialog = Some(DialogView::notice(title, body));
-            self.status_note = Some("activity stats".into());
-            self.needs_render = true;
-        } else if let Some((title, body)) = parse_notice(text, "## Usage", "Usage") {
-            self.dialog = Some(DialogView::notice(title, body));
-            self.status_note = Some("usage".into());
-            self.needs_render = true;
-        } else if let Some((title, body)) = parse_notice(text, "## Theme", "Theme") {
-            self.dialog = Some(DialogView::notice(title, body));
-            self.status_note = Some("theme".into());
-            self.needs_render = true;
-        } else if let Some((title, body)) = parse_notice(text, "## Color", "Color") {
-            self.dialog = Some(DialogView::notice(title, body));
-            self.status_note = Some("color".into());
-            self.needs_render = true;
-        } else if let Some((title, body)) = parse_notice(text, "## Fast", "Fast") {
-            self.dialog = Some(DialogView::notice(title, body));
-            self.status_note = Some("fast".into());
-            self.needs_render = true;
-        } else if let Some((title, body)) = parse_notice(text, "## Brief", "Brief") {
-            self.dialog = Some(DialogView::notice(title, body));
-            self.status_note = Some("brief".into());
-            self.needs_render = true;
-        } else if let Some((title, body)) = parse_notice(text, "## Effort", "Effort") {
-            self.dialog = Some(DialogView::notice(title, body));
-            self.status_note = Some("effort".into());
-            self.needs_render = true;
-        } else if let Some((title, body)) = parse_notice(text, "## Feedback", "Feedback") {
-            self.dialog = Some(DialogView::notice(title, body));
-            self.status_note = Some("feedback".into());
-            self.needs_render = true;
-        } else if let Some((title, body)) = parse_notice(text, "## Insights", "Insights") {
-            self.dialog = Some(DialogView::notice(title, body));
-            self.status_note = Some("insights".into());
-            self.needs_render = true;
-        } else if let Some((title, body)) = parse_notice(text, "## Upgrade", "Upgrade") {
-            self.dialog = Some(DialogView::notice(title, body));
-            self.status_note = Some("upgrade".into());
-            self.needs_render = true;
-        } else if let Some((title, body)) = parse_notice(text, "## Release Notes", "Release Notes")
-        {
-            self.dialog = Some(DialogView::notice(title, body));
-            self.status_note = Some("release notes".into());
-            self.needs_render = true;
-        } else if let Some((title, body)) = parse_notice(text, "## Version", "Version") {
-            self.dialog = Some(DialogView::notice(title, body));
-            self.status_note = Some("version".into());
-            self.needs_render = true;
-        } else if let Some((title, body)) = parse_notice(text, "## Hooks", "Hooks") {
-            self.dialog = Some(DialogView::notice(title, body));
-            self.status_note = Some("hooks".into());
-            self.needs_render = true;
-        } else if let Some((title, body)) = parse_notice(text, "## Keybindings", "Keybindings") {
-            self.dialog = Some(DialogView::notice(title, body));
-            self.status_note = Some("keybindings".into());
-            self.needs_render = true;
-        } else if let Some((title, body)) =
-            parse_notice(text, "## Privacy Settings", "Privacy Settings")
-        {
-            self.dialog = Some(DialogView::notice(title, body));
-            self.status_note = Some("privacy settings".into());
+            self.dialog = None;
             self.needs_render = true;
         }
         for queued_prompt in text
@@ -2044,7 +1985,7 @@ impl<'a> TuiController<'a> {
                 wonder_of_u_tui::DialogActionView::new("Cancel", false),
             ],
         });
-        self.status_note = Some("use Up/Down to choose, Enter to select, Esc to cancel".into());
+        self.status_note = Some(picker_status_note("permission mode"));
         self.needs_render = true;
     }
 
@@ -2149,7 +2090,7 @@ impl<'a> TuiController<'a> {
                 wonder_of_u_tui::DialogActionView::new("Cancel", false),
             ],
         });
-        self.status_note = Some("use Up/Down to choose, Enter to select, Esc to cancel".into());
+        self.status_note = Some(picker_status_note("memory"));
         self.needs_render = true;
     }
 
@@ -2313,7 +2254,7 @@ impl<'a> TuiController<'a> {
                 wonder_of_u_tui::DialogActionView::new("Cancel", false),
             ],
         });
-        self.status_note = Some("use Up/Down to choose, Enter to select, Esc to cancel".into());
+        self.status_note = Some(picker_status_note("theme picker"));
         self.needs_render = true;
     }
 
@@ -2419,7 +2360,7 @@ impl<'a> TuiController<'a> {
                 wonder_of_u_tui::DialogActionView::new("Cancel", false),
             ],
         });
-        self.status_note = Some("use Up/Down to choose, Enter to select, Esc to cancel".into());
+        self.status_note = Some(picker_status_note("model picker"));
         self.needs_render = true;
     }
 
@@ -2482,6 +2423,7 @@ impl<'a> TuiController<'a> {
         self.dialog = None;
         self.pending_permission_picker = None;
         self.pending_memory_picker = None;
+        self.pending_tag_removal = None;
         self.pending_theme_picker = None;
         self.pending_model_picker = None;
         if matches!(
@@ -2494,6 +2436,25 @@ impl<'a> TuiController<'a> {
             self.state.input_mode = InputMode::Prompt;
         }
         self.needs_render = true;
+    }
+
+    fn dismiss_notice_dialog(&mut self) {
+        let status = self
+            .dialog
+            .as_ref()
+            .map(|dialog| overlay_closed_status(&dialog.title));
+        self.dismiss_dialog();
+        if let Some(status) = status {
+            self.status_note = Some(status);
+        }
+    }
+
+    fn has_picker_overlay(&self) -> bool {
+        self.pending_permission_picker.is_some()
+            || self.pending_memory_picker.is_some()
+            || self.pending_tag_removal.is_some()
+            || self.pending_theme_picker.is_some()
+            || self.pending_model_picker.is_some()
     }
 
     fn should_confirm_exit(&self) -> bool {
@@ -3531,6 +3492,43 @@ fn parse_tag_remove_confirmation(text: &str) -> Option<String> {
     (!value.is_empty()).then(|| value.to_string())
 }
 
+fn picker_status_note(title: &str) -> String {
+    format!("{title}: {PICKER_CONTROLS_NOTE}")
+}
+
+fn overlay_closed_status(title: &str) -> String {
+    format!("{} closed", title.to_ascii_lowercase())
+}
+
+fn parse_known_notice(text: &str) -> Option<(String, Vec<String>, &'static str)> {
+    [
+        ("## Context Usage", "Context Usage", "context usage"),
+        ("## Activity Stats", "Activity Stats", "activity stats"),
+        ("## Usage", "Usage", "usage"),
+        ("## Theme", "Theme", "theme"),
+        ("## Color", "Color", "color"),
+        ("## Fast", "Fast", "fast"),
+        ("## Brief", "Brief", "brief"),
+        ("## Effort", "Effort", "effort"),
+        ("## Feedback", "Feedback", "feedback"),
+        ("## Insights", "Insights", "insights"),
+        ("## Upgrade", "Upgrade", "upgrade"),
+        ("## Release Notes", "Release Notes", "release notes"),
+        ("## Version", "Version", "version"),
+        ("## Hooks", "Hooks", "hooks"),
+        ("## Keybindings", "Keybindings", "keybindings"),
+        (
+            "## Privacy Settings",
+            "Privacy Settings",
+            "privacy settings",
+        ),
+    ]
+    .into_iter()
+    .find_map(|(heading, title, note)| {
+        parse_notice(text, heading, title).map(|(title, body)| (title, body, note))
+    })
+}
+
 fn parse_notice(text: &str, heading: &str, title: &str) -> Option<(String, Vec<String>)> {
     let mut lines = text.lines();
     if lines.next()?.trim() != heading {
@@ -3786,7 +3784,7 @@ mod tests {
 
         assert_eq!(
             controller.status_note.as_deref(),
-            Some("use Up/Down to choose, Enter to select, Esc to cancel")
+            Some("model picker: use Up/Down to choose, Enter to select, Esc to cancel")
         );
         assert!(controller.pending_model_picker.is_some());
         assert!(matches!(
@@ -3838,6 +3836,7 @@ mod tests {
             .expect("select model");
 
         assert!(controller.pending_model_picker.is_none());
+        assert!(controller.dialog.is_none());
         assert_eq!(controller.state.provider.as_deref(), Some("anthropic"));
         assert_eq!(
             controller.state.model.as_deref(),
@@ -3880,6 +3879,7 @@ mod tests {
             .expect("cancel picker");
 
         assert!(controller.pending_model_picker.is_none());
+        assert!(controller.dialog.is_none());
         assert_eq!(
             controller.status_note.as_deref(),
             Some("model picker cancelled")
@@ -3912,7 +3912,7 @@ mod tests {
 
         assert_eq!(
             controller.status_note.as_deref(),
-            Some("use Up/Down to choose, Enter to select, Esc to cancel")
+            Some("theme picker: use Up/Down to choose, Enter to select, Esc to cancel")
         );
         assert!(controller.pending_theme_picker.is_some());
         assert!(matches!(
@@ -3958,6 +3958,7 @@ mod tests {
             .expect("select theme");
 
         assert!(controller.pending_theme_picker.is_none());
+        assert!(controller.dialog.is_none());
         assert_eq!(controller.state.theme.as_deref(), Some("midnight"));
         assert!(controller.view().footer.contains("theme=midnight"));
         assert!(matches!(
@@ -3999,6 +4000,60 @@ mod tests {
                         .as_deref()
                         .is_some_and(|text| text.contains("## Theme"))
         ));
+    }
+
+    #[test]
+    fn controller_dismisses_theme_notice_dialog_cleanly() {
+        let dir = unique_test_dir("tui-theme-notice-dismiss");
+        let registry = commands::registry(Some(dir.clone())).expect("registry");
+        let mut controller = TuiController::new(
+            test_context(&dir),
+            &registry,
+            Some(dir.as_path()),
+            TuiLaunchOptions { session_id: None },
+        )
+        .expect("controller");
+
+        controller
+            .execute_slash_command("/theme show")
+            .expect("show theme");
+        controller
+            .handle_dialog_key(
+                KeyEvent {
+                    code: KeyCode::Esc,
+                    modifiers: wonder_of_u_tui::KeyModifiers::default(),
+                },
+                None,
+                &mut |_| Ok(()),
+            )
+            .expect("dismiss theme notice");
+
+        assert!(controller.dialog.is_none());
+        assert_eq!(controller.state.input_mode, InputMode::Prompt);
+        assert_eq!(controller.status_note.as_deref(), Some("theme closed"));
+    }
+
+    #[test]
+    fn apply_command_output_hints_clears_stale_notice_dialog() {
+        let dir = unique_test_dir("tui-notice-clear");
+        let registry = commands::registry(Some(dir.clone())).expect("registry");
+        let mut controller = TuiController::new(
+            test_context(&dir),
+            &registry,
+            Some(dir.as_path()),
+            TuiLaunchOptions { session_id: None },
+        )
+        .expect("controller");
+
+        controller.apply_command_output_hints(Some("## Theme\nCurrent theme: default\n"));
+        assert!(matches!(
+            controller.dialog.as_ref(),
+            Some(dialog) if dialog.title == "Theme"
+        ));
+
+        controller.apply_command_output_hints(Some("status=theme updated\n"));
+
+        assert!(controller.dialog.is_none());
     }
 
     #[test]
@@ -4446,6 +4501,10 @@ mod tests {
             .execute_slash_command("/memory")
             .expect("open memory picker");
 
+        assert_eq!(
+            controller.status_note.as_deref(),
+            Some("memory: use Up/Down to choose, Enter to select, Esc to cancel")
+        );
         assert!(controller.pending_memory_picker.is_some());
         assert!(matches!(
             controller.dialog.as_ref(),
@@ -4497,12 +4556,17 @@ mod tests {
             .expect("select memory target");
 
         assert!(controller.pending_memory_picker.is_none());
+        assert!(controller.dialog.is_none());
         assert_eq!(
             controller.pending_external_editor.as_ref(),
             Some(&ExternalEditorRequest {
                 cwd: dir.clone(),
                 path: dir.join("config/CLAUDE.md"),
             })
+        );
+        assert_eq!(
+            controller.status_note.as_deref(),
+            Some("opening file in editor")
         );
         assert!(matches!(
             controller.state.messages.last().map(|message| &message.payload),
@@ -4541,6 +4605,7 @@ mod tests {
             .expect("cancel picker");
 
         assert!(controller.pending_memory_picker.is_none());
+        assert!(controller.dialog.is_none());
         assert_eq!(
             controller.status_note.as_deref(),
             Some("memory picker cancelled")
@@ -4863,6 +4928,10 @@ mod tests {
             .execute_slash_command("/permissions")
             .expect("open permissions picker");
 
+        assert_eq!(
+            controller.status_note.as_deref(),
+            Some("permission mode: use Up/Down to choose, Enter to select, Esc to cancel")
+        );
         assert!(controller.pending_permission_picker.is_some());
         assert!(matches!(
             controller.dialog.as_ref(),
@@ -4913,6 +4982,7 @@ mod tests {
             .expect("select permission mode");
 
         assert!(controller.pending_permission_picker.is_none());
+        assert!(controller.dialog.is_none());
         assert_eq!(
             controller.state.permission_mode,
             PermissionMode::AcceptEdits
@@ -5922,6 +5992,24 @@ mod tests {
                 .body
                 .iter()
                 .any(|line| line.contains("all tests passed"))
+        );
+
+        controller
+            .handle_dialog_key(
+                KeyEvent {
+                    code: KeyCode::Esc,
+                    modifiers: wonder_of_u_tui::KeyModifiers::default(),
+                },
+                None,
+                &mut |_| Ok(()),
+            )
+            .expect("dismiss task notice");
+
+        assert!(controller.dialog.is_none());
+        assert_eq!(controller.state.input_mode, InputMode::Prompt);
+        assert_eq!(
+            controller.status_note.as_deref(),
+            Some("task update closed")
         );
     }
 
