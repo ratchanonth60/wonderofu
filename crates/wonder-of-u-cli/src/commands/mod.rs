@@ -10,6 +10,7 @@ use wonder_of_u_core::{
     CommandInvocation, CommandRegistry, CommandSpec, Result, SessionId, ToolSpec, WonderError,
 };
 
+mod advanced;
 pub(crate) mod auth;
 mod doctor;
 mod features;
@@ -25,6 +26,7 @@ mod task_runtime;
 mod tui;
 pub(crate) mod workflow;
 
+use advanced::{BridgeCommand, DebugCommand, DiagnosticsCommand, VoiceCommand};
 use auth::{ConfigCommand, LoginCommand, LogoutCommand, ModelCommand};
 use doctor::DoctorCommand;
 use features::FeaturesCommand;
@@ -63,6 +65,10 @@ pub fn registry(storage_dir: Option<PathBuf>) -> Result<CommandRegistry> {
         VersionCommand::command_spec(),
         ReleaseNotesCommand::command_spec(),
         FeedbackCommand::command_spec(),
+        DiagnosticsCommand::command_spec(),
+        BridgeCommand::command_spec(),
+        VoiceCommand::command_spec(),
+        DebugCommand::command_spec(),
         UpgradeCommand::command_spec(),
         DesktopCommand::command_spec(),
         MobileCommand::command_spec(),
@@ -134,6 +140,10 @@ pub fn registry(storage_dir: Option<PathBuf>) -> Result<CommandRegistry> {
     registry.register(Arc::new(VersionCommand::new()))?;
     registry.register(Arc::new(ReleaseNotesCommand::new()))?;
     registry.register(Arc::new(FeedbackCommand::new()))?;
+    registry.register(Arc::new(DiagnosticsCommand::new()))?;
+    registry.register(Arc::new(BridgeCommand::new(storage_dir.clone())))?;
+    registry.register(Arc::new(VoiceCommand::new()))?;
+    registry.register(Arc::new(DebugCommand::new(storage_dir.clone())))?;
     registry.register(Arc::new(UpgradeCommand::new()))?;
     registry.register(Arc::new(DesktopCommand::new()))?;
     registry.register(Arc::new(MobileCommand::new()))?;
