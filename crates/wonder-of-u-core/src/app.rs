@@ -338,13 +338,13 @@ impl TaskState {
         task.kind = TaskKind::LocalAgent;
         task.status_message = Some(
             match agent.runtime {
-                AgentRuntime::MetadataOnly => {
-                    "agent metadata recorded; model-backed autonomous execution is deferred"
-                }
+                AgentRuntime::MetadataOnly => "agent metadata recorded for catalog/status tracking",
                 AgentRuntime::PromptSubprocess => {
                     "local agent prompt subprocess is queued for launch"
                 }
-                AgentRuntime::Deferred => "agent execution is deferred",
+                AgentRuntime::Deferred => {
+                    "legacy agent record; relaunch with prompt_subprocess runtime"
+                }
             }
             .into(),
         );

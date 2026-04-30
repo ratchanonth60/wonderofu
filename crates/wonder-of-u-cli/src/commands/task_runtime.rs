@@ -716,7 +716,7 @@ fn agent_runtime_label(runtime: AgentRuntime) -> &'static str {
     match runtime {
         AgentRuntime::MetadataOnly => "metadata_only",
         AgentRuntime::PromptSubprocess => "prompt_subprocess",
-        AgentRuntime::Deferred => "deferred",
+        AgentRuntime::Deferred => "legacy_relaunch_required",
     }
 }
 

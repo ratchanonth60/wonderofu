@@ -1184,8 +1184,7 @@ fn render_insights_enqueue(storage_dir: Option<&Path>, focus: &str) -> Result<St
         "insights_prompt_ready=true".into(),
         format!("tracked_sessions={}", metadata.len()),
         "status=insights prompt queued".into(),
-        "note=local-only insights; remote homespace and facet extraction parity are not wired yet"
-            .into(),
+        "note=local insights use stored session metadata and can be extended by the queued provider prompt".into(),
         format!("enqueue_prompt={prompt}"),
     ]
     .join("\n"))

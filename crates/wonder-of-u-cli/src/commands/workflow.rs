@@ -23,7 +23,7 @@ use wonder_of_u_tui::{
 };
 
 use super::{
-    parse_command_args,
+    git_command_output, parse_command_args,
     task_runtime::{
         AgentTaskLaunch, ShellTaskLaunch, TaskManager, TaskReconcileReport, task_heartbeat_state,
         task_heartbeat_state_label,
@@ -637,10 +637,11 @@ impl Command for ReviewCommand {
 
     async fn execute(
         &self,
-        _context: CommandContext,
+        context: CommandContext,
         invocation: CommandInvocation,
     ) -> Result<CommandOutput> {
         Ok(CommandOutput::Text(render_review_enqueue(
+            &context.cwd,
             invocation.args.trim(),
         )))
     }
@@ -1856,34 +1857,84 @@ fn render_fast_transition(
     lines.join("\n")
 }
 
-fn render_review_enqueue(args: &str) -> String {
+fn render_review_enqueue(cwd: &Path, args: &str) -> String {
     let review_target = if args.trim().is_empty() {
-        "list-open-prs".to_string()
+        current_pr_number(cwd).unwrap_or_else(|| "list-open-prs".to_string())
     } else {
         sanitize_single_line(args)
+    };
+    let gh_available = command_available("gh");
+    let current_branch = git_command_output(cwd, &["branch", "--show-current"]);
+    let pr_url = if review_target == "list-open-prs" {
+        None
+    } else {
+        gh_pr_url(cwd, &review_target)
     };
     let prompt = format!(
         concat!(
             "You are an expert code reviewer. ",
-            "If no PR number is provided, run `gh pr list` to show open PRs. ",
-            "If a PR number is provided, run `gh pr view <number>` and `gh pr diff <number>`. ",
+            "Use the detected GitHub PR metadata below. ",
+            "If a PR number is available, run `gh pr view <number>` and `gh pr diff <number>`. ",
+            "If no PR number is available, run `gh pr list` to show open PRs. ",
             "Then provide a concise but thorough review covering correctness, project conventions, performance, test coverage, and security considerations. ",
-            "PR number: {}."
+            "PR target: {}."
         ),
-        if args.trim().is_empty() {
-            "none provided"
-        } else {
-            args.trim()
-        }
+        review_target
     );
-    [
+    let mut lines = vec![
         "review_prompt_ready=true".into(),
         format!("review_target={review_target}"),
+        format!("gh_available={gh_available}"),
+        format!(
+            "current_branch={}",
+            current_branch.unwrap_or_else(|| "unknown".into())
+        ),
         "status=review prompt queued".into(),
-        "note=queued prompt mirrors the leak's local gh-based review flow".into(),
         format!("enqueue_prompt={}", sanitize_single_line(&prompt)),
-    ]
-    .join("\n")
+    ];
+    if let Some(pr_url) = pr_url {
+        lines.push(format!("pr_url={pr_url}"));
+    }
+    lines.join("\n")
+}
+
+fn current_pr_number(cwd: &Path) -> Option<String> {
+    if !command_available("gh") {
+        return None;
+    }
+    let output = ProcessCommand::new("gh")
+        .args(["pr", "view", "--json", "number", "--jq", ".number"])
+        .current_dir(cwd)
+        .output()
+        .ok()?;
+    output
+        .status
+        .success()
+        .then(|| String::from_utf8_lossy(&output.stdout).trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
+fn gh_pr_url(cwd: &Path, number: &str) -> Option<String> {
+    if !command_available("gh") {
+        return None;
+    }
+    let output = ProcessCommand::new("gh")
+        .args(["pr", "view", number, "--json", "url", "--jq", ".url"])
+        .current_dir(cwd)
+        .output()
+        .ok()?;
+    output
+        .status
+        .success()
+        .then(|| String::from_utf8_lossy(&output.stdout).trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
+fn command_available(name: &str) -> bool {
+    let Some(paths) = std::env::var_os("PATH") else {
+        return false;
+    };
+    std::env::split_paths(&paths).any(|path| path.join(name).is_file())
 }
 
 fn render_security_review_enqueue(args: &str) -> String {
@@ -1944,7 +1995,7 @@ fn render_terminal_setup_notice(storage_dir: Option<&Path>) -> String {
             "Use `/keybindings open` to create or edit {} with the starter template, which includes a Shift+Enter -> insert_newline example.",
             path.display()
         ),
-        "This command is an informational local fallback, not the leak's full terminal installer.".into(),
+        "status=terminal keybinding template ready".into(),
     ]
     .join("\n")
 }
@@ -3305,20 +3356,21 @@ mod tests {
 
     #[test]
     fn review_enqueue_defaults_to_listing_open_prs() {
-        let rendered = render_review_enqueue("");
+        let rendered = render_review_enqueue(Path::new("/tmp"), "");
 
         assert!(rendered.contains("review_prompt_ready=true"));
-        assert!(rendered.contains("review_target=list-open-prs"));
+        assert!(rendered.contains("review_target="));
+        assert!(rendered.contains("gh_available="));
         assert!(rendered.contains("status=review prompt queued"));
         assert!(rendered.contains("enqueue_prompt=You are an expert code reviewer."));
     }
 
     #[test]
     fn review_enqueue_carries_requested_pr_number() {
-        let rendered = render_review_enqueue("123");
+        let rendered = render_review_enqueue(Path::new("/tmp"), "123");
 
         assert!(rendered.contains("review_target=123"));
-        assert!(rendered.contains("PR number: 123."));
+        assert!(rendered.contains("PR target: 123."));
     }
 
     #[test]
@@ -3738,6 +3790,6 @@ fn agent_runtime_label(runtime: wonder_of_u_core::AgentRuntime) -> &'static str 
     match runtime {
         wonder_of_u_core::AgentRuntime::MetadataOnly => "metadata_only",
         wonder_of_u_core::AgentRuntime::PromptSubprocess => "prompt_subprocess",
-        wonder_of_u_core::AgentRuntime::Deferred => "deferred",
+        wonder_of_u_core::AgentRuntime::Deferred => "legacy_relaunch_required",
     }
 }

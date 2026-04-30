@@ -361,7 +361,7 @@ fn agent_runtime_label(runtime: wonder_of_u_core::AgentRuntime) -> &'static str 
     match runtime {
         wonder_of_u_core::AgentRuntime::MetadataOnly => "metadata-only",
         wonder_of_u_core::AgentRuntime::PromptSubprocess => "prompt-subprocess",
-        wonder_of_u_core::AgentRuntime::Deferred => "deferred",
+        wonder_of_u_core::AgentRuntime::Deferred => "legacy-relaunch-required",
     }
 }
 

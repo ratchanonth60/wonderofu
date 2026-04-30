@@ -568,6 +568,7 @@ fn render_plugin_run_output(
         "sandbox_stdin=null".into(),
         format!("sandbox_timeout_seconds={}", sandbox.timeout_seconds),
         format!("sandbox_timed_out={}", sandbox.timed_out),
+        "daemon_policy=foreground_bounded_subprocess".into(),
         format!(
             "allowed_tools={}",
             command
