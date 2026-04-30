@@ -2857,7 +2857,7 @@ mod tests {
         )
         .expect("stop agent");
         let stopped = String::from_utf8(stopped).expect("utf8");
-        assert!(stopped.contains("status=killed"));
+        assert!(stopped.contains("status=cancelled"));
     }
 
     #[test]

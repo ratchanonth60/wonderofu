@@ -3,11 +3,14 @@ use std::io::{self, BufRead, BufReader, Write};
 use serde_json::{Value, json};
 use wonder_of_u_mcp::{JsonRpcError, JsonRpcResponse};
 
+const EXIT_AFTER_ENV: &str = "WONDER_OF_U_FAKE_MCP_EXIT_AFTER";
+
 fn main() -> io::Result<()> {
     let stdin = io::stdin();
     let stdout = io::stdout();
     let mut reader = BufReader::new(stdin.lock());
     let mut writer = stdout.lock();
+    let exit_after = std::env::var(EXIT_AFTER_ENV).ok();
 
     loop {
         let Some(message) = read_message(&mut reader)? else {
@@ -39,7 +42,11 @@ fn main() -> io::Result<()> {
                     error: None,
                 },
             )?,
-            "notifications/initialized" => {}
+            "notifications/initialized" => {
+                if exit_after.as_deref() == Some("initialized") {
+                    return Ok(());
+                }
+            }
             "tools/list" => write_response(
                 &mut writer,
                 JsonRpcResponse {
@@ -64,6 +71,47 @@ fn main() -> io::Result<()> {
                     error: None,
                 },
             )?,
+            "tools/call" => {
+                let name = message
+                    .pointer("/params/name")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                let echoed = message
+                    .pointer("/params/arguments/text")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                if name == "Echo Text" {
+                    write_response(
+                        &mut writer,
+                        JsonRpcResponse {
+                            jsonrpc: "2.0".into(),
+                            id,
+                            result: Some(json!({
+                                "content": [{
+                                    "type": "text",
+                                    "text": format!("echoed: {echoed}")
+                                }],
+                                "isError": false
+                            })),
+                            error: None,
+                        },
+                    )?;
+                } else {
+                    write_response(
+                        &mut writer,
+                        JsonRpcResponse {
+                            jsonrpc: "2.0".into(),
+                            id,
+                            result: None,
+                            error: Some(JsonRpcError {
+                                code: -32602,
+                                message: format!("unknown tool: {name}"),
+                                data: None,
+                            }),
+                        },
+                    )?;
+                }
+            }
             "resources/list" => write_response(
                 &mut writer,
                 JsonRpcResponse {
@@ -82,6 +130,43 @@ fn main() -> io::Result<()> {
                     error: None,
                 },
             )?,
+            "resources/read" => {
+                let uri = message
+                    .pointer("/params/uri")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                if uri == "file:///workspace/Cargo.toml" {
+                    write_response(
+                        &mut writer,
+                        JsonRpcResponse {
+                            jsonrpc: "2.0".into(),
+                            id,
+                            result: Some(json!({
+                                "contents": [{
+                                    "uri": uri,
+                                    "mimeType": "text/toml",
+                                    "text": "[workspace]\nmembers = [\"crates/wonder-of-u-mcp\"]\n"
+                                }]
+                            })),
+                            error: None,
+                        },
+                    )?;
+                } else {
+                    write_response(
+                        &mut writer,
+                        JsonRpcResponse {
+                            jsonrpc: "2.0".into(),
+                            id,
+                            result: None,
+                            error: Some(JsonRpcError {
+                                code: -32002,
+                                message: format!("unknown resource: {uri}"),
+                                data: None,
+                            }),
+                        },
+                    )?;
+                }
+            }
             _ if id.is_some() => write_response(
                 &mut writer,
                 JsonRpcResponse {
