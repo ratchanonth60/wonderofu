@@ -861,51 +861,211 @@ fn apply_metadata_to_state(state: &mut AppState, metadata: &SessionMetadata) {
 
 #[cfg(test)]
 mod tests {
-    use std::{fs::OpenOptions, io::Write};
+    use std::{fs, fs::OpenOptions, io::Write};
 
+    use serde_json::json;
+    use tempfile::TempDir;
+    use time::format_description::well_known::Rfc3339;
     use wonder_of_u_core::{
         AgentTaskState, AppState, InputMode, MessageEnvelope, MessagePayload, QueuePlacement,
-        TaskId, TaskKind, TaskState, TokenUsage,
+        TaskId, TaskKind, TaskState, TaskStatus, TokenUsage, ToolUseId,
     };
     use wonder_of_u_test_support::unique_test_dir;
 
     use super::*;
 
-    #[test]
-    fn appends_and_loads_jsonl_messages() {
-        let dir = unique_test_dir("storage-jsonl");
-        let store = TranscriptStore::new(dir);
-        let session_id = SessionId::new();
-        let first = MessageEnvelope::user_text(session_id, "hello");
-        let second = MessageEnvelope::system(session_id, "ready");
+    fn temp_dir() -> TempDir {
+        tempfile::tempdir().expect("create temp dir")
+    }
 
-        store.append_message(&first).expect("append first");
-        store.append_message(&second).expect("append second");
+    fn fixed_timestamp() -> OffsetDateTime {
+        OffsetDateTime::parse("2024-01-02T03:04:05Z", &Rfc3339).expect("parse fixed timestamp")
+    }
+
+    fn transcript_message(session_id: SessionId, payload: MessagePayload) -> MessageEnvelope {
+        let mut message = MessageEnvelope::new(session_id, payload)
+            .with_context(Some(PathBuf::from("/workspace")), Some("main".into()))
+            .with_runtime(Some("doctor".into()), Some("0.1.0".into()));
+        message.timestamp = fixed_timestamp();
+        message
+    }
+
+    #[test]
+    fn transcript_roundtrip_all_message_variants() {
+        let dir = temp_dir();
+        let store = TranscriptStore::new(dir.path());
+        let session_id = SessionId::new();
+        let messages = vec![
+            transcript_message(
+                session_id,
+                MessagePayload::UserText {
+                    content: "hello".into(),
+                },
+            ),
+            transcript_message(
+                session_id,
+                MessagePayload::UserAttachment {
+                    label: "spec".into(),
+                    uri: "file:///workspace/spec.md".into(),
+                },
+            ),
+            transcript_message(
+                session_id,
+                MessagePayload::AssistantText {
+                    content: "hi there".into(),
+                },
+            ),
+            transcript_message(
+                session_id,
+                MessagePayload::AssistantThinking {
+                    content: "reasoning".into(),
+                    collapsed: true,
+                },
+            ),
+            transcript_message(
+                session_id,
+                MessagePayload::AssistantToolUse {
+                    tool: "bash".into(),
+                    use_id: ToolUseId::new(),
+                    input: json!({
+                        "command": "cargo test -p wonder-of-u-storage",
+                        "cwd": "/workspace",
+                    }),
+                },
+            ),
+            transcript_message(
+                session_id,
+                MessagePayload::ToolResult {
+                    tool: "bash".into(),
+                    use_id: ToolUseId::new(),
+                    success: true,
+                    content: "ok".into(),
+                },
+            ),
+            transcript_message(
+                session_id,
+                MessagePayload::BashOutput {
+                    stdout: "done".into(),
+                    stderr: String::new(),
+                    exit_code: Some(0),
+                },
+            ),
+            transcript_message(
+                session_id,
+                MessagePayload::System {
+                    content: "ready".into(),
+                },
+            ),
+            transcript_message(
+                session_id,
+                MessagePayload::Progress {
+                    label: "loading".into(),
+                    detail: Some("50%".into()),
+                },
+            ),
+            transcript_message(
+                session_id,
+                MessagePayload::Command {
+                    input: "/status".into(),
+                    output: Some("healthy".into()),
+                },
+            ),
+            transcript_message(
+                session_id,
+                MessagePayload::HookResult {
+                    hook: "preflight".into(),
+                    success: true,
+                    output: "passed".into(),
+                },
+            ),
+            transcript_message(
+                session_id,
+                MessagePayload::CompactBoundary {
+                    summary: "Compacted 3 messages".into(),
+                },
+            ),
+            transcript_message(
+                session_id,
+                MessagePayload::Task {
+                    task_id: TaskId::new(),
+                    status: TaskStatus::Running,
+                    message: "running tests".into(),
+                },
+            ),
+            transcript_message(
+                session_id,
+                MessagePayload::Permission {
+                    tool: "bash".into(),
+                    decision: "approved".into(),
+                    reason: "workspace-scoped".into(),
+                },
+            ),
+            transcript_message(
+                session_id,
+                MessagePayload::PlanApproval {
+                    summary: "Ship transcript recovery tests".into(),
+                    approved: true,
+                },
+            ),
+        ];
+
+        for message in &messages {
+            store
+                .append_message(message)
+                .expect("append transcript message");
+        }
         let loaded = store.load_session(session_id).expect("load session");
 
-        assert_eq!(loaded.messages, vec![first, second]);
+        assert_eq!(loaded.messages, messages);
         assert!(loaded.warnings.is_empty());
     }
 
     #[test]
-    fn load_tolerates_corrupt_trailing_line() {
-        let dir = unique_test_dir("storage-corrupt-tail");
-        let store = TranscriptStore::new(&dir);
+    fn transcript_recovers_corrupt_trailing_line() {
+        let dir = temp_dir();
+        let store = TranscriptStore::new(dir.path());
         let session_id = SessionId::new();
-        let message = MessageEnvelope::user_text(session_id, "hello");
-        store.append_message(&message).expect("append");
+        let messages = vec![
+            transcript_message(
+                session_id,
+                MessagePayload::UserText {
+                    content: "hello".into(),
+                },
+            ),
+            transcript_message(
+                session_id,
+                MessagePayload::AssistantText {
+                    content: "world".into(),
+                },
+            ),
+            transcript_message(
+                session_id,
+                MessagePayload::System {
+                    content: "ready".into(),
+                },
+            ),
+        ];
+        for message in &messages {
+            store.append_message(message).expect("append");
+        }
 
         let mut file = OpenOptions::new()
             .append(true)
             .open(store.paths().transcript_path(session_id))
             .expect("open transcript");
-        file.write_all(b"{not-json")
+        file.write_all(br#"{"schema_version":1,"payload":"partial""#)
             .expect("write corrupt trailing line");
 
         let loaded = store.load_session(session_id).expect("load session");
 
-        assert_eq!(loaded.messages, vec![message]);
+        assert_eq!(loaded.messages, messages);
         assert_eq!(loaded.warnings.len(), 1);
+        assert_eq!(loaded.warnings[0].line, 4);
+        assert!(
+            loaded.warnings[0]
+                .message
+                .contains("ignored corrupt trailing transcript line")
+        );
     }
 
     #[test]
@@ -960,6 +1120,50 @@ mod tests {
         assert_eq!(loaded, metadata);
         assert_eq!(loaded.costs.usage.total_tokens(), 140);
         assert_eq!(loaded.auth.status_label(), "not_required");
+    }
+
+    #[test]
+    #[ignore = "paste references are not implemented in transcript messages yet"]
+    fn transcript_paste_reference_expands_on_reload() {
+        // TODO: When transcript messages can reference `StoredPaste` entries, persist a
+        // paste-backed message here and assert reload expands it back to the original content.
+    }
+
+    #[test]
+    fn session_metadata_atomic_write() {
+        let dir = temp_dir();
+        let store = TranscriptStore::new(dir.path());
+        let mut state = AppState::new(PathBuf::from("/workspace"));
+        state.session.title = "first title".into();
+        let mut metadata = SessionMetadata::from_app_state(&state);
+
+        store.write_metadata(&metadata).expect("write metadata");
+
+        let pending_path = store
+            .paths()
+            .metadata_path(metadata.session_id)
+            .with_extension("json.next");
+        fs::write(&pending_path, "{stale temp file").expect("write stale metadata temp file");
+
+        metadata.title = "updated title".into();
+        metadata.message_count = 7;
+        store
+            .write_metadata(&metadata)
+            .expect("rewrite metadata over stale temp file");
+
+        let raw = fs::read_to_string(store.paths().metadata_path(metadata.session_id))
+            .expect("read final metadata");
+        let decoded: SessionMetadata =
+            serde_json::from_str(&raw).expect("deserialize final metadata");
+
+        assert_eq!(decoded, metadata);
+        assert_eq!(
+            store
+                .read_metadata(metadata.session_id)
+                .expect("read metadata"),
+            metadata
+        );
+        assert!(!pending_path.exists());
     }
 
     #[test]
