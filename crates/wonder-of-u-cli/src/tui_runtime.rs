@@ -113,6 +113,7 @@ pub(crate) fn run_tui<W: Write>(
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
+#[allow(dead_code)]
 enum ActiveOverlay {
     HistorySearch,
     Picker,
@@ -1430,6 +1431,7 @@ impl<'a> TuiController<'a> {
                 || dialog.title == "Desktop"
                 || dialog.title == "Mobile"
                 || dialog.title == "Chrome"
+                || dialog.title == "IDE Integration"
                 || dialog.title == "Background Tasks"
                 || dialog.title == "Release Notes"
                 || dialog.title == "Version"
@@ -2806,6 +2808,7 @@ impl<'a> TuiController<'a> {
         self.needs_render = true;
     }
 
+    #[allow(dead_code)]
     fn active_overlay(&self) -> ActiveOverlay {
         if self.history_search.is_some() {
             return ActiveOverlay::HistorySearch;
@@ -4299,6 +4302,7 @@ fn parse_known_notice(text: &str) -> Option<(String, Vec<String>, &'static str)>
         ("## Desktop", "Desktop", "desktop"),
         ("## Mobile", "Mobile", "mobile"),
         ("## Chrome", "Chrome", "chrome"),
+        ("## IDE Integration", "IDE Integration", "ide integration"),
         ("## Release Notes", "Release Notes", "release notes"),
         ("## Version", "Version", "version"),
         ("## Hooks", "Hooks", "hooks"),
@@ -5428,6 +5432,35 @@ mod tests {
                     && output
                         .as_deref()
                         .is_some_and(|text| text.contains("## Chrome") && text.contains("extension_url="))
+        ));
+    }
+
+    #[test]
+    fn controller_shows_ide_notice_dialog() {
+        let dir = unique_test_dir("tui-ide-notice");
+        let registry = commands::registry(Some(dir.clone())).expect("registry");
+        let mut controller = TuiController::new(
+            test_context(&dir),
+            &registry,
+            Some(dir.as_path()),
+            TuiLaunchOptions { session_id: None },
+        )
+        .expect("controller");
+
+        controller.execute_slash_command("/ide").expect("show ide");
+
+        assert_eq!(controller.status_note.as_deref(), Some("ide integration"));
+        assert!(matches!(
+            controller.dialog.as_ref(),
+            Some(dialog) if dialog.title == "IDE Integration"
+        ));
+        assert!(matches!(
+            controller.state.messages.last().map(|message| &message.payload),
+            Some(MessagePayload::Command { input, output })
+                if input == "/ide"
+                    && output
+                        .as_deref()
+                        .is_some_and(|text| text.contains("## IDE Integration") && text.contains("ide_docs_url="))
         ));
     }
 

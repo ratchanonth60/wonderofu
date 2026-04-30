@@ -42,9 +42,9 @@ use session::{
 };
 use skills::SkillsCommand;
 use status::{
-    ChromeCommand, CostCommand, DesktopCommand, FeedbackCommand, InsightsCommand, MobileCommand,
-    OutputStyleCommand, ReleaseNotesCommand, StatsCommand, StatusCommand, UpgradeCommand,
-    UsageCommand, VersionCommand,
+    ChromeCommand, CostCommand, DesktopCommand, FeedbackCommand, IdeCommand, InsightsCommand,
+    MobileCommand, OutputStyleCommand, ReleaseNotesCommand, StatsCommand, StatusCommand,
+    UpgradeCommand, UsageCommand, VersionCommand,
 };
 use tui::TuiCommand;
 use workflow::{
@@ -67,6 +67,7 @@ pub fn registry(storage_dir: Option<PathBuf>) -> Result<CommandRegistry> {
         DesktopCommand::command_spec(),
         MobileCommand::command_spec(),
         ChromeCommand::command_spec(),
+        IdeCommand::command_spec(),
         InsightsCommand::command_spec(),
         UsageCommand::command_spec(),
         CostCommand::command_spec(),
@@ -137,6 +138,7 @@ pub fn registry(storage_dir: Option<PathBuf>) -> Result<CommandRegistry> {
     registry.register(Arc::new(DesktopCommand::new()))?;
     registry.register(Arc::new(MobileCommand::new()))?;
     registry.register(Arc::new(ChromeCommand::new()))?;
+    registry.register(Arc::new(IdeCommand::new()))?;
     registry.register(Arc::new(InsightsCommand::new(storage_dir.clone())))?;
     registry.register(Arc::new(UsageCommand::new(storage_dir.clone())))?;
     registry.register(Arc::new(CostCommand::new(storage_dir.clone())))?;
