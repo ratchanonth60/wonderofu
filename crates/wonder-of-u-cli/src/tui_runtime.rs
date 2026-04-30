@@ -112,6 +112,15 @@ pub(crate) fn run_tui<W: Write>(
     Ok(())
 }
 
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+enum ActiveOverlay {
+    HistorySearch,
+    Picker,
+    ConfirmDialog,
+    NoticeDialog,
+    None,
+}
+
 struct TuiController<'a> {
     registry: &'a CommandRegistry,
     storage_dir: Option<PathBuf>,
@@ -1460,6 +1469,7 @@ impl<'a> TuiController<'a> {
             && invocation.args.is_empty()
             && self.state.background_tasks.is_empty()
         {
+            self.dismiss_dialog();
             self.dialog = Some(DialogView::notice(
                 "Background Tasks",
                 ["No background tasks running"],
@@ -1935,6 +1945,7 @@ impl<'a> TuiController<'a> {
         };
         if self.state.background_tasks != effective_tasks {
             if let Some(task) = next_task_notification(&previous_tasks, &effective_tasks) {
+                self.dismiss_dialog();
                 self.dialog = Some(DialogView::notice(
                     "Task update",
                     task_notification_lines(task),
@@ -2089,6 +2100,7 @@ impl<'a> TuiController<'a> {
         self.pending_theme_picker = None;
         self.pending_model_picker = None;
         self.pending_permission_picker = Some(picker);
+        self.status_note = None;
         self.refresh_permission_picker_dialog();
     }
 
@@ -2232,6 +2244,7 @@ impl<'a> TuiController<'a> {
         self.pending_theme_picker = None;
         self.pending_model_picker = None;
         self.pending_memory_picker = Some(picker);
+        self.status_note = None;
         self.refresh_memory_picker_dialog();
     }
 
@@ -2454,6 +2467,7 @@ impl<'a> TuiController<'a> {
         self.pending_tag_removal = None;
         self.pending_model_picker = None;
         self.pending_theme_picker = Some(picker);
+        self.status_note = None;
         self.refresh_theme_picker_dialog();
     }
 
@@ -2590,6 +2604,7 @@ impl<'a> TuiController<'a> {
         self.pending_tag_removal = None;
         self.pending_theme_picker = None;
         self.pending_model_picker = Some(picker);
+        self.status_note = None;
         self.refresh_model_picker_dialog();
     }
 
@@ -2789,6 +2804,23 @@ impl<'a> TuiController<'a> {
         self.task_notice_ttl = None;
         self.dismiss_dialog();
         self.needs_render = true;
+    }
+
+    fn active_overlay(&self) -> ActiveOverlay {
+        if self.history_search.is_some() {
+            return ActiveOverlay::HistorySearch;
+        }
+        if self.has_picker_overlay() {
+            return ActiveOverlay::Picker;
+        }
+        if let Some(dialog) = &self.dialog {
+            return if dialog.actions.is_empty() {
+                ActiveOverlay::NoticeDialog
+            } else {
+                ActiveOverlay::ConfirmDialog
+            };
+        }
+        ActiveOverlay::None
     }
 
     fn has_picker_overlay(&self) -> bool {
@@ -7367,6 +7399,111 @@ mod tests {
                 .any(|l| l.contains("No background tasks")),
             "dialog body should mention no background tasks"
         );
+    }
+
+    #[test]
+    fn controller_active_overlay_is_none_when_idle() {
+        let dir = unique_test_dir("tui-overlay-none");
+        let registry = commands::registry(Some(dir.clone())).expect("registry");
+        let controller = TuiController::new(
+            test_context(&dir),
+            &registry,
+            Some(dir.as_path()),
+            TuiLaunchOptions { session_id: None },
+        )
+        .expect("controller");
+
+        assert_eq!(controller.active_overlay(), ActiveOverlay::None);
+    }
+
+    #[test]
+    fn controller_active_overlay_is_picker_when_picker_open() {
+        let dir = unique_test_dir("tui-overlay-picker");
+        let registry = commands::registry(Some(dir.clone())).expect("registry");
+        let mut controller = TuiController::new(
+            test_context(&dir),
+            &registry,
+            Some(dir.as_path()),
+            TuiLaunchOptions { session_id: None },
+        )
+        .expect("controller");
+
+        controller
+            .execute_slash_command("/model")
+            .expect("open model picker");
+
+        assert_eq!(controller.active_overlay(), ActiveOverlay::Picker);
+    }
+
+    #[test]
+    fn controller_opening_picker_clears_stale_notice() {
+        let dir = unique_test_dir("tui-picker-clears-notice");
+        let registry = commands::registry(Some(dir.clone())).expect("registry");
+        let mut controller = TuiController::new(
+            test_context(&dir),
+            &registry,
+            Some(dir.as_path()),
+            TuiLaunchOptions { session_id: None },
+        )
+        .expect("controller");
+
+        // Simulate a stale status_note from a previous interaction.
+        controller.status_note = Some("stale: task update closed".into());
+
+        controller
+            .execute_slash_command("/model")
+            .expect("open model picker");
+
+        let note = controller
+            .status_note
+            .as_deref()
+            .expect("status note should be set");
+        assert!(
+            note.contains("model picker"),
+            "status note should be from the picker, not stale: {note:?}"
+        );
+    }
+
+    #[test]
+    fn controller_setting_notice_clears_picker() {
+        let dir = unique_test_dir("tui-notice-clears-picker");
+        let registry = commands::registry(Some(dir.clone())).expect("registry");
+        let mut controller = TuiController::new(
+            test_context(&dir),
+            &registry,
+            Some(dir.as_path()),
+            TuiLaunchOptions { session_id: None },
+        )
+        .expect("controller");
+
+        // Open model picker.
+        controller
+            .execute_slash_command("/model")
+            .expect("open model picker");
+        assert!(controller.pending_model_picker.is_some(), "picker open");
+
+        // Simulate a task finishing which triggers a notice.
+        let store = TaskStore::new(&dir);
+        let mut task = TaskState::pending("index workspace");
+        task.status = TaskStatus::Running;
+        store.write_task(&task).expect("write running task");
+        controller
+            .refresh_runtime_state()
+            .expect("load running task");
+
+        task.mark_finished(TaskStatus::Completed, Some(0), None);
+        store.write_task(&task).expect("write completed task");
+        controller
+            .refresh_runtime_state()
+            .expect("load completed task — triggers notice");
+
+        // The task notice should be showing and the picker should be gone.
+        assert_eq!(controller.state.input_mode, InputMode::TaskNotification);
+        assert!(
+            controller.pending_model_picker.is_none(),
+            "picker should be cleared when a notice is shown"
+        );
+        assert!(controller.dialog.is_some(), "notice dialog should be open");
     }
 
     #[test]
