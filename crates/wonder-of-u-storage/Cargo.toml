@@ -13,4 +13,5 @@ time.workspace = true
 wonder-of-u-core.workspace = true
 
 [dev-dependencies]
+tempfile = "3"
 wonder-of-u-test-support.workspace = true

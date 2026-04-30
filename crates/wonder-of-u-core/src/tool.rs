@@ -631,11 +631,11 @@ mod tests {
     }
 
     #[test]
-    fn file_tools_require_review_for_paths_outside_scope() {
+    fn file_tools_require_review_for_absolute_paths_outside_scope() {
         let tool = ReadTool;
         let context = tool_context();
 
-        let decision = tool.permission_decision(&context, &json!({ "path": "../secret.txt" }));
+        let decision = tool.permission_decision(&context, &json!({ "path": "/secret.txt" }));
 
         assert!(matches!(decision, PermissionDecision::Ask { .. }));
     }

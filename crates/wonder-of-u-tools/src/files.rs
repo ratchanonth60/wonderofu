@@ -447,10 +447,10 @@ mod tests {
     }
 
     #[test]
-    fn file_read_permission_requires_review_outside_scope() {
+    fn file_read_permission_requires_review_for_absolute_path_outside_scope() {
         let tool = FileReadTool;
         let context = tool_context(PathBuf::from("/workspace"));
-        let decision = tool.permission_decision(&context, &json!({ "path": "../secret.txt" }));
+        let decision = tool.permission_decision(&context, &json!({ "path": "/secret.txt" }));
 
         assert!(matches!(decision, PermissionDecision::Ask { .. }));
     }
