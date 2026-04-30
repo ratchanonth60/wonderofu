@@ -509,4 +509,67 @@ mod tests {
         assert_eq!(plugin.readiness, PluginReadiness::Ready);
         assert_eq!(plugin.trust, PluginTrustLevel::Trusted);
     }
+
+    #[test]
+    fn plugin_broken_manifest_does_not_crash_registry() {
+        let cwd = unique_test_dir("plugin-broken-manifest-cwd");
+        let project_root = cwd.join(".wonder/plugins");
+        write_plugin(&project_root, "valid-plugin", "valid-run", "valid-skill");
+
+        let broken_dir = project_root.join("broken-plugin");
+        fs::create_dir_all(&broken_dir).expect("broken plugin dir");
+        fs::write(broken_dir.join("plugin.json"), "{ not valid json").expect("broken manifest");
+
+        let catalog = PluginCatalog::load(&cwd, None, &PluginConfig::default());
+
+        assert_eq!(catalog.entries().len(), 2);
+        assert_eq!(catalog.ready_count(), 1);
+        assert_eq!(catalog.invalid_count(), 1);
+        assert_eq!(catalog.errors().len(), 1);
+        assert_eq!(
+            catalog
+                .find("valid-plugin")
+                .expect("valid plugin")
+                .command_registrations
+                .len(),
+            1
+        );
+        let broken = catalog.find("broken-plugin").expect("broken plugin");
+        assert_eq!(broken.readiness, PluginReadiness::Invalid);
+        assert!(broken.command_registrations.is_empty());
+    }
+
+    #[test]
+    fn plugin_reload_with_broken_plugin_preserves_valid_plugins() {
+        let cwd = unique_test_dir("plugin-reload-cwd");
+        let project_root = cwd.join(".wonder/plugins");
+        write_plugin(&project_root, "valid-plugin", "valid-run", "valid-skill");
+
+        let first_load = PluginCatalog::load(&cwd, None, &PluginConfig::default());
+        assert_eq!(first_load.ready_count(), 1);
+        assert_eq!(
+            first_load
+                .find("valid-plugin")
+                .expect("valid plugin")
+                .command_registrations
+                .len(),
+            1
+        );
+
+        let broken_dir = project_root.join("broken-plugin");
+        fs::create_dir_all(&broken_dir).expect("broken plugin dir");
+        fs::write(broken_dir.join("plugin.json"), "{ broken").expect("broken manifest");
+
+        let reloaded = PluginCatalog::load(&cwd, None, &PluginConfig::default());
+
+        assert_eq!(reloaded.ready_count(), 1);
+        assert_eq!(reloaded.invalid_count(), 1);
+        assert_eq!(reloaded.errors().len(), 1);
+        let valid = reloaded
+            .find("valid-plugin")
+            .expect("valid plugin after reload");
+        assert_eq!(valid.readiness, PluginReadiness::Ready);
+        assert_eq!(valid.command_registrations.len(), 1);
+        assert_eq!(valid.command_registrations[0].spec.name, "valid-run");
+    }
 }

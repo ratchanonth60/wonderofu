@@ -21,6 +21,18 @@ fn fake_server_config() -> McpServerConfig {
     }
 }
 
+fn failing_server_config() -> McpServerConfig {
+    McpServerConfig {
+        name: "broken".into(),
+        command: "/bin/sh".into(),
+        args: vec!["-c".into(), "exit 1".into()],
+        env: BTreeMap::new(),
+        enabled: true,
+        cwd: None,
+        protocol_version: None,
+    }
+}
+
 #[test]
 fn client_initializes_and_discovers_catalog() {
     let mut client = McpClient::connect(
@@ -55,4 +67,35 @@ fn status_report_marks_connected_server_ready() {
     assert_eq!(server.tool_count(), 1);
     assert_eq!(server.resource_count(), 1);
     assert_eq!(server.capability_labels(), vec!["tools", "resources"]);
+}
+
+#[test]
+fn mcp_server_init_failure_does_not_block_other_tools() {
+    let config = McpConfig {
+        servers: vec![failing_server_config(), fake_server_config()],
+        ..McpConfig::default()
+    };
+
+    let report = McpStatusReport::inspect("mcp-config.json".into(), &config);
+
+    assert_eq!(report.ready_count(), 1);
+    assert_eq!(report.error_count(), 1);
+
+    let broken = report
+        .servers
+        .iter()
+        .find(|server| server.name == "broken")
+        .expect("broken server");
+    assert_eq!(broken.state, Some(McpServerState::Error));
+    assert!(broken.catalog.tools.is_empty());
+    assert!(broken.error.is_some());
+
+    let ready = report
+        .servers
+        .iter()
+        .find(|server| server.name == "demo")
+        .expect("ready server");
+    assert_eq!(ready.state, Some(McpServerState::Ready));
+    assert_eq!(ready.tool_count(), 1);
+    assert_eq!(ready.catalog.tool_specs()[0].name, "mcp__demo__echo_text");
 }
