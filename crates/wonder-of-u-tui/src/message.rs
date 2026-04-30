@@ -1,6 +1,6 @@
 use wonder_of_u_core::{
-    session_footer_text, session_status_text, AppState, MessageEnvelope, MessagePayload,
-    QueuedCommand, TaskKind, TaskState, TaskStatus,
+    AppState, MessageEnvelope, MessagePayload, QueuedCommand, TaskKind, TaskState, TaskStatus,
+    session_footer_text, session_status_text,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -42,6 +42,15 @@ pub struct HistorySearchView {
     pub match_text: Option<String>,
     pub match_index: usize,
     pub match_total: usize,
+}
+
+/// Carries the computed preview for the currently highlighted picker option.
+///
+/// `preview` is `None` when the active filter yields no matches, so the
+/// renderer can simply skip the preview block rather than show empty content.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct PickerView {
+    pub preview: Option<String>,
 }
 
 pub fn message_lines(messages: &[MessageEnvelope]) -> Vec<MessageLineView> {

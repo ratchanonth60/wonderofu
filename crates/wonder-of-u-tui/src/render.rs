@@ -5,8 +5,8 @@ use crate::{
     frame::{FrameBuffer, Rect},
     layout::ShellLayout,
     message::{
-        footer_text, message_lines, queued_panel_view, status_text, task_panel_view,
-        HistorySearchView, MessageLineView, MessageRole, TaskPanelView,
+        HistorySearchView, MessageLineView, MessageRole, PickerView, TaskPanelView, footer_text,
+        message_lines, queued_panel_view, status_text, task_panel_view,
     },
     style::{Color, TextStyle, Theme},
 };
@@ -22,6 +22,7 @@ pub struct ShellView {
     pub queued_panel: Option<TaskPanelView>,
     pub task_panel: Option<TaskPanelView>,
     pub dialog: Option<DialogView>,
+    pub picker_view: Option<PickerView>,
 }
 
 impl ShellView {
@@ -48,6 +49,7 @@ impl ShellView {
             queued_panel: queued_panel_view(app),
             task_panel: task_panel_view(app),
             dialog: None,
+            picker_view: None,
         }
     }
 }
@@ -89,6 +91,12 @@ pub fn render_shell(frame: &mut FrameBuffer, view: &ShellView, theme: &Theme) {
 
     if let Some(dialog) = &view.dialog {
         draw_dialog(frame, layout.messages.inset(1), dialog, theme);
+    }
+
+    if let Some(pv) = &view.picker_view {
+        if let Some(preview) = &pv.preview {
+            draw_picker_preview(frame, layout.messages.inset(1), preview, theme);
+        }
     }
 }
 
@@ -251,6 +259,37 @@ fn draw_dialog(frame: &mut FrameBuffer, viewport: Rect, dialog: &DialogView, the
     draw_panel(frame, rect, Some(&dialog.title), &body, theme);
 }
 
+/// Draws a small bordered "Preview" panel anchored to the bottom of `viewport`.
+///
+/// The panel is only rendered when there is enough vertical space so it does
+/// not collide with the dialog that sits above it.
+fn draw_picker_preview(frame: &mut FrameBuffer, viewport: Rect, preview: &str, theme: &Theme) {
+    const PREVIEW_HEIGHT: u16 = 3; // top border + one content row + bottom border
+    if viewport.width < 12 || viewport.height < PREVIEW_HEIGHT {
+        return;
+    }
+    let preview_width = u16::try_from(preview.chars().count().saturating_add(4))
+        .unwrap_or(viewport.width)
+        .max(viewport.width.saturating_sub(2))
+        .min(viewport.width);
+    let rect = Rect::new(
+        viewport.x + viewport.width.saturating_sub(preview_width) / 2,
+        viewport.y + viewport.height.saturating_sub(PREVIEW_HEIGHT),
+        preview_width,
+        PREVIEW_HEIGHT,
+    );
+    draw_panel(
+        frame,
+        rect,
+        Some("Preview"),
+        &[StyledLine {
+            text: preview.into(),
+            style: theme.messages,
+        }],
+        theme,
+    );
+}
+
 fn draw_status_line(frame: &mut FrameBuffer, area: Rect, text: &str, style: TextStyle) {
     if area.is_empty() {
         return;
@@ -383,6 +422,7 @@ mod tests {
             queued_panel: None,
             task_panel: None,
             dialog: None,
+            picker_view: None,
         };
 
         let frame = render_snapshot(30, 9, &view, &Theme::default());
@@ -425,6 +465,7 @@ mod tests {
                 )],
             }),
             dialog: None,
+            picker_view: None,
         };
 
         let frame = render_snapshot(48, 10, &view, &Theme::default());
@@ -514,6 +555,7 @@ mod tests {
             }),
             task_panel: None,
             dialog: None,
+            picker_view: None,
         };
 
         let frame = render_snapshot(42, 12, &view, &Theme::default());
@@ -553,6 +595,7 @@ mod tests {
                 "Confirm action",
                 ["Approve command execution", "This cannot be undone"],
             )),
+            picker_view: None,
         };
 
         let frame = render_snapshot(42, 12, &view, &Theme::default());
@@ -597,6 +640,7 @@ mod tests {
             queued_panel: None,
             task_panel: None,
             dialog: None,
+            picker_view: None,
         };
 
         let frame = render_snapshot(42, 14, &view, &Theme::default());

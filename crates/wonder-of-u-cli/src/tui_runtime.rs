@@ -15,31 +15,31 @@ use crossterm::{
 };
 use futures::executor::block_on;
 use wonder_of_u_agent::{
-    builtin_tool_registry, CompletionRequest, ProviderResolver, ProviderRuntime, ProviderSelection,
-    ProviderToolCall, ProviderToolResultMessage, ProviderToolSpec, SettingsStore,
-    ToolConversationRound, ToolUseRequest, ToolUseResponse,
+    CompletionRequest, ProviderResolver, ProviderRuntime, ProviderSelection, ProviderToolCall,
+    ProviderToolResultMessage, ProviderToolSpec, SettingsStore, ToolConversationRound,
+    ToolUseRequest, ToolUseResponse, builtin_tool_registry,
 };
 use wonder_of_u_core::{
-    parse_slash_command, session_footer_text, session_status_text, AdditionalWorkingDirectory,
-    AppState, AuthState, CommandContext, CommandOutput, CommandQuery, CommandRegistry, FeatureSet,
-    InputMode, MessageEnvelope, MessagePayload, PendingLocalToolCall, PendingProviderToolCall,
-    PendingProviderToolResult, PendingToolApprovalState, PendingToolConversationRound,
-    PermissionDecision, PermissionMode, PermissionRuleSource, ProviderReadiness, QueuePlacement,
-    Result, SessionId, TaskState, TaskStatus, ToolContext, ToolQuery, ToolResult, ToolUseId,
-    WonderError,
+    AdditionalWorkingDirectory, AppState, AuthState, CommandContext, CommandOutput, CommandQuery,
+    CommandRegistry, FeatureSet, InputMode, MessageEnvelope, MessagePayload, PendingLocalToolCall,
+    PendingProviderToolCall, PendingProviderToolResult, PendingToolApprovalState,
+    PendingToolConversationRound, PermissionDecision, PermissionMode, PermissionRuleSource,
+    ProviderReadiness, QueuePlacement, Result, SessionId, TaskState, TaskStatus, ToolContext,
+    ToolQuery, ToolResult, ToolUseId, WonderError, parse_slash_command, session_footer_text,
+    session_status_text,
 };
 use wonder_of_u_storage::{TaskStore, TranscriptStore};
 use wonder_of_u_tui::{
     CrosstermControl, CrosstermEventSource, DialogView, EditAction, EventLoop, FrameBuffer,
-    HistorySearchView, KeyBindingContext, KeyBindingResolver, KeyCode, KeyEvent, ResolvedKey,
-    ShellLayout, ShellView, TerminalConfig, TerminalLifecycle, TextBuffer, Theme, TurnState,
-    UiEvent, VimMode, VimState,
+    HistorySearchView, KeyBindingContext, KeyBindingResolver, KeyCode, KeyEvent, PickerView,
+    ResolvedKey, ShellLayout, ShellView, TerminalConfig, TerminalLifecycle, TextBuffer, Theme,
+    TurnState, UiEvent, VimMode, VimState,
 };
 
 use crate::commands;
 use crate::commands::prompt::{
-    append_contextual_message, load_or_create_state, persist_messages_and_state,
-    persist_prompt_state, truncate_chars, SessionPersistenceState,
+    SessionPersistenceState, append_contextual_message, load_or_create_state,
+    persist_messages_and_state, persist_prompt_state, truncate_chars,
 };
 
 pub(crate) struct TuiLaunchOptions {
@@ -2036,6 +2036,13 @@ impl<'a> TuiController<'a> {
         footer.push_str(" | enter submit");
         view.footer = footer;
         view.dialog = self.dialog.clone();
+        view.picker_view = if self.has_picker_overlay() {
+            Some(PickerView {
+                preview: self.current_picker_preview(),
+            })
+        } else {
+            None
+        };
         view
     }
 
@@ -2759,6 +2766,55 @@ impl<'a> TuiController<'a> {
             || self.pending_model_picker.is_some()
     }
 
+    /// Returns the formatted preview string for the currently highlighted picker
+    /// option, or `None` when the filter yields no matches.
+    fn current_picker_preview(&self) -> Option<String> {
+        if let Some(picker) = &self.pending_model_picker {
+            let filtered = filtered_picker_indices(&picker.query, &picker.options, |opt| {
+                format!(
+                    "{} {} {} {} {}",
+                    opt.provider, opt.provider_display, opt.model, opt.model_display, opt.auth
+                )
+            });
+            let idx = selected_picker_index(picker.selected_index, &filtered)?;
+            let opt = picker.options.get(idx)?;
+            return Some(format!("{} / {}", opt.provider_display, opt.model_display));
+        }
+        if let Some(picker) = &self.pending_theme_picker {
+            let filtered = filtered_picker_indices(&picker.query, &picker.options, |opt| {
+                format!("{} {} {}", opt.theme, opt.label, opt.description)
+            });
+            let idx = selected_picker_index(picker.selected_index, &filtered)?;
+            let opt = picker.options.get(idx)?;
+            return Some(format!("{} — {}", opt.label, opt.description));
+        }
+        if let Some(picker) = &self.pending_permission_picker {
+            let filtered = filtered_picker_indices(&picker.query, &picker.options, |opt| {
+                format!("{} {}", opt.label, opt.description)
+            });
+            let idx = selected_picker_index(picker.selected_index, &filtered)?;
+            let opt = picker.options.get(idx)?;
+            return Some(format!("{} — {}", opt.label, opt.description));
+        }
+        if let Some(picker) = &self.pending_memory_picker {
+            let filtered = filtered_picker_indices(&picker.query, &picker.options, |opt| {
+                format!("{} {} {}", opt.label, opt.description, opt.path.display())
+            });
+            let idx = selected_picker_index(picker.selected_index, &filtered)?;
+            let opt = picker.options.get(idx)?;
+            let path_str = opt.path.display().to_string();
+            let first_line = std::fs::read_to_string(&opt.path)
+                .ok()
+                .and_then(|s| s.lines().next().map(str::to_string))
+                .filter(|l| !l.is_empty());
+            return Some(match first_line {
+                Some(line) => format!("{path_str}\n{line}"),
+                None => path_str,
+            });
+        }
+        None
+    }
+
     fn should_confirm_exit(&self) -> bool {
         !self.prompt.text().trim().is_empty()
             || !self.state.messages.is_empty()
@@ -3232,6 +3288,7 @@ fn prompt_cursor_position(width: u16, height: u16, prompt: &str, cursor: usize) 
             queued_panel: None,
             task_panel: None,
             dialog: None,
+            picker_view: None,
         }
         .prompt_height(),
     );
@@ -3275,6 +3332,7 @@ fn history_search_cursor_position(
             queued_panel: None,
             task_panel: None,
             dialog: None,
+            picker_view: None,
         }
         .prompt_height(),
     );
@@ -4258,7 +4316,7 @@ mod tests {
         thread,
     };
 
-    use serde_json::{json, Value};
+    use serde_json::{Value, json};
     use wonder_of_u_agent::{
         AgentSettings, AuthMaterial, CredentialStore, SettingsStore, StoredCredentials,
     };
@@ -4266,7 +4324,7 @@ mod tests {
         AuthState, InputMode, MessageEnvelope, MessagePayload, PendingLocalToolCall,
         PendingProviderToolCall, PendingToolApprovalState, PendingToolConversationRound,
     };
-    use wonder_of_u_test_support::{unique_test_dir, EnvVarGuard};
+    use wonder_of_u_test_support::{EnvVarGuard, unique_test_dir};
 
     use super::*;
     use crate::commands;
@@ -4634,6 +4692,76 @@ mod tests {
                         .as_deref()
                         .is_some_and(|text| text.contains("status=model picker cancelled"))
         ));
+    }
+
+    #[test]
+    fn controller_model_picker_preview_shows_selected_description() {
+        let dir = unique_test_dir("tui-model-picker-preview");
+        let registry = commands::registry(Some(dir.clone())).expect("registry");
+        let mut controller = TuiController::new(
+            test_context(&dir),
+            &registry,
+            Some(dir.as_path()),
+            TuiLaunchOptions { session_id: None },
+        )
+        .expect("controller");
+
+        controller
+            .execute_slash_command("/model")
+            .expect("open model picker");
+
+        let view = controller.view();
+        let pv = view
+            .picker_view
+            .as_ref()
+            .expect("picker_view present while model picker is open");
+        let preview = pv
+            .preview
+            .as_deref()
+            .expect("preview Some when a model option is highlighted");
+        // The preview must name both the provider and the selected model.
+        assert!(
+            preview.contains("Anthropic")
+                || preview.contains("Copilot")
+                || preview.contains("OpenAI"),
+            "preview should contain provider display name, got: {preview:?}"
+        );
+        assert!(!preview.is_empty(), "preview should not be empty");
+    }
+
+    #[test]
+    fn controller_picker_preview_is_none_when_no_matches() {
+        let dir = unique_test_dir("tui-picker-preview-no-matches");
+        let registry = commands::registry(Some(dir.clone())).expect("registry");
+        let mut controller = TuiController::new(
+            test_context(&dir),
+            &registry,
+            Some(dir.as_path()),
+            TuiLaunchOptions { session_id: None },
+        )
+        .expect("controller");
+
+        controller
+            .execute_slash_command("/theme")
+            .expect("open theme picker");
+        // Type a query that matches nothing so the filter is empty.
+        for ch in ['z', 'z', 'z'] {
+            send_dialog_key(
+                &mut controller,
+                picker_key(KeyCode::Char(ch)),
+                Some(ResolvedKey::InsertChar(ch)),
+            );
+        }
+
+        let view = controller.view();
+        let pv = view
+            .picker_view
+            .as_ref()
+            .expect("picker_view present while theme picker is open");
+        assert!(
+            pv.preview.is_none(),
+            "preview should be None when filter has no matches"
+        );
     }
 
     #[test]
@@ -5428,10 +5556,12 @@ mod tests {
             Some(expected_matches.as_str())
         );
         assert!(dialog.body.iter().any(|line| line.contains("User memory")));
-        assert!(!dialog
-            .body
-            .iter()
-            .any(|line| line.contains("Project memory")));
+        assert!(
+            !dialog
+                .body
+                .iter()
+                .any(|line| line.contains("Project memory"))
+        );
     }
 
     #[test]
@@ -6028,21 +6158,23 @@ mod tests {
                     Some("draft the migration plan")
                 );
             },
-            vec![json!({
-                "id": "msg_plan_prompt_1",
-                "type": "message",
-                "role": "assistant",
-                "content": [{
-                    "type": "text",
-                    "text": "queued plan reply"
-                }],
-                "stop_reason": "end_turn",
-                "usage": {
-                    "input_tokens": 8,
-                    "output_tokens": 4
-                }
-            })
-            .to_string()],
+            vec![
+                json!({
+                    "id": "msg_plan_prompt_1",
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [{
+                        "type": "text",
+                        "text": "queued plan reply"
+                    }],
+                    "stop_reason": "end_turn",
+                    "usage": {
+                        "input_tokens": 8,
+                        "output_tokens": 4
+                    }
+                })
+                .to_string(),
+            ],
         );
         write_provider_config_for(&dir, "anthropic", "claude-3-7-sonnet-latest", &api_base);
         let registry = commands::registry(Some(dir.clone())).expect("registry");
@@ -6404,21 +6536,23 @@ mod tests {
                     Some("auto")
                 );
             },
-            vec![json!({
-                "id": "msg_tui_1",
-                "type": "message",
-                "role": "assistant",
-                "content": [{
-                    "type": "text",
-                    "text": "hello back"
-                }],
-                "stop_reason": "end_turn",
-                "usage": {
-                    "input_tokens": 4,
-                    "output_tokens": 2
-                }
-            })
-            .to_string()],
+            vec![
+                json!({
+                    "id": "msg_tui_1",
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [{
+                        "type": "text",
+                        "text": "hello back"
+                    }],
+                    "stop_reason": "end_turn",
+                    "usage": {
+                        "input_tokens": 4,
+                        "output_tokens": 2
+                    }
+                })
+                .to_string(),
+            ],
         );
         write_provider_config_for(&dir, "anthropic", "claude-3-7-sonnet-latest", &api_base);
         let registry = commands::registry(Some(dir.clone())).expect("registry");
@@ -6480,11 +6614,13 @@ mod tests {
                     assert_eq!(body["model"], "gpt-4.1");
                     assert_eq!(body["messages"][0]["content"], "read the note");
                     assert_eq!(body["tool_choice"], "auto");
-                    assert!(body["tools"]
-                        .as_array()
-                        .expect("tools array")
-                        .iter()
-                        .any(|tool| tool["function"]["name"] == "file_read"));
+                    assert!(
+                        body["tools"]
+                            .as_array()
+                            .expect("tools array")
+                            .iter()
+                            .any(|tool| tool["function"]["name"] == "file_read")
+                    );
                 }
                 1 => {
                     assert_eq!(body["messages"][0]["content"], "read the note");
@@ -6493,10 +6629,12 @@ mod tests {
                         "file_read"
                     );
                     assert_eq!(body["messages"][2]["role"], "tool");
-                    assert!(body["messages"][2]["content"]
-                        .as_str()
-                        .expect("tool content")
-                        .contains("hello from file"));
+                    assert!(
+                        body["messages"][2]["content"]
+                            .as_str()
+                            .expect("tool content")
+                            .contains("hello from file")
+                    );
                 }
                 other => panic!("unexpected request index {other}"),
             },
@@ -7042,10 +7180,12 @@ mod tests {
         let dialog = controller.view().dialog.expect("task notification dialog");
         assert_eq!(dialog.title, "Task update");
         assert!(dialog.body.iter().any(|line| line.contains("run tests")));
-        assert!(dialog
-            .body
-            .iter()
-            .any(|line| line.contains("all tests passed")));
+        assert!(
+            dialog
+                .body
+                .iter()
+                .any(|line| line.contains("all tests passed"))
+        );
 
         controller
             .handle_dialog_key(
@@ -7533,10 +7673,12 @@ mod tests {
         let dialog = controller.view().dialog.expect("task dialog");
         assert_eq!(dialog.title, "Task update");
         assert!(dialog.body.iter().any(|line| line.contains("run tests")));
-        assert!(dialog
-            .body
-            .iter()
-            .any(|line| line.contains("all tests passed")));
+        assert!(
+            dialog
+                .body
+                .iter()
+                .any(|line| line.contains("all tests passed"))
+        );
     }
 
     #[test]
@@ -7728,10 +7870,12 @@ mod tests {
             Some("claude-3-7-sonnet-latest")
         );
         assert!(controller.state.auth.is_ready());
-        assert!(controller
-            .view()
-            .status
-            .contains("anthropic:claude-3-7-sonnet-latest"));
+        assert!(
+            controller
+                .view()
+                .status
+                .contains("anthropic:claude-3-7-sonnet-latest")
+        );
     }
 
     #[test]
