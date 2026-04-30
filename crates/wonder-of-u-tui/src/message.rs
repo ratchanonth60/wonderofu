@@ -173,6 +173,10 @@ fn render_message(message: &MessageEnvelope, output: &mut Vec<MessageLineView>) 
             format!("attachment> {label} ({uri})"),
             MessageRole::User,
         )),
+        MessagePayload::UserPasteReference { sha256, bytes } => output.push(MessageLineView::new(
+            format!("paste> {sha256} ({bytes} bytes)"),
+            MessageRole::User,
+        )),
         MessagePayload::AssistantText { content } => {
             push_prefixed_lines(output, "assistant> ", content, MessageRole::Assistant)
         }

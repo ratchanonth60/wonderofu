@@ -574,9 +574,9 @@ fn render_context_summary(state: &AppState) -> String {
     let mut task_updates = 0usize;
     for message in &state.messages {
         match &message.payload {
-            MessagePayload::UserText { .. } | MessagePayload::UserAttachment { .. } => {
-                user_messages += 1;
-            }
+            MessagePayload::UserText { .. }
+            | MessagePayload::UserAttachment { .. }
+            | MessagePayload::UserPasteReference { .. } => user_messages += 1,
             MessagePayload::AssistantText { .. } | MessagePayload::AssistantThinking { .. } => {
                 assistant_messages += 1;
             }

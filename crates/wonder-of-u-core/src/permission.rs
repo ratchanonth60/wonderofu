@@ -159,11 +159,11 @@ impl PermissionRule {
                 if request.paths.is_empty() {
                     return false;
                 }
-                let prefix = context.resolve_path(path);
+                let prefix = canonicalize_best_effort(&context.resolve_path(path));
                 request
                     .paths
                     .iter()
-                    .map(|path| context.resolve_path(path))
+                    .map(|path| canonicalize_best_effort(&context.resolve_path(path)))
                     .all(|path| is_path_within(&path, &prefix))
             }
             PermissionRuleConstraint::ShellCommandContains { text } => request
@@ -230,11 +230,11 @@ impl ToolPermissionContext {
 
     #[must_use]
     pub fn working_directories(&self) -> Vec<PathBuf> {
-        std::iter::once(self.resolve_path(&self.cwd))
+        std::iter::once(canonicalize_best_effort(&self.resolve_path(&self.cwd)))
             .chain(
                 self.additional_working_directories
                     .iter()
-                    .map(|directory| self.resolve_path(&directory.path)),
+                    .map(|directory| canonicalize_best_effort(&self.resolve_path(&directory.path))),
             )
             .collect()
     }
@@ -246,7 +246,7 @@ impl ToolPermissionContext {
 
     #[must_use]
     pub fn path_in_scope(&self, path: impl AsRef<Path>) -> bool {
-        let resolved = self.resolve_path(path);
+        let resolved = canonicalize_best_effort(&self.resolve_path(path));
         self.working_directories()
             .into_iter()
             .any(|scope| is_path_within(&resolved, &scope))
@@ -256,18 +256,26 @@ impl ToolPermissionContext {
     pub fn first_path_outside_scope(&self, paths: &[PathBuf]) -> Option<PathBuf> {
         paths
             .iter()
-            .map(|path| self.resolve_path(path))
+            .map(|path| canonicalize_best_effort(&self.resolve_path(path)))
             .find(|path| !self.path_in_scope(path))
     }
 
     #[must_use]
     fn first_path_escape_attempt(&self, paths: &[PathBuf]) -> Option<PathBuf> {
         let scopes = self.working_directories();
-        paths
-            .iter()
-            .filter(|path| contains_parent_dir(path))
-            .map(|path| self.resolve_path(path))
-            .find(|path| scopes.iter().all(|scope| !is_path_within(path, scope)))
+        paths.iter().find_map(|path| {
+            let resolved = self.resolve_path(path);
+            let canonical = canonicalize_best_effort(&resolved);
+            let canonical_outside = scopes
+                .iter()
+                .all(|scope| !is_path_within(&canonical, scope));
+            if contains_parent_dir(path) && canonical_outside {
+                return Some(canonical);
+            }
+
+            let raw_inside = scopes.iter().any(|scope| is_path_within(&resolved, scope));
+            (raw_inside && canonical_outside).then_some(canonical)
+        })
     }
 
     #[must_use]
@@ -695,6 +703,33 @@ fn normalize_path(path: &Path) -> PathBuf {
     }
 }
 
+fn canonicalize_best_effort(path: &Path) -> PathBuf {
+    let normalized = normalize_path(path);
+    if let Ok(canonical) = std::fs::canonicalize(&normalized) {
+        return normalize_path(&canonical);
+    }
+
+    let mut missing = Vec::new();
+    let mut existing = normalized.as_path();
+    while !existing.exists() {
+        let Some(parent) = existing.parent() else {
+            return normalized;
+        };
+        if let Some(name) = existing.file_name() {
+            missing.push(name.to_os_string());
+        }
+        existing = parent;
+    }
+
+    let Ok(mut canonical) = std::fs::canonicalize(existing) else {
+        return normalized;
+    };
+    for part in missing.iter().rev() {
+        canonical.push(part);
+    }
+    normalize_path(&canonical)
+}
+
 fn contains_parent_dir(path: &Path) -> bool {
     path.components()
         .any(|component| matches!(component, std::path::Component::ParentDir))
@@ -885,10 +920,21 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[test]
-    #[ignore = "TODO: canonicalize symlinks before enforcing symlink escape denial"]
     fn permission_path_escape_via_symlink_is_denied() {
-        let context = ToolPermissionContext::new("/workspace/project", PermissionMode::Default);
+        let root = std::env::temp_dir().join(format!(
+            "wonder-permission-symlink-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let project = root.join("project");
+        let outside = root.join("outside");
+        std::fs::create_dir_all(&project).expect("create project");
+        std::fs::create_dir_all(&outside).expect("create outside");
+        std::fs::write(outside.join("passwd"), "root:x").expect("write outside file");
+        std::os::unix::fs::symlink(&outside, project.join("linked")).expect("create symlink");
+
+        let context = ToolPermissionContext::new(&project, PermissionMode::Default);
         let request = PermissionRequest::new("file_read")
             .read_only(true)
             .with_path("linked/passwd");
@@ -896,6 +942,7 @@ mod tests {
         let decision = context.evaluate(&request);
 
         assert!(matches!(decision, PermissionDecision::Deny { .. }));
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]

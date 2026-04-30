@@ -3412,7 +3412,12 @@ fn prompt_cursor_position(width: u16, height: u16, prompt: &str, cursor: usize) 
         }
         .prompt_height(),
     );
-    let inner = layout.prompt.inset(1);
+    let inner = wonder_of_u_tui::Rect::new(
+        layout.prompt.x,
+        layout.prompt.y.saturating_add(1),
+        layout.prompt.width,
+        layout.prompt.height.saturating_sub(1),
+    );
     let cursor_text = prompt.chars().take(cursor).collect::<String>();
     let mut line = 0u16;
     let mut column = 0u16;
@@ -3456,8 +3461,13 @@ fn history_search_cursor_position(
         }
         .prompt_height(),
     );
-    let inner = layout.prompt.inset(1);
-    let query_prefix = "History search: ".chars().count();
+    let inner = wonder_of_u_tui::Rect::new(
+        layout.prompt.x,
+        layout.prompt.y.saturating_add(1),
+        layout.prompt.width,
+        layout.prompt.height.saturating_sub(1),
+    );
+    let query_prefix = "search: ".chars().count();
     (
         inner
             .x
@@ -8265,7 +8275,7 @@ mod tests {
     #[test]
     fn prompt_cursor_tracks_edit_position_inside_prompt_panel() {
         let (x, y) = prompt_cursor_position(40, 10, "abc", 2);
-        assert_eq!((x, y), (1 + 2, 6));
+        assert_eq!((x, y), (2, 7));
     }
 
     /// Verify that enabling brief mode injects the hint into the system prompt
@@ -8395,8 +8405,8 @@ mod tests {
     }
 
     #[test]
-    fn ratatui_empty_repl_renders_border_and_status() {
-        // An empty ShellView should still render panel borders and status line.
+    fn ratatui_empty_repl_renders_header_and_status() {
+        // An empty ShellView should still render a header and status line.
         let view = wonder_of_u_tui::ShellView {
             title: "Test Session".into(),
             status: "claude-3-5-sonnet · default".into(),
