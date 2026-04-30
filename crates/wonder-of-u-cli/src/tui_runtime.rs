@@ -15,30 +15,31 @@ use crossterm::{
 };
 use futures::executor::block_on;
 use wonder_of_u_agent::{
-    CompletionRequest, ProviderResolver, ProviderRuntime, ProviderSelection, ProviderToolCall,
-    ProviderToolResultMessage, ProviderToolSpec, SettingsStore, ToolConversationRound,
-    ToolUseRequest, ToolUseResponse, builtin_tool_registry,
+    builtin_tool_registry, CompletionRequest, ProviderResolver, ProviderRuntime, ProviderSelection,
+    ProviderToolCall, ProviderToolResultMessage, ProviderToolSpec, SettingsStore,
+    ToolConversationRound, ToolUseRequest, ToolUseResponse,
 };
 use wonder_of_u_core::{
-    AdditionalWorkingDirectory, AppState, AuthState, CommandContext, CommandOutput, CommandQuery,
-    CommandRegistry, FeatureSet, InputMode, MessageEnvelope, MessagePayload, PendingLocalToolCall,
-    PendingProviderToolCall, PendingProviderToolResult, PendingToolApprovalState,
-    PendingToolConversationRound, PermissionDecision, PermissionMode, PermissionRuleSource,
-    ProviderReadiness, QueuePlacement, Result, SessionId, TaskState, TaskStatus, ToolContext,
-    ToolQuery, ToolResult, ToolUseId, WonderError, parse_slash_command, session_footer_text,
-    session_status_text,
+    parse_slash_command, session_footer_text, session_status_text, AdditionalWorkingDirectory,
+    AppState, AuthState, CommandContext, CommandOutput, CommandQuery, CommandRegistry, FeatureSet,
+    InputMode, MessageEnvelope, MessagePayload, PendingLocalToolCall, PendingProviderToolCall,
+    PendingProviderToolResult, PendingToolApprovalState, PendingToolConversationRound,
+    PermissionDecision, PermissionMode, PermissionRuleSource, ProviderReadiness, QueuePlacement,
+    Result, SessionId, TaskState, TaskStatus, ToolContext, ToolQuery, ToolResult, ToolUseId,
+    WonderError,
 };
 use wonder_of_u_storage::{TaskStore, TranscriptStore};
 use wonder_of_u_tui::{
     CrosstermControl, CrosstermEventSource, DialogView, EditAction, EventLoop, FrameBuffer,
-    KeyBindingContext, KeyBindingResolver, KeyCode, KeyEvent, ResolvedKey, ShellLayout, ShellView,
-    TerminalConfig, TerminalLifecycle, TextBuffer, Theme, TurnState, UiEvent, VimMode, VimState,
+    HistorySearchView, KeyBindingContext, KeyBindingResolver, KeyCode, KeyEvent, ResolvedKey,
+    ShellLayout, ShellView, TerminalConfig, TerminalLifecycle, TextBuffer, Theme, TurnState,
+    UiEvent, VimMode, VimState,
 };
 
 use crate::commands;
 use crate::commands::prompt::{
-    SessionPersistenceState, append_contextual_message, load_or_create_state,
-    persist_messages_and_state, persist_prompt_state, truncate_chars,
+    append_contextual_message, load_or_create_state, persist_messages_and_state,
+    persist_prompt_state, truncate_chars, SessionPersistenceState,
 };
 
 pub(crate) struct TuiLaunchOptions {
@@ -48,6 +49,8 @@ pub(crate) struct TuiLaunchOptions {
 const MAX_TOOL_LOOP_ITERATIONS: usize = 6;
 const PICKER_CONTROLS_NOTE: &str =
     "type to filter, use Up/Down to choose, Enter to select, Esc to cancel";
+const HISTORY_SEARCH_CONTROLS_NOTE: &str =
+    "type to filter, Ctrl+R/Up/Down to cycle, Enter to accept, Esc to cancel";
 
 pub(crate) fn run_tui<W: Write>(
     writer: &mut W,
@@ -115,7 +118,7 @@ struct TuiController<'a> {
     prompt: TextBuffer,
     keymap: KeyBindingResolver,
     vim: VimState,
-    history_recall_index: Option<usize>,
+    history_search: Option<HistorySearchState>,
     turn_state: TurnState,
     needs_render: bool,
     exit_requested: bool,
@@ -204,6 +207,14 @@ struct MemoryPickerState {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+struct HistorySearchState {
+    query: TextBuffer,
+    matches: Vec<usize>,
+    cursor: usize,
+    saved_buffer: TextBuffer,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 struct ExternalEditorRequest {
     cwd: PathBuf,
     path: PathBuf,
@@ -255,7 +266,7 @@ impl<'a> TuiController<'a> {
             prompt: TextBuffer::new(false),
             keymap: crate::commands::workflow::load_keybinding_resolver(storage_dir)?,
             vim: VimState::default(),
-            history_recall_index: None,
+            history_search: None,
             turn_state: TurnState::Idle,
             needs_render: true,
             exit_requested: false,
@@ -296,12 +307,16 @@ impl<'a> TuiController<'a> {
             UiEvent::Key(key) => self.handle_key_event(key, &mut before_blocking),
             UiEvent::Paste(text) => {
                 if !text.is_empty() {
-                    self.prompt.insert_text(&text);
-                    self.turn_state = TurnState::EditingInput;
-                    self.state.input_mode = InputMode::Prompt;
-                    self.reset_history_recall();
-                    self.status_note = None;
-                    self.needs_render = true;
+                    if self.history_search.is_some() {
+                        self.edit_history_search_query_text(&text);
+                    } else {
+                        self.prompt.insert_text(&text);
+                        self.turn_state = TurnState::EditingInput;
+                        self.state.input_mode = InputMode::Prompt;
+                        self.reset_history_recall();
+                        self.status_note = None;
+                        self.needs_render = true;
+                    }
                 }
                 Ok(())
             }
@@ -328,6 +343,9 @@ impl<'a> TuiController<'a> {
         let resolved = self.keymap.resolve(KeyBindingContext::Prompt, key);
         if self.dialog.is_some() {
             return self.handle_dialog_key(key, resolved, before_blocking);
+        }
+        if self.history_search.is_some() {
+            return self.handle_history_search_key(key, resolved);
         }
         let Some(resolved) = resolved else {
             return if self.vim.mode() == VimMode::Normal || key.code == KeyCode::Esc {
@@ -407,7 +425,46 @@ impl<'a> TuiController<'a> {
                 self.needs_render = true;
                 Ok(())
             }
-            wonder_of_u_tui::SystemAction::HistorySearch => self.recall_previous_prompt(),
+            wonder_of_u_tui::SystemAction::HistorySearch => self.open_or_step_history_search(),
+        }
+    }
+
+    fn handle_history_search_key(
+        &mut self,
+        key: KeyEvent,
+        resolved: Option<ResolvedKey>,
+    ) -> Result<()> {
+        match key.code {
+            KeyCode::Esc => return self.cancel_history_search(),
+            KeyCode::Up => {
+                self.step_history_search(1);
+                return Ok(());
+            }
+            KeyCode::Down => {
+                self.step_history_search(-1);
+                return Ok(());
+            }
+            _ => {}
+        }
+
+        match resolved {
+            Some(ResolvedKey::Edit(EditAction::InsertNewline)) => self.accept_history_search(),
+            Some(ResolvedKey::System(wonder_of_u_tui::SystemAction::HistorySearch)) => {
+                self.step_history_search(1);
+                Ok(())
+            }
+            Some(ResolvedKey::System(wonder_of_u_tui::SystemAction::Redraw)) => {
+                self.needs_render = true;
+                Ok(())
+            }
+            Some(ResolvedKey::System(system)) => self.handle_system_action(system),
+            Some(resolved) if self.edit_history_search_query(resolved) => Ok(()),
+            Some(_) | None => {
+                self.status_note =
+                    Some(history_search_status_note(self.history_search_has_match()));
+                self.needs_render = true;
+                Ok(())
+            }
         }
     }
 
@@ -1904,7 +1961,23 @@ impl<'a> TuiController<'a> {
     }
 
     fn view(&self) -> ShellView {
-        let mut view = ShellView::from_app_state(&self.state, self.prompt.text());
+        let history_entries = prompt_history_entries(&self.state.messages);
+        let prompt = self
+            .history_search
+            .as_ref()
+            .and_then(|search| current_history_search_match(search, &history_entries))
+            .map_or_else(|| self.prompt.text(), ToString::to_string);
+        let mut view = ShellView::from_app_state(&self.state, prompt);
+        view.history_search = self
+            .history_search
+            .as_ref()
+            .map(|search| HistorySearchView {
+                query: search.query.text(),
+                match_text: current_history_search_match(search, &history_entries)
+                    .map(ToString::to_string),
+                match_index: search.cursor,
+                match_total: search.matches.len(),
+            });
         let mut status = session_status_text(&self.state);
         status.push_str(" | turn=");
         status.push_str(turn_state_label(self.turn_state));
@@ -2693,30 +2766,122 @@ impl<'a> TuiController<'a> {
     }
 
     fn reset_history_recall(&mut self) {
-        self.history_recall_index = None;
+        self.history_search = None;
     }
 
-    fn recall_previous_prompt(&mut self) -> Result<()> {
-        let entries = prompt_history_entries(&self.state.messages);
-        if entries.is_empty() {
-            self.status_note = Some("history empty".into());
-            self.needs_render = true;
+    fn open_or_step_history_search(&mut self) -> Result<()> {
+        if self.history_search.is_none() {
+            self.history_search = Some(HistorySearchState {
+                query: TextBuffer::new(false),
+                matches: Vec::new(),
+                cursor: 0,
+                saved_buffer: self.prompt.clone(),
+            });
+            self.refresh_history_search();
             return Ok(());
         }
-        let next_index = self
-            .history_recall_index
-            .map(|index| (index + 1) % entries.len())
-            .unwrap_or(0);
-        self.prompt = TextBuffer::from_text(&entries[next_index], false);
-        self.history_recall_index = Some(next_index);
+
+        self.step_history_search(1);
+        Ok(())
+    }
+
+    fn edit_history_search_query_text(&mut self, text: &str) {
+        let Some(search) = &mut self.history_search else {
+            return;
+        };
+        search.query.insert_text(text);
+        self.refresh_history_search();
+    }
+
+    fn edit_history_search_query(&mut self, resolved: ResolvedKey) -> bool {
+        let Some(search) = &mut self.history_search else {
+            return false;
+        };
+        if !apply_picker_query_edit(&mut search.query, resolved) {
+            return false;
+        }
+        self.refresh_history_search();
+        true
+    }
+
+    fn refresh_history_search(&mut self) {
+        let entries = prompt_history_entries(&self.state.messages);
+        let Some(search) = &mut self.history_search else {
+            return;
+        };
+        search.matches = filtered_picker_indices(&search.query, &entries, Clone::clone);
+        if search.matches.is_empty() {
+            search.cursor = 0;
+        } else {
+            search.cursor = search.cursor.min(search.matches.len().saturating_sub(1));
+        }
         self.turn_state = TurnState::EditingInput;
         self.state.input_mode = InputMode::Prompt;
-        self.status_note = Some(format!("history {}/{}", next_index + 1, entries.len()));
+        self.status_note = Some(history_search_status_note(!search.matches.is_empty()));
+        self.needs_render = true;
+    }
+
+    fn step_history_search(&mut self, delta: isize) {
+        let Some(search) = &mut self.history_search else {
+            return;
+        };
+        if !search.matches.is_empty() {
+            search.cursor =
+                (search.cursor as isize + delta).rem_euclid(search.matches.len() as isize) as usize;
+        }
+        self.turn_state = TurnState::EditingInput;
+        self.state.input_mode = InputMode::Prompt;
+        self.status_note = Some(history_search_status_note(!search.matches.is_empty()));
+        self.needs_render = true;
+    }
+
+    fn accept_history_search(&mut self) -> Result<()> {
+        let Some(search) = self.history_search.take() else {
+            return Ok(());
+        };
+        let entries = prompt_history_entries(&self.state.messages);
+        let Some(selection) = current_history_search_match(&search, &entries) else {
+            self.history_search = Some(search);
+            self.status_note = Some(history_search_status_note(false));
+            self.needs_render = true;
+            return Ok(());
+        };
+        self.prompt = TextBuffer::from_text(selection, false);
+        self.turn_state = TurnState::EditingInput;
+        self.state.input_mode = InputMode::Prompt;
+        self.status_note = Some("history search accepted".into());
         self.needs_render = true;
         Ok(())
     }
 
+    fn cancel_history_search(&mut self) -> Result<()> {
+        let Some(search) = self.history_search.take() else {
+            return Ok(());
+        };
+        self.prompt = search.saved_buffer;
+        self.turn_state = if self.prompt.text().trim().is_empty() {
+            if self.state.messages.is_empty() && self.state.background_tasks.is_empty() {
+                TurnState::Idle
+            } else {
+                TurnState::Completed
+            }
+        } else {
+            TurnState::EditingInput
+        };
+        self.state.input_mode = InputMode::Prompt;
+        self.status_note = Some("history search cancelled".into());
+        self.needs_render = true;
+        Ok(())
+    }
+
+    fn history_search_has_match(&self) -> bool {
+        self.history_search
+            .as_ref()
+            .is_some_and(|search| !search.matches.is_empty())
+    }
+
     fn rebuild_ephemeral_state(&mut self) {
+        self.history_search = None;
         self.dialog = None;
         self.pending_permission_picker = None;
         self.pending_memory_picker = None;
@@ -2817,6 +2982,18 @@ impl<'a> TuiController<'a> {
     }
 
     fn prompt_cursor(&self, width: u16, height: u16) -> (u16, u16) {
+        if let Some(search) = &self.history_search {
+            let view = HistorySearchView {
+                query: search.query.text(),
+                match_text: self
+                    .view()
+                    .history_search
+                    .and_then(|history_search| history_search.match_text),
+                match_index: search.cursor,
+                match_total: search.matches.len(),
+            };
+            return history_search_cursor_position(width, height, &view, search.query.cursor());
+        }
         prompt_cursor_position(width, height, &self.prompt.text(), self.prompt.cursor())
     }
 
@@ -3049,6 +3226,7 @@ fn prompt_cursor_position(width: u16, height: u16, prompt: &str, cursor: usize) 
             title: String::new(),
             messages: Vec::new(),
             prompt: prompt.into(),
+            history_search: None,
             status: String::new(),
             footer: String::new(),
             queued_panel: None,
@@ -3076,6 +3254,40 @@ fn prompt_cursor_position(width: u16, height: u16, prompt: &str, cursor: usize) 
         inner
             .y
             .saturating_add(line.min(inner.height.saturating_sub(1))),
+    )
+}
+
+fn history_search_cursor_position(
+    width: u16,
+    height: u16,
+    view: &HistorySearchView,
+    query_cursor: usize,
+) -> (u16, u16) {
+    let layout = ShellLayout::split(
+        wonder_of_u_tui::Rect::new(0, 0, width.max(1), height.max(1)),
+        ShellView {
+            title: String::new(),
+            messages: Vec::new(),
+            prompt: view.match_text.clone().unwrap_or_default(),
+            history_search: Some(view.clone()),
+            status: String::new(),
+            footer: String::new(),
+            queued_panel: None,
+            task_panel: None,
+            dialog: None,
+        }
+        .prompt_height(),
+    );
+    let inner = layout.prompt.inset(1);
+    let query_prefix = "History search: ".chars().count();
+    (
+        inner
+            .x
+            .saturating_add(
+                u16::try_from(query_prefix.saturating_add(query_cursor)).unwrap_or(u16::MAX),
+            )
+            .min(inner.right().saturating_sub(1)),
+        inner.y,
     )
 }
 
@@ -3504,6 +3716,17 @@ fn prompt_history_entries(messages: &[MessageEnvelope]) -> Vec<String> {
     entries
 }
 
+fn current_history_search_match<'a>(
+    search: &HistorySearchState,
+    entries: &'a [String],
+) -> Option<&'a str> {
+    search
+        .matches
+        .get(search.cursor)
+        .and_then(|&index| entries.get(index))
+        .map(String::as_str)
+}
+
 fn runtime_label(provider: Option<&str>, model: Option<&str>) -> &'static str {
     let _ = model;
     match provider {
@@ -3925,6 +4148,14 @@ fn picker_status_note(title: &str) -> String {
     format!("{title}: {PICKER_CONTROLS_NOTE}")
 }
 
+fn history_search_status_note(has_match: bool) -> String {
+    if has_match {
+        format!("history search: {HISTORY_SEARCH_CONTROLS_NOTE}")
+    } else {
+        format!("history search: no matches; {HISTORY_SEARCH_CONTROLS_NOTE}")
+    }
+}
+
 fn overlay_closed_status(title: &str) -> String {
     format!("{} closed", title.to_ascii_lowercase())
 }
@@ -4027,7 +4258,7 @@ mod tests {
         thread,
     };
 
-    use serde_json::{Value, json};
+    use serde_json::{json, Value};
     use wonder_of_u_agent::{
         AgentSettings, AuthMaterial, CredentialStore, SettingsStore, StoredCredentials,
     };
@@ -4035,7 +4266,7 @@ mod tests {
         AuthState, InputMode, MessageEnvelope, MessagePayload, PendingLocalToolCall,
         PendingProviderToolCall, PendingToolApprovalState, PendingToolConversationRound,
     };
-    use wonder_of_u_test_support::{EnvVarGuard, unique_test_dir};
+    use wonder_of_u_test_support::{unique_test_dir, EnvVarGuard};
 
     use super::*;
     use crate::commands;
@@ -4165,6 +4396,32 @@ mod tests {
         controller
             .handle_dialog_key(key, resolved, &mut |_| Ok(()))
             .expect("handle dialog key");
+    }
+
+    fn send_prompt_key(controller: &mut TuiController<'_>, key: KeyEvent) {
+        controller
+            .handle_key_event(key, &mut |_| Ok(()))
+            .expect("handle prompt key");
+    }
+
+    fn ctrl_r_key() -> KeyEvent {
+        KeyEvent {
+            code: KeyCode::Char('r'),
+            modifiers: wonder_of_u_tui::KeyModifiers {
+                control: true,
+                ..wonder_of_u_tui::KeyModifiers::default()
+            },
+        }
+    }
+
+    fn seed_prompt_history(controller: &mut TuiController<'_>, entries: &[&str]) {
+        let session_id = controller.state.session.id;
+        for entry in entries {
+            controller
+                .state
+                .messages
+                .push(MessageEnvelope::user_text(session_id, *entry));
+        }
     }
 
     #[test]
@@ -5171,12 +5428,10 @@ mod tests {
             Some(expected_matches.as_str())
         );
         assert!(dialog.body.iter().any(|line| line.contains("User memory")));
-        assert!(
-            !dialog
-                .body
-                .iter()
-                .any(|line| line.contains("Project memory"))
-        );
+        assert!(!dialog
+            .body
+            .iter()
+            .any(|line| line.contains("Project memory")));
     }
 
     #[test]
@@ -5773,23 +6028,21 @@ mod tests {
                     Some("draft the migration plan")
                 );
             },
-            vec![
-                json!({
-                    "id": "msg_plan_prompt_1",
-                    "type": "message",
-                    "role": "assistant",
-                    "content": [{
-                        "type": "text",
-                        "text": "queued plan reply"
-                    }],
-                    "stop_reason": "end_turn",
-                    "usage": {
-                        "input_tokens": 8,
-                        "output_tokens": 4
-                    }
-                })
-                .to_string(),
-            ],
+            vec![json!({
+                "id": "msg_plan_prompt_1",
+                "type": "message",
+                "role": "assistant",
+                "content": [{
+                    "type": "text",
+                    "text": "queued plan reply"
+                }],
+                "stop_reason": "end_turn",
+                "usage": {
+                    "input_tokens": 8,
+                    "output_tokens": 4
+                }
+            })
+            .to_string()],
         );
         write_provider_config_for(&dir, "anthropic", "claude-3-7-sonnet-latest", &api_base);
         let registry = commands::registry(Some(dir.clone())).expect("registry");
@@ -6151,23 +6404,21 @@ mod tests {
                     Some("auto")
                 );
             },
-            vec![
-                json!({
-                    "id": "msg_tui_1",
-                    "type": "message",
-                    "role": "assistant",
-                    "content": [{
-                        "type": "text",
-                        "text": "hello back"
-                    }],
-                    "stop_reason": "end_turn",
-                    "usage": {
-                        "input_tokens": 4,
-                        "output_tokens": 2
-                    }
-                })
-                .to_string(),
-            ],
+            vec![json!({
+                "id": "msg_tui_1",
+                "type": "message",
+                "role": "assistant",
+                "content": [{
+                    "type": "text",
+                    "text": "hello back"
+                }],
+                "stop_reason": "end_turn",
+                "usage": {
+                    "input_tokens": 4,
+                    "output_tokens": 2
+                }
+            })
+            .to_string()],
         );
         write_provider_config_for(&dir, "anthropic", "claude-3-7-sonnet-latest", &api_base);
         let registry = commands::registry(Some(dir.clone())).expect("registry");
@@ -6229,13 +6480,11 @@ mod tests {
                     assert_eq!(body["model"], "gpt-4.1");
                     assert_eq!(body["messages"][0]["content"], "read the note");
                     assert_eq!(body["tool_choice"], "auto");
-                    assert!(
-                        body["tools"]
-                            .as_array()
-                            .expect("tools array")
-                            .iter()
-                            .any(|tool| tool["function"]["name"] == "file_read")
-                    );
+                    assert!(body["tools"]
+                        .as_array()
+                        .expect("tools array")
+                        .iter()
+                        .any(|tool| tool["function"]["name"] == "file_read"));
                 }
                 1 => {
                     assert_eq!(body["messages"][0]["content"], "read the note");
@@ -6244,12 +6493,10 @@ mod tests {
                         "file_read"
                     );
                     assert_eq!(body["messages"][2]["role"], "tool");
-                    assert!(
-                        body["messages"][2]["content"]
-                            .as_str()
-                            .expect("tool content")
-                            .contains("hello from file")
-                    );
+                    assert!(body["messages"][2]["content"]
+                        .as_str()
+                        .expect("tool content")
+                        .contains("hello from file"));
                 }
                 other => panic!("unexpected request index {other}"),
             },
@@ -6795,12 +7042,10 @@ mod tests {
         let dialog = controller.view().dialog.expect("task notification dialog");
         assert_eq!(dialog.title, "Task update");
         assert!(dialog.body.iter().any(|line| line.contains("run tests")));
-        assert!(
-            dialog
-                .body
-                .iter()
-                .any(|line| line.contains("all tests passed"))
-        );
+        assert!(dialog
+            .body
+            .iter()
+            .any(|line| line.contains("all tests passed")));
 
         controller
             .handle_dialog_key(
@@ -6927,8 +7172,8 @@ mod tests {
     }
 
     #[test]
-    fn controller_cycles_prompt_history_on_history_search() {
-        let dir = unique_test_dir("tui-history-search");
+    fn controller_enters_history_search_with_ctrl_r() {
+        let dir = unique_test_dir("tui-history-search-enter");
         let registry = commands::registry(Some(dir.clone())).expect("registry");
         let mut controller = TuiController::new(
             test_context(&dir),
@@ -6937,32 +7182,33 @@ mod tests {
             TuiLaunchOptions { session_id: None },
         )
         .expect("controller");
-        let session_id = controller.state.session.id;
-        controller
-            .state
-            .messages
-            .push(MessageEnvelope::user_text(session_id, "first prompt"));
-        controller
-            .state
-            .messages
-            .push(MessageEnvelope::user_text(session_id, "second prompt"));
+        controller.prompt = TextBuffer::from_text("draft", false);
+        seed_prompt_history(&mut controller, &["first prompt", "second prompt"]);
 
-        controller
-            .handle_system_action(wonder_of_u_tui::SystemAction::HistorySearch)
-            .expect("history search first");
-        assert_eq!(controller.prompt.text(), "second prompt");
-        assert_eq!(controller.status_note.as_deref(), Some("history 1/2"));
+        send_prompt_key(&mut controller, ctrl_r_key());
 
-        controller
-            .handle_system_action(wonder_of_u_tui::SystemAction::HistorySearch)
-            .expect("history search second");
-        assert_eq!(controller.prompt.text(), "first prompt");
-        assert_eq!(controller.status_note.as_deref(), Some("history 2/2"));
+        let history = controller
+            .history_search
+            .as_ref()
+            .expect("history search active");
+        let view = controller.view();
+        let overlay = view.history_search.as_ref().expect("history overlay");
+        assert!(history.query.is_empty());
+        assert_eq!(history.saved_buffer.text(), "draft");
+        assert_eq!(controller.prompt.text(), "draft");
+        assert_eq!(view.prompt, "second prompt");
+        assert_eq!(overlay.match_text.as_deref(), Some("second prompt"));
+        assert_eq!(overlay.match_total, 2);
+        let expected_note = history_search_status_note(true);
+        assert_eq!(
+            controller.status_note.as_deref(),
+            Some(expected_note.as_str())
+        );
     }
 
     #[test]
-    fn editing_resets_prompt_history_cycle() {
-        let dir = unique_test_dir("tui-history-search-reset");
+    fn controller_filters_history_search_with_substring_query() {
+        let dir = unique_test_dir("tui-history-search-filter");
         let registry = commands::registry(Some(dir.clone())).expect("registry");
         let mut controller = TuiController::new(
             test_context(&dir),
@@ -6971,34 +7217,192 @@ mod tests {
             TuiLaunchOptions { session_id: None },
         )
         .expect("controller");
-        let session_id = controller.state.session.id;
-        controller
-            .state
-            .messages
-            .push(MessageEnvelope::user_text(session_id, "first prompt"));
-        controller
-            .state
-            .messages
-            .push(MessageEnvelope::user_text(session_id, "second prompt"));
+        controller.prompt = TextBuffer::from_text("draft", false);
+        seed_prompt_history(
+            &mut controller,
+            &["Ship docs", "Review parity closeout", "Ship checklist"],
+        );
 
-        controller
-            .handle_system_action(wonder_of_u_tui::SystemAction::HistorySearch)
-            .expect("history search first");
-        controller
-            .handle_key_event(
-                wonder_of_u_tui::KeyEvent {
-                    code: wonder_of_u_tui::KeyCode::Char('!'),
-                    modifiers: wonder_of_u_tui::KeyModifiers::default(),
-                },
-                &mut |_| Ok(()),
-            )
-            .expect("edit prompt");
+        send_prompt_key(&mut controller, ctrl_r_key());
+        send_prompt_key(&mut controller, picker_key(KeyCode::Char('s')));
+        send_prompt_key(&mut controller, picker_key(KeyCode::Char('H')));
+        send_prompt_key(&mut controller, picker_key(KeyCode::Char('I')));
 
-        controller
-            .handle_system_action(wonder_of_u_tui::SystemAction::HistorySearch)
-            .expect("history search reset");
-        assert_eq!(controller.prompt.text(), "second prompt");
-        assert_eq!(controller.status_note.as_deref(), Some("history 1/2"));
+        let view = controller.view();
+        let overlay = view.history_search.as_ref().expect("history overlay");
+        assert_eq!(controller.prompt.text(), "draft");
+        assert_eq!(overlay.query, "sHI");
+        assert_eq!(overlay.match_total, 2);
+        assert_eq!(overlay.match_text.as_deref(), Some("Ship checklist"));
+        assert_eq!(view.prompt, "Ship checklist");
+    }
+
+    #[test]
+    fn controller_history_search_cycles_through_matches() {
+        let dir = unique_test_dir("tui-history-search-cycle");
+        let registry = commands::registry(Some(dir.clone())).expect("registry");
+        let mut controller = TuiController::new(
+            test_context(&dir),
+            &registry,
+            Some(dir.as_path()),
+            TuiLaunchOptions { session_id: None },
+        )
+        .expect("controller");
+        seed_prompt_history(
+            &mut controller,
+            &["deploy plan", "draft plan", "plan update"],
+        );
+
+        send_prompt_key(&mut controller, ctrl_r_key());
+        send_prompt_key(&mut controller, picker_key(KeyCode::Char('p')));
+        send_prompt_key(&mut controller, picker_key(KeyCode::Char('l')));
+        send_prompt_key(&mut controller, picker_key(KeyCode::Char('a')));
+        send_prompt_key(&mut controller, picker_key(KeyCode::Char('n')));
+        assert_eq!(
+            controller
+                .view()
+                .history_search
+                .and_then(|overlay| overlay.match_text)
+                .as_deref(),
+            Some("plan update")
+        );
+
+        send_prompt_key(&mut controller, ctrl_r_key());
+        assert_eq!(
+            controller
+                .view()
+                .history_search
+                .and_then(|overlay| overlay.match_text)
+                .as_deref(),
+            Some("draft plan")
+        );
+
+        send_prompt_key(&mut controller, picker_key(KeyCode::Up));
+        assert_eq!(
+            controller
+                .view()
+                .history_search
+                .and_then(|overlay| overlay.match_text)
+                .as_deref(),
+            Some("deploy plan")
+        );
+
+        send_prompt_key(&mut controller, picker_key(KeyCode::Down));
+        assert_eq!(
+            controller
+                .view()
+                .history_search
+                .and_then(|overlay| overlay.match_text)
+                .as_deref(),
+            Some("draft plan")
+        );
+    }
+
+    #[test]
+    fn controller_history_search_enter_accepts_match() {
+        let dir = unique_test_dir("tui-history-search-accept");
+        let registry = commands::registry(Some(dir.clone())).expect("registry");
+        let mut controller = TuiController::new(
+            test_context(&dir),
+            &registry,
+            Some(dir.as_path()),
+            TuiLaunchOptions { session_id: None },
+        )
+        .expect("controller");
+        controller.prompt = TextBuffer::from_text("draft", false);
+        seed_prompt_history(&mut controller, &["first prompt", "second prompt"]);
+
+        send_prompt_key(&mut controller, ctrl_r_key());
+        send_prompt_key(&mut controller, picker_key(KeyCode::Char('f')));
+        send_prompt_key(&mut controller, picker_key(KeyCode::Enter));
+
+        assert!(controller.history_search.is_none());
+        assert_eq!(controller.prompt.text(), "first prompt");
+        assert_eq!(controller.prompt.cursor(), "first prompt".chars().count());
+        assert!(controller.view().history_search.is_none());
+    }
+
+    #[test]
+    fn controller_history_search_esc_restores_prior_buffer() {
+        let dir = unique_test_dir("tui-history-search-esc");
+        let registry = commands::registry(Some(dir.clone())).expect("registry");
+        let mut controller = TuiController::new(
+            test_context(&dir),
+            &registry,
+            Some(dir.as_path()),
+            TuiLaunchOptions { session_id: None },
+        )
+        .expect("controller");
+        controller.prompt = TextBuffer::from_text("draft note", false);
+        seed_prompt_history(&mut controller, &["first prompt", "second prompt"]);
+
+        send_prompt_key(&mut controller, ctrl_r_key());
+        send_prompt_key(&mut controller, picker_key(KeyCode::Char('f')));
+        send_prompt_key(&mut controller, picker_key(KeyCode::Esc));
+
+        assert!(controller.history_search.is_none());
+        assert_eq!(controller.prompt.text(), "draft note");
+        assert!(controller.view().history_search.is_none());
+    }
+
+    #[test]
+    fn controller_history_search_reports_no_matches() {
+        let dir = unique_test_dir("tui-history-search-no-match");
+        let registry = commands::registry(Some(dir.clone())).expect("registry");
+        let mut controller = TuiController::new(
+            test_context(&dir),
+            &registry,
+            Some(dir.as_path()),
+            TuiLaunchOptions { session_id: None },
+        )
+        .expect("controller");
+        controller.prompt = TextBuffer::from_text("draft", false);
+        seed_prompt_history(&mut controller, &["first prompt", "second prompt"]);
+
+        send_prompt_key(&mut controller, ctrl_r_key());
+        for ch in ['z', 'z', 'z'] {
+            send_prompt_key(&mut controller, picker_key(KeyCode::Char(ch)));
+        }
+
+        let view = controller.view();
+        let overlay = view.history_search.as_ref().expect("history overlay");
+        assert_eq!(overlay.match_total, 0);
+        assert_eq!(overlay.match_text, None);
+        assert_eq!(view.prompt, "draft");
+        let expected_note = history_search_status_note(false);
+        assert_eq!(
+            controller.status_note.as_deref(),
+            Some(expected_note.as_str())
+        );
+    }
+
+    #[test]
+    fn controller_history_search_with_empty_history_is_safe() {
+        let dir = unique_test_dir("tui-history-search-empty");
+        let registry = commands::registry(Some(dir.clone())).expect("registry");
+        let mut controller = TuiController::new(
+            test_context(&dir),
+            &registry,
+            Some(dir.as_path()),
+            TuiLaunchOptions { session_id: None },
+        )
+        .expect("controller");
+        controller.prompt = TextBuffer::from_text("draft", false);
+
+        send_prompt_key(&mut controller, ctrl_r_key());
+        send_prompt_key(&mut controller, picker_key(KeyCode::Up));
+        send_prompt_key(&mut controller, picker_key(KeyCode::Enter));
+
+        let view = controller.view();
+        let overlay = view.history_search.as_ref().expect("history overlay");
+        assert_eq!(overlay.match_total, 0);
+        assert_eq!(overlay.match_text, None);
+        assert_eq!(controller.prompt.text(), "draft");
+        let expected_note = history_search_status_note(false);
+        assert_eq!(
+            controller.status_note.as_deref(),
+            Some(expected_note.as_str())
+        );
     }
 
     #[test]
@@ -7129,12 +7533,10 @@ mod tests {
         let dialog = controller.view().dialog.expect("task dialog");
         assert_eq!(dialog.title, "Task update");
         assert!(dialog.body.iter().any(|line| line.contains("run tests")));
-        assert!(
-            dialog
-                .body
-                .iter()
-                .any(|line| line.contains("all tests passed"))
-        );
+        assert!(dialog
+            .body
+            .iter()
+            .any(|line| line.contains("all tests passed")));
     }
 
     #[test]
@@ -7326,12 +7728,10 @@ mod tests {
             Some("claude-3-7-sonnet-latest")
         );
         assert!(controller.state.auth.is_ready());
-        assert!(
-            controller
-                .view()
-                .status
-                .contains("anthropic:claude-3-7-sonnet-latest")
-        );
+        assert!(controller
+            .view()
+            .status
+            .contains("anthropic:claude-3-7-sonnet-latest"));
     }
 
     #[test]
