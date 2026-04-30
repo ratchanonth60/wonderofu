@@ -18,8 +18,8 @@ pub mod vim;
 
 pub use dialog::{DialogActionView, DialogKind, DialogView};
 pub use event::{
-    CrosstermEventSource, EventLoop, EventLoopState, EventSource, KeyCode, KeyEvent, KeyModifiers,
-    TurnState, UiEvent, normalize_key_event,
+    normalize_key_event, CrosstermEventSource, EventLoop, EventLoopState, EventSource, KeyCode,
+    KeyEvent, KeyModifiers, TurnState, UiEvent,
 };
 pub use frame::{Cell, FrameBuffer, Rect};
 pub use input::{EditAction, Motion, TextBuffer};
@@ -29,10 +29,10 @@ pub use keymap::{
 };
 pub use layout::ShellLayout;
 pub use message::{
-    MessageLineView, MessageRole, TaskPanelView, footer_text, message_lines, queued_panel_view,
-    status_text, task_panel_view,
+    footer_text, message_lines, queued_panel_view, status_text, task_panel_view, HistorySearchView,
+    MessageLineView, MessageRole, TaskPanelView,
 };
-pub use render::{ShellView, render_shell, render_snapshot};
+pub use render::{render_shell, render_snapshot, ShellView};
 pub use style::{Color, TextStyle, Theme};
 pub use terminal::{
     CrosstermControl, TerminalCommand, TerminalConfig, TerminalControl, TerminalLifecycle,

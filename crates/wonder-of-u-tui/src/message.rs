@@ -1,6 +1,6 @@
 use wonder_of_u_core::{
-    AppState, MessageEnvelope, MessagePayload, QueuedCommand, TaskKind, TaskState, TaskStatus,
-    session_footer_text, session_status_text,
+    session_footer_text, session_status_text, AppState, MessageEnvelope, MessagePayload,
+    QueuedCommand, TaskKind, TaskState, TaskStatus,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -33,6 +33,15 @@ impl MessageLineView {
 pub struct TaskPanelView {
     pub title: String,
     pub lines: Vec<MessageLineView>,
+}
+
+/// Describes the incremental prompt history search overlay.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct HistorySearchView {
+    pub query: String,
+    pub match_text: Option<String>,
+    pub match_index: usize,
+    pub match_total: usize,
 }
 
 pub fn message_lines(messages: &[MessageEnvelope]) -> Vec<MessageLineView> {

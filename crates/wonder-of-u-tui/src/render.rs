@@ -5,8 +5,8 @@ use crate::{
     frame::{FrameBuffer, Rect},
     layout::ShellLayout,
     message::{
-        MessageLineView, MessageRole, TaskPanelView, footer_text, message_lines, queued_panel_view,
-        status_text, task_panel_view,
+        footer_text, message_lines, queued_panel_view, status_text, task_panel_view,
+        HistorySearchView, MessageLineView, MessageRole, TaskPanelView,
     },
     style::{Color, TextStyle, Theme},
 };
@@ -16,6 +16,7 @@ pub struct ShellView {
     pub title: String,
     pub messages: Vec<MessageLineView>,
     pub prompt: String,
+    pub history_search: Option<HistorySearchView>,
     pub status: String,
     pub footer: String,
     pub queued_panel: Option<TaskPanelView>,
@@ -26,7 +27,10 @@ pub struct ShellView {
 impl ShellView {
     #[must_use]
     pub fn prompt_height(&self) -> u16 {
-        let line_count = self.prompt.lines().count().max(1);
+        let line_count = match &self.history_search {
+            Some(search) => history_search_line_count(search),
+            None => text_line_count(&self.prompt),
+        };
         u16::try_from(line_count)
             .unwrap_or(u16::MAX.saturating_sub(2))
             .saturating_add(2)
@@ -38,6 +42,7 @@ impl ShellView {
             title: format!("Session: {}", app.session.title),
             messages: message_lines(&app.messages),
             prompt: prompt.into(),
+            history_search: None,
             status: status_text(app),
             footer: footer_text(app),
             queued_panel: queued_panel_view(app),
@@ -68,7 +73,7 @@ pub fn render_shell(frame: &mut FrameBuffer, view: &ShellView, theme: &Theme) {
         frame,
         layout.prompt,
         Some("Prompt"),
-        &plain_lines(&split_lines(&view.prompt), theme.prompt),
+        &prompt_panel_lines(view, theme),
         theme,
     );
     draw_status_line(frame, layout.status, &view.status, theme.status);
@@ -276,6 +281,36 @@ fn message_lines_to_styled(lines: &[MessageLineView], theme: &Theme) -> Vec<Styl
         .collect()
 }
 
+fn prompt_panel_lines(view: &ShellView, theme: &Theme) -> Vec<StyledLine> {
+    let Some(search) = &view.history_search else {
+        return plain_lines(&split_lines(&view.prompt), theme.prompt);
+    };
+
+    let mut lines = vec![
+        StyledLine {
+            text: format!("History search: {}", search.query),
+            style: theme.status,
+        },
+        StyledLine {
+            text: format!(
+                "Match: {}/{}",
+                if search.match_total == 0 {
+                    0
+                } else {
+                    search.match_index.saturating_add(1)
+                },
+                search.match_total
+            ),
+            style: theme.footer,
+        },
+    ];
+    lines.extend(plain_lines(
+        &split_lines(search.match_text.as_deref().unwrap_or("")),
+        theme.prompt,
+    ));
+    lines
+}
+
 fn plain_lines(lines: &[String], style: TextStyle) -> Vec<StyledLine> {
     lines
         .iter()
@@ -317,6 +352,14 @@ fn split_lines(text: &str) -> Vec<String> {
     text.lines().map(ToString::to_string).collect()
 }
 
+fn text_line_count(text: &str) -> usize {
+    text.lines().count().max(1)
+}
+
+fn history_search_line_count(search: &HistorySearchView) -> usize {
+    2usize.saturating_add(text_line_count(search.match_text.as_deref().unwrap_or("")))
+}
+
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
@@ -334,6 +377,7 @@ mod tests {
             title: "Session: Empty".into(),
             messages: Vec::new(),
             prompt: String::new(),
+            history_search: None,
             status: "prompt | 0 messages".into(),
             footer: "ctrl-c interrupt".into(),
             queued_panel: None,
@@ -369,6 +413,7 @@ mod tests {
                 MessageLineView::new("assistant> hello", MessageRole::Assistant),
             ],
             prompt: "/status".into(),
+            history_search: None,
             status: "prompt | 2 messages".into(),
             footer: "cwd=/workspace | ctrl-c interrupt".into(),
             queued_panel: None,
@@ -456,6 +501,7 @@ mod tests {
                 MessageRole::Assistant,
             )],
             prompt: "/plan".into(),
+            history_search: None,
             status: "prompt | 1 messages".into(),
             footer: "cwd=/workspace | ctrl-c interrupt".into(),
             queued_panel: Some(TaskPanelView {
@@ -498,6 +544,7 @@ mod tests {
             title: "Session: Dialog".into(),
             messages: vec![MessageLineView::new("system> ready", MessageRole::System)],
             prompt: "continue?".into(),
+            history_search: None,
             status: "permission | 1 messages".into(),
             footer: "cwd=/workspace | ctrl-c interrupt".into(),
             queued_panel: None,
@@ -524,6 +571,52 @@ mod tests {
                 "|continue?                               |",
                 "+----------------------------------------+",
                 "permission | 1 messages",
+                "cwd=/workspace | ctrl-c interrupt",
+            ]
+            .join("\n")
+        );
+    }
+
+    #[test]
+    fn history_search_snapshot_renders_overlay_and_preview() {
+        let view = ShellView {
+            title: "Session: Search".into(),
+            messages: vec![MessageLineView::new(
+                "assistant> ready",
+                MessageRole::Assistant,
+            )],
+            prompt: "draft".into(),
+            history_search: Some(HistorySearchView {
+                query: "pla".into(),
+                match_text: Some("draft plan".into()),
+                match_index: 1,
+                match_total: 3,
+            }),
+            status: "prompt | 1 messages".into(),
+            footer: "cwd=/workspace | ctrl-c interrupt".into(),
+            queued_panel: None,
+            task_panel: None,
+            dialog: None,
+        };
+
+        let frame = render_snapshot(42, 14, &view, &Theme::default());
+
+        assert_eq!(
+            frame.to_plain_text(),
+            [
+                "+-Session: Search------------------------+",
+                "|assistant> ready                        |",
+                "|                                        |",
+                "|                                        |",
+                "|                                        |",
+                "|                                        |",
+                "+----------------------------------------+",
+                "+-Prompt---------------------------------+",
+                "|History search: pla                     |",
+                "|Match: 2/3                              |",
+                "|draft plan                              |",
+                "+----------------------------------------+",
+                "prompt | 1 messages",
                 "cwd=/workspace | ctrl-c interrupt",
             ]
             .join("\n")
