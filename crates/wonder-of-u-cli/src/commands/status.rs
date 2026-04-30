@@ -50,6 +50,8 @@ pub struct MobileCommand;
 
 pub struct ChromeCommand;
 
+pub struct IdeCommand;
+
 pub struct InsightsCommand {
     storage_dir: Option<PathBuf>,
 }
@@ -205,6 +207,20 @@ impl ChromeCommand {
         CommandSpec::new(
             "chrome",
             "Open Claude in Chrome setup guidance and extension links",
+            CommandKind::Local,
+        )
+    }
+}
+
+impl IdeCommand {
+    pub const fn new() -> Self {
+        Self
+    }
+
+    pub fn command_spec() -> CommandSpec {
+        CommandSpec::new(
+            "ide",
+            "Open Claude Code IDE integration docs and extension links",
             CommandKind::Local,
         )
     }
@@ -650,6 +666,23 @@ impl Command for ChromeCommand {
 }
 
 #[async_trait]
+impl Command for IdeCommand {
+    fn spec(&self) -> CommandSpec {
+        Self::command_spec()
+    }
+
+    async fn execute(
+        &self,
+        _context: CommandContext,
+        _invocation: CommandInvocation,
+    ) -> Result<CommandOutput> {
+        Ok(CommandOutput::Text(render_ide_summary(try_open_browser(
+            IDE_DOCS_URL,
+        ))))
+    }
+}
+
+#[async_trait]
 impl Command for InsightsCommand {
     fn spec(&self) -> CommandSpec {
         Self::command_spec()
@@ -696,6 +729,7 @@ const MOBILE_ANDROID_URL: &str =
 const CHROME_EXTENSION_URL: &str = "https://claude.ai/chrome";
 const CHROME_PERMISSIONS_URL: &str = "https://clau.de/chrome/permissions";
 const CHROME_DOCS_URL: &str = "https://code.claude.com/docs/en/chrome";
+const IDE_DOCS_URL: &str = "https://code.claude.com/docs/en/ide";
 
 #[derive(Default)]
 struct AggregateStats {
@@ -1031,6 +1065,19 @@ fn render_chrome_summary(browser_launch_attempted: bool) -> String {
         "The Rust port does not yet implement the Claude in Chrome extension status picker or default-on config flow.".into(),
         "Open the extension page to install or reconnect Claude in Chrome, then manage site permissions in the extension settings.".into(),
         "Use the docs link for the full browser-control setup guide.".into(),
+    ]
+    .join("\n")
+}
+
+fn render_ide_summary(browser_launch_attempted: bool) -> String {
+    [
+        "## IDE Integration".into(),
+        format!("ide_docs_url={IDE_DOCS_URL}"),
+        format!("browser_launch_attempted={browser_launch_attempted}"),
+        String::new(),
+        "The Rust port does not yet implement the Claude Code IDE extension installer or editor-detection flow.".into(),
+        "Open the docs link to install the VS Code or JetBrains extension, then follow the setup guide to connect Claude Code to your editor.".into(),
+        "This keeps the command honest until IDE deep-link handoff parity exists.".into(),
     ]
     .join("\n")
 }
