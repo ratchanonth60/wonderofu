@@ -1760,6 +1760,7 @@ mod tests {
         requests: Mutex<Vec<HttpRequest>>,
         responses: Mutex<Vec<HttpResponse>>,
         stream_bodies: Mutex<Vec<String>>,
+        force_error: Mutex<Option<String>>,
     }
 
     impl RecordingTransport {
@@ -1771,6 +1772,7 @@ mod tests {
                     body: serde_json::to_string(&body).expect("serialize response"),
                 }]),
                 stream_bodies: Mutex::new(Vec::new()),
+                force_error: Mutex::new(None),
             })
         }
 
@@ -1799,6 +1801,7 @@ mod tests {
                         .collect(),
                 ),
                 stream_bodies: Mutex::new(Vec::new()),
+                force_error: Mutex::new(None),
             })
         }
 
@@ -1807,6 +1810,7 @@ mod tests {
                 requests: Mutex::new(Vec::new()),
                 responses: Mutex::new(Vec::new()),
                 stream_bodies: Mutex::new(vec![body.into()]),
+                force_error: Mutex::new(None),
             })
         }
 
@@ -1828,6 +1832,34 @@ mod tests {
                 stream_bodies: Mutex::new(
                     stream_bodies.into_iter().map(ToString::to_string).collect(),
                 ),
+                force_error: Mutex::new(None),
+            })
+        }
+
+        fn with_http_error(status: u16, body: Value) -> Arc<Self> {
+            Arc::new(Self {
+                responses: Mutex::new(vec![HttpResponse {
+                    status,
+                    body: serde_json::to_string(&body).expect("serialize error body"),
+                }]),
+                ..Self::default()
+            })
+        }
+
+        fn with_raw_body(status: u16, body: impl Into<String>) -> Arc<Self> {
+            Arc::new(Self {
+                responses: Mutex::new(vec![HttpResponse {
+                    status,
+                    body: body.into(),
+                }]),
+                ..Self::default()
+            })
+        }
+
+        fn with_network_error(message: impl Into<String>) -> Arc<Self> {
+            Arc::new(Self {
+                force_error: Mutex::new(Some(message.into())),
+                ..Self::default()
             })
         }
     }
@@ -1838,11 +1870,24 @@ mod tests {
                 .lock()
                 .expect("lock requests")
                 .push(request.clone());
+            if let Some(msg) = self.force_error.lock().expect("lock force_error").take() {
+                return Err(WonderError::validation(format!(
+                    "provider request failed: {msg}"
+                )));
+            }
             let mut responses = self.responses.lock().expect("lock response");
             if responses.is_empty() {
                 return Err(WonderError::internal("missing recorded response"));
             }
-            Ok(responses.remove(0))
+            let response = responses.remove(0);
+            if response.status >= 400 {
+                return Err(WonderError::validation(format!(
+                    "provider HTTP request failed with status {}: {}",
+                    response.status,
+                    provider_error_message(&response.body),
+                )));
+            }
+            Ok(response)
         }
 
         fn execute_stream(&self, request: &HttpRequest) -> Result<StreamingHttpResponse> {
@@ -2904,6 +2949,105 @@ mod tests {
                 .map(String::as_str),
             Some("high"),
             "x-reasoning-effort header should be 'high' for max effort level"
+        );
+    }
+
+    #[test]
+    fn openai_401_auth_error_surfaces_as_validation_error() {
+        let transport = RecordingTransport::with_http_error(
+            401,
+            json!({"error": {"message": "Invalid API key"}}),
+        );
+        let runtime = ProviderRuntime::with_transport(transport as Arc<dyn HttpTransport>);
+        let resolved = resolved_provider("openai", Some("gpt-4.1"));
+        let request = CompletionRequest::new("hello");
+
+        let err = runtime
+            .complete(&resolved, &request)
+            .expect_err("401 should fail");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("401"),
+            "error should mention status code; got: {msg}"
+        );
+        assert!(
+            msg.contains("Invalid API key"),
+            "error should include provider message; got: {msg}"
+        );
+    }
+
+    #[test]
+    fn openai_429_rate_limit_error_surfaces_message() {
+        let transport = RecordingTransport::with_http_error(
+            429,
+            json!({"error": {"message": "Rate limit exceeded. Please retry after 60 seconds."}}),
+        );
+        let runtime = ProviderRuntime::with_transport(transport as Arc<dyn HttpTransport>);
+        let resolved = resolved_provider("openai", Some("gpt-4.1"));
+        let request = CompletionRequest::new("ping");
+
+        let err = runtime
+            .complete(&resolved, &request)
+            .expect_err("429 should fail");
+        let msg = err.to_string();
+        assert!(msg.contains("429"), "error should mention 429; got: {msg}");
+        assert!(
+            msg.contains("Rate limit"),
+            "error should surface rate-limit message; got: {msg}"
+        );
+    }
+
+    #[test]
+    fn anthropic_500_server_error_surfaces_as_validation_error() {
+        let transport = RecordingTransport::with_http_error(
+            500,
+            json!({"error": {"message": "Internal server error"}}),
+        );
+        let runtime = ProviderRuntime::with_transport(transport as Arc<dyn HttpTransport>);
+        let resolved = resolved_provider("anthropic", Some("claude-3-7-sonnet-latest"));
+        let request = CompletionRequest::new("hello");
+
+        let err = runtime
+            .complete(&resolved, &request)
+            .expect_err("500 should fail");
+        let msg = err.to_string();
+        assert!(msg.contains("500"), "error should mention 500; got: {msg}");
+    }
+
+    #[test]
+    fn openai_malformed_json_body_surfaces_parse_error() {
+        let transport = RecordingTransport::with_raw_body(200, "not valid json {{{");
+        let runtime = ProviderRuntime::with_transport(transport as Arc<dyn HttpTransport>);
+        let resolved = resolved_provider("openai", Some("gpt-4.1"));
+        let request = CompletionRequest::new("hello");
+
+        let err = runtime
+            .complete(&resolved, &request)
+            .expect_err("malformed json should fail");
+        assert!(
+            !err.to_string().is_empty(),
+            "error message should be non-empty; got: {err}"
+        );
+    }
+
+    #[test]
+    fn network_error_surfaces_as_validation_error() {
+        let transport = RecordingTransport::with_network_error("connection refused");
+        let runtime = ProviderRuntime::with_transport(transport as Arc<dyn HttpTransport>);
+        let resolved = resolved_provider("openai", Some("gpt-4.1"));
+        let request = CompletionRequest::new("hello");
+
+        let err = runtime
+            .complete(&resolved, &request)
+            .expect_err("network error should fail");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("provider request failed"),
+            "error should mention provider request failed; got: {msg}"
+        );
+        assert!(
+            msg.contains("connection refused"),
+            "error should include underlying cause; got: {msg}"
         );
     }
 }
