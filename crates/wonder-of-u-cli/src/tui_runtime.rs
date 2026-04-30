@@ -51,6 +51,8 @@ const PICKER_CONTROLS_NOTE: &str =
     "type to filter, use Up/Down to choose, Enter to select, Esc to cancel";
 const HISTORY_SEARCH_CONTROLS_NOTE: &str =
     "type to filter, Ctrl+R/Up/Down to cycle, Enter to accept, Esc to cancel";
+/// Number of ticks before an auto-dismissed task notification dialog disappears.
+const TASK_NOTICE_TTL: u8 = 30;
 
 pub(crate) fn run_tui<W: Write>(
     writer: &mut W,
@@ -130,6 +132,8 @@ struct TuiController<'a> {
     pending_permission_picker: Option<PermissionPickerState>,
     pending_memory_picker: Option<MemoryPickerState>,
     pending_external_editor: Option<ExternalEditorRequest>,
+    /// Countdown ticks until the task notification dialog is auto-dismissed.
+    task_notice_ttl: Option<u8>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -278,6 +282,7 @@ impl<'a> TuiController<'a> {
             pending_permission_picker: None,
             pending_memory_picker: None,
             pending_external_editor: None,
+            task_notice_ttl: None,
         };
         controller.hydrate_initial_settings()?;
         controller.refresh_runtime_state()?;
@@ -321,6 +326,15 @@ impl<'a> TuiController<'a> {
                 Ok(())
             }
             UiEvent::Tick => {
+                match self.task_notice_ttl {
+                    Some(0) => {
+                        self.dismiss_task_notice();
+                    }
+                    Some(n) => {
+                        self.task_notice_ttl = Some(n - 1);
+                    }
+                    None => {}
+                }
                 if self.refresh_runtime_state()? {
                     self.needs_render = true;
                 }
@@ -1407,6 +1421,7 @@ impl<'a> TuiController<'a> {
                 || dialog.title == "Desktop"
                 || dialog.title == "Mobile"
                 || dialog.title == "Chrome"
+                || dialog.title == "Background Tasks"
                 || dialog.title == "Release Notes"
                 || dialog.title == "Version"
                 || dialog.title == "Hooks"
@@ -1440,6 +1455,17 @@ impl<'a> TuiController<'a> {
             self.status_note = Some("opening file in editor".into());
         } else if !had_queued_commands {
             self.status_note = Some("slash command recorded".into());
+        }
+        if invocation.name == "tasks"
+            && invocation.args.is_empty()
+            && self.state.background_tasks.is_empty()
+        {
+            self.dialog = Some(DialogView::notice(
+                "Background Tasks",
+                ["No background tasks running"],
+            ));
+            self.task_notice_ttl = Some(TASK_NOTICE_TTL);
+            self.status_note = Some("no background tasks running".into());
         }
         self.needs_render = true;
         Ok(())
@@ -1919,6 +1945,7 @@ impl<'a> TuiController<'a> {
                     task_status_label(task.status),
                     task.description
                 ));
+                self.task_notice_ttl = Some(TASK_NOTICE_TTL);
             }
             self.state.background_tasks = effective_tasks;
             changed = true;
@@ -2756,6 +2783,12 @@ impl<'a> TuiController<'a> {
         if let Some(status) = status {
             self.status_note = Some(status);
         }
+    }
+
+    fn dismiss_task_notice(&mut self) {
+        self.task_notice_ttl = None;
+        self.dismiss_dialog();
+        self.needs_render = true;
     }
 
     fn has_picker_overlay(&self) -> bool {
@@ -7203,6 +7236,136 @@ mod tests {
         assert_eq!(
             controller.status_note.as_deref(),
             Some("task update closed")
+        );
+    }
+
+    #[test]
+    fn controller_task_notice_clears_after_ttl_ticks() {
+        let dir = unique_test_dir("tui-task-notice-ttl");
+        let registry = commands::registry(Some(dir.clone())).expect("registry");
+        let mut controller = TuiController::new(
+            test_context(&dir),
+            &registry,
+            Some(dir.as_path()),
+            TuiLaunchOptions { session_id: None },
+        )
+        .expect("controller");
+        let store = TaskStore::new(&dir);
+        let mut task = TaskState::pending("run tests");
+        task.status = TaskStatus::Running;
+        store.write_task(&task).expect("write running task");
+        controller
+            .refresh_runtime_state()
+            .expect("load running task");
+
+        task.mark_finished(TaskStatus::Completed, Some(0), Some("done".into()));
+        store.write_task(&task).expect("write completed task");
+        controller
+            .refresh_runtime_state()
+            .expect("load completed task");
+
+        assert!(
+            controller.task_notice_ttl.is_some(),
+            "TTL should be set after task notification"
+        );
+        assert!(controller.dialog.is_some(), "dialog should be open");
+
+        // Tick until TTL expires (TASK_NOTICE_TTL ticks to decrement to 0, then one more to dismiss)
+        for _ in 0..=TASK_NOTICE_TTL {
+            controller
+                .handle_event(UiEvent::Tick, |_| Ok(()))
+                .expect("tick");
+        }
+
+        assert!(
+            controller.dialog.is_none(),
+            "dialog should be dismissed after TTL ticks"
+        );
+        assert_eq!(controller.task_notice_ttl, None);
+    }
+
+    #[test]
+    fn controller_task_notice_esc_dismisses_immediately() {
+        let dir = unique_test_dir("tui-task-notice-esc");
+        let registry = commands::registry(Some(dir.clone())).expect("registry");
+        let mut controller = TuiController::new(
+            test_context(&dir),
+            &registry,
+            Some(dir.as_path()),
+            TuiLaunchOptions { session_id: None },
+        )
+        .expect("controller");
+        let store = TaskStore::new(&dir);
+        let mut task = TaskState::pending("build project");
+        task.status = TaskStatus::Running;
+        store.write_task(&task).expect("write running task");
+        controller
+            .refresh_runtime_state()
+            .expect("load running task");
+
+        task.mark_finished(TaskStatus::Completed, Some(0), None);
+        store.write_task(&task).expect("write completed task");
+        controller
+            .refresh_runtime_state()
+            .expect("load completed task");
+
+        assert!(controller.dialog.is_some(), "dialog should be open");
+
+        controller
+            .handle_dialog_key(
+                KeyEvent {
+                    code: KeyCode::Esc,
+                    modifiers: wonder_of_u_tui::KeyModifiers::default(),
+                },
+                None,
+                &mut |_| Ok(()),
+            )
+            .expect("dismiss via Esc");
+
+        assert!(
+            controller.dialog.is_none(),
+            "dialog should be gone immediately after Esc"
+        );
+        assert_eq!(controller.state.input_mode, InputMode::Prompt);
+    }
+
+    #[test]
+    fn controller_empty_task_panel_shows_notice_when_opened() {
+        let dir = unique_test_dir("tui-empty-tasks-notice");
+        let registry = commands::registry(Some(dir.clone())).expect("registry");
+        let mut controller = TuiController::new(
+            test_context(&dir),
+            &registry,
+            Some(dir.as_path()),
+            TuiLaunchOptions { session_id: None },
+        )
+        .expect("controller");
+
+        // No tasks exist — run bare /tasks command
+        controller
+            .execute_slash_command("/tasks")
+            .expect("run /tasks with no tasks");
+
+        assert_eq!(
+            controller.status_note.as_deref(),
+            Some("no background tasks running"),
+            "status note should indicate no tasks"
+        );
+        assert!(
+            controller.task_notice_ttl.is_some(),
+            "TTL should be set for empty-tasks notice"
+        );
+        let dialog = controller
+            .view()
+            .dialog
+            .expect("notice dialog should be shown");
+        assert_eq!(dialog.title, "Background Tasks");
+        assert!(
+            dialog
+                .body
+                .iter()
+                .any(|l| l.contains("No background tasks")),
+            "dialog body should mention no background tasks"
         );
     }
 
