@@ -2909,6 +2909,7 @@ fn render_runtime_disabled(kind: &str, note: &str) -> String {
 }
 
 #[cfg(test)]
+#[allow(clippy::items_after_test_module)]
 mod tests {
     use std::path::Path;
 
@@ -3274,7 +3275,7 @@ mod tests {
         assert!(persisted);
         assert!(rendered.contains("fast_mode=true"));
         assert!(rendered.contains("status=fast mode enabled"));
-        assert_eq!(store.read().expect("read settings").fast_mode, true);
+        assert!(store.read().expect("read settings").fast_mode);
     }
 
     #[test]

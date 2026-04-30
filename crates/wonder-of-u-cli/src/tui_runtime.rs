@@ -8,12 +8,17 @@ use std::{
 };
 
 use crossterm::{
-    cursor::{Hide, MoveTo, Show},
-    queue,
-    style::{Attribute, Print, ResetColor, SetAttribute, SetBackgroundColor, SetForegroundColor},
-    terminal::{self, Clear, ClearType},
+    cursor::{Hide, Show},
+    event::{DisableBracketedPaste, EnableBracketedPaste},
+    execute,
+    terminal::{self, EnterAlternateScreen, LeaveAlternateScreen},
 };
 use futures::executor::block_on;
+use ratatui::{
+    Frame, Terminal,
+    backend::CrosstermBackend,
+    prelude::{Color as RatatuiColor, Modifier, Style as RatatuiStyle},
+};
 use wonder_of_u_agent::{
     CompletionRequest, ProviderResolver, ProviderRuntime, ProviderSelection, ProviderToolCall,
     ProviderToolResultMessage, ProviderToolSpec, SettingsStore, ToolConversationRound,
@@ -30,10 +35,9 @@ use wonder_of_u_core::{
 };
 use wonder_of_u_storage::{TaskStore, TranscriptStore};
 use wonder_of_u_tui::{
-    CrosstermControl, CrosstermEventSource, DialogView, EditAction, EventLoop, FrameBuffer,
-    HistorySearchView, KeyBindingContext, KeyBindingResolver, KeyCode, KeyEvent, PickerView,
-    ResolvedKey, ShellLayout, ShellView, TerminalConfig, TerminalLifecycle, TextBuffer, Theme,
-    TurnState, UiEvent, VimMode, VimState,
+    CrosstermEventSource, DialogView, EditAction, EventLoop, HistorySearchView, KeyBindingContext,
+    KeyBindingResolver, KeyCode, KeyEvent, PickerView, ResolvedKey, ShellLayout, ShellView,
+    TextBuffer, Theme, TurnState, UiEvent, VimMode, VimState,
 };
 
 use crate::commands;
@@ -54,8 +58,28 @@ const HISTORY_SEARCH_CONTROLS_NOTE: &str =
 /// Number of ticks before an auto-dismissed task notification dialog disappears.
 const TASK_NOTICE_TTL: u8 = 30;
 
+/// Enters raw mode and alternate screen via ratatui's `CrosstermBackend`, returning
+/// a fully initialised `Terminal` ready for `draw()` calls.
+fn setup_ratatui_terminal<W: Write>(writer: W) -> Result<Terminal<CrosstermBackend<W>>> {
+    terminal::enable_raw_mode()?;
+    let mut backend = CrosstermBackend::new(writer);
+    execute!(backend, EnterAlternateScreen, Hide, EnableBracketedPaste)?;
+    Ok(Terminal::new(backend)?)
+}
+
+/// Leaves alternate screen and restores the terminal to a usable state.
+fn restore_ratatui_terminal<W: Write>(term: &mut Terminal<CrosstermBackend<W>>) {
+    let _ = execute!(
+        term.backend_mut(),
+        LeaveAlternateScreen,
+        Show,
+        DisableBracketedPaste
+    );
+    let _ = terminal::disable_raw_mode();
+}
+
 pub(crate) fn run_tui<W: Write>(
-    writer: &mut W,
+    writer: W,
     registry: &CommandRegistry,
     storage_dir: Option<&Path>,
     options: TuiLaunchOptions,
@@ -85,31 +109,40 @@ pub(crate) fn run_tui<W: Write>(
         additional_working_directories: Vec::new(),
     };
     let mut controller = TuiController::new(context, registry, storage_dir, options)?;
-    let mut lifecycle =
-        TerminalLifecycle::enter(CrosstermControl::new(writer), TerminalConfig::default())?;
+    let mut term = setup_ratatui_terminal(writer)?;
     let mut events = EventLoop::new(CrosstermEventSource, Duration::from_millis(500));
 
-    render_controller(lifecycle.control_mut().writer_mut(), &controller)?;
+    render_tui(&mut term, &controller)?;
     controller.mark_rendered();
 
-    while !controller.exit_requested() {
-        let event = events.next_event()?;
-        controller.handle_event(event, |controller| {
-            render_controller(lifecycle.control_mut().writer_mut(), controller)
-        })?;
-        if let Some(request) = controller.take_external_editor_request() {
-            lifecycle.restore()?;
-            let result = launch_external_editor(&request);
-            lifecycle.reenter(TerminalConfig::default())?;
-            controller.finish_external_editor_request(&request, result);
+    let run_result = (|| -> Result<()> {
+        while !controller.exit_requested() {
+            let event = events.next_event()?;
+            controller.handle_event(event, |c| render_tui(&mut term, c))?;
+            if let Some(request) = controller.take_external_editor_request() {
+                // Temporarily leave the TUI while the external editor runs.
+                restore_ratatui_terminal(&mut term);
+                let result = launch_external_editor(&request);
+                terminal::enable_raw_mode()?;
+                execute!(
+                    term.backend_mut(),
+                    EnterAlternateScreen,
+                    Hide,
+                    EnableBracketedPaste
+                )?;
+                term.clear()?;
+                controller.finish_external_editor_request(&request, result);
+            }
+            if controller.needs_render() {
+                render_tui(&mut term, &controller)?;
+                controller.mark_rendered();
+            }
         }
-        if controller.needs_render() {
-            render_controller(lifecycle.control_mut().writer_mut(), &controller)?;
-            controller.mark_rendered();
-        }
-    }
+        Ok(())
+    })();
 
-    Ok(())
+    restore_ratatui_terminal(&mut term);
+    run_result
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
@@ -690,10 +723,12 @@ impl<'a> TuiController<'a> {
             | Some(ResolvedKey::InsertChar('Y')) => {
                 self.resolve_pending_tool_approval(true, before_blocking)
             }
+            _ if key.code == KeyCode::Esc => {
+                self.resolve_pending_tool_approval(false, before_blocking)
+            }
             Some(ResolvedKey::InsertChar('n'))
             | Some(ResolvedKey::InsertChar('N'))
-            | Some(ResolvedKey::System(wonder_of_u_tui::SystemAction::Interrupt))
-            | _ if key.code == KeyCode::Esc => {
+            | Some(ResolvedKey::System(wonder_of_u_tui::SystemAction::Interrupt)) => {
                 self.resolve_pending_tool_approval(false, before_blocking)
             }
             _ => {
@@ -781,8 +816,7 @@ impl<'a> TuiController<'a> {
                         remaining_calls: remaining_calls
                             .iter()
                             .skip(index + 1)
-                            .cloned()
-                            .map(|call| pending_local_call_from_runtime(&call))
+                            .map(pending_local_call_from_runtime)
                             .collect(),
                         reason,
                     });
@@ -1008,8 +1042,7 @@ impl<'a> TuiController<'a> {
                                     remaining_calls: local_calls
                                         .iter()
                                         .skip(index + 1)
-                                        .cloned()
-                                        .map(|call| pending_local_call_from_runtime(&call))
+                                        .map(pending_local_call_from_runtime)
                                         .collect(),
                                     reason,
                                 });
@@ -1309,8 +1342,7 @@ impl<'a> TuiController<'a> {
                                     remaining_calls: local_calls
                                         .iter()
                                         .skip(index + 1)
-                                        .cloned()
-                                        .map(|call| pending_local_call_from_runtime(&call))
+                                        .map(pending_local_call_from_runtime)
                                         .collect(),
                                     reason,
                                 });
@@ -1460,11 +1492,12 @@ impl<'a> TuiController<'a> {
             self.status_note = Some(format!("effort {effort}"));
         } else if let Some(color) = parse_session_color_hint(text.as_deref().unwrap_or_default()) {
             self.status_note = Some(format!("color {color}"));
-        } else if self.pending_permission_picker.is_some() {
-        } else if self.pending_memory_picker.is_some() {
-        } else if self.pending_tag_removal.is_some() {
-        } else if self.pending_theme_picker.is_some() {
-        } else if self.pending_model_picker.is_some() {
+        } else if self.pending_permission_picker.is_some()
+            || self.pending_memory_picker.is_some()
+            || self.pending_tag_removal.is_some()
+            || self.pending_theme_picker.is_some()
+            || self.pending_model_picker.is_some()
+        {
         } else if self.pending_external_editor.is_some() {
             self.status_note = Some("opening file in editor".into());
         } else if !had_queued_commands {
@@ -3202,23 +3235,97 @@ fn tui_editor_command() -> Option<(String, Vec<String>)> {
     Some((command, tokens.drain(1..).collect()))
 }
 
-fn render_controller<W: Write>(writer: &mut W, controller: &TuiController<'_>) -> Result<()> {
-    let (width, height) = terminal::size()?;
-    let width = width.max(20);
-    let height = height.max(6);
+/// Renders the current controller state using ratatui's `Terminal::draw`, which
+/// handles buffer diffing and cursor positioning.
+fn render_tui<W: Write>(
+    term: &mut Terminal<CrosstermBackend<W>>,
+    controller: &TuiController<'_>,
+) -> Result<()> {
     let view = controller.view();
-    let frame = wonder_of_u_tui::render_snapshot(
-        width,
-        height,
-        &view,
-        &theme_for_state(
-            controller.state.theme.as_deref(),
-            controller.state.session_color.as_deref(),
-        ),
+    let theme = theme_for_state(
+        controller.state.theme.as_deref(),
+        controller.state.session_color.as_deref(),
     );
-    let (cursor_x, cursor_y) = controller.prompt_cursor(width, height);
-    render_frame(writer, &frame, cursor_x, cursor_y)?;
+    let (cursor_x, cursor_y) = {
+        let (width, height) = terminal::size().unwrap_or((80, 24));
+        controller.prompt_cursor(width.max(20), height.max(6))
+    };
+    term.draw(|frame| {
+        render_to_ratatui_frame(frame, &view, &theme);
+        // Place the input cursor at the prompt position.
+        frame.set_cursor_position((cursor_x, cursor_y));
+    })
+    .map_err(|e| WonderError::internal(e.to_string()))?;
     Ok(())
+}
+
+fn render_to_ratatui_frame(frame: &mut Frame<'_>, view: &ShellView, theme: &Theme) {
+    let area = frame.area();
+    let snapshot = wonder_of_u_tui::render_snapshot(area.width, area.height, view, theme);
+    let buffer = frame.buffer_mut();
+
+    for y in 0..area.height {
+        for x in 0..area.width {
+            let Some(cell) = snapshot.cell(x, y) else {
+                continue;
+            };
+            let target = &mut buffer[(area.x.saturating_add(x), area.y.saturating_add(y))];
+            target.set_char(cell.symbol);
+            target.set_style(ratatui_style(cell.style));
+        }
+    }
+}
+
+fn ratatui_style(style: wonder_of_u_tui::TextStyle) -> RatatuiStyle {
+    let mut rendered = RatatuiStyle::default();
+    if let Some(fg) = style.fg {
+        rendered = rendered.fg(ratatui_color(fg));
+    }
+    if let Some(bg) = style.bg {
+        rendered = rendered.bg(ratatui_color(bg));
+    }
+
+    let mut modifiers = Modifier::empty();
+    if style.bold {
+        modifiers |= Modifier::BOLD;
+    }
+    if style.dim {
+        modifiers |= Modifier::DIM;
+    }
+    if style.italic {
+        modifiers |= Modifier::ITALIC;
+    }
+    if style.underlined {
+        modifiers |= Modifier::UNDERLINED;
+    }
+    if style.reversed {
+        modifiers |= Modifier::REVERSED;
+    }
+
+    rendered.add_modifier(modifiers)
+}
+
+fn ratatui_color(color: wonder_of_u_tui::Color) -> RatatuiColor {
+    match color {
+        wonder_of_u_tui::Color::Reset => RatatuiColor::Reset,
+        wonder_of_u_tui::Color::Black => RatatuiColor::Black,
+        wonder_of_u_tui::Color::DarkGrey => RatatuiColor::DarkGray,
+        wonder_of_u_tui::Color::Red => RatatuiColor::Red,
+        wonder_of_u_tui::Color::DarkRed => RatatuiColor::LightRed,
+        wonder_of_u_tui::Color::Green => RatatuiColor::Green,
+        wonder_of_u_tui::Color::DarkGreen => RatatuiColor::LightGreen,
+        wonder_of_u_tui::Color::Yellow => RatatuiColor::Yellow,
+        wonder_of_u_tui::Color::DarkYellow => RatatuiColor::LightYellow,
+        wonder_of_u_tui::Color::Blue => RatatuiColor::Blue,
+        wonder_of_u_tui::Color::DarkBlue => RatatuiColor::LightBlue,
+        wonder_of_u_tui::Color::Magenta => RatatuiColor::Magenta,
+        wonder_of_u_tui::Color::DarkMagenta => RatatuiColor::LightMagenta,
+        wonder_of_u_tui::Color::Cyan => RatatuiColor::Cyan,
+        wonder_of_u_tui::Color::DarkCyan => RatatuiColor::LightCyan,
+        wonder_of_u_tui::Color::Grey => RatatuiColor::Gray,
+        wonder_of_u_tui::Color::White => RatatuiColor::White,
+        wonder_of_u_tui::Color::Rgb(r, g, b) => RatatuiColor::Rgb(r, g, b),
+    }
 }
 
 fn theme_for_state(name: Option<&str>, session_color: Option<&str>) -> Theme {
@@ -3286,64 +3393,6 @@ fn session_color_style(
         (_, "cyan") => wonder_of_u_tui::Color::Cyan,
         _ => return None,
     })
-}
-
-fn render_frame<W: Write>(
-    writer: &mut W,
-    frame: &FrameBuffer,
-    cursor_x: u16,
-    cursor_y: u16,
-) -> Result<()> {
-    queue!(writer, Hide, MoveTo(0, 0), Clear(ClearType::All))?;
-    let mut active_style = None;
-    for y in 0..frame.height() {
-        queue!(writer, MoveTo(0, y))?;
-        for x in 0..frame.width() {
-            let cell = frame
-                .cell(x, y)
-                .ok_or_else(|| WonderError::internal("frame cell out of bounds"))?;
-            if active_style != Some(cell.style) {
-                queue!(writer, ResetColor, SetAttribute(Attribute::Reset))?;
-                apply_style(writer, cell.style)?;
-                active_style = Some(cell.style);
-            }
-            queue!(writer, Print(cell.symbol))?;
-        }
-    }
-    queue!(
-        writer,
-        ResetColor,
-        SetAttribute(Attribute::Reset),
-        MoveTo(cursor_x, cursor_y),
-        Show
-    )?;
-    writer.flush()?;
-    Ok(())
-}
-
-fn apply_style<W: Write>(writer: &mut W, style: wonder_of_u_tui::TextStyle) -> Result<()> {
-    if let Some(color) = style.fg {
-        queue!(writer, SetForegroundColor(color.into()))?;
-    }
-    if let Some(color) = style.bg {
-        queue!(writer, SetBackgroundColor(color.into()))?;
-    }
-    if style.bold {
-        queue!(writer, SetAttribute(Attribute::Bold))?;
-    }
-    if style.dim {
-        queue!(writer, SetAttribute(Attribute::Dim))?;
-    }
-    if style.italic {
-        queue!(writer, SetAttribute(Attribute::Italic))?;
-    }
-    if style.underlined {
-        queue!(writer, SetAttribute(Attribute::Underlined))?;
-    }
-    if style.reversed {
-        queue!(writer, SetAttribute(Attribute::Reverse))?;
-    }
-    Ok(())
 }
 
 fn prompt_cursor_position(width: u16, height: u16, prompt: &str, cursor: usize) -> (u16, u16) {
@@ -6845,13 +6894,12 @@ mod tests {
             |request_index, _headers, body| match request_index {
                 0 => {
                     assert_eq!(body["messages"][0]["content"], "write the note");
-                    assert_eq!(
+                    assert!(
                         body["tools"]
                             .as_array()
                             .expect("tools array")
                             .iter()
-                            .any(|tool| tool["function"]["name"] == "file_write"),
-                        true
+                            .any(|tool| tool["function"]["name"] == "file_write")
                     );
                 }
                 1 => {
@@ -8314,5 +8362,135 @@ mod tests {
             controller.state.brief_mode,
             "brief mode should persist across /clear"
         );
+    }
+
+    // ── ratatui TestBackend snapshot tests ──────────────────────────────────
+
+    /// Renders a `ShellView` into a ratatui `TestBackend` at the given size and
+    /// returns each row as a plain-text string (no ANSI codes) so tests can
+    /// make simple string assertions without depending on exact cell styles.
+    fn render_to_test_backend(
+        width: u16,
+        height: u16,
+        view: &wonder_of_u_tui::ShellView,
+        theme: &wonder_of_u_tui::Theme,
+    ) -> Vec<String> {
+        use ratatui::{Terminal, backend::TestBackend};
+
+        let backend = TestBackend::new(width, height);
+        let mut terminal = Terminal::new(backend).expect("test terminal");
+        terminal
+            .draw(|frame| {
+                render_to_ratatui_frame(frame, view, theme);
+            })
+            .expect("draw");
+        let buffer = terminal.backend().buffer().clone();
+        (0..height)
+            .map(|y| {
+                (0..width)
+                    .map(|x| buffer[(x, y)].symbol().chars().next().unwrap_or(' '))
+                    .collect()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn ratatui_empty_repl_renders_border_and_status() {
+        // An empty ShellView should still render panel borders and status line.
+        let view = wonder_of_u_tui::ShellView {
+            title: "Test Session".into(),
+            status: "claude-3-5-sonnet · default".into(),
+            footer: "Ctrl+C to quit".into(),
+            ..wonder_of_u_tui::ShellView::default()
+        };
+        let theme = wonder_of_u_tui::Theme::default();
+        let rows = render_to_test_backend(60, 20, &view, &theme);
+
+        // There must be at least one row containing the session title.
+        let has_title = rows.iter().any(|r| r.contains("Test Session"));
+        assert!(
+            has_title,
+            "title 'Test Session' not found in rendered output"
+        );
+
+        // Status line must contain the model/mode text.
+        let has_status = rows
+            .iter()
+            .any(|r| r.contains("claude") || r.contains("default"));
+        assert!(has_status, "status text not found in rendered output");
+    }
+
+    #[test]
+    fn ratatui_prompt_text_appears_in_frame() {
+        // A non-empty prompt string should appear verbatim in the rendered frame.
+        let view = wonder_of_u_tui::ShellView {
+            title: String::new(),
+            prompt: "hello world".into(),
+            status: "model · default".into(),
+            footer: String::new(),
+            ..wonder_of_u_tui::ShellView::default()
+        };
+        let theme = wonder_of_u_tui::Theme::default();
+        let rows = render_to_test_backend(80, 24, &view, &theme);
+
+        let has_prompt = rows.iter().any(|r| r.contains("hello world"));
+        assert!(has_prompt, "prompt text 'hello world' not found in frame");
+    }
+
+    #[test]
+    fn ratatui_message_text_appears_in_frame() {
+        use wonder_of_u_tui::{MessageLineView, MessageRole};
+
+        // A user message line should be visible in the messages panel.
+        let view = wonder_of_u_tui::ShellView {
+            title: "S".into(),
+            messages: vec![MessageLineView {
+                role: MessageRole::User,
+                text: "test user message".into(),
+            }],
+            status: "m".into(),
+            footer: "f".into(),
+            ..wonder_of_u_tui::ShellView::default()
+        };
+        let theme = wonder_of_u_tui::Theme::default();
+        let rows = render_to_test_backend(80, 24, &view, &theme);
+
+        let has_msg = rows.iter().any(|r| r.contains("test user message"));
+        assert!(has_msg, "user message text not found in frame");
+    }
+
+    #[test]
+    fn ratatui_frame_fills_full_terminal_size() {
+        // Every row must have exactly `width` characters — no short rows.
+        let width: u16 = 72;
+        let height: u16 = 18;
+        let view = wonder_of_u_tui::ShellView::default();
+        let theme = wonder_of_u_tui::Theme::default();
+        let rows = render_to_test_backend(width, height, &view, &theme);
+
+        assert_eq!(rows.len(), height as usize, "wrong number of rows");
+        for (i, row) in rows.iter().enumerate() {
+            assert_eq!(
+                row.chars().count(),
+                width as usize,
+                "row {i} has wrong width"
+            );
+        }
+    }
+
+    #[test]
+    fn ratatui_midnight_theme_renders_without_panic() {
+        // Verify that the midnight theme variant flows through without panicking.
+        let view = wonder_of_u_tui::ShellView {
+            title: "midnight".into(),
+            prompt: "type here".into(),
+            status: "claude · default".into(),
+            footer: "hints".into(),
+            ..wonder_of_u_tui::ShellView::default()
+        };
+        let theme = theme_for_state(Some("midnight"), None);
+        // Should not panic.
+        let rows = render_to_test_backend(80, 24, &view, &theme);
+        assert_eq!(rows.len(), 24);
     }
 }

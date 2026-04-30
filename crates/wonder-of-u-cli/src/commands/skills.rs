@@ -191,7 +191,7 @@ fn render_skill_details(skill: &SkillRegistration) -> String {
         .take(120)
         .collect::<String>();
 
-    vec![
+    [
         format!("skill={}", skill.manifest.name),
         format!("description={}", skill.manifest.description),
         format!("source={}", skill.source.label()),

@@ -88,18 +88,17 @@ impl PermissionRuleSource {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum PermissionRuleConstraint {
+    #[default]
     Any,
-    PathPrefix { path: PathBuf },
-    ShellCommandContains { text: String },
-}
-
-impl Default for PermissionRuleConstraint {
-    fn default() -> Self {
-        Self::Any
-    }
+    PathPrefix {
+        path: PathBuf,
+    },
+    ShellCommandContains {
+        text: String,
+    },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]

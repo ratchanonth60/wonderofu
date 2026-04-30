@@ -615,7 +615,7 @@ fn render_agent_task_header(task: &TaskState) -> String {
 }
 
 fn sanitize_log_value(value: &str) -> String {
-    value.replace('\n', " ").replace('\r', " ")
+    value.replace(['\n', '\r'], " ")
 }
 
 fn task_supports_process_runtime(kind: TaskKind) -> bool {

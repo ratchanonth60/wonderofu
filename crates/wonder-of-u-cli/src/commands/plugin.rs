@@ -385,7 +385,7 @@ fn render_plugin_status(plugins: &PluginCatalog, skills: &SkillCatalog) -> Strin
 }
 
 fn render_reload_status(plugins: &PluginCatalog, skills: &SkillCatalog) -> String {
-    vec![
+    [
         "reloaded=true".into(),
         format!("plugins={}", plugins.entries().len()),
         format!("ready_plugins={}", plugins.ready_count()),

@@ -1084,7 +1084,7 @@ fn render_ide_summary(browser_launch_attempted: bool) -> String {
 
 fn render_insights_enqueue(storage_dir: Option<&Path>, focus: &str) -> Result<String> {
     let Some(storage_dir) = storage_dir else {
-        return Ok(vec![
+        return Ok([
             "## Insights".to_string(),
             "storage_dir=disabled".to_string(),
             "The Rust port needs --storage-dir session history before it can generate an insights report.".to_string(),
@@ -1094,7 +1094,7 @@ fn render_insights_enqueue(storage_dir: Option<&Path>, focus: &str) -> Result<St
     let store = TranscriptStore::new(storage_dir);
     let metadata = store.list_metadata()?;
     if metadata.is_empty() {
-        return Ok(vec![
+        return Ok([
             "## Insights".to_string(),
             format!("storage_dir={}", store.paths().base_dir().display()),
             "No persisted sessions were found yet, so there is nothing to analyze.".to_string(),

@@ -1236,7 +1236,7 @@ mod tests {
             SessionMetadata::from_app_state(&AppState::new(PathBuf::from("/workspace")));
         let mut second =
             SessionMetadata::from_app_state(&AppState::new(PathBuf::from("/workspace/second")));
-        second.updated_at = second.updated_at + time::Duration::seconds(30);
+        second.updated_at += time::Duration::seconds(30);
 
         store.write_metadata(&first).expect("write first");
         store.write_metadata(&second).expect("write second");
