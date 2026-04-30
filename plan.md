@@ -91,7 +91,7 @@ The target TUI is **visual-close**: layout, flow, colors, dialogs, status/footer
     - `feat/ratatui-picker-search`: picker overlays in the Rust TUI now support live search/filter queries with visible match counts and filtered navigation for model/theme/memory/permission flows.
     - `feat/ratatui-queued-visibility`: the ratatui shell now shows pending queued commands in a dedicated queued panel with truncation and overflow summaries so upcoming work is visible before it drains.
 - TUI parity note:
-  - The reference UI uses **Ink/React**, while `wonder-of-u` uses a custom Rust state/controller loop on top of **ratatui/crossterm**.
+  - The reference UI uses **Ink/React**, while `wonder-of-u` uses ratatui's `Terminal<CrosstermBackend<W>>::draw()` loop — the TUI renderer was fully migrated from the old custom FrameBuffer cell-iteration path to proper ratatui `Terminal::draw()` calls in `feat/ratatui-proper-backend-3` (merged 2026-05-01).
   - Because of that, parity work must focus on reproducing flow/state/dialog behavior instead of assuming the same component lifecycle or repaint model.
   - Any TUI that still feels "strange" should be treated as a parity bug, not as expected behavior.
   - Validation hardening also matters for parity work: cwd-sensitive CLI tests are now serialized so command parity changes do not leave the suite with unrelated flaky failures.
@@ -99,7 +99,7 @@ The target TUI is **visual-close**: layout, flow, colors, dialogs, status/footer
   - Update progress in this project-level `plan.md` at each meaningful milestone.
   - Use `dev` as the integration branch.
   - `main` now reflects the merged parity snapshot from `dev`.
-  - `dev` now includes the merged fast, permission, overlay, resume, command-audit, companion-handoff, picker-search, and queued-visibility parity slices.
+  - `dev` now includes: fast, permission, overlay, resume, command-audit, companion-handoff, picker-search, queued-visibility parity slices + ratatui Terminal::draw() backend + full built-in tool registry (web_fetch, web_search, todo, ask_user, plan_read/write, task_output/stop, agent, mcp_resource_list/read).
   - Custom Rust code-writing agents are now expected to use Rust-native documentation/comment style when comments are needed (`//!` module docs, `///` public item docs, `//` concise why-comments).
   - The last completed feature sequence was: `feat/fast-mode-parity` -> `feat/tui-permission-parity` -> `feat/tui-overlay-parity` -> `feat/tui-resume-parity` -> `feat/command-audit-parity` -> `feat/companion-handoff-parity` -> `feat/ratatui-picker-search` -> `feat/ratatui-queued-visibility`.
   - For each new feature slice, branch from `dev` into `feat/<slice>`, finish the slice, then merge back into `dev`.
@@ -146,7 +146,7 @@ Slices (each = its own `feat/<slice>` branched from `dev`, merged back via `--no
    - Tests cover registry wiring, command output, and TUI notice parsing.
 6. `feat/parity-hardening-docs-final` ✅ — final documentation/plan sweep, `main` fast-forwarded from `dev`.
 
-**`parity-hardening-release` is COMPLETE.** All six slices merged. `dev` and `main` are at parity. Test counts: 185 CLI + 35 TUI (all passing).
+**`parity-hardening-release` is COMPLETE.** All six slices merged. ratatui Terminal::draw() backend migrated. Full built-in tool registry registered. `dev` and `main` are at `2a2c376`. Test count: **395 tests pass, 0 failures**.
 
 Cross-cutting expectations for each slice:
 - Branch from `dev`, never edit `dev` directly.
