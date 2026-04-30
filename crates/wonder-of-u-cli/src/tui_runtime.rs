@@ -8216,4 +8216,100 @@ mod tests {
         let (x, y) = prompt_cursor_position(40, 10, "abc", 2);
         assert_eq!((x, y), (1 + 2, 6));
     }
+
+    /// Verify that enabling brief mode injects the hint into the system prompt
+    /// field exactly once and never into the messages array.
+    #[test]
+    fn controller_brief_mode_injects_system_prompt_once() {
+        let dir = unique_test_dir("tui-brief-system-prompt");
+        let (api_base, handle) = spawn_json_sequence_server(
+            |_index, _headers, body| {
+                let system = body["system"].as_str().expect("system field present");
+                let brief_hint = "Be brief.";
+                assert!(
+                    system.contains(brief_hint),
+                    "system prompt should contain the brief hint"
+                );
+                assert_eq!(
+                    system.matches(brief_hint).count(),
+                    1,
+                    "brief hint should appear exactly once in system prompt"
+                );
+                let messages = body["messages"].as_array().expect("messages array");
+                assert_eq!(messages.len(), 1, "exactly one user message");
+                assert_eq!(messages[0]["role"].as_str(), Some("user"));
+                // The brief hint must NOT appear in the user message content.
+                let content_text = messages[0]["content"][0]["text"]
+                    .as_str()
+                    .unwrap_or_default();
+                assert!(
+                    !content_text.contains(brief_hint),
+                    "brief hint must not appear in user message content"
+                );
+            },
+            vec![
+                json!({
+                    "id": "msg_brief_test_1",
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [{"type": "text", "text": "brief reply"}],
+                    "stop_reason": "end_turn",
+                    "usage": {"input_tokens": 5, "output_tokens": 2}
+                })
+                .to_string(),
+            ],
+        );
+        write_provider_config_for(&dir, "anthropic", "claude-3-7-sonnet-latest", &api_base);
+        let registry = commands::registry(Some(dir.clone())).expect("registry");
+        let mut controller = TuiController::new(
+            test_context(&dir),
+            &registry,
+            Some(dir.as_path()),
+            TuiLaunchOptions { session_id: None },
+        )
+        .expect("controller");
+
+        controller
+            .execute_slash_command("/brief")
+            .expect("enable brief");
+        assert!(controller.state.brief_mode, "brief mode should be enabled");
+
+        controller
+            .state
+            .queue_command("hello", wonder_of_u_core::QueuePlacement::Now);
+        controller
+            .drain_queued_commands(&mut |_| Ok(()))
+            .expect("drain prompt");
+
+        handle.join().expect("server join");
+    }
+
+    /// Verify that the brief flag survives a `/clear` command (i.e. it is
+    /// persisted in the session snapshot and restored on reload).
+    #[test]
+    fn controller_brief_flag_persists_across_clear() {
+        let dir = unique_test_dir("tui-brief-persists-clear");
+        let registry = commands::registry(Some(dir.clone())).expect("registry");
+        let mut controller = TuiController::new(
+            test_context(&dir),
+            &registry,
+            Some(dir.as_path()),
+            TuiLaunchOptions { session_id: None },
+        )
+        .expect("controller");
+
+        controller
+            .execute_slash_command("/brief")
+            .expect("enable brief");
+        assert!(controller.state.brief_mode, "brief mode should be on");
+
+        controller
+            .execute_slash_command("/clear")
+            .expect("clear session");
+
+        assert!(
+            controller.state.brief_mode,
+            "brief mode should persist across /clear"
+        );
+    }
 }
