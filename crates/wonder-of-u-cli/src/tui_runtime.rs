@@ -5462,7 +5462,7 @@ mod tests {
                 if input == "/ios"
                     && output
                         .as_deref()
-                        .is_some_and(|text| text.contains("## Mobile") && text.contains("qr_rendered=false"))
+                        .is_some_and(|text| text.contains("## Mobile") && text.contains("ios_qr_text="))
         ));
     }
 
