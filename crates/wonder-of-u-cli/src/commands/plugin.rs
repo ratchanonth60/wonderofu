@@ -1,7 +1,9 @@
 use std::{
     path::{Path, PathBuf},
-    process::Command as ProcessCommand,
+    process::{Command as ProcessCommand, Output, Stdio},
     sync::Arc,
+    thread,
+    time::{Duration, Instant},
 };
 
 use async_trait::async_trait;
@@ -326,7 +328,7 @@ fn render_plugin_list(plugins: &PluginCatalog) -> String {
         ));
     }
     lines.push(
-        "note=trusted ready plugin commands can run with `plugin run` or dynamic slash-command lookup; sandboxing remains deferred".into(),
+        "note=trusted ready plugin commands run in a bounded subprocess sandbox with a minimal environment and plugin metadata".into(),
     );
     lines.join("\n")
 }
@@ -379,7 +381,7 @@ fn render_plugin_status(plugins: &PluginCatalog, skills: &SkillCatalog) -> Strin
         lines.push(format!("error[{index}].message={}", error.message));
     }
     lines.push(
-        "note=trusted ready plugin commands support `plugin run` and dynamic slash-command lookup; sandboxing, prompts, and daemons remain deferred".into(),
+        "note=trusted ready plugin commands support `plugin run` and dynamic slash-command lookup through the bounded subprocess sandbox".into(),
     );
     lines.join("\n")
 }
@@ -460,13 +462,87 @@ fn execute_plugin_registration(
     cwd: &Path,
     args: &[String],
 ) -> Result<String> {
-    let output = ProcessCommand::new(&command.entry_path)
-        .args(args)
-        .current_dir(cwd)
-        .output()?;
+    let sandbox = PluginSandbox::new(plugin, command, cwd, args);
+    let output = sandbox.run()?;
     Ok(render_plugin_run_output(
         plugin, command, cwd, args, &output,
     ))
+}
+
+struct PluginSandboxOutput {
+    output: Output,
+    timeout_seconds: u64,
+    timed_out: bool,
+}
+
+struct PluginSandbox<'a> {
+    plugin: &'a PluginCatalogEntry,
+    command: &'a PluginCommandRegistration,
+    cwd: &'a Path,
+    args: &'a [String],
+    timeout: Duration,
+}
+
+impl<'a> PluginSandbox<'a> {
+    fn new(
+        plugin: &'a PluginCatalogEntry,
+        command: &'a PluginCommandRegistration,
+        cwd: &'a Path,
+        args: &'a [String],
+    ) -> Self {
+        Self {
+            plugin,
+            command,
+            cwd,
+            args,
+            timeout: Duration::from_secs(30),
+        }
+    }
+
+    fn run(&self) -> Result<PluginSandboxOutput> {
+        let mut child = ProcessCommand::new(&self.command.entry_path)
+            .args(self.args)
+            .current_dir(self.cwd)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .env_clear()
+            .env("PATH", std::env::var_os("PATH").unwrap_or_default())
+            .env("HOME", std::env::var_os("HOME").unwrap_or_default())
+            .env("WONDER_OF_U_PLUGIN_ID", &self.plugin.id)
+            .env("WONDER_OF_U_PLUGIN_ROOT", &self.plugin.root_dir)
+            .env("WONDER_OF_U_PLUGIN_COMMAND", &self.command.spec.name)
+            .env(
+                "WONDER_OF_U_PLUGIN_ALLOWED_TOOLS",
+                self.command
+                    .allowed_tools
+                    .iter()
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .join(","),
+            )
+            .spawn()?;
+
+        let deadline = Instant::now() + self.timeout;
+        loop {
+            if child.try_wait()?.is_some() {
+                return Ok(PluginSandboxOutput {
+                    output: child.wait_with_output()?,
+                    timeout_seconds: self.timeout.as_secs(),
+                    timed_out: false,
+                });
+            }
+            if Instant::now() >= deadline {
+                let _ = child.kill();
+                return Ok(PluginSandboxOutput {
+                    output: child.wait_with_output()?,
+                    timeout_seconds: self.timeout.as_secs(),
+                    timed_out: true,
+                });
+            }
+            thread::sleep(Duration::from_millis(20));
+        }
+    }
 }
 
 fn render_plugin_run_output(
@@ -474,8 +550,9 @@ fn render_plugin_run_output(
     command: &PluginCommandRegistration,
     cwd: &Path,
     args: &[String],
-    output: &std::process::Output,
+    sandbox: &PluginSandboxOutput,
 ) -> String {
+    let output = &sandbox.output;
     let status_code = output.status.code();
     let lines = vec![
         format!("plugin={}", plugin.id),
@@ -486,6 +563,21 @@ fn render_plugin_run_output(
         format!("kind={:?}", command.spec.kind),
         format!("requires_auth={}", command.spec.requires_auth),
         format!("interactive_only={}", command.spec.interactive_only),
+        "sandbox=bounded_subprocess".into(),
+        "sandbox_env=minimal".into(),
+        "sandbox_stdin=null".into(),
+        format!("sandbox_timeout_seconds={}", sandbox.timeout_seconds),
+        format!("sandbox_timed_out={}", sandbox.timed_out),
+        "daemon_policy=foreground_bounded_subprocess".into(),
+        format!(
+            "allowed_tools={}",
+            command
+                .allowed_tools
+                .iter()
+                .cloned()
+                .collect::<Vec<_>>()
+                .join(",")
+        ),
         format!("success={}", output.status.success()),
         format!(
             "exit_status={}",
@@ -497,7 +589,7 @@ fn render_plugin_run_output(
         render_stream(&output.stdout),
         "stderr:".into(),
         render_stream(&output.stderr),
-        "note=plugin run and dynamic slash-command lookup execute the manifest entry directly; sandboxing and daemons remain deferred".into(),
+        "note=plugin run and dynamic slash-command lookup execute inside the same bounded subprocess sandbox".into(),
     ];
     lines.join("\n")
 }

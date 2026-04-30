@@ -881,7 +881,9 @@ fn payload_distribution(messages: &[MessageEnvelope]) -> String {
 
     for message in messages {
         match &message.payload {
-            MessagePayload::UserText { .. } | MessagePayload::UserAttachment { .. } => user += 1,
+            MessagePayload::UserText { .. }
+            | MessagePayload::UserAttachment { .. }
+            | MessagePayload::UserPasteReference { .. } => user += 1,
             MessagePayload::AssistantText { .. } | MessagePayload::AssistantThinking { .. } => {
                 assistant += 1;
             }
@@ -936,6 +938,9 @@ fn message_summary(message: &MessageEnvelope) -> String {
         | MessagePayload::AssistantText { content }
         | MessagePayload::System { content } => content.clone(),
         MessagePayload::UserAttachment { label, uri } => format!("attachment {label} ({uri})"),
+        MessagePayload::UserPasteReference { sha256, bytes } => {
+            format!("paste {sha256} ({bytes} bytes)")
+        }
         MessagePayload::AssistantThinking { content, collapsed } => {
             if *collapsed {
                 format!("thinking [collapsed] {content}")

@@ -68,6 +68,21 @@ impl MessageEnvelope {
     }
 
     #[must_use]
+    pub fn user_paste_reference(
+        session_id: SessionId,
+        sha256: impl Into<String>,
+        bytes: usize,
+    ) -> Self {
+        Self::new(
+            session_id,
+            MessagePayload::UserPasteReference {
+                sha256: sha256.into(),
+                bytes,
+            },
+        )
+    }
+
+    #[must_use]
     pub fn system(session_id: SessionId, content: impl Into<String>) -> Self {
         Self::new(
             session_id,
@@ -89,6 +104,10 @@ pub enum MessagePayload {
     UserAttachment {
         label: String,
         uri: String,
+    },
+    UserPasteReference {
+        sha256: String,
+        bytes: usize,
     },
     AssistantText {
         content: String,

@@ -173,6 +173,10 @@ fn render_message(message: &MessageEnvelope, output: &mut Vec<MessageLineView>) 
             format!("attachment> {label} ({uri})"),
             MessageRole::User,
         )),
+        MessagePayload::UserPasteReference { sha256, bytes } => output.push(MessageLineView::new(
+            format!("paste> {sha256} ({bytes} bytes)"),
+            MessageRole::User,
+        )),
         MessagePayload::AssistantText { content } => {
             push_prefixed_lines(output, "assistant> ", content, MessageRole::Assistant)
         }
@@ -357,7 +361,7 @@ fn agent_runtime_label(runtime: wonder_of_u_core::AgentRuntime) -> &'static str 
     match runtime {
         wonder_of_u_core::AgentRuntime::MetadataOnly => "metadata-only",
         wonder_of_u_core::AgentRuntime::PromptSubprocess => "prompt-subprocess",
-        wonder_of_u_core::AgentRuntime::Deferred => "deferred",
+        wonder_of_u_core::AgentRuntime::Deferred => "legacy-relaunch-required",
     }
 }
 

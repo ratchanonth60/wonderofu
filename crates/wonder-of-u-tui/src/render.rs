@@ -33,8 +33,8 @@ impl ShellView {
             None => text_line_count(&self.prompt),
         };
         u16::try_from(line_count)
-            .unwrap_or(u16::MAX.saturating_sub(2))
-            .saturating_add(2)
+            .unwrap_or(u16::MAX.saturating_sub(1))
+            .saturating_add(1)
     }
 
     #[must_use]
@@ -64,33 +64,13 @@ pub fn render_shell(frame: &mut FrameBuffer, view: &ShellView, theme: &Theme) {
     let layout = ShellLayout::split(frame.area(), view.prompt_height());
     frame.fill_rect(frame.area(), ' ', theme.background);
 
-    draw_panel(
-        frame,
-        layout.messages,
-        Some(&view.title),
-        &message_panel_lines(view, theme),
-        theme,
-    );
-    draw_panel(
-        frame,
-        layout.prompt,
-        Some("Prompt"),
-        &prompt_panel_lines(view, theme),
-        theme,
-    );
+    draw_message_view(frame, layout.messages, view, theme);
+    draw_prompt_view(frame, layout.prompt, view, theme);
     draw_status_line(frame, layout.status, &view.status, theme.status);
     draw_status_line(frame, layout.footer, &view.footer, theme.footer);
 
-    if let Some(task_panel) = &view.task_panel {
-        draw_task_panel(frame, layout.messages, task_panel, theme);
-    }
-
-    if let Some(queued_panel) = &view.queued_panel {
-        draw_queue_panel(frame, layout.messages, queued_panel, theme);
-    }
-
     if let Some(dialog) = &view.dialog {
-        draw_dialog(frame, layout.messages.inset(1), dialog, theme);
+        draw_dialog(frame, layout.messages, dialog, theme);
     }
 
     if let Some(pv) = &view.picker_view {
@@ -153,72 +133,115 @@ fn draw_panel(
     }
 }
 
-fn draw_task_panel(frame: &mut FrameBuffer, area: Rect, panel: &TaskPanelView, theme: &Theme) {
-    let overlay = area.inset(1);
-    if overlay.width < 16 || overlay.height < 3 {
+fn draw_message_view(frame: &mut FrameBuffer, area: Rect, view: &ShellView, theme: &Theme) {
+    if area.is_empty() {
         return;
     }
 
-    let content_width = panel
-        .lines
-        .iter()
-        .map(|line| line.text.chars().count())
-        .chain(std::iter::once(panel.title.chars().count()))
-        .max()
-        .unwrap_or(0);
-    let desired_width = u16::try_from(content_width.saturating_add(4)).unwrap_or(overlay.width);
-    let width = desired_width.min(overlay.width.min(24)).max(16);
-    let height = u16::try_from(panel.lines.len().saturating_add(2))
-        .unwrap_or(overlay.height)
-        .min(overlay.height);
-    let rect = Rect::new(
-        overlay.right().saturating_sub(width),
-        overlay.y,
-        width,
-        height,
-    );
+    frame.fill_rect(area, ' ', theme.background);
 
-    draw_panel(
-        frame,
-        rect,
-        Some(&panel.title),
-        &message_lines_to_styled(&panel.lines, theme),
-        theme,
-    );
+    let title_height = u16::from(!view.title.is_empty() && area.height > 0);
+    if title_height == 1 {
+        frame.write_str(area.x, area.y, &view.title, theme.title, area.width);
+    }
+
+    let docked_lines = if view.dialog.is_some() {
+        Vec::new()
+    } else {
+        docked_panel_lines(view, theme)
+    };
+    let docked_height = u16::try_from(docked_lines.len()).unwrap_or(area.height);
+    let transcript_y = area.y.saturating_add(title_height);
+    let transcript_height = area
+        .height
+        .saturating_sub(title_height)
+        .saturating_sub(docked_height.min(area.height.saturating_sub(title_height)));
+    let transcript_area = Rect::new(area.x, transcript_y, area.width, transcript_height);
+
+    draw_lines_tail(frame, transcript_area, &message_panel_lines(view, theme));
+
+    if docked_height == 0 || docked_height > area.height.saturating_sub(title_height) {
+        return;
+    }
+
+    let dock_y = area.bottom().saturating_sub(docked_height);
+    let dock_area = Rect::new(area.x, dock_y, area.width, docked_height);
+    draw_lines(frame, dock_area, &docked_lines);
 }
 
-fn draw_queue_panel(frame: &mut FrameBuffer, area: Rect, panel: &TaskPanelView, theme: &Theme) {
-    let overlay = area.inset(1);
-    if overlay.width < 20 || overlay.height < 4 {
+fn draw_prompt_view(frame: &mut FrameBuffer, area: Rect, view: &ShellView, theme: &Theme) {
+    if area.is_empty() {
         return;
     }
 
-    let content_width = panel
-        .lines
-        .iter()
-        .map(|line| line.text.chars().count())
-        .chain(std::iter::once(panel.title.chars().count()))
-        .max()
-        .unwrap_or(0);
-    let desired_width = u16::try_from(content_width.saturating_add(4)).unwrap_or(overlay.width);
-    let width = desired_width.min(overlay.width.min(36)).max(20);
-    let height = u16::try_from(panel.lines.len().saturating_add(2))
-        .unwrap_or(overlay.height)
-        .min(overlay.height);
-    let rect = Rect::new(
-        overlay.x,
-        overlay.bottom().saturating_sub(height),
-        width,
-        height,
-    );
+    frame.fill_rect(area, ' ', theme.background);
+    draw_rule(frame, area.x, area.y, area.width, theme.border);
 
-    draw_panel(
-        frame,
-        rect,
-        Some(&panel.title),
-        &message_lines_to_styled(&panel.lines, theme),
-        theme,
+    let content = Rect::new(
+        area.x,
+        area.y.saturating_add(1),
+        area.width,
+        area.height.saturating_sub(1),
     );
+    draw_lines(frame, content, &prompt_panel_lines(view, theme));
+}
+
+fn docked_panel_lines(view: &ShellView, theme: &Theme) -> Vec<StyledLine> {
+    let mut lines = Vec::new();
+
+    if let Some(task_panel) = &view.task_panel {
+        lines.extend(panel_lines(task_panel, theme));
+    }
+
+    if let Some(queued_panel) = &view.queued_panel {
+        if !lines.is_empty() {
+            lines.push(StyledLine {
+                text: String::new(),
+                style: theme.background,
+            });
+        }
+        lines.extend(panel_lines(queued_panel, theme));
+    }
+
+    lines
+}
+
+fn panel_lines(panel: &TaskPanelView, theme: &Theme) -> Vec<StyledLine> {
+    let mut lines = vec![StyledLine {
+        text: panel.title.clone(),
+        style: theme.title,
+    }];
+    lines.extend(message_lines_to_styled(&panel.lines, theme));
+    lines
+}
+
+fn draw_lines(frame: &mut FrameBuffer, area: Rect, lines: &[StyledLine]) {
+    if area.is_empty() {
+        return;
+    }
+
+    for (offset, line) in lines.iter().take(usize::from(area.height)).enumerate() {
+        let y = area
+            .y
+            .saturating_add(u16::try_from(offset).unwrap_or(u16::MAX));
+        frame.write_str(area.x, y, &line.text, line.style, area.width);
+    }
+}
+
+fn draw_lines_tail(frame: &mut FrameBuffer, area: Rect, lines: &[StyledLine]) {
+    if area.is_empty() {
+        return;
+    }
+
+    let visible = usize::from(area.height);
+    let start = lines.len().saturating_sub(visible);
+    draw_lines(frame, area, &lines[start..]);
+}
+
+fn draw_rule(frame: &mut FrameBuffer, x: u16, y: u16, width: u16, style: TextStyle) {
+    for offset in 0..width {
+        frame.put(x.saturating_add(offset), y, '─', style);
+    }
 }
 
 fn draw_dialog(frame: &mut FrameBuffer, viewport: Rect, dialog: &DialogView, theme: &Theme) {
@@ -327,19 +350,11 @@ fn prompt_panel_lines(view: &ShellView, theme: &Theme) -> Vec<StyledLine> {
 
     let mut lines = vec![
         StyledLine {
-            text: format!("History search: {}", search.query),
+            text: format!("search: {}", search.query),
             style: theme.status,
         },
         StyledLine {
-            text: format!(
-                "Match: {}/{}",
-                if search.match_total == 0 {
-                    0
-                } else {
-                    search.match_index.saturating_add(1)
-                },
-                search.match_total
-            ),
+            text: history_match_label(search),
             style: theme.footer,
         },
     ];
@@ -348,6 +363,18 @@ fn prompt_panel_lines(view: &ShellView, theme: &Theme) -> Vec<StyledLine> {
         theme.prompt,
     ));
     lines
+}
+
+fn history_match_label(search: &HistorySearchView) -> String {
+    if search.match_total == 0 {
+        return "no matches".into();
+    }
+
+    format!(
+        "match {}/{}",
+        search.match_index.saturating_add(1),
+        search.match_total
+    )
 }
 
 fn plain_lines(lines: &[String], style: TextStyle) -> Vec<StyledLine> {
@@ -430,13 +457,13 @@ mod tests {
         assert_eq!(
             frame.to_plain_text(),
             [
-                "+-Session: Empty-------------+",
-                "|No messages yet.            |",
-                "|                            |",
-                "+----------------------------+",
-                "+-Prompt---------------------+",
-                "|                            |",
-                "+----------------------------+",
+                "Session: Empty",
+                "No messages yet.",
+                "",
+                "",
+                "",
+                "──────────────────────────────",
+                "",
                 "prompt | 0 messages",
                 "ctrl-c interrupt",
             ]
@@ -473,14 +500,14 @@ mod tests {
         assert_eq!(
             frame.to_plain_text(),
             [
-                "+-Session: Demo--------------------------------+",
-                "|system> ready         +-Tasks----------------+|",
-                "|assistant> hello      |[running] shell: index||",
-                "|                      +----------------------+|",
-                "+----------------------------------------------+",
-                "+-Prompt---------------------------------------+",
-                "|/status                                       |",
-                "+----------------------------------------------+",
+                "Session: Demo",
+                "system> ready",
+                "assistant> hello",
+                "",
+                "Tasks",
+                "[running] shell: index workspace",
+                "────────────────────────────────────────────────",
+                "/status",
                 "prompt | 2 messages",
                 "cwd=/workspace | ctrl-c interrupt",
             ]
@@ -563,16 +590,16 @@ mod tests {
         assert_eq!(
             frame.to_plain_text(),
             [
-                "+-Session: Demo--------------------------+",
-                "|+-Queued------------------+             |",
-                "||1. /status               |             |",
-                "||2. draft migration plan  |             |",
-                "||+2 more queued           |             |",
-                "|+-------------------------+             |",
-                "+----------------------------------------+",
-                "+-Prompt---------------------------------+",
-                "|/plan                                   |",
-                "+----------------------------------------+",
+                "Session: Demo",
+                "assistant> ready",
+                "",
+                "",
+                "Queued",
+                "1. /status",
+                "2. draft migration plan",
+                "+2 more queued",
+                "──────────────────────────────────────────",
+                "/plan",
                 "prompt | 1 messages",
                 "cwd=/workspace | ctrl-c interrupt",
             ]
@@ -603,16 +630,16 @@ mod tests {
         assert_eq!(
             frame.to_plain_text(),
             [
-                "+-Session: Dialog------------------------+",
-                "| +-Confirm action---------------------+ |",
-                "| |Approve command execution           | |",
-                "| |This cannot be undone               | |",
-                "| |[Confirm]  Cancel                   | |",
-                "| +------------------------------------+ |",
-                "+----------------------------------------+",
-                "+-Prompt---------------------------------+",
-                "|continue?                               |",
-                "+----------------------------------------+",
+                "",
+                " +-Confirm action-----------------------+",
+                " |Approve command execution             |",
+                " |This cannot be undone                 |",
+                " |[Confirm]  Cancel                     |",
+                " +--------------------------------------+",
+                "",
+                "",
+                "──────────────────────────────────────────",
+                "continue?",
                 "permission | 1 messages",
                 "cwd=/workspace | ctrl-c interrupt",
             ]
@@ -648,22 +675,47 @@ mod tests {
         assert_eq!(
             frame.to_plain_text(),
             [
-                "+-Session: Search------------------------+",
-                "|assistant> ready                        |",
-                "|                                        |",
-                "|                                        |",
-                "|                                        |",
-                "|                                        |",
-                "+----------------------------------------+",
-                "+-Prompt---------------------------------+",
-                "|History search: pla                     |",
-                "|Match: 2/3                              |",
-                "|draft plan                              |",
-                "+----------------------------------------+",
+                "Session: Search",
+                "assistant> ready",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "──────────────────────────────────────────",
+                "search: pla",
+                "match 2/3",
+                "draft plan",
                 "prompt | 1 messages",
                 "cwd=/workspace | ctrl-c interrupt",
             ]
             .join("\n")
         );
+    }
+
+    #[test]
+    fn transcript_snapshot_keeps_latest_visible_lines() {
+        let view = ShellView {
+            title: "Session: Tail".into(),
+            messages: (1..=6)
+                .map(|index| {
+                    MessageLineView::new(format!("assistant> line {index}"), MessageRole::Assistant)
+                })
+                .collect(),
+            prompt: "tail".into(),
+            history_search: None,
+            status: "prompt | 6 messages".into(),
+            footer: "cwd=/workspace | ctrl-c interrupt".into(),
+            queued_panel: None,
+            task_panel: None,
+            dialog: None,
+            picker_view: None,
+        };
+
+        let frame = render_snapshot(32, 9, &view, &Theme::default());
+
+        assert!(!frame.to_plain_text().contains("assistant> line 1"));
+        assert!(frame.to_plain_text().contains("assistant> line 6"));
     }
 }

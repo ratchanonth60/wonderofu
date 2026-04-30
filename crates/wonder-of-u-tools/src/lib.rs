@@ -1,6 +1,7 @@
 mod agent_tool;
 mod ask_user_tool;
 mod bash;
+mod extended;
 mod files;
 mod plan_tool;
 mod search;
@@ -22,6 +23,10 @@ use wonder_of_u_core::{FeatureFlag, Result, Tool, ToolKind, ToolRegistry, ToolSp
 pub use agent_tool::{AgentInput, AgentTool};
 pub use ask_user_tool::{AskUserInput, AskUserTool};
 pub use bash::{BashInput, BashTool};
+pub use extended::{
+    CronListTool, NotebookEditInput, NotebookEditTool, PowerShellInput, PowerShellTool,
+    TerminalCaptureTool, WorktreeListTool,
+};
 pub use files::{
     FileEditInput, FileEditTool, FileReadInput, FileReadTool, FileWriteInput, FileWriteMode,
     FileWriteTool,
@@ -39,11 +44,16 @@ pub use wonder_of_u_mcp::{
 pub fn builtin_tools() -> Vec<Arc<dyn Tool>> {
     vec![
         Arc::new(BashTool),
+        Arc::new(PowerShellTool),
         Arc::new(FileReadTool),
         Arc::new(FileWriteTool),
         Arc::new(FileEditTool),
+        Arc::new(NotebookEditTool),
         Arc::new(GlobTool),
         Arc::new(GrepTool),
+        Arc::new(WorktreeListTool),
+        Arc::new(TerminalCaptureTool),
+        Arc::new(CronListTool),
         Arc::new(WebFetchTool),
         Arc::new(WebSearchTool),
         Arc::new(TodoTool),
@@ -143,11 +153,16 @@ mod tests {
             names,
             vec![
                 "bash",
+                "powershell",
                 "file_read",
                 "file_write",
                 "file_edit",
+                "notebook_edit",
                 "glob",
                 "grep",
+                "worktree_list",
+                "terminal_capture",
+                "cron_list",
                 "web_fetch",
                 "web_search",
                 "todo",

@@ -12,8 +12,8 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 use wonder_of_u_core::{
-    AppState, CostState, MESSAGE_SCHEMA_VERSION, MessageEnvelope, Result, SessionId, TaskId,
-    TaskState, WonderError,
+    AppState, CostState, MESSAGE_SCHEMA_VERSION, MessageEnvelope, MessagePayload, Result,
+    SessionId, TaskId, TaskState, WonderError,
 };
 
 pub const STORAGE_SCHEMA_VERSION: u16 = 1;
@@ -279,7 +279,7 @@ impl TranscriptStore {
             match serde_json::from_str::<MessageEnvelope>(line) {
                 Ok(message) => {
                     ensure_supported_schema("message", message.schema_version)?;
-                    messages.push(message);
+                    messages.push(self.expand_paste_reference(message)?);
                 }
                 Err(error) if index + 1 == lines.len() => {
                     warnings.push(TranscriptWarning {
@@ -293,6 +293,16 @@ impl TranscriptStore {
         }
 
         Ok(LoadedTranscript { messages, warnings })
+    }
+
+    fn expand_paste_reference(&self, mut message: MessageEnvelope) -> Result<MessageEnvelope> {
+        let MessagePayload::UserPasteReference { sha256, .. } = &message.payload else {
+            return Ok(message);
+        };
+
+        let content = PasteStore::new(self.paths.base_dir().to_path_buf()).load_text(sha256)?;
+        message.payload = MessagePayload::UserText { content };
+        Ok(message)
     }
 
     pub fn write_metadata(&self, metadata: &SessionMetadata) -> Result<()> {
@@ -1123,10 +1133,28 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "paste references are not implemented in transcript messages yet"]
     fn transcript_paste_reference_expands_on_reload() {
-        // TODO: When transcript messages can reference `StoredPaste` entries, persist a
-        // paste-backed message here and assert reload expands it back to the original content.
+        let dir = unique_test_dir("storage-paste-reference-reload");
+        let transcript = TranscriptStore::new(&dir);
+        let paste_store = PasteStore::new(&dir);
+        let session_id = SessionId::new();
+        let paste = paste_store
+            .store("large pasted content")
+            .expect("store paste");
+        let message = MessageEnvelope::user_paste_reference(session_id, &paste.sha256, paste.bytes);
+
+        transcript
+            .append_message(&message)
+            .expect("append reference");
+        let loaded = transcript.load_session(session_id).expect("load session");
+
+        assert_eq!(loaded.messages.len(), 1);
+        assert_eq!(
+            loaded.messages[0].payload,
+            MessagePayload::UserText {
+                content: "large pasted content".into()
+            }
+        );
     }
 
     #[test]
