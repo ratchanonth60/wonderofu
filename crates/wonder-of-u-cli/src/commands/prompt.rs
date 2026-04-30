@@ -225,6 +225,7 @@ pub(crate) fn execute_prompt_turn(
         system_prompt: input.system_prompt,
         max_output_tokens: input.max_output_tokens,
         temperature: input.temperature,
+        effort_level: None,
     };
 
     let response = runtime.complete(&resolved, &request)?;
@@ -514,6 +515,7 @@ fn execute_prompt_tool_loop(
                 temperature,
                 tools: provider_tools.clone(),
                 rounds: rounds.clone(),
+                effort_level: None,
             },
         )?;
 

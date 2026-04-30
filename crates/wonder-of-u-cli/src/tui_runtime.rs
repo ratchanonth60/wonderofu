@@ -927,6 +927,7 @@ impl<'a> TuiController<'a> {
                     temperature: None,
                     tools: provider_tools.to_vec(),
                     rounds: rounds.clone(),
+                    effort_level: self.state.effort_level.clone(),
                 },
             )?;
 
@@ -1112,6 +1113,7 @@ impl<'a> TuiController<'a> {
             system_prompt: self.state.effective_system_prompt(None),
             max_output_tokens: None,
             temperature: None,
+            effort_level: self.state.effort_level.clone(),
         };
         let streaming = runtime.supports_streaming(resolved.provider_id());
 
@@ -1222,6 +1224,7 @@ impl<'a> TuiController<'a> {
                     temperature: None,
                     tools: provider_tools.clone(),
                     rounds: rounds.clone(),
+                    effort_level: self.state.effort_level.clone(),
                 },
             )?;
 

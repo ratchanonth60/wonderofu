@@ -29,6 +29,7 @@ pub struct CompletionRequest {
     pub system_prompt: Option<String>,
     pub max_output_tokens: Option<u32>,
     pub temperature: Option<f32>,
+    pub effort_level: Option<String>,
 }
 
 impl CompletionRequest {
@@ -39,6 +40,7 @@ impl CompletionRequest {
             system_prompt: None,
             max_output_tokens: None,
             temperature: None,
+            effort_level: None,
         }
     }
 }
@@ -87,6 +89,7 @@ pub struct ToolUseRequest {
     pub temperature: Option<f32>,
     pub tools: Vec<ProviderToolSpec>,
     pub rounds: Vec<ToolConversationRound>,
+    pub effort_level: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -617,6 +620,10 @@ fn build_openai_request_with_mode(
     if let Some(max_output_tokens) = request.max_output_tokens {
         body_map.insert("max_completion_tokens".into(), json!(max_output_tokens));
     }
+    // wire reasoning effort for openai
+    if is_high_effort(request.effort_level.as_deref()) {
+        body_map.insert("reasoning_effort".into(), json!("high"));
+    }
 
     Ok(HttpRequest {
         method: "POST".into(),
@@ -713,6 +720,10 @@ fn build_openai_tool_use_request(
     if let Some(max_output_tokens) = request.max_output_tokens {
         body_map.insert("max_completion_tokens".into(), json!(max_output_tokens));
     }
+    // wire reasoning effort for openai
+    if is_high_effort(request.effort_level.as_deref()) {
+        body_map.insert("reasoning_effort".into(), json!("high"));
+    }
 
     Ok(HttpRequest {
         method: "POST".into(),
@@ -774,6 +785,13 @@ fn build_anthropic_request_with_mode(
     }
     if let Some(temperature) = request.temperature {
         body_map.insert("temperature".into(), json!(temperature));
+    }
+    // wire reasoning effort for anthropic
+    if is_high_effort(request.effort_level.as_deref()) && is_anthropic_model(resolved.model()) {
+        body_map.insert(
+            "thinking".into(),
+            json!({"type": "enabled", "budget_tokens": 10000}),
+        );
     }
 
     Ok(HttpRequest {
@@ -899,6 +917,13 @@ fn build_anthropic_tool_use_request_with_headers(
     }
     if let Some(temperature) = request.temperature {
         body_map.insert("temperature".into(), json!(temperature));
+    }
+    // wire reasoning effort for anthropic
+    if is_high_effort(request.effort_level.as_deref()) && is_anthropic_model(model) {
+        body_map.insert(
+            "thinking".into(),
+            json!({"type": "enabled", "budget_tokens": 10000}),
+        );
     }
 
     Ok(HttpRequest {
@@ -1044,6 +1069,10 @@ fn build_copilot_openai_request(
     headers.insert("accept".into(), "application/json".into());
     headers.insert("content-type".into(), "application/json".into());
     headers.insert("authorization".into(), format!("Bearer {bearer_token}"));
+    // wire reasoning effort for copilot
+    if is_high_effort(request.effort_level.as_deref()) {
+        headers.insert("x-reasoning-effort".into(), "high".into());
+    }
     Ok(HttpRequest {
         method: "POST".into(),
         url: join_url(api_base, "/chat/completions"),
@@ -1139,6 +1168,10 @@ fn build_copilot_openai_tool_use_request(
     headers.insert("accept".into(), "application/json".into());
     headers.insert("content-type".into(), "application/json".into());
     headers.insert("authorization".into(), format!("Bearer {bearer_token}"));
+    // wire reasoning effort for copilot
+    if is_high_effort(request.effort_level.as_deref()) {
+        headers.insert("x-reasoning-effort".into(), "high".into());
+    }
     Ok(HttpRequest {
         method: "POST".into(),
         url: join_url(api_base, "/chat/completions"),
@@ -1180,6 +1213,13 @@ fn build_copilot_anthropic_request(
     }
     if let Some(temperature) = request.temperature {
         body_map.insert("temperature".into(), json!(temperature));
+    }
+    // wire reasoning effort for anthropic
+    if is_high_effort(request.effort_level.as_deref()) && is_anthropic_model(resolved.model()) {
+        body_map.insert(
+            "thinking".into(),
+            json!({"type": "enabled", "budget_tokens": 10000}),
+        );
     }
 
     let mut headers = copilot_standard_headers();
@@ -1689,6 +1729,10 @@ fn is_anthropic_model(model: &str) -> bool {
     model.to_ascii_lowercase().contains("claude")
 }
 
+fn is_high_effort(level: Option<&str>) -> bool {
+    matches!(level, Some("high") | Some("max"))
+}
+
 fn copilot_oauth_should_refresh(resolved: &ResolvedProviderExecution) -> bool {
     resolved.oauth_expires_at().is_some_and(|expires_at| {
         expires_at
@@ -1985,6 +2029,7 @@ mod tests {
             system_prompt: Some("Be concise".into()),
             max_output_tokens: Some(64),
             temperature: Some(0.2),
+            effort_level: None,
         };
 
         let response = runtime
@@ -2055,6 +2100,7 @@ mod tests {
                     system_prompt: Some("Use tools when needed".into()),
                     max_output_tokens: Some(128),
                     temperature: Some(0.1),
+                    effort_level: None,
                     tools: vec![ProviderToolSpec {
                         name: "file_read".into(),
                         description: "Read a UTF-8 file".into(),
@@ -2763,5 +2809,101 @@ mod tests {
             }
             other => panic!("expected copilot claude tool-call response, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn openai_request_includes_reasoning_effort_for_high() {
+        let transport = RecordingTransport::with_json_body(json!({
+            "choices": [{"finish_reason": "stop", "message": {"content": "ok"}}],
+            "usage": {"prompt_tokens": 4, "completion_tokens": 1}
+        }));
+        let runtime = ProviderRuntime::with_transport(transport.clone() as Arc<dyn HttpTransport>);
+        let resolved = resolved_provider("openai", Some("gpt-4.1"));
+        let request = CompletionRequest {
+            prompt: "ping".into(),
+            effort_level: Some("high".into()),
+            ..CompletionRequest::default()
+        };
+
+        runtime.complete(&resolved, &request).expect("complete");
+        let recorded = transport.take_request();
+        let body: Value = serde_json::from_str(&recorded.body).expect("body json");
+
+        assert_eq!(
+            body.pointer("/reasoning_effort").and_then(Value::as_str),
+            Some("high"),
+            "reasoning_effort should be 'high' for high effort level"
+        );
+    }
+
+    #[test]
+    fn anthropic_request_includes_thinking_for_high_effort_claude_model() {
+        let transport = RecordingTransport::with_json_body(json!({
+            "id": "msg_think_1",
+            "type": "message",
+            "role": "assistant",
+            "content": [{"type": "text", "text": "deep thought"}],
+            "stop_reason": "end_turn",
+            "usage": {"input_tokens": 5, "output_tokens": 2}
+        }));
+        let runtime = ProviderRuntime::with_transport(transport.clone() as Arc<dyn HttpTransport>);
+        let resolved = resolved_provider("anthropic", Some("claude-3-7-sonnet-latest"));
+        let request = CompletionRequest {
+            prompt: "think deeply".into(),
+            effort_level: Some("max".into()),
+            ..CompletionRequest::default()
+        };
+
+        runtime.complete(&resolved, &request).expect("complete");
+        let recorded = transport.take_request();
+        let body: Value = serde_json::from_str(&recorded.body).expect("body json");
+
+        assert_eq!(
+            body.pointer("/thinking/type").and_then(Value::as_str),
+            Some("enabled"),
+            "thinking type should be 'enabled' for high effort with claude model"
+        );
+        assert_eq!(
+            body.pointer("/thinking/budget_tokens")
+                .and_then(Value::as_u64),
+            Some(10000),
+            "thinking budget_tokens should be 10000"
+        );
+    }
+
+    #[test]
+    fn copilot_openai_request_includes_reasoning_effort_header_for_max_effort() {
+        let transport = RecordingTransport::with_json_responses(vec![
+            json!({
+                "token": "copilot-bearer",
+                "expires_at": 1_750_000_000,
+                "refresh_in": 900,
+                "endpoints": {"api": "https://api.githubcopilot.com"}
+            }),
+            json!({
+                "choices": [{"finish_reason": "stop", "message": {"content": "done"}}],
+                "usage": {"prompt_tokens": 4, "completion_tokens": 1}
+            }),
+        ]);
+        let runtime = ProviderRuntime::with_transport(transport.clone() as Arc<dyn HttpTransport>);
+        let resolved = resolved_oauth_provider("copilot", Some("gpt-4.1"));
+        let request = CompletionRequest {
+            prompt: "ping".into(),
+            effort_level: Some("max".into()),
+            ..CompletionRequest::default()
+        };
+
+        runtime.complete(&resolved, &request).expect("complete");
+        let requests = transport.take_requests();
+        // requests[0] is the copilot token exchange; requests[1] is the completion
+        assert_eq!(requests.len(), 2);
+        assert_eq!(
+            requests[1]
+                .headers
+                .get("x-reasoning-effort")
+                .map(String::as_str),
+            Some("high"),
+            "x-reasoning-effort header should be 'high' for max effort level"
+        );
     }
 }
