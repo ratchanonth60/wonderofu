@@ -158,6 +158,11 @@ impl SkillCatalog {
     }
 
     #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.skills.is_empty()
+    }
+
+    #[must_use]
     pub fn command_count(&self) -> usize {
         self.skills
             .iter()

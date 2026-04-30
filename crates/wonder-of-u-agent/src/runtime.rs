@@ -154,16 +154,18 @@ impl HttpTransport for UreqTransport {
     fn execute(&self, request: &HttpRequest) -> Result<HttpResponse> {
         match send_ureq_request(&self.agent, request) {
             Ok(response) => read_http_response(response),
-            Err(ureq::Error::Status(status, response)) => {
-                let body = response.into_string().unwrap_or_default();
-                Err(WonderError::validation(format!(
-                    "provider HTTP request failed with status {status}: {}",
-                    provider_error_message(&body)
-                )))
-            }
-            Err(ureq::Error::Transport(error)) => Err(WonderError::validation(format!(
-                "provider request failed: {error}"
-            ))),
+            Err(error) => match *error {
+                ureq::Error::Status(status, response) => {
+                    let body = response.into_string().unwrap_or_default();
+                    Err(WonderError::validation(format!(
+                        "provider HTTP request failed with status {status}: {}",
+                        provider_error_message(&body)
+                    )))
+                }
+                ureq::Error::Transport(error) => Err(WonderError::validation(format!(
+                    "provider request failed: {error}"
+                ))),
+            },
         }
     }
 
@@ -172,16 +174,18 @@ impl HttpTransport for UreqTransport {
             Ok(response) => Ok(StreamingHttpResponse {
                 reader: Box::new(response.into_reader()),
             }),
-            Err(ureq::Error::Status(status, response)) => {
-                let body = response.into_string().unwrap_or_default();
-                Err(WonderError::validation(format!(
-                    "provider HTTP request failed with status {status}: {}",
-                    provider_error_message(&body)
-                )))
-            }
-            Err(ureq::Error::Transport(error)) => Err(WonderError::validation(format!(
-                "provider request failed: {error}"
-            ))),
+            Err(error) => match *error {
+                ureq::Error::Status(status, response) => {
+                    let body = response.into_string().unwrap_or_default();
+                    Err(WonderError::validation(format!(
+                        "provider HTTP request failed with status {status}: {}",
+                        provider_error_message(&body)
+                    )))
+                }
+                ureq::Error::Transport(error) => Err(WonderError::validation(format!(
+                    "provider request failed: {error}"
+                ))),
+            },
         }
     }
 }
@@ -189,15 +193,15 @@ impl HttpTransport for UreqTransport {
 fn send_ureq_request(
     agent: &ureq::Agent,
     request: &HttpRequest,
-) -> std::result::Result<ureq::Response, ureq::Error> {
+) -> std::result::Result<ureq::Response, Box<ureq::Error>> {
     let mut transport = agent.request(request.method.as_str(), request.url.as_str());
     for (name, value) in &request.headers {
         transport = transport.set(name, value);
     }
     if request.body.is_empty() && request.method.eq_ignore_ascii_case("GET") {
-        transport.call()
+        transport.call().map_err(Box::new)
     } else {
-        transport.send_string(&request.body)
+        transport.send_string(&request.body).map_err(Box::new)
     }
 }
 
@@ -302,11 +306,7 @@ impl ProviderRuntime {
 
     #[must_use]
     pub fn supports_tool_use_for(&self, resolved: &ResolvedProviderExecution) -> bool {
-        match resolved.provider_id() {
-            "openai" => true,
-            "anthropic" | "copilot" => true,
-            _ => false,
-        }
+        matches!(resolved.provider_id(), "openai" | "anthropic" | "copilot")
     }
 
     pub fn complete_streaming<F>(

@@ -57,7 +57,7 @@ impl KeyEvent {
     #[must_use]
     pub fn is_ctrl_char(self, expected: char) -> bool {
         matches!(self.code, KeyCode::Char(actual)
-            if actual.to_ascii_lowercase() == expected.to_ascii_lowercase() && self.modifiers.control)
+            if actual.eq_ignore_ascii_case(&expected) && self.modifiers.control)
     }
 }
 

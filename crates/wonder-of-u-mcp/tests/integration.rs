@@ -42,7 +42,7 @@ async fn integration_mcp_fake_server_tool_call() {
     let result = client
         .call_tool("Echo Text", json!({ "text": "hello integration" }))
         .expect("call tool");
-    assert_eq!(result.is_error, false);
+    assert!(!result.is_error);
     assert_eq!(
         result.content,
         vec![McpContent {
