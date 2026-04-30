@@ -18,6 +18,13 @@ version = "0.1.0"
 edition = "2024"
 rust-version = "1.85"
 default-run = "wonder-of-u"
+description = "A Rust port of the Claude interactive CLI with full ratatui TUI"
+authors = ["wonder-of-u contributors"]
+license = "MIT"
+repository = "https://github.com/ratchanonth60/wonderofu"
+keywords = ["claude", "ai", "tui", "cli", "ratatui"]
+categories = ["command-line-utilities"]
+readme = "README.md"
 [workspace.dependencies]
 futures = "0.3"
 async-trait = "0.1"
