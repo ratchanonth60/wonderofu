@@ -105,20 +105,55 @@ The target TUI is **visual-close**: layout, flow, colors, dialogs, status/footer
   - For each new feature slice, branch from `dev` into `feat/<slice>`, finish the slice, then merge back into `dev`.
   - Keep files grouped by domain (`commands/status.rs` for informational commands, `commands/workflow.rs` for interactive workflow commands, `tui_runtime.rs` for shell/controller behavior) and avoid scattering feature logic across unrelated modules.
 - Current high-priority parity queue:
-  - Completed in the current merged flow:
+  - **All completed** — the full parity-hardening-release branch sequence is merged into `dev` and fast-forwarded to `main`:
     - `/fast`
     - TUI permission parity
     - TUI overlay/picker parity
     - TUI resume/live-state parity
     - command-audit parity (`/security-review`, `/terminal-setup`)
     - companion/browser-handoff parity (`/desktop`, `/mobile`, `/ios`, `/android`, `/chrome`)
-    - ratatui picker search/filter parity across existing chooser dialogs
-    - ratatui queued-command visibility in the shell
-  - Continue the broader `parity-hardening-release` work from clean `dev`; the branch sequence above is complete.
-  - Remaining top-level work is now broader hardening rather than the completed branch sequence above.
-  - Re-audit the remaining less-central command surfaces and moved-to-plugin/browser-handoff flows that still have no honest Rust equivalent, especially `ide` and any deeper companion bridge behavior beyond the new notice/browser fallbacks.
-  - Keep tightening ratatui interaction feel where the shell still diverges from the reference beyond the slices already merged, with remaining likely candidates including richer history search, picker previews, task-panel polish, and deeper modal coordination.
-  - Only claim feature parity when the Rust path has real runtime behavior or an explicit fallback that matches the reference command semantics.
+    - ratatui picker search/filter parity
+    - ratatui queued-command visibility
+    - ratatui Ctrl+R history search overlay
+    - ratatui picker preview panel
+    - task panel lifecycle polish (auto-dismiss notices)
+    - modal/overlay coordination (single-owner Esc routing)
+    - `/ide` honest browser-handoff notice
+
+## 2.2 Plan to close `parity-hardening-release`
+
+Goal: finish the umbrella `parity-hardening-release` work by closing the remaining ratatui polish items and the last honest browser-handoff command, then publish the result.
+
+Slices (each = its own `feat/<slice>` branched from `dev`, merged back via `--no-ff`, with `plan.md` and SQL todos updated after every merge):
+
+1. `feat/ratatui-history-search` — incremental Ctrl+R style prompt-history search overlay.
+   - Adds search-mode state machine on top of current history-recall cycling.
+   - Shows live query, current match index/total, and a clear cancel/accept flow.
+   - Falls back gracefully when history is empty.
+   - Tests cover entering/exiting search, no-match behavior, and accept-on-Enter.
+2. `feat/ratatui-picker-previews` — minimal honest preview panel for picker overlays.
+   - Reuses existing picker descriptions/paths to render a side/below preview block under the filtered list.
+   - No fake remote previews; only data already known to the Rust port.
+   - Tests cover preview visibility for non-empty selection and empty/no-match states.
+3. `feat/ratatui-task-panel-polish` — tighten task overlay lifecycle and visible state.
+   - Cleaner task summary, consistent status-note feedback when tasks transition or are dismissed, stale-state cleanup.
+   - Tests cover task add, completion, dismissal, and stale-state cleanup.
+4. `feat/ratatui-modal-coordination` — coordinate Esc/dismiss across notices, pickers, confirmations, and tag removal so only one overlay owns input at a time and dismissal feedback is consistent.
+   - Audits and consolidates `dismiss_dialog` / picker-cancel paths.
+   - Tests cover stacked-overlay dismissal order and stale-overlay cleanup.
+5. `feat/ide-handoff-fallback` — add `/ide` as honest local/browser fallback notice (mirrors `/desktop` and `/chrome`).
+   - Live `IDE` notice dialog, attempts browser handoff to the IDE docs URL, explicitly states the Rust port does not yet implement a live IDE bridge.
+   - Tests cover registry wiring, command output, and TUI notice parsing.
+6. `feat/parity-hardening-docs-final` ✅ — final documentation/plan sweep, `main` fast-forwarded from `dev`.
+
+**`parity-hardening-release` is COMPLETE.** All six slices merged. `dev` and `main` are at parity. Test counts: 185 CLI + 35 TUI (all passing).
+
+Cross-cutting expectations for each slice:
+- Branch from `dev`, never edit `dev` directly.
+- Run `cargo fmt --all`, `cargo test --workspace`, and `cargo build --workspace` before merge.
+- Update `plan.md` and SQL todos after each merge.
+- Keep comments Rust-native (`//!` / `///` / `//` why-comments) per the agent style guide.
+- After all six slices merge into `dev`, fast-forward `main` from `dev` and report the final commit hash.
 
 ## 3. First-release scope and backlog
 
