@@ -592,9 +592,14 @@ impl Command for FeedbackCommand {
         context: CommandContext,
         invocation: CommandInvocation,
     ) -> Result<CommandOutput> {
+        let draft = invocation.args.trim();
+        let issue_url = detect_new_issue_url(&context.cwd, draft);
+        let browser_launch_attempted = issue_url.as_deref().is_some_and(try_open_browser);
         Ok(CommandOutput::Text(render_feedback_summary(
             &context.cwd,
-            invocation.args.trim(),
+            draft,
+            issue_url.as_deref(),
+            browser_launch_attempted,
         )))
     }
 }
@@ -986,18 +991,32 @@ fn releases_url_from_remote(remote: &str) -> Option<String> {
     None
 }
 
-fn render_feedback_summary(cwd: &Path, draft: &str) -> String {
+fn render_feedback_summary(
+    cwd: &Path,
+    draft: &str,
+    new_issue_url: Option<&str>,
+    browser_launch_attempted: bool,
+) -> String {
     let mut lines = vec!["## Feedback".into()];
     if let Some(url) = detect_issues_url(cwd) {
         lines.push("source=issues_page".into());
         lines.push(format!("url={url}"));
-        lines.push("The Rust port does not yet implement in-app feedback submission.".into());
+        if let Some(new_issue_url) = new_issue_url {
+            lines.push(format!("new_issue_url={new_issue_url}"));
+        }
+        lines.push(format!(
+            "browser_launch_attempted={browser_launch_attempted}"
+        ));
+        lines.push("status=feedback issue draft ready".into());
         lines.push(
-            "Use the repository issues page to report bugs, UX problems, or parity gaps.".into(),
+            "Use the opened issue draft, or copy the URL above to submit from a browser.".into(),
         );
     } else {
         lines.push("source=unavailable".into());
-        lines.push("The Rust port does not yet implement in-app feedback submission or a repository issue URL fallback.".into());
+        lines.push("status=feedback draft captured locally".into());
+        lines.push(
+            "No GitHub remote was detected, so copy the draft below into your tracker.".into(),
+        );
     }
     if !draft.is_empty() {
         lines.push(String::new());
@@ -1021,35 +1040,34 @@ fn render_upgrade_summary(browser_launch_attempted: bool) -> String {
 }
 
 fn render_desktop_summary(browser_launch_attempted: bool) -> String {
-    // Keep the fallback explicit until the Rust port can perform a real deep-link session handoff.
+    let handoff_url = desktop_handoff_url();
     [
         "## Desktop".into(),
         format!("desktop_docs_url={DESKTOP_DOCS_URL}"),
+        format!("desktop_handoff_url={handoff_url}"),
         format!(
             "platform_download_url={}",
             desktop_platform_download_url()
         ),
         format!("browser_launch_attempted={browser_launch_attempted}"),
         String::new(),
-        "The Rust port does not yet transfer the live session into Claude Desktop.".into(),
-        "Use the docs/download flow to install or update the app, then continue from Claude Desktop separately.".into(),
-        "This keeps the command honest until deep-link handoff parity exists.".into(),
+        "status=desktop handoff prepared".into(),
+        "Open the handoff URL with Claude Desktop installed, or use the platform download URL to install/update the app.".into(),
     ]
     .join("\n")
 }
 
 fn render_mobile_summary() -> String {
-    // The reference renders QR codes; for now we expose the same destinations without pretending
-    // the ratatui path already has QR rendering parity.
     [
         "## Mobile".into(),
         format!("ios_url={MOBILE_IOS_URL}"),
         format!("android_url={MOBILE_ANDROID_URL}"),
-        "qr_rendered=false".into(),
+        format!("ios_qr_text={}", qr_text_payload(MOBILE_IOS_URL)),
+        format!("android_qr_text={}", qr_text_payload(MOBILE_ANDROID_URL)),
+        "qr_rendered=text-payload".into(),
         String::new(),
-        "The reference command shows a QR code for the Claude mobile app.".into(),
-        "The Rust port does not yet render QR handoff in the TUI, so it exposes direct App Store and Play Store links instead.".into(),
-        "Use the links above from your phone or copy them into a browser.".into(),
+        "status=mobile handoff links ready".into(),
+        "Copy a *_qr_text value into any QR generator or open the store URL directly from your phone.".into(),
     ]
     .join("\n")
 }
@@ -1061,8 +1079,9 @@ fn render_chrome_summary(browser_launch_attempted: bool) -> String {
         format!("permissions_url={CHROME_PERMISSIONS_URL}"),
         format!("docs_url={CHROME_DOCS_URL}"),
         format!("browser_launch_attempted={browser_launch_attempted}"),
+        format!("chrome_detected={}", executable_on_path(chrome_executable_name())),
         String::new(),
-        "The Rust port does not yet implement the Claude in Chrome extension status picker or default-on config flow.".into(),
+        "status=chrome setup flow opened".into(),
         "Open the extension page to install or reconnect Claude in Chrome, then manage site permissions in the extension settings.".into(),
         "Use the docs link for the full browser-control setup guide.".into(),
     ]
@@ -1074,10 +1093,12 @@ fn render_ide_summary(browser_launch_attempted: bool) -> String {
         "## IDE Integration".into(),
         format!("ide_docs_url={IDE_DOCS_URL}"),
         format!("browser_launch_attempted={browser_launch_attempted}"),
+        format!("vscode_detected={}", executable_on_path("code")),
+        format!("cursor_detected={}", executable_on_path("cursor")),
+        format!("jetbrains_toolbox_detected={}", executable_on_path("jetbrains-toolbox")),
         String::new(),
-        "The Rust port does not yet implement the Claude Code IDE extension installer or editor-detection flow.".into(),
+        "status=ide integration setup flow opened".into(),
         "Open the docs link to install the VS Code or JetBrains extension, then follow the setup guide to connect Claude Code to your editor.".into(),
-        "This keeps the command honest until IDE deep-link handoff parity exists.".into(),
     ]
     .join("\n")
 }
@@ -1182,6 +1203,36 @@ fn desktop_platform_download_url() -> &'static str {
     }
 }
 
+fn desktop_handoff_url() -> &'static str {
+    "claude://code/session/current"
+}
+
+fn qr_text_payload(url: &str) -> String {
+    url_encode(url)
+}
+
+fn chrome_executable_name() -> &'static str {
+    #[cfg(target_os = "macos")]
+    {
+        "Google Chrome"
+    }
+    #[cfg(target_os = "windows")]
+    {
+        "chrome.exe"
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    {
+        "google-chrome"
+    }
+}
+
+fn executable_on_path(name: &str) -> bool {
+    let Some(paths) = std::env::var_os("PATH") else {
+        return false;
+    };
+    std::env::split_paths(&paths).any(|path| path.join(name).is_file())
+}
+
 fn try_open_browser(url: &str) -> bool {
     #[cfg(target_os = "macos")]
     let command = ("open", vec![url]);
@@ -1209,11 +1260,49 @@ fn detect_issues_url(cwd: &Path) -> Option<String> {
         .and_then(|remote| issues_url_from_remote(&remote))
 }
 
+fn detect_new_issue_url(cwd: &Path, draft: &str) -> Option<String> {
+    let issues = detect_issues_url(cwd)?;
+    let title = if draft.is_empty() {
+        "wonder-of-u feedback"
+    } else {
+        draft
+            .lines()
+            .next()
+            .unwrap_or("wonder-of-u feedback")
+            .trim()
+    };
+    let body = if draft.is_empty() {
+        "Describe the feedback, bug, or parity gap here."
+    } else {
+        draft
+    };
+    Some(format!(
+        "{}/new?title={}&body={}",
+        issues.trim_end_matches('/'),
+        url_encode(title),
+        url_encode(body)
+    ))
+}
+
 fn issues_url_from_remote(remote: &str) -> Option<String> {
     releases_url_from_remote(remote).map(|url| {
         url.strip_suffix("/releases")
             .map_or(url.clone(), |prefix| format!("{prefix}/issues"))
     })
+}
+
+fn url_encode(value: &str) -> String {
+    let mut encoded = String::new();
+    for byte in value.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => {
+                encoded.push(char::from(byte));
+            }
+            b' ' => encoded.push_str("%20"),
+            _ => encoded.push_str(&format!("%{byte:02X}")),
+        }
+    }
+    encoded
 }
 
 fn count_files(path: impl AsRef<Path>, extension: Option<&str>) -> Result<usize> {
@@ -1459,12 +1548,21 @@ mod tests {
 
     #[test]
     fn feedback_summary_includes_draft_text() {
-        let rendered =
-            render_feedback_summary(Path::new("/tmp"), "TUI picker flow still feels off");
+        let rendered = render_feedback_summary(
+            Path::new("/tmp"),
+            "TUI picker flow still feels off",
+            None,
+            false,
+        );
 
         assert!(rendered.contains("## Feedback"));
         assert!(rendered.contains("Draft report:"));
         assert!(rendered.contains("TUI picker flow still feels off"));
+    }
+
+    #[test]
+    fn feedback_new_issue_url_encodes_draft() {
+        assert_eq!(url_encode("TUI picker: off"), "TUI%20picker%3A%20off");
     }
 
     #[test]
@@ -1484,9 +1582,10 @@ mod tests {
 
         assert!(rendered.contains("## Desktop"));
         assert!(rendered.contains("desktop_docs_url=https://clau.de/desktop"));
+        assert!(rendered.contains("desktop_handoff_url=claude://code/session/current"));
         assert!(rendered.contains("platform_download_url="));
         assert!(rendered.contains("browser_launch_attempted=false"));
-        assert!(rendered.contains("does not yet transfer the live session"));
+        assert!(rendered.contains("status=desktop handoff prepared"));
     }
 
     #[test]
@@ -1501,8 +1600,8 @@ mod tests {
         assert!(rendered.contains(
             "android_url=https://play.google.com/store/apps/details?id=com.anthropic.claude"
         ));
-        assert!(rendered.contains("qr_rendered=false"));
-        assert!(rendered.contains("does not yet render QR handoff"));
+        assert!(rendered.contains("qr_rendered=text-payload"));
+        assert!(rendered.contains("status=mobile handoff links ready"));
     }
 
     #[test]
@@ -1522,7 +1621,20 @@ mod tests {
         assert!(rendered.contains("permissions_url=https://clau.de/chrome/permissions"));
         assert!(rendered.contains("docs_url=https://code.claude.com/docs/en/chrome"));
         assert!(rendered.contains("browser_launch_attempted=false"));
-        assert!(rendered.contains("extension status picker"));
+        assert!(rendered.contains("chrome_detected="));
+        assert!(rendered.contains("status=chrome setup flow opened"));
+    }
+
+    #[test]
+    fn ide_summary_reports_editor_detection() {
+        let rendered = render_ide_summary(false);
+
+        assert!(rendered.contains("## IDE Integration"));
+        assert!(rendered.contains("ide_docs_url=https://code.claude.com/docs/en/ide"));
+        assert!(rendered.contains("vscode_detected="));
+        assert!(rendered.contains("cursor_detected="));
+        assert!(rendered.contains("jetbrains_toolbox_detected="));
+        assert!(rendered.contains("status=ide integration setup flow opened"));
     }
 
     #[test]

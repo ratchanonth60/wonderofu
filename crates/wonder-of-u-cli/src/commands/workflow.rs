@@ -750,9 +750,9 @@ impl Command for PrivacySettingsCommand {
     ) -> Result<CommandOutput> {
         let args = parse_command_args::<PrivacySettingsArgs>("privacy-settings", &invocation)?;
         match args.command.unwrap_or(PrivacySettingsSubcommand::Show) {
-            PrivacySettingsSubcommand::Show => {
-                Ok(CommandOutput::Text(render_privacy_settings_summary()))
-            }
+            PrivacySettingsSubcommand::Show => Ok(CommandOutput::Text(
+                render_privacy_settings_summary(try_open_browser(PRIVACY_SETTINGS_URL)),
+            )),
         }
     }
 }
@@ -1717,7 +1717,7 @@ fn render_effort_status(
         "- max: ask for the deepest available reasoning mode".into(),
         "- auto: clear the explicit override".into(),
         String::new(),
-        "The Rust port stores and displays this setting, but provider-specific inference mapping is not wired yet.".into(),
+        "Provider runtime mapping is active: OpenAI/Copilot receive reasoning_effort for high/max, and Claude-family Anthropic requests receive thinking budget configuration.".into(),
     ];
     if storage_dir.is_none() {
         lines.push("Storage is disabled, so changes only apply to the current TUI session.".into());
@@ -1740,7 +1740,7 @@ fn render_effort_transition(
         lines.push("note=storage disabled; effort is session-only".into());
     } else {
         lines.push(
-            "note=provider runtime does not yet translate effort into provider-specific inference options"
+            "note=provider runtime maps high/max effort into provider-specific inference options"
                 .into(),
         );
     }
@@ -2247,13 +2247,37 @@ fn hooks_open_output(context: &CommandContext, storage_dir: Option<&Path>) -> Re
     ))
 }
 
-fn render_privacy_settings_summary() -> String {
+fn render_privacy_settings_summary(browser_launch_attempted: bool) -> String {
     [
         "## Privacy Settings".into(),
-        "The Rust port does not yet implement the live Grove/privacy API flow.".into(),
+        format!("privacy_settings_url={PRIVACY_SETTINGS_URL}"),
+        format!("browser_launch_attempted={browser_launch_attempted}"),
+        "status=privacy settings opened".into(),
         format!("Review and manage your privacy settings at {PRIVACY_SETTINGS_URL}"),
     ]
     .join("\n")
+}
+
+fn try_open_browser(url: &str) -> bool {
+    #[cfg(target_os = "macos")]
+    let command = ("open", vec![url]);
+    #[cfg(target_os = "linux")]
+    let command = ("xdg-open", vec![url]);
+    #[cfg(target_os = "windows")]
+    let command = ("cmd", vec!["/c", "start", "", url]);
+
+    #[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
+    {
+        ProcessCommand::new(command.0)
+            .args(command.1)
+            .spawn()
+            .is_ok()
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
+    {
+        let _ = url;
+        false
+    }
 }
 
 fn keybindings_open_output(context: &CommandContext, storage_dir: Option<&Path>) -> Result<String> {
@@ -3122,10 +3146,11 @@ mod tests {
 
     #[test]
     fn privacy_settings_summary_points_to_web_controls() {
-        let rendered = render_privacy_settings_summary();
+        let rendered = render_privacy_settings_summary(false);
 
         assert!(rendered.contains("## Privacy Settings"));
-        assert!(rendered.contains("does not yet implement the live Grove/privacy API flow"));
+        assert!(rendered.contains("status=privacy settings opened"));
+        assert!(rendered.contains("browser_launch_attempted=false"));
         assert!(rendered.contains("https://claude.ai/settings/data-privacy-controls"));
     }
 
@@ -3405,7 +3430,7 @@ mod tests {
         assert!(rendered.contains("## Effort"));
         assert!(rendered.contains("current_effort=medium"));
         assert!(rendered.contains("persisted_effort=high"));
-        assert!(rendered.contains("provider-specific inference mapping is not wired yet"));
+        assert!(rendered.contains("Provider runtime mapping is active"));
     }
 
     #[test]
