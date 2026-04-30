@@ -136,6 +136,8 @@ pub struct PluginCommandDefinition {
     pub kind: CommandKind,
     pub path: PathBuf,
     #[serde(default)]
+    pub allowed_tools: Vec<String>,
+    #[serde(default)]
     pub hidden: bool,
     #[serde(default)]
     pub requires_auth: bool,
@@ -150,6 +152,16 @@ impl PluginCommandDefinition {
                 "plugin `{plugin_name}` command `{}` description cannot be empty",
                 self.name
             )));
+        }
+        let mut allowed_tools = BTreeSet::new();
+        for tool in &self.allowed_tools {
+            let normalized = normalize_registry_name(tool, "tool")?;
+            if !allowed_tools.insert(normalized.clone()) {
+                return Err(WonderError::validation(format!(
+                    "plugin `{plugin_name}` command `{}` declares duplicate allowed tool: {normalized}",
+                    self.name
+                )));
+            }
         }
         validate_relative_path(
             &self.path,
@@ -175,6 +187,11 @@ impl PluginCommandDefinition {
         Ok(PluginCommandRegistration {
             plugin_id: plugin_id.to_string(),
             entry_path,
+            allowed_tools: self
+                .allowed_tools
+                .iter()
+                .map(|tool| normalize_registry_name(tool, "tool"))
+                .collect::<Result<BTreeSet<_>>>()?,
             spec: self.command_spec(),
         })
     }
@@ -203,7 +220,18 @@ impl PluginSkillDefinition {
 pub struct PluginCommandRegistration {
     pub plugin_id: String,
     pub entry_path: PathBuf,
+    pub allowed_tools: BTreeSet<String>,
     pub spec: CommandSpec,
+}
+
+impl PluginCommandRegistration {
+    /// Returns whether this plugin command explicitly allows a tool name.
+    #[must_use]
+    pub fn allows_tool(&self, tool_name: &str) -> bool {
+        normalize_registry_name(tool_name, "tool")
+            .map(|normalized| self.allowed_tools.contains(&normalized))
+            .unwrap_or(false)
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -378,6 +406,7 @@ mod tests {
                 description: "Run demo".into(),
                 kind: CommandKind::Local,
                 path: PathBuf::from("commands/demo.txt"),
+                allowed_tools: Vec::new(),
                 hidden: false,
                 requires_auth: false,
                 interactive_only: false,
@@ -398,5 +427,41 @@ mod tests {
         assert_eq!(commands[0].spec.source, CommandSource::Plugin);
         assert_eq!(skills.len(), 1);
         assert!(skills[0].path.ends_with("skills/demo"));
+    }
+
+    #[test]
+    fn plugin_commands_are_permission_scoped() {
+        let dir = unique_test_dir("plugin-manifest-allowed-tools");
+        fs::create_dir_all(dir.join("commands")).expect("commands dir");
+        fs::write(dir.join("commands/demo.txt"), "echo demo").expect("command file");
+
+        let manifest = PluginManifest {
+            schema_version: 1,
+            name: "Scoped Plugin".into(),
+            version: "0.1.0".into(),
+            description: "demo".into(),
+            commands: vec![PluginCommandDefinition {
+                name: "demo".into(),
+                aliases: Vec::new(),
+                description: "Run demo".into(),
+                kind: CommandKind::Local,
+                path: PathBuf::from("commands/demo.txt"),
+                allowed_tools: vec!["file_read".into()],
+                hidden: false,
+                requires_auth: false,
+                interactive_only: false,
+            }],
+            skills: Vec::new(),
+        };
+
+        let registration = manifest
+            .command_registrations(&manifest.plugin_id().expect("plugin id"), &dir)
+            .expect("commands")
+            .pop()
+            .expect("registration");
+
+        assert!(registration.allows_tool("file_read"));
+        assert!(registration.allows_tool("/FILE_READ"));
+        assert!(!registration.allows_tool("bash"));
     }
 }

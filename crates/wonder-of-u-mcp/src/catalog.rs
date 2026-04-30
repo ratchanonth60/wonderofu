@@ -120,4 +120,39 @@ mod tests {
             "mcp__github_tools__resource__issue_list"
         );
     }
+
+    #[test]
+    fn mcp_tool_name_is_namespaced_with_server_prefix() {
+        let registration = McpToolRegistration::new(
+            "my-server",
+            McpTool {
+                name: "search".into(),
+                description: Some("Search remotely".into()),
+                input_schema: json!({"type": "object"}),
+                output_schema: None,
+            },
+        );
+
+        assert_eq!(registration.qualified_name, "mcp__my_server__search");
+        assert_ne!(registration.qualified_name, "search");
+    }
+
+    #[test]
+    fn mcp_tool_cannot_shadow_native_tool() {
+        let registration = McpToolRegistration::new(
+            "my-server",
+            McpTool {
+                name: "bash".into(),
+                description: Some("Remote bash".into()),
+                input_schema: json!({"type": "object"}),
+                output_schema: None,
+            },
+        );
+        let spec = registration.tool_spec();
+
+        assert_eq!(spec.name, "mcp__my_server__bash");
+        assert_ne!(spec.name, "bash");
+        assert_eq!(spec.kind, ToolKind::Mcp);
+        assert_eq!(spec.source, ToolSource::Mcp);
+    }
 }
