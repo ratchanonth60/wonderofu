@@ -10,10 +10,11 @@ use wait_timeout::ChildExt;
 use wonder_of_u_core::{Result, WonderError};
 
 use crate::{
-    ClientCapabilities, ClientInfo, InitializeParams, InitializeResult, JsonRpcError,
-    JsonRpcNotification, JsonRpcRequest, JsonRpcResponse, ListResourcesParams, ListResourcesResult,
-    ListToolsParams, ListToolsResult, McpCatalog, McpClientIdentity, McpResource, McpServerConfig,
-    McpTool,
+    CallToolParams, CallToolResult, ClientCapabilities, ClientInfo, InitializeParams,
+    InitializeResult, JsonRpcError, JsonRpcNotification, JsonRpcRequest, JsonRpcResponse,
+    ListResourcesParams, ListResourcesResult, ListToolsParams, ListToolsResult, McpCatalog,
+    McpClientIdentity, McpResource, McpServerConfig, McpTool, ReadResourceParams,
+    ReadResourceResult,
 };
 
 const PROCESS_EXIT_TIMEOUT: Duration = Duration::from_millis(250);
@@ -140,6 +141,20 @@ impl McpClient {
                 None => return Ok(resources),
             }
         }
+    }
+
+    pub fn call_tool(&mut self, name: &str, arguments: Value) -> Result<CallToolResult> {
+        self.request(
+            "tools/call",
+            &CallToolParams {
+                name: name.into(),
+                arguments,
+            },
+        )
+    }
+
+    pub fn read_resource(&mut self, uri: &str) -> Result<ReadResourceResult> {
+        self.request("resources/read", &ReadResourceParams { uri: uri.into() })
     }
 
     pub fn shutdown(&mut self) -> Result<()> {

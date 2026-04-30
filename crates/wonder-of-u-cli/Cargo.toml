@@ -36,4 +36,6 @@ wonder-of-u-storage.workspace = true
 wonder-of-u-tui.workspace = true
 
 [dev-dependencies]
+tokio = { version = "1", features = ["full"] }
+tempfile = "3"
 wonder-of-u-test-support.workspace = true

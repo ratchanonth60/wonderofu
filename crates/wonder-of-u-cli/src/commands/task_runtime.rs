@@ -303,12 +303,12 @@ impl TaskManager {
             )));
         }
 
-        let note = if force {
-            "force-stopped by stop request"
+        let (status, note) = if force {
+            (TaskStatus::Killed, "force-stopped by stop request")
         } else {
-            "stopped by stop request"
+            (TaskStatus::Cancelled, "cancelled by stop request")
         };
-        task.mark_finished(TaskStatus::Killed, None, Some(note.into()));
+        task.mark_finished(status, None, Some(note.into()));
         self.store.write_task(&task)?;
         self.store.append_log(
             task.id,
