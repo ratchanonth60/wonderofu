@@ -17,6 +17,7 @@ wait-timeout.workspace = true
 walkdir.workspace = true
 wonder-of-u-core.workspace = true
 wonder-of-u-mcp.workspace = true
+wonder-of-u-storage.workspace = true
 
 [dev-dependencies]
 futures.workspace = true

@@ -33,7 +33,11 @@ pub use files::{
 };
 pub use plan_tool::{PlanReadInput, PlanReadTool, PlanWriteInput, PlanWriteTool};
 pub use search::{GlobEntryType, GlobInput, GlobTool, GrepInput, GrepTool};
-pub use task_tools::{TaskOutputInput, TaskOutputTool, TaskStopInput, TaskStopTool};
+pub use task_tools::{
+    TaskCreateInput, TaskCreateTool, TaskGetInput, TaskGetTool, TaskListInput, TaskListTool,
+    TaskOutputInput, TaskOutputTool, TaskStopInput, TaskStopTool, TaskUpdateInput,
+    TaskUpdateStatus, TaskUpdateTool,
+};
 pub use todo_tool::{TodoAction, TodoInput, TodoTool};
 pub use web::{WebFetchInput, WebFetchTool, WebSearchInput, WebSearchTool};
 pub use wonder_of_u_mcp::{
@@ -60,6 +64,10 @@ pub fn builtin_tools() -> Vec<Arc<dyn Tool>> {
         Arc::new(AskUserTool),
         Arc::new(PlanReadTool),
         Arc::new(PlanWriteTool),
+        Arc::new(TaskCreateTool),
+        Arc::new(TaskGetTool),
+        Arc::new(TaskListTool),
+        Arc::new(TaskUpdateTool),
         Arc::new(TaskOutputTool),
         Arc::new(TaskStopTool),
         Arc::new(AgentTool),
@@ -169,6 +177,10 @@ mod tests {
                 "ask_user",
                 "plan_read",
                 "plan_write",
+                "task_create",
+                "task_get",
+                "task_list",
+                "task_update",
                 "task_output",
                 "task_stop",
                 "agent",
