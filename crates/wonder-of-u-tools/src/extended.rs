@@ -26,6 +26,23 @@ pub struct PowerShellInput {
     pub cwd: Option<PathBuf>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub timeout_secs: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(
+        default,
+        rename = "run_in_background",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub run_in_background: Option<bool>,
+    #[serde(
+        default,
+        rename = "dangerouslyDisableSandbox",
+        alias = "dangerously_disable_sandbox",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub dangerously_disable_sandbox: Option<bool>,
 }
 
 #[derive(Debug, Default)]
@@ -46,6 +63,30 @@ impl Tool for PowerShellTool {
                         "timeout_secs",
                         ToolSchema::integer("optional timeout in seconds"),
                     )
+                    .property(
+                        "timeout",
+                        ToolSchema::integer(
+                            "source-compatible timeout in milliseconds; converted to seconds",
+                        ),
+                    )
+                    .property(
+                        "description",
+                        ToolSchema::string(
+                            "optional source-compatible command description; ignored by the Rust runtime",
+                        ),
+                    )
+                    .property(
+                        "run_in_background",
+                        ToolSchema::boolean(
+                            "source-compatible background flag; currently unsupported",
+                        ),
+                    )
+                    .property(
+                        "dangerouslyDisableSandbox",
+                        ToolSchema::boolean(
+                            "source-compatible sandbox override flag; currently unsupported",
+                        ),
+                    )
                     .required("command"),
             );
         spec.destructive = true;
@@ -55,9 +96,32 @@ impl Tool for PowerShellTool {
     fn validate_input(&self, input: &Value) -> Result<()> {
         let input = parse_input::<PowerShellInput>("powershell", input)?;
         require_non_empty_text("powershell", "command", &input.command)?;
+        if let Some(cwd) = &input.cwd {
+            require_non_empty_path("powershell", "cwd", cwd)?;
+        }
         if input.timeout_secs == Some(0) {
             return Err(WonderError::validation(
                 "powershell timeout_secs must be greater than zero",
+            ));
+        }
+        if input.timeout == Some(0) {
+            return Err(WonderError::validation(
+                "powershell timeout must be greater than zero",
+            ));
+        }
+        if input.timeout_secs.is_some() && input.timeout.is_some() {
+            return Err(WonderError::validation(
+                "powershell accepts either `timeout_secs` or source-compatible `timeout`, not both",
+            ));
+        }
+        if input.run_in_background == Some(true) {
+            return Err(WonderError::validation(
+                "powershell run_in_background is not supported in wonder-of-u-tools",
+            ));
+        }
+        if input.dangerously_disable_sandbox == Some(true) {
+            return Err(WonderError::validation(
+                "powershell dangerouslyDisableSandbox is not supported in wonder-of-u-tools",
             ));
         }
         Ok(())
@@ -89,7 +153,12 @@ impl Tool for PowerShellTool {
             .map_err(|error| {
                 WonderError::validation(format!("failed to start {shell}: {error}"))
             })?;
-        let timeout = Duration::from_secs(input.timeout_secs.unwrap_or(DEFAULT_TIMEOUT_SECS));
+        let timeout = Duration::from_secs(
+            input
+                .timeout_secs
+                .or_else(|| input.timeout.map(|timeout| timeout.div_ceil(1_000)))
+                .unwrap_or(DEFAULT_TIMEOUT_SECS),
+        );
         let timed_out = child.wait_timeout(timeout)?.is_none();
         if timed_out {
             let _ = child.kill();
@@ -290,7 +359,9 @@ impl Tool for CronListTool {
             "List current user cron entries",
             ToolKind::Task,
         );
+        spec.aliases.push("CronList".into());
         spec.read_only = true;
+        spec.concurrency_safe = true;
         spec
     }
 
@@ -315,5 +386,64 @@ impl Tool for CronListTool {
                 format!("failed to run crontab -l: {error}"),
             )),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+
+    use serde_json::json;
+    use wonder_of_u_core::{
+        FeatureSet, PermissionDecision, PermissionMode, SessionId, ToolContext,
+    };
+
+    use super::*;
+
+    fn tool_context(cwd: PathBuf) -> ToolContext {
+        ToolContext {
+            session_id: SessionId::new(),
+            cwd,
+            permission_mode: PermissionMode::Default,
+            additional_working_directories: Vec::new(),
+            permission_rules: Vec::new(),
+            features: FeatureSet::first_release(),
+        }
+    }
+
+    #[test]
+    fn powershell_validation_rejects_empty_cwd() {
+        let tool = PowerShellTool;
+        let error = tool
+            .validate_input(&json!({ "command": "Get-ChildItem", "cwd": "" }))
+            .expect_err("empty cwd");
+
+        assert!(error.to_string().contains("non-empty `cwd`"));
+    }
+
+    #[test]
+    fn powershell_permission_requires_review_for_encoded_commands() {
+        let tool = PowerShellTool;
+        let context = tool_context(PathBuf::from("/workspace"));
+        let decision = tool.permission_decision(
+            &context,
+            &json!({ "command": "pwsh –EncodedCommand ZQBjAGgAbwA=" }),
+        );
+
+        assert!(matches!(decision, PermissionDecision::Ask { .. }));
+        assert!(decision.reason().to_string().contains("encoded"));
+    }
+
+    #[test]
+    fn powershell_permission_requires_review_for_invoke_expression() {
+        let tool = PowerShellTool;
+        let context = tool_context(PathBuf::from("/workspace"));
+        let decision = tool.permission_decision(
+            &context,
+            &json!({ "command": "Invoke-Expression $payload" }),
+        );
+
+        assert!(matches!(decision, PermissionDecision::Ask { .. }));
+        assert!(decision.reason().to_string().contains("PowerShell"));
     }
 }

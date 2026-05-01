@@ -5,7 +5,8 @@ use std::{
 
 use crossterm::event::{
     self, Event as CrosstermEvent, KeyCode as CrosstermKeyCode, KeyEvent as CrosstermKeyEvent,
-    KeyEventKind, MouseEvent,
+    KeyEventKind, MouseButton as CrosstermMouseButton, MouseEvent as CrosstermMouseEvent,
+    MouseEventKind as CrosstermMouseEventKind,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -61,10 +62,119 @@ impl KeyEvent {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MouseButton {
+    Left,
+    Middle,
+    Right,
+}
+
+impl From<CrosstermMouseButton> for MouseButton {
+    fn from(value: CrosstermMouseButton) -> Self {
+        match value {
+            CrosstermMouseButton::Left => Self::Left,
+            CrosstermMouseButton::Middle => Self::Middle,
+            CrosstermMouseButton::Right => Self::Right,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MouseEventKind {
+    Down(MouseButton),
+    Up(MouseButton),
+    Drag(MouseButton),
+    Moved,
+    ScrollUp,
+    ScrollDown,
+    ScrollLeft,
+    ScrollRight,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct MouseEvent {
+    pub kind: MouseEventKind,
+    pub column: u16,
+    pub row: u16,
+    pub modifiers: KeyModifiers,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ClickEvent {
+    pub button: MouseButton,
+    pub column: u16,
+    pub row: u16,
+    pub modifiers: KeyModifiers,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+struct PressState {
+    button: Option<MouseButton>,
+    origin_column: u16,
+    origin_row: u16,
+    modifiers: KeyModifiers,
+    dragged: bool,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct ClickTracker {
+    pressed: PressState,
+}
+
+impl ClickTracker {
+    pub fn observe(&mut self, event: MouseEvent) -> Option<ClickEvent> {
+        match event.kind {
+            MouseEventKind::Down(button) => {
+                self.pressed = PressState {
+                    button: Some(button),
+                    origin_column: event.column,
+                    origin_row: event.row,
+                    modifiers: event.modifiers,
+                    dragged: false,
+                };
+                None
+            }
+            MouseEventKind::Drag(button) => {
+                if self.pressed.button == Some(button) {
+                    self.pressed.dragged = true;
+                }
+                None
+            }
+            MouseEventKind::Moved => {
+                if self.pressed.button.is_some()
+                    && (event.column != self.pressed.origin_column
+                        || event.row != self.pressed.origin_row)
+                {
+                    self.pressed.dragged = true;
+                }
+                None
+            }
+            MouseEventKind::Up(button) => {
+                let pressed = self.pressed;
+                self.pressed = PressState::default();
+                if pressed.button == Some(button) && !pressed.dragged {
+                    Some(ClickEvent {
+                        button,
+                        column: event.column,
+                        row: event.row,
+                        modifiers: event.modifiers,
+                    })
+                } else {
+                    None
+                }
+            }
+            MouseEventKind::ScrollUp
+            | MouseEventKind::ScrollDown
+            | MouseEventKind::ScrollLeft
+            | MouseEventKind::ScrollRight => None,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum UiEvent {
     Key(KeyEvent),
-    Mouse(MouseEvent),
+    Mouse(CrosstermMouseEvent),
     Paste(String),
     Resize { width: u16, height: u16 },
     FocusGained,
@@ -84,6 +194,14 @@ impl UiEvent {
             CrosstermEvent::FocusLost => Some(Self::FocusLost),
         }
     }
+
+    #[must_use]
+    pub fn normalized_mouse(&self) -> Option<MouseEvent> {
+        match self {
+            Self::Mouse(mouse_event) => Some(normalize_mouse_event(*mouse_event)),
+            _ => None,
+        }
+    }
 }
 
 #[must_use]
@@ -96,6 +214,16 @@ pub fn normalize_key_event(event: CrosstermKeyEvent) -> Option<KeyEvent> {
         code: normalize_key_code(event.code),
         modifiers: event.modifiers.into(),
     })
+}
+
+#[must_use]
+pub fn normalize_mouse_event(event: CrosstermMouseEvent) -> MouseEvent {
+    MouseEvent {
+        kind: normalize_mouse_kind(event.kind),
+        column: event.column,
+        row: event.row,
+        modifiers: event.modifiers.into(),
+    }
 }
 
 fn normalize_key_code(code: CrosstermKeyCode) -> KeyCode {
@@ -118,6 +246,19 @@ fn normalize_key_code(code: CrosstermKeyCode) -> KeyCode {
         CrosstermKeyCode::Char(ch) => KeyCode::Char(ch),
         CrosstermKeyCode::F(index) => KeyCode::F(index),
         _ => KeyCode::Null,
+    }
+}
+
+fn normalize_mouse_kind(kind: CrosstermMouseEventKind) -> MouseEventKind {
+    match kind {
+        CrosstermMouseEventKind::Down(button) => MouseEventKind::Down(button.into()),
+        CrosstermMouseEventKind::Up(button) => MouseEventKind::Up(button.into()),
+        CrosstermMouseEventKind::Drag(button) => MouseEventKind::Drag(button.into()),
+        CrosstermMouseEventKind::Moved => MouseEventKind::Moved,
+        CrosstermMouseEventKind::ScrollUp => MouseEventKind::ScrollUp,
+        CrosstermMouseEventKind::ScrollDown => MouseEventKind::ScrollDown,
+        CrosstermMouseEventKind::ScrollLeft => MouseEventKind::ScrollLeft,
+        CrosstermMouseEventKind::ScrollRight => MouseEventKind::ScrollRight,
     }
 }
 
@@ -332,6 +473,67 @@ mod tests {
                 },
             })
         );
+    }
+
+    #[test]
+    fn normalize_mouse_event_keeps_kind_coordinates_and_modifiers() {
+        let raw = CrosstermMouseEvent {
+            kind: CrosstermMouseEventKind::Drag(CrosstermMouseButton::Left),
+            column: 7,
+            row: 3,
+            modifiers: event::KeyModifiers::SHIFT | event::KeyModifiers::ALT,
+        };
+
+        assert_eq!(
+            normalize_mouse_event(raw),
+            MouseEvent {
+                kind: MouseEventKind::Drag(MouseButton::Left),
+                column: 7,
+                row: 3,
+                modifiers: KeyModifiers {
+                    shift: true,
+                    control: false,
+                    alt: true,
+                },
+            }
+        );
+    }
+
+    #[test]
+    fn click_tracker_ignores_drags_but_emits_clicks_on_release() {
+        let mut tracker = ClickTracker::default();
+        let down = MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: 2,
+            row: 4,
+            modifiers: KeyModifiers::default(),
+        };
+        let up = MouseEvent {
+            kind: MouseEventKind::Up(MouseButton::Left),
+            column: 2,
+            row: 4,
+            modifiers: KeyModifiers::default(),
+        };
+
+        assert_eq!(tracker.observe(down), None);
+        assert_eq!(
+            tracker.observe(up),
+            Some(ClickEvent {
+                button: MouseButton::Left,
+                column: 2,
+                row: 4,
+                modifiers: KeyModifiers::default(),
+            })
+        );
+
+        tracker.observe(down);
+        tracker.observe(MouseEvent {
+            kind: MouseEventKind::Drag(MouseButton::Left),
+            column: 3,
+            row: 4,
+            modifiers: KeyModifiers::default(),
+        });
+        assert_eq!(tracker.observe(up), None);
     }
 
     #[test]

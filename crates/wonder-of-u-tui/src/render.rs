@@ -4,10 +4,12 @@ use crate::{
     dialog::DialogView,
     frame::{FrameBuffer, Rect},
     layout::ShellLayout,
+    measure::widest_line,
     message::{
         HistorySearchView, MessageLineView, MessageRole, PickerView, TaskPanelView, footer_text,
         message_lines, queued_panel_view, status_text, task_panel_view,
     },
+    notification::{NotificationSeverity, NotificationView},
     style::{Color, TextStyle, Theme},
 };
 
@@ -23,6 +25,7 @@ pub struct ShellView {
     pub task_panel: Option<TaskPanelView>,
     pub dialog: Option<DialogView>,
     pub picker_view: Option<PickerView>,
+    pub notifications: Vec<NotificationView>,
 }
 
 impl ShellView {
@@ -50,6 +53,7 @@ impl ShellView {
             task_panel: task_panel_view(app),
             dialog: None,
             picker_view: None,
+            notifications: Vec::new(),
         }
     }
 }
@@ -68,6 +72,7 @@ pub fn render_shell(frame: &mut FrameBuffer, view: &ShellView, theme: &Theme) {
     draw_prompt_view(frame, layout.prompt, view, theme);
     draw_status_line(frame, layout.status, &view.status, theme.status);
     draw_status_line(frame, layout.footer, &view.footer, theme.footer);
+    draw_notification_stack(frame, layout.messages, &view.notifications, theme);
 
     if let Some(dialog) = &view.dialog {
         draw_dialog(frame, layout.messages, dialog, theme);
@@ -255,9 +260,9 @@ fn draw_dialog(frame: &mut FrameBuffer, viewport: Rect, dialog: &DialogView, the
     let content_width = dialog
         .body
         .iter()
-        .map(|line| line.chars().count())
-        .chain(std::iter::once(dialog.title.chars().count()))
-        .chain(std::iter::once(actions.chars().count()))
+        .map(|line| widest_line(line))
+        .chain(std::iter::once(widest_line(&dialog.title)))
+        .chain(std::iter::once(widest_line(&actions)))
         .max()
         .unwrap_or(0);
     let width = u16::try_from(content_width.saturating_add(4))
@@ -282,6 +287,104 @@ fn draw_dialog(frame: &mut FrameBuffer, viewport: Rect, dialog: &DialogView, the
     draw_panel(frame, rect, Some(&dialog.title), &body, theme);
 }
 
+fn draw_notification_stack(
+    frame: &mut FrameBuffer,
+    viewport: Rect,
+    notifications: &[NotificationView],
+    theme: &Theme,
+) {
+    if notifications.is_empty() || viewport.width < 18 || viewport.height < 3 {
+        return;
+    }
+
+    let mut y = viewport.y;
+    for notification in notifications {
+        let title = notification_title(notification);
+        let lines = notification_panel_lines(notification, theme);
+        let content_width = lines
+            .iter()
+            .map(|line| widest_line(&line.text))
+            .chain(std::iter::once(widest_line(&title)))
+            .max()
+            .unwrap_or(0);
+        let width = u16::try_from(content_width.saturating_add(4))
+            .unwrap_or(viewport.width)
+            .clamp(18, viewport.width);
+        let height = u16::try_from(lines.len().saturating_add(2)).unwrap_or(viewport.height);
+        if y.saturating_add(height) > viewport.bottom() {
+            break;
+        }
+
+        let rect = Rect::new(viewport.right().saturating_sub(width), y, width, height);
+        draw_notification(frame, rect, &title, notification, &lines, theme);
+        y = y.saturating_add(height.saturating_add(1));
+    }
+}
+
+fn draw_notification(
+    frame: &mut FrameBuffer,
+    area: Rect,
+    title: &str,
+    notification: &NotificationView,
+    lines: &[StyledLine],
+    theme: &Theme,
+) {
+    if area.is_empty() {
+        return;
+    }
+
+    let border = notification_border_style(notification);
+    let panel_theme = Theme {
+        background: theme.background,
+        border,
+        title: border.bold(),
+        messages: theme.messages,
+        prompt: theme.prompt,
+        status: theme.status,
+        footer: theme.footer,
+    };
+    draw_panel(frame, area, Some(title), lines, &panel_theme);
+}
+
+fn notification_title(notification: &NotificationView) -> String {
+    let title = format!("{} {}", notification.severity.label(), notification.title);
+    if notification.focused {
+        format!("{title} • focus")
+    } else {
+        title
+    }
+}
+
+fn notification_panel_lines(notification: &NotificationView, theme: &Theme) -> Vec<StyledLine> {
+    notification
+        .lines
+        .iter()
+        .map(|line| StyledLine {
+            text: line.clone(),
+            style: if notification.focused {
+                theme.messages.bold()
+            } else {
+                theme.messages
+            },
+        })
+        .collect()
+}
+
+fn notification_border_style(notification: &NotificationView) -> TextStyle {
+    let accent = match notification.severity {
+        NotificationSeverity::Info => Color::Cyan,
+        NotificationSeverity::Success => Color::Green,
+        NotificationSeverity::Warning => Color::Yellow,
+        NotificationSeverity::Error => Color::Red,
+    };
+    let style = TextStyle::default().fg(accent);
+    if notification.focused {
+        style.bold()
+    } else {
+        style
+    }
+}
+
 /// Draws a small bordered "Preview" panel anchored to the bottom of `viewport`.
 ///
 /// The panel is only rendered when there is enough vertical space so it does
@@ -291,7 +394,7 @@ fn draw_picker_preview(frame: &mut FrameBuffer, viewport: Rect, preview: &str, t
     if viewport.width < 12 || viewport.height < PREVIEW_HEIGHT {
         return;
     }
-    let preview_width = u16::try_from(preview.chars().count().saturating_add(4))
+    let preview_width = u16::try_from(widest_line(preview).saturating_add(4))
         .unwrap_or(viewport.width)
         .max(viewport.width.saturating_sub(2))
         .min(viewport.width);
@@ -450,6 +553,7 @@ mod tests {
             task_panel: None,
             dialog: None,
             picker_view: None,
+            notifications: Vec::new(),
         };
 
         let frame = render_snapshot(30, 9, &view, &Theme::default());
@@ -493,6 +597,7 @@ mod tests {
             }),
             dialog: None,
             picker_view: None,
+            notifications: Vec::new(),
         };
 
         let frame = render_snapshot(48, 10, &view, &Theme::default());
@@ -583,6 +688,7 @@ mod tests {
             task_panel: None,
             dialog: None,
             picker_view: None,
+            notifications: Vec::new(),
         };
 
         let frame = render_snapshot(42, 12, &view, &Theme::default());
@@ -623,6 +729,7 @@ mod tests {
                 ["Approve command execution", "This cannot be undone"],
             )),
             picker_view: None,
+            notifications: Vec::new(),
         };
 
         let frame = render_snapshot(42, 12, &view, &Theme::default());
@@ -668,6 +775,7 @@ mod tests {
             task_panel: None,
             dialog: None,
             picker_view: None,
+            notifications: Vec::new(),
         };
 
         let frame = render_snapshot(42, 14, &view, &Theme::default());
@@ -711,11 +819,108 @@ mod tests {
             task_panel: None,
             dialog: None,
             picker_view: None,
+            notifications: Vec::new(),
         };
 
         let frame = render_snapshot(32, 9, &view, &Theme::default());
 
         assert!(!frame.to_plain_text().contains("assistant> line 1"));
         assert!(frame.to_plain_text().contains("assistant> line 6"));
+    }
+
+    #[test]
+    fn shell_snapshot_renders_grouped_tool_summary_lines() {
+        let view = ShellView {
+            title: "Session: Demo".into(),
+            messages: vec![
+                MessageLineView::new("tools[bash]> 1 call", MessageRole::Tool),
+                MessageLineView::new(
+                    "  • #00000000 ok · command=\"echo hi\" → done",
+                    MessageRole::Tool,
+                ),
+            ],
+            prompt: String::new(),
+            history_search: None,
+            status: "prompt | 2 messages".into(),
+            footer: "cwd=/workspace | ctrl-c interrupt".into(),
+            queued_panel: None,
+            task_panel: None,
+            dialog: None,
+            picker_view: None,
+            notifications: Vec::new(),
+        };
+
+        let frame = render_snapshot(48, 8, &view, &Theme::default());
+
+        assert_eq!(
+            frame.to_plain_text(),
+            [
+                "Session: Demo",
+                "tools[bash]> 1 call",
+                "  • #00000000 ok · command=\"echo hi\" → done",
+                "",
+                "────────────────────────────────────────────────",
+                "",
+                "prompt | 2 messages",
+                "cwd=/workspace | ctrl-c interrupt",
+            ]
+            .join("\n")
+        );
+    }
+
+    #[test]
+    fn shell_snapshot_renders_notification_stack_overlay() {
+        let view = ShellView {
+            title: "Session: Demo".into(),
+            messages: vec![MessageLineView::new(
+                "assistant> ready",
+                MessageRole::Assistant,
+            )],
+            prompt: String::new(),
+            history_search: None,
+            status: "prompt | 1 messages".into(),
+            footer: "cwd=/workspace | ctrl-c interrupt".into(),
+            queued_panel: None,
+            task_panel: None,
+            dialog: None,
+            picker_view: None,
+            notifications: vec![
+                NotificationView {
+                    key: "source-status".into(),
+                    title: "Source status".into(),
+                    lines: vec!["workspace index refreshed".into()],
+                    severity: NotificationSeverity::Info,
+                    focused: false,
+                },
+                NotificationView {
+                    key: "task:1".into(),
+                    title: "Task update".into(),
+                    lines: vec!["tests passed".into()],
+                    severity: NotificationSeverity::Success,
+                    focused: true,
+                },
+            ],
+        };
+
+        let frame = render_snapshot(48, 12, &view, &Theme::default());
+
+        assert_eq!(
+            frame.to_plain_text(),
+            [
+                "Session: Demo      +-info Source status--------+",
+                "assistant> ready   |workspace index refreshed  |",
+                "                   +---------------------------+",
+                "",
+                "                      +-ok Task update • focus-+",
+                "                      |tests passed            |",
+                "                      +------------------------+",
+                "",
+                "────────────────────────────────────────────────",
+                "",
+                "prompt | 1 messages",
+                "cwd=/workspace | ctrl-c interrupt",
+            ]
+            .join("\n")
+        );
     }
 }

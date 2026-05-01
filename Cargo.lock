@@ -1892,6 +1892,7 @@ dependencies = [
  "wonder-of-u-skills",
  "wonder-of-u-storage",
  "wonder-of-u-test-support",
+ "wonder-of-u-tools",
  "wonder-of-u-tui",
 ]
 
@@ -1980,6 +1981,9 @@ dependencies = [
  "walkdir",
  "wonder-of-u-core",
  "wonder-of-u-mcp",
+ "wonder-of-u-plugins",
+ "wonder-of-u-skills",
+ "wonder-of-u-storage",
  "wonder-of-u-test-support",
 ]
 
@@ -1988,6 +1992,9 @@ name = "wonder-of-u-tui"
 version = "0.1.0"
 dependencies = [
  "crossterm",
+ "serde_json",
+ "unicode-segmentation",
+ "unicode-width 0.2.0",
  "wonder-of-u-core",
 ]
 

@@ -12,12 +12,15 @@ use wonder_of_u_agent::{
 };
 use wonder_of_u_core::{
     AppState, Command, CommandContext, CommandInvocation, CommandKind, CommandOutput, CommandSpec,
-    FeatureFlag, MessageEnvelope, MessagePayload, PermissionDecision, PermissionMode, Result,
-    ToolContext, ToolQuery, ToolResult, ToolUseId, WonderError,
+    CoordinatorState, FeatureFlag, MessageEnvelope, MessagePayload, PermissionDecision,
+    PermissionMode, PromptSuggestion, QueryState, Result, ToolContext, ToolQuery, ToolResult,
+    ToolUseId, WonderError, best_prompt_suggestion,
 };
 use wonder_of_u_storage::{
-    CostStore, SessionCostLedger, SessionMetadata, SessionSnapshot, TranscriptStore,
+    CostStore, SessionCostLedger, SessionMemoryIndexStore, SessionMetadata, SessionSnapshot,
+    TranscriptStore,
 };
+use wonder_of_u_tools::provider_tool_specs;
 
 use super::{detect_git_branch, parse_command_args, parse_session_id};
 
@@ -43,6 +46,9 @@ pub(crate) struct PromptExecutionResult {
     pub persisted: bool,
     pub tool_use_requested: bool,
     pub tool_calls: usize,
+    pub query: QueryState,
+    pub coordinator: CoordinatorState,
+    pub prompt_suggestion: Option<PromptSuggestion>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -67,6 +73,14 @@ pub(crate) struct PromptTurnInput {
 pub(crate) struct PromptTurnResult {
     pub response: CompletionResponse,
     pub tool_calls: usize,
+    pub query: QueryState,
+    pub coordinator: CoordinatorState,
+    pub prompt_suggestion: Option<PromptSuggestion>,
+}
+
+struct PromptOrchestrationState {
+    query: QueryState,
+    coordinator: CoordinatorState,
 }
 
 pub struct PromptCommand {
@@ -142,13 +156,7 @@ impl Command for PromptCommand {
             },
         )?;
 
-        Ok(CommandOutput::Text(render_prompt_output(
-            &result.state,
-            &result.response,
-            result.persisted,
-            result.tool_use_requested,
-            result.tool_calls,
-        )))
+        Ok(CommandOutput::Text(render_prompt_output(&result)))
     }
 }
 
@@ -188,6 +196,9 @@ pub(crate) fn execute_prompt_run(
         persisted: persistence.persisted,
         tool_use_requested: input.tool_use,
         tool_calls: result.tool_calls,
+        query: result.query,
+        coordinator: result.coordinator,
+        prompt_suggestion: result.prompt_suggestion,
     })
 }
 
@@ -198,6 +209,11 @@ pub(crate) fn execute_prompt_turn(
     mut input: PromptTurnInput,
 ) -> Result<PromptTurnResult> {
     validate_prompt_turn_input(&input)?;
+    let coordinator = CoordinatorState::default();
+    let mut orchestration = PromptOrchestrationState {
+        query: QueryState::start(&input.user_prompt, coordinator.mode),
+        coordinator,
+    };
 
     let selection = ProviderSelection::new(input.provider.clone(), input.model.clone());
     let runtime = ProviderRuntime::new();
@@ -217,6 +233,7 @@ pub(crate) fn execute_prompt_turn(
             &runtime,
             &resolved,
             input,
+            orchestration,
         );
     }
 
@@ -248,10 +265,15 @@ pub(crate) fn execute_prompt_turn(
         persistence,
         &[user_message, assistant_message],
     )?;
+    orchestration.query.complete();
+    let prompt_suggestion = best_prompt_suggestion(state, &orchestration.query);
 
     Ok(PromptTurnResult {
         response,
         tool_calls: 0,
+        query: orchestration.query,
+        coordinator: orchestration.coordinator,
+        prompt_suggestion,
     })
 }
 
@@ -449,23 +471,69 @@ pub(crate) fn persist_prompt_state(
         persistence.transcript_message_count,
         persistence.transcript_warning_count,
     ))?;
+    rebuild_session_memory_index(store, state, persistence.transcript_message_count)?;
     CostStore::new(store.paths().base_dir()).write_costs(&SessionCostLedger::from_app_state(state))
 }
 
-fn render_prompt_output(
+fn rebuild_session_memory_index(
+    store: &TranscriptStore,
     state: &AppState,
-    response: &CompletionResponse,
-    persisted: bool,
-    tool_use_requested: bool,
-    tool_calls: usize,
-) -> String {
-    let mut lines = vec![response.output_text.clone(), String::new()];
-    append_execution_metadata_lines(&mut lines, state, response, persisted);
-    if tool_use_requested {
-        lines.push(format!("tool_use_requested={tool_use_requested}"));
-        lines.push(format!("tool_calls={tool_calls}"));
+    transcript_message_count: usize,
+) -> Result<()> {
+    let index_store = SessionMemoryIndexStore::new(store.paths().base_dir());
+    if state.messages.len() == transcript_message_count {
+        index_store.rebuild_from_messages(state.session.id, &state.messages)?;
+    } else {
+        index_store.rebuild_from_transcript(store, state.session.id)?;
+    }
+    Ok(())
+}
+
+fn render_prompt_output(result: &PromptExecutionResult) -> String {
+    let mut lines = vec![result.response.output_text.clone(), String::new()];
+    append_execution_metadata_lines(
+        &mut lines,
+        &result.state,
+        &result.response,
+        result.persisted,
+    );
+    append_orchestration_metadata_lines(
+        &mut lines,
+        &result.query,
+        &result.coordinator,
+        result.prompt_suggestion.as_ref(),
+    );
+    if result.tool_use_requested {
+        lines.push(format!("tool_use_requested={}", result.tool_use_requested));
+        lines.push(format!("tool_calls={}", result.tool_calls));
     }
     lines.join("\n")
+}
+
+pub(crate) fn append_orchestration_metadata_lines(
+    lines: &mut Vec<String>,
+    query: &QueryState,
+    coordinator: &CoordinatorState,
+    prompt_suggestion: Option<&PromptSuggestion>,
+) {
+    lines.push(format!("query_phase={}", query.phase.label()));
+    lines.push(format!("query_tool_roundtrips={}", query.tool_roundtrips));
+    lines.push(format!("coordinator_mode={}", coordinator.mode.label()));
+    lines.push(format!(
+        "coordinator_cloud_queries={}",
+        coordinator.cloud_queries.support.label()
+    ));
+    lines.push(format!(
+        "coordinator_external_backend={}",
+        coordinator.external_backend.support.label()
+    ));
+    if let Some(prompt_suggestion) = prompt_suggestion {
+        lines.push(format!("prompt_suggestion={}", prompt_suggestion.text));
+        lines.push(format!(
+            "prompt_suggestion_kind={}",
+            prompt_suggestion.kind.label()
+        ));
+    }
 }
 
 fn execute_prompt_tool_loop(
@@ -475,6 +543,7 @@ fn execute_prompt_tool_loop(
     runtime: &ProviderRuntime,
     resolved: &wonder_of_u_agent::ResolvedProviderExecution,
     input: PromptTurnInput,
+    mut orchestration: PromptOrchestrationState,
 ) -> Result<PromptTurnResult> {
     let PromptTurnInput {
         system_prompt,
@@ -487,11 +556,8 @@ fn execute_prompt_tool_loop(
     } = input;
     let registry = builtin_tool_registry()?;
     let tool_context = tool_context(state);
-    let tool_query = ToolQuery::from(&tool_context);
-    let provider_tools = registry
-        .enabled_specs_for(&tool_query)
+    let provider_tools = provider_tool_specs(&registry, &tool_context, allowed_tools.as_ref())
         .into_iter()
-        .filter(|spec| tool_is_allowed(spec, allowed_tools.as_ref()))
         .map(tool_spec_to_provider_tool)
         .collect::<Vec<_>>();
 
@@ -530,13 +596,21 @@ fn execute_prompt_tool_loop(
                 )?;
                 staged_messages.push(assistant_message);
                 persist_messages_and_state(storage_dir, state, persistence, &staged_messages)?;
+                orchestration.query.complete();
+                let prompt_suggestion = best_prompt_suggestion(state, &orchestration.query);
                 return Ok(PromptTurnResult {
                     response,
                     tool_calls,
+                    query: orchestration.query,
+                    coordinator: orchestration.coordinator,
+                    prompt_suggestion,
                 });
             }
             ToolUseResponse::ToolCalls(batch) => {
                 state.record_cost_usage(batch.usage, None);
+                orchestration
+                    .query
+                    .record_tool_batch(batch.calls.iter().map(|call| call.tool_name.clone()));
                 let local_calls = batch
                     .calls
                     .iter()
@@ -603,6 +677,7 @@ fn execute_prompt_tool_loop(
         },
     )?;
     persist_messages_and_state(storage_dir, state, persistence, &[system_message])?;
+    orchestration.query.fail(message.clone());
     Err(WonderError::validation(message))
 }
 
@@ -735,18 +810,4 @@ fn permission_decision_label(decision: &PermissionDecision) -> &'static str {
         PermissionDecision::Ask { .. } => "ask",
         PermissionDecision::Deny { .. } => "deny",
     }
-}
-
-fn tool_is_allowed(
-    spec: &wonder_of_u_core::ToolSpec,
-    allowed_tools: Option<&BTreeSet<String>>,
-) -> bool {
-    let Some(allowed_tools) = allowed_tools else {
-        return true;
-    };
-    allowed_tools.contains(&spec.name)
-        || spec
-            .aliases
-            .iter()
-            .any(|alias| allowed_tools.contains(alias))
 }

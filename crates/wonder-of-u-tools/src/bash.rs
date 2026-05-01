@@ -26,6 +26,23 @@ pub struct BashInput {
     pub cwd: Option<PathBuf>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub timeout_secs: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(
+        default,
+        rename = "run_in_background",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub run_in_background: Option<bool>,
+    #[serde(
+        default,
+        rename = "dangerouslyDisableSandbox",
+        alias = "dangerously_disable_sandbox",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub dangerously_disable_sandbox: Option<bool>,
 }
 
 impl BashInput {
@@ -39,11 +56,33 @@ impl BashInput {
                 "bash timeout_secs must be greater than zero",
             ));
         }
+        if self.timeout == Some(0) {
+            return Err(WonderError::validation(
+                "bash timeout must be greater than zero",
+            ));
+        }
+        if self.timeout_secs.is_some() && self.timeout.is_some() {
+            return Err(WonderError::validation(
+                "bash accepts either `timeout_secs` or source-compatible `timeout`, not both",
+            ));
+        }
+        if self.run_in_background == Some(true) {
+            return Err(WonderError::validation(
+                "bash run_in_background is not supported in wonder-of-u-tools",
+            ));
+        }
+        if self.dangerously_disable_sandbox == Some(true) {
+            return Err(WonderError::validation(
+                "bash dangerouslyDisableSandbox is not supported in wonder-of-u-tools",
+            ));
+        }
         Ok(())
     }
 
     fn timeout(&self) -> u64 {
-        self.timeout_secs.unwrap_or(DEFAULT_TIMEOUT_SECS)
+        self.timeout_secs
+            .or_else(|| self.timeout.map(|timeout| timeout.div_ceil(1_000)))
+            .unwrap_or(DEFAULT_TIMEOUT_SECS)
     }
 }
 
@@ -66,6 +105,30 @@ impl Tool for BashTool {
                     .property(
                         "timeout_secs",
                         ToolSchema::integer("optional command timeout in seconds"),
+                    )
+                    .property(
+                        "timeout",
+                        ToolSchema::integer(
+                            "source-compatible timeout in milliseconds; converted to seconds",
+                        ),
+                    )
+                    .property(
+                        "description",
+                        ToolSchema::string(
+                            "optional source-compatible command description; ignored by the Rust runtime",
+                        ),
+                    )
+                    .property(
+                        "run_in_background",
+                        ToolSchema::boolean(
+                            "source-compatible background flag; currently unsupported",
+                        ),
+                    )
+                    .property(
+                        "dangerouslyDisableSandbox",
+                        ToolSchema::boolean(
+                            "source-compatible sandbox override flag; currently unsupported",
+                        ),
                     )
                     .required("command"),
             );
@@ -224,6 +287,31 @@ mod tests {
         let decision = tool.permission_decision(&context, &json!({ "command": "echo ${cmd@P}" }));
 
         assert!(matches!(decision, PermissionDecision::Deny { .. }));
+    }
+
+    #[test]
+    fn bash_validation_rejects_unsupported_background_execution() {
+        let tool = BashTool;
+        let error = tool
+            .validate_input(&json!({
+                "command": "echo hi",
+                "run_in_background": true,
+            }))
+            .expect_err("unsupported background execution");
+
+        assert!(error.to_string().contains("run_in_background"));
+    }
+
+    #[test]
+    fn bash_validation_accepts_source_timeout_metadata() {
+        let tool = BashTool;
+
+        tool.validate_input(&json!({
+            "command": "echo hi",
+            "description": "Print a greeting",
+            "timeout": 1_500,
+        }))
+        .expect("source-compatible bash input");
     }
 
     #[test]

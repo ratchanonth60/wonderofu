@@ -16,7 +16,7 @@ use wonder_of_u_core::{
     AuthMaterialKind, Command, CommandContext, CommandInvocation, CommandKind, CommandOutput,
     CommandSpec, FeatureFlag, Result, WonderError,
 };
-use wonder_of_u_storage::StoragePaths;
+use wonder_of_u_storage::{StoragePaths, SyncStatusReport};
 
 use super::parse_command_args;
 
@@ -497,6 +497,47 @@ impl ConfigCommand {
                 lines.push(format!(
                     "selected_model={}",
                     settings.selected_model.as_deref().unwrap_or("none")
+                ));
+                let sync_status = SyncStatusReport::inspect(&paths);
+                lines.push(format!(
+                    "settings_sync={}",
+                    sync_status.settings_sync.status.label()
+                ));
+                lines.push(format!(
+                    "settings_sync_cloud={}",
+                    sync_status.settings_sync.cloud_status.label()
+                ));
+                lines.push(format!(
+                    "settings_sync_settings_exists={}",
+                    sync_status.settings_sync.settings_exists
+                ));
+                lines.push(format!(
+                    "settings_sync_user_memory_exists={}",
+                    sync_status.settings_sync.user_memory_exists
+                ));
+                lines.push(format!(
+                    "settings_sync_user_memory_path={}",
+                    sync_status.settings_sync.user_memory_path.display()
+                ));
+                lines.push(format!(
+                    "settings_sync_cloud_attempted={}",
+                    sync_status.settings_sync.cloud_attempted
+                ));
+                lines.push(format!(
+                    "remote_managed_settings={}",
+                    sync_status.remote_managed_settings.status.label()
+                ));
+                lines.push(format!(
+                    "remote_managed_settings_cloud_attempted={}",
+                    sync_status.remote_managed_settings.cloud_attempted
+                ));
+                lines.push(format!(
+                    "team_memory_sync={}",
+                    sync_status.team_memory_sync.status.label()
+                ));
+                lines.push(format!(
+                    "team_memory_sync_cloud_attempted={}",
+                    sync_status.team_memory_sync.cloud_attempted
                 ));
                 for provider in credentials.providers.keys() {
                     lines.push(format!("stored_credential={provider}"));

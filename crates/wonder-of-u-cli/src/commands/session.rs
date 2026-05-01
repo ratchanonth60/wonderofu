@@ -10,8 +10,8 @@ use wonder_of_u_core::{
     session_footer_text, session_status_text,
 };
 use wonder_of_u_storage::{
-    LoadedTranscript, RestoredSession, SessionMetadata, SessionResumeSource, SessionSnapshot,
-    TranscriptStore,
+    LoadedTranscript, RestoredSession, SessionMemoryIndexStore, SessionMetadata,
+    SessionResumeSource, SessionSnapshot, TranscriptStore,
 };
 
 use super::{detect_git_branch, parse_command_args, parse_session_id};
@@ -673,7 +673,22 @@ fn persist_session_state(
         state,
         transcript_message_count,
         transcript_warning_count,
-    ))
+    ))?;
+    rebuild_session_memory_index(store, state, transcript_message_count)
+}
+
+fn rebuild_session_memory_index(
+    store: &TranscriptStore,
+    state: &AppState,
+    transcript_message_count: usize,
+) -> Result<()> {
+    let index_store = SessionMemoryIndexStore::new(store.paths().base_dir());
+    if state.messages.len() == transcript_message_count {
+        index_store.rebuild_from_messages(state.session.id, &state.messages)?;
+    } else {
+        index_store.rebuild_from_transcript(store, state.session.id)?;
+    }
+    Ok(())
 }
 
 fn resume_summary_lines(restored: &RestoredSession) -> Vec<String> {
