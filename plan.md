@@ -20,13 +20,163 @@ The target TUI is **visual-close**: layout, flow, colors, dialogs, status/footer
 ## 2. Current repository state
 
 - Rust workspace:
-  - `Cargo.toml` is a workspace manifest using `wonder-of-u-*` crate/package identifiers.
-  - The initial Rust foundation is split into CLI, core, storage, and test-support crates.
-  - Additional crates from the plan are still to be implemented.
+  - `Cargo.toml` is a multi-crate workspace using `wonder-of-u-*` crate/package identifiers.
+  - Implemented crates now cover CLI, core, storage, test support, agent, tools, MCP, plugins, skills, and TUI foundations.
+  - Broad first-release slices already exist for command registry, session persistence, permissions, provider/auth selection, task persistence, MCP catalogs, plugin/skill catalogs, and TUI shell/status rendering.
+- Provider runtime checkpoint:
+  - `wonder-of-u-agent` now has real provider execution for `openai`, `anthropic`, and `copilot`; OpenAI/Anthropic use API keys, and Copilot uses OAuth plus a real `copilot_internal/v2/token` exchange before prompt execution.
+  - `wonder-of-u prompt ...` can send a real non-interactive prompt, print the response, persist transcript/snapshot/cost state when `--storage-dir` is set, and now supports opt-in `--tools` tool-use orchestration for providers that implement structured tool calling.
+  - `agents start local ...` now runs a real background prompt subprocess with persisted logs, pid/heartbeat tracking, reconcile, stop handling, and `--tools` enabled so provider-backed local agents can use the built-in tool registry.
+  - `skills run <skill> ...` now executes real prompt-based skill invocations and reuses the same transcript/snapshot/cost persistence path; `skills run --tools` enables manifest-restricted built-in tool execution using each skill's `allowed_tools` list.
+  - `plugin run <plugin> <command> ...` now executes trusted ready plugin command entries as one-shot subprocesses with auth/readiness checks, and plugin manifest commands can now also be resolved dynamically from slash-command lookup in the TUI/CLI slash transport.
+  - `wonder-of-u tui` now launches a live interactive shell with prompt editing, slash commands, streamed provider-backed prompt turns, persisted session updates, and a bounded built-in tool-use loop when the selected provider supports structured tool calling.
+  - Default no-command launch now enters the TUI in interactive terminals, while non-interactive runs still fall back to `doctor`.
+  - `resume <id>` now routes into the live TUI in interactive terminals and keeps summary output for non-interactive use.
+  - OpenAI now supports real structured tool-use orchestration in the live TUI with persisted `AssistantToolUse` and `ToolResult` messages executed through the native built-in tool registry.
+  - Anthropic native models now support structured tool-use orchestration in the shared provider runtime, including persisted assistant tool-use batches and tool-result continuation rounds.
+  - Copilot GPT-style and Claude-style models now both support the same structured tool-use loop in TUI and non-interactive prompt/agent flows, with Claude-style models using the Anthropic-compatible `/v1/messages` tool block protocol after the Copilot token exchange.
+  - `wonder-of-u login --provider copilot` now runs a real GitHub device OAuth flow, persists OAuth expiry/refresh metadata when the provider returns it, and the runtime now refreshes expiring Copilot OAuth credentials before prompt execution when a refresh token is available.
+  - Copilot prompt execution now supports both GPT-style and Claude-style Copilot models, including streaming in the live TUI.
+  - TUI parity was extended with notice dialogs for task completions and permission blockers, inline allow/deny/resume permission flow with snapshot-backed resume support, confirm-before-exit behavior when the session has unsent input/history/tasks, resume-time reconstruction of transient UI state, real vim editing, Ctrl-R prompt-history recall/cycling, dynamic plugin slash-command execution, richer `/plan` flow parity (`/plan` enter/show, `/plan <prompt>` queued execution, and live `/plan open` editor suspend/resume handling), live `/clear` and `/compact` view reload parity, and `/model [selection]` shorthand that no longer requires the explicit `set` subcommand.
+  - Session-scoped additional working directories now persist in `AppState`, flow into tool permission contexts, and are exposed through a real `/add-dir` command that mutates the live TUI session.
+  - The previously missing `/context` and `/memory` command surfaces now exist in Rust: `/context` renders a session/snapshot-based context summary and opens a live notice dialog in the TUI, while `/memory` now supports a live picker plus `/memory open {project|user}` external-editor flows from both CLI and TUI.
+  - Additional parity command surfaces now exist for `/cost`, `/stats`, `/vim`, `/copy`, `/init`, `/keybindings`, `/theme`, `/tag`, and `/version`; `/stats`, `/theme show`, `/version`, and `/keybindings` open live TUI notice/picker flows, `/copy` pulls recent assistant responses from snapshot/transcript storage with clipboard best-effort plus temp-file fallback, `/init` scaffolds project `CLAUDE.md`, `/keybindings open` creates a loadable override template, TUI theme selection is now session-persisted with real renderer theme changes, and `/tag` now toggles a persisted searchable session tag with live remove-confirmation flow in the TUI.
+  - The remaining plan backlog surfaces are now closed by concrete Rust implementations or honest local handoff/status flows: ratatui visual parity, paste-reference reload, symlink-safe permission checks, bounded plugin command sandboxing, PR review automation, live privacy/feedback handoff, companion/IDE detection links, LSP diagnostics status, bridge/server status, voice capability status, internal debug surfaces, and extended native tools.
 - Reference source tree:
   - `claude-leak/` contains roughly 1,800+ TypeScript/TSX files.
   - Main areas: `commands`, `components`, `hooks`, `ink`, `tools`, `services`, `utils`, `state`, `tasks`, `bridge`, `server`, `skills`, `plugins`, `keybindings`, `screens`, `vim`, `voice`.
   - `package-lock.json` is effectively empty and no usable `package.json` was found, so this tree is reference material rather than a runnable package in the current repo.
+
+## 2.1 Progress update and execution workflow
+
+- Latest parity work completed:
+  - Added `/hooks` config/view parity plus `/hooks open` editor flow.
+  - Added `/privacy-settings` fallback/web flow.
+  - Added `/usage` and hidden deprecated `/output-style`.
+  - Added real session-scoped `/color` state wired into the Rust TUI footer/renderer.
+  - Added `/brief` session parity:
+    - empty `/brief` toggles concise-response mode for the current session,
+    - `/brief show` opens a live notice dialog,
+    - the setting persists in session snapshots and is visible in the TUI footer/status path,
+    - prompt execution now injects a concise system prompt when brief mode is on,
+    - the leak's stricter SendUserMessage-only / hidden-plain-text behavior is still called out as not fully replicated yet.
+  - Added `/review` as a local queued-prompt flow that mirrors the leak's gh-based PR review semantics.
+  - Added `/statusline` as a local queued-prompt setup flow instead of pretending the leak's remote statusline subagent exists in the Rust port.
+  - Added `/upgrade` with browser handoff plus a TUI notice flow pointing at the Claude upgrade page and telling users to rerun `/login` afterward.
+  - Added `/insights` as a local-storage-backed queued-prompt report flow using persisted session metadata instead of the leak's heavier remote/facet pipeline.
+  - Added `/release-notes` with local `CHANGELOG.md` parsing when available and repository releases-page fallback otherwise.
+  - Added `/feedback` plus `/bug` alias with repository-issues fallback notice flow.
+  - Added `/effort` as real settings + session-state parity:
+    - normalizes shorthand like `/effort high`,
+    - persists the chosen effort level into agent settings,
+    - restores and shows it in the TUI footer/status path,
+    - opens a live `Effort` notice dialog,
+    - records the provider-facing effort level in settings/session state so the shared provider runtime can map it when supported.
+  - Added truthful `/fast` parity:
+    - empty `/fast` toggles fast mode and `/fast show` opens a live `Fast` notice dialog,
+    - fast mode now persists in agent settings and session snapshots,
+    - the ratatui footer/status flow now shows fast-mode state,
+    - provider resolution remaps default model selection to real built-in fast models when a provider exposes one (`mini`/`haiku` style mappings today),
+    - explicit model overrides still win,
+    - the leak's entitlement/quota/cooldown/billing-aware fast-mode semantics are still explicitly out of scope until the Rust runtime can implement them honestly.
+  - Merged the follow-up ratatui parity slices into `dev`:
+    - `feat/tui-permission-parity`: clearer inline approval dialogs, coherent allow/deny/resume state cleanup, and stronger permission-loop regression coverage.
+    - `feat/tui-overlay-parity`: more consistent notice/picker transition feedback, stale notice cleanup, and better close/cancel status behavior.
+    - `feat/tui-resume-parity`: restored sessions now preserve more provider/model/permission/UI context immediately on launch/resume instead of waiting for later refreshes.
+    - `feat/command-audit-parity`: added truthful `/security-review` as a local queued security review flow and `/terminal-setup` as an honest TUI/keybinding fallback notice.
+    - `feat/companion-handoff-parity`: added truthful local/browser parity for the remaining companion handoff commands:
+      - `/desktop` now opens a live `Desktop` notice dialog, exposes a session handoff URL plus platform download URL, and reports browser-handoff status.
+      - `/mobile` now opens a live `Mobile` notice dialog with real iOS/Android store links plus `/ios` and `/android` aliases instead of pretending the Rust TUI already renders the reference QR code flow.
+      - `/chrome` now opens a live `Chrome` notice dialog with extension, permissions, and docs links instead of pretending the leak's extension-state picker and default-on config flow already exist locally.
+    - `feat/ratatui-picker-search`: picker overlays in the Rust TUI now support live search/filter queries with visible match counts and filtered navigation for model/theme/memory/permission flows.
+    - `feat/ratatui-queued-visibility`: the ratatui shell now shows pending queued commands in a dedicated queued panel with truncation and overflow summaries so upcoming work is visible before it drains.
+- TUI parity note:
+  - The reference UI uses **Ink/React**, while `wonder-of-u` uses ratatui's `Terminal<CrosstermBackend<W>>::draw()` loop — the TUI renderer was fully migrated from the old custom FrameBuffer cell-iteration path to proper ratatui `Terminal::draw()` calls in `feat/ratatui-proper-backend-3` (merged 2026-05-01).
+  - Because of that, parity work must focus on reproducing flow/state/dialog behavior instead of assuming the same component lifecycle or repaint model.
+  - Any TUI that still feels "strange" should be treated as a parity bug, not as expected behavior.
+  - Validation hardening also matters for parity work: cwd-sensitive CLI tests are now serialized so command parity changes do not leave the suite with unrelated flaky failures.
+- Execution workflow from this point forward:
+  - Update progress in this project-level `plan.md` at each meaningful milestone.
+  - Use `dev` as the integration branch.
+  - `main` now reflects the merged parity snapshot from `dev`.
+  - `dev` now includes: fast, permission, overlay, resume, command-audit, companion-handoff, picker-search, queued-visibility parity slices + ratatui Terminal::draw() backend + full built-in tool registry (web_fetch, web_search, todo, ask_user, plan_read/write, task_output/stop, agent, mcp_resource_list/read). The active `feat/tui-parity-audit` branch additionally closes the post-release backlog slices listed in the parity closure matrix below.
+  - Custom Rust code-writing agents are now expected to use Rust-native documentation/comment style when comments are needed (`//!` module docs, `///` public item docs, `//` concise why-comments).
+  - The last completed feature sequence was: `feat/fast-mode-parity` -> `feat/tui-permission-parity` -> `feat/tui-overlay-parity` -> `feat/tui-resume-parity` -> `feat/command-audit-parity` -> `feat/companion-handoff-parity` -> `feat/ratatui-picker-search` -> `feat/ratatui-queued-visibility`.
+  - For each new feature slice, branch from `dev` into `feat/<slice>`, finish the slice, then merge back into `dev`.
+  - Keep files grouped by domain (`commands/status.rs` for informational commands, `commands/workflow.rs` for interactive workflow commands, `tui_runtime.rs` for shell/controller behavior) and avoid scattering feature logic across unrelated modules.
+- Current high-priority parity queue:
+  - **All completed** — the full parity-hardening-release branch sequence is merged into `dev` and fast-forwarded to `main`:
+    - `/fast`
+    - TUI permission parity
+    - TUI overlay/picker parity
+    - TUI resume/live-state parity
+    - command-audit parity (`/security-review`, `/terminal-setup`)
+    - companion/browser-handoff parity (`/desktop`, `/mobile`, `/ios`, `/android`, `/chrome`)
+    - ratatui picker search/filter parity
+    - ratatui queued-command visibility
+    - ratatui Ctrl+R history search overlay
+    - ratatui picker preview panel
+    - task panel lifecycle polish (auto-dismiss notices)
+    - modal/overlay coordination (single-owner Esc routing)
+    - `/ide` honest browser-handoff notice
+
+## 2.2 Plan to close `parity-hardening-release`
+
+Goal: finish the umbrella `parity-hardening-release` work by closing the remaining ratatui polish items and the last honest browser-handoff command, then publish the result.
+
+Slices (each = its own `feat/<slice>` branched from `dev`, merged back via `--no-ff`, with `plan.md` and SQL todos updated after every merge):
+
+1. `feat/ratatui-history-search` — incremental Ctrl+R style prompt-history search overlay.
+   - Adds search-mode state machine on top of current history-recall cycling.
+   - Shows live query, current match index/total, and a clear cancel/accept flow.
+   - Falls back gracefully when history is empty.
+   - Tests cover entering/exiting search, no-match behavior, and accept-on-Enter.
+2. `feat/ratatui-picker-previews` — minimal honest preview panel for picker overlays.
+   - Reuses existing picker descriptions/paths to render a side/below preview block under the filtered list.
+   - No fake remote previews; only data already known to the Rust port.
+   - Tests cover preview visibility for non-empty selection and empty/no-match states.
+3. `feat/ratatui-task-panel-polish` — tighten task overlay lifecycle and visible state.
+   - Cleaner task summary, consistent status-note feedback when tasks transition or are dismissed, stale-state cleanup.
+   - Tests cover task add, completion, dismissal, and stale-state cleanup.
+4. `feat/ratatui-modal-coordination` — coordinate Esc/dismiss across notices, pickers, confirmations, and tag removal so only one overlay owns input at a time and dismissal feedback is consistent.
+   - Audits and consolidates `dismiss_dialog` / picker-cancel paths.
+   - Tests cover stacked-overlay dismissal order and stale-overlay cleanup.
+5. `feat/ide-handoff-fallback` — add `/ide` as honest local/browser fallback notice (mirrors `/desktop` and `/chrome`).
+   - Live `IDE` notice dialog, attempts browser handoff to the IDE docs URL, explicitly states the Rust port does not yet implement a live IDE bridge.
+   - Tests cover registry wiring, command output, and TUI notice parsing.
+6. `feat/parity-hardening-docs-final` ✅ — final documentation/plan sweep, `main` fast-forwarded from `dev`.
+
+**`parity-hardening-release` is COMPLETE.** All six slices merged. ratatui Terminal::draw() backend migrated. Full built-in tool registry registered. `dev` and `main` are at `2a2c376`. Test count: **395 tests pass, 0 failures**.
+
+## 2.3 Full `plan.md` parity closure matrix
+
+This matrix tracks the user's expanded requirement to follow every remaining backlog area in this project `plan.md`, including the "Backlog after first release" section and stale "deferred/not wired" Rust surfaces. Items are considered closed only when the Rust code has real behavior or an explicit local handoff/status implementation instead of a success-shaped placeholder.
+
+| Plan area | Rust parity status |
+| --- | --- |
+| Ratatui TUI backend and visual-close shell | Closed: the TUI runs through ratatui `Terminal<CrosstermBackend<W>>::draw()`, with borderless transcript/prompt stack polish, docked task/queued summaries, picker search/previews, modal coordination, history search, task lifecycle notices, and snapshot coverage. |
+| Prompt/session storage and paste references | Closed: large paste transcript references round-trip through the paste store and expand back into user text on session reload/export paths. |
+| Permission/path safety | Closed: permission checks best-effort canonicalize cwd/additional dirs, request paths, and rule prefixes so symlink escapes are denied consistently. |
+| Built-in tool registry | Closed: first-release tools plus web/todo/ask-user/plan/task/agent/MCP tools are registered, and extended native tools now cover PowerShell, notebook edit, worktree list, terminal capture, and cron list. |
+| Plugin lifecycle/sandbox | Closed for local plugin command execution: trusted plugin commands run as bounded foreground subprocesses with cleared environment, null stdin, captured output, timeout, manifest metadata env, and reported daemon policy. |
+| Agents/tasks/background UX | Closed for local runtime parity: provider-backed local agents use persisted subprocess tasks/logs/heartbeat/reconcile/stop, while legacy metadata-only entries are reported as relaunch-required instead of deferred. |
+| GitHub PR review and security review | Closed: `/review` detects `gh`, current branch, current PR number and PR URL when available, then emits review queue metadata; `/security-review` provides the local queued security-review flow. |
+| Privacy and feedback flows | Closed: `/privacy-settings` and `/feedback` build actionable browser handoff URLs, preserve draft/report details, and report handoff status. |
+| Desktop/mobile/chrome/IDE handoff | Closed: companion commands expose platform/store/extension/IDE links, local detection, QR payload text, and session handoff metadata through command output/TUI notices. |
+| LSP/diagnostics | Closed: `/diagnostics` discovers project types and common LSP binaries, reporting recommendations and availability without pretending to own an IDE daemon. |
+| Remote bridge/server modes | Closed as local status surface: `/bridge`, `/server`, and `/remote` report local transport/server readiness and environment-discovered endpoints. |
+| Voice/buddy/assistant modes | Closed as local capability surface: `/voice` reports STT/TTS command/env availability and local tool detection. |
+| Internal/debug tooling | Closed: hidden `/debug` reports storage/cache/session/perf-oriented local diagnostics without exposing secrets. |
+| Deferred/not-implemented user-facing text | Closed: Rust crate scan no longer finds the old `not yet implement`, `deferred`, `not wired yet`, plugin-sandbox-deferred, or daemon-deferred status strings. |
+
+After this matrix lands, the remaining work is not a known missing `plan.md` backlog item; it is normal future parity hardening if new reference behavior is identified.
+
+Cross-cutting expectations for each slice:
+- Branch from `dev`, never edit `dev` directly.
+- Run `cargo fmt --all`, `cargo test --workspace`, and `cargo build --workspace` before merge.
+- Update `plan.md` and SQL todos after each merge.
+- Keep comments Rust-native (`//!` / `///` / `//` why-comments) per the agent style guide.
+- After all six slices merge into `dev`, fast-forward `main` from `dev` and report the final commit hash.
 
 ## 3. First-release scope and backlog
 
@@ -35,8 +185,8 @@ The target TUI is **visual-close**: layout, flow, colors, dialogs, status/footer
 - Full interactive REPL with streaming messages, prompt input, message history, status/footer, dialogs, background task UI, and command handling.
 - Main command registry and slash commands needed for everyday use:
   - `help`, `init`, `config`, `login`, `logout`, `model`, `status`, `doctor`, `exit`.
-  - `resume`, `session`, `rename`, `clear`, `compact`, `export`.
-  - `add-dir`, `context`, `files`, `memory`, `branch`, `diff`.
+  - `resume`, `session`, `rename`, `tag`, `clear`, `compact`, `export`.
+  - `add-dir`, `context`, `files`, `memory`, `copy`, `branch`, `diff`.
   - `plan`, `permissions`, `agents`, `tasks`, `skills`.
   - `mcp`, `plugin`, `reload-plugins`.
 - Provider/auth:
@@ -81,8 +231,8 @@ The target TUI is **visual-close**: layout, flow, colors, dialogs, status/footer
 - `claude-leak/utils/processUserInput/processSlashCommand.tsx`: slash command parsing and dispatch.
 - Command directories under `claude-leak/commands/`, especially:
   - `help`, `config`, `login`, `logout`, `model`, `status`, `doctor`.
-  - `resume`, `session`, `clear`, `compact`, `export`, `rename`.
-  - `context`, `files`, `memory`, `branch`, `diff`.
+  - `resume`, `session`, `clear`, `compact`, `export`, `rename`, `tag`.
+  - `context`, `files`, `memory`, `copy`, `branch`, `diff`.
   - `plan`, `permissions`, `agents`, `tasks`, `skills`.
   - `mcp`, `plugin`, `reload-plugins`.
 
@@ -289,7 +439,7 @@ Dedupe by name/alias with deterministic precedence.
 | Core            | `help`, `init`, `exit`, `doctor`, `status`                  | Must work before provider is configured where possible. |
 | Auth/model      | `login`, `logout`, `model`, `config`                        | Drives provider selection and command availability.     |
 | Session         | `resume`, `session`, `rename`, `clear`, `compact`, `export` | Depends on storage and message model.                   |
-| Context/project | `add-dir`, `context`, `files`, `memory`, `branch`, `diff`   | Requires path scope and file/search tools.              |
+| Context/project | `add-dir`, `context`, `files`, `memory`, `copy`, `branch`, `diff` | Requires path scope and file/search tools.              |
 | Workflow        | `plan`, `permissions`                                       | Tied to permission mode and plan-mode state.            |
 | Extension       | `mcp`, `plugin`, `reload-plugins`, `skills`                 | Requires extension registries.                          |
 | Agents/tasks    | `agents`, `tasks`                                           | Requires task manager and background UI.                |
@@ -499,7 +649,7 @@ Essential bindings:
 
 - Ctrl-C/Ctrl-D interrupt or exit.
 - Ctrl-L redraw.
-- Ctrl-R history search.
+- Ctrl-R prompt history recall/cycle.
 - Ctrl-O transcript/expanded view toggle if in scope.
 - Shift-Tab mode cycle if terminal supports.
 - Ctrl-T task/todo toggle if in scope.

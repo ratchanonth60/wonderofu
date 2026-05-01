@@ -20,6 +20,10 @@ pub struct MessageEnvelope {
     pub cwd: Option<PathBuf>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub git_branch: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub entrypoint: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub app_version: Option<String>,
     pub payload: MessagePayload,
 }
 
@@ -33,6 +37,8 @@ impl MessageEnvelope {
             timestamp: OffsetDateTime::now_utc(),
             cwd: None,
             git_branch: None,
+            entrypoint: None,
+            app_version: None,
             payload,
         }
     }
@@ -45,11 +51,33 @@ impl MessageEnvelope {
     }
 
     #[must_use]
+    pub fn with_runtime(mut self, entrypoint: Option<String>, app_version: Option<String>) -> Self {
+        self.entrypoint = entrypoint;
+        self.app_version = app_version;
+        self
+    }
+
+    #[must_use]
     pub fn user_text(session_id: SessionId, content: impl Into<String>) -> Self {
         Self::new(
             session_id,
             MessagePayload::UserText {
                 content: content.into(),
+            },
+        )
+    }
+
+    #[must_use]
+    pub fn user_paste_reference(
+        session_id: SessionId,
+        sha256: impl Into<String>,
+        bytes: usize,
+    ) -> Self {
+        Self::new(
+            session_id,
+            MessagePayload::UserPasteReference {
+                sha256: sha256.into(),
+                bytes,
             },
         )
     }
@@ -76,6 +104,10 @@ pub enum MessagePayload {
     UserAttachment {
         label: String,
         uri: String,
+    },
+    UserPasteReference {
+        sha256: String,
+        bytes: usize,
     },
     AssistantText {
         content: String,
@@ -142,7 +174,9 @@ mod tests {
     #[test]
     fn message_envelope_json_round_trips() {
         let session_id = SessionId::new();
-        let message = MessageEnvelope::user_text(session_id, "hello");
+        let message = MessageEnvelope::user_text(session_id, "hello")
+            .with_context(Some(PathBuf::from("/workspace")), Some("main".into()))
+            .with_runtime(Some("doctor".into()), Some("0.1.0".into()));
 
         let json = serde_json::to_string(&message).expect("serialize message");
         let decoded: MessageEnvelope = serde_json::from_str(&json).expect("deserialize message");
@@ -155,5 +189,7 @@ mod tests {
                 content: "hello".into()
             }
         );
+        assert_eq!(decoded.entrypoint.as_deref(), Some("doctor"));
+        assert_eq!(decoded.app_version.as_deref(), Some("0.1.0"));
     }
 }

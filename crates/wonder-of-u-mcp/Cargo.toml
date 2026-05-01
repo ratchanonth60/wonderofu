@@ -1,0 +1,22 @@
+[package]
+name = "wonder-of-u-mcp"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[[bin]]
+name = "fake_mcp_server"
+path = "src/bin/fake_mcp_server.rs"
+
+[dependencies]
+async-trait.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+wait-timeout.workspace = true
+wonder-of-u-core.workspace = true
+wonder-of-u-storage.workspace = true
+
+[dev-dependencies]
+tokio = { version = "1", features = ["full"] }
+wonder-of-u-test-support.workspace = true
