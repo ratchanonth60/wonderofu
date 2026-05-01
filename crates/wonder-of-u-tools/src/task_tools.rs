@@ -10,8 +10,8 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 use wonder_of_u_core::{
-    FeatureFlag, Result, TaskId, TaskStatus, Tool, ToolContext, ToolKind, ToolResult, ToolSchema,
-    ToolSpec, ToolUseId, WonderError,
+    FeatureFlag, RemoteTaskState, Result, TaskId, TaskStatus, Tool, ToolContext, ToolKind,
+    ToolResult, ToolSchema, ToolSpec, ToolUseId, WonderError,
 };
 use wonder_of_u_storage::TaskStore;
 
@@ -144,6 +144,10 @@ pub struct TaskOutputInput {
     pub task_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lines: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub block: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout: Option<u64>,
 }
 
 impl TaskOutputInput {
@@ -152,6 +156,11 @@ impl TaskOutputInput {
         if self.lines == Some(0) {
             return Err(WonderError::validation(
                 "task_output lines must be greater than zero",
+            ));
+        }
+        if self.block.is_some() || self.timeout.is_some() {
+            return Err(WonderError::validation(
+                "task_output block/timeout polling is not supported in wonder-of-u-tools",
             ));
         }
         Ok(())
@@ -165,6 +174,7 @@ impl TaskOutputInput {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TaskStopInput {
+    #[serde(alias = "shell_id")]
     pub task_id: String,
 }
 
@@ -424,9 +434,23 @@ impl Tool for TaskOutputTool {
                     "lines",
                     ToolSchema::integer("number of trailing log lines to return"),
                 )
+                .property(
+                    "block",
+                    ToolSchema::boolean(
+                        "source-compatible wait flag; currently unsupported in the Rust runtime",
+                    ),
+                )
+                .property(
+                    "timeout",
+                    ToolSchema::integer(
+                        "source-compatible timeout in milliseconds; currently unsupported in the Rust runtime",
+                    ),
+                )
                 .required("task_id"),
         );
         spec.aliases.push("TaskOutput".into());
+        spec.aliases.push("AgentOutputTool".into());
+        spec.aliases.push("BashOutputTool".into());
         spec.read_only = true;
         spec.concurrency_safe = true;
         spec.required_features.insert(FeatureFlag::BackgroundTasks);
@@ -456,11 +480,18 @@ impl Tool for TaskStopTool {
     fn spec(&self) -> ToolSpec {
         let mut spec = base_spec("task_stop", "Request task cancellation", ToolKind::Task)
             .with_input_schema(
-                ToolSchema::object()
-                    .property("task_id", ToolSchema::string("background task id"))
-                    .required("task_id"),
-            );
+            ToolSchema::object()
+                .property("task_id", ToolSchema::string("background task id"))
+                .property(
+                    "shell_id",
+                    ToolSchema::string(
+                        "source-compatible legacy task id field accepted as an alias for task_id",
+                    ),
+                )
+                .required("task_id"),
+        );
         spec.aliases.push("TaskStop".into());
+        spec.aliases.push("KillShell".into());
         spec.destructive = true;
         spec.required_features.insert(FeatureFlag::BackgroundTasks);
         spec
@@ -590,6 +621,18 @@ fn request_persisted_task_stop(app_root: &Path, task_id: &str) -> Result<Option<
         return Ok(Some(TaskStopOutcome::AlreadyTerminal(task.status)));
     }
 
+    if task.kind == wonder_of_u_core::TaskKind::RemoteAgent {
+        return Err(WonderError::validation(
+            task.remote
+                .as_ref()
+                .map(RemoteTaskState::stop_error_message)
+                .unwrap_or_else(|| {
+                    "cannot stop remote task: remote task transport is unavailable in this Rust runtime"
+                        .into()
+                }),
+        ));
+    }
+
     let pid = task.pid.ok_or_else(|| {
         WonderError::validation(format!(
             "task_stop cannot stop task {} because it has no process id",
@@ -674,6 +717,7 @@ mod tests {
     use futures::executor::block_on;
     use serde_json::json;
     use wonder_of_u_core::{FeatureSet, PermissionMode, SessionId, TaskState};
+    use wonder_of_u_core::{RemoteTaskState, RemoteTaskType};
     use wonder_of_u_test_support::unique_test_dir;
 
     use super::*;
@@ -775,6 +819,19 @@ mod tests {
     }
 
     #[test]
+    fn task_output_rejects_source_polling_fields() {
+        let tool = TaskOutputTool;
+        let error = tool
+            .validate_input(&json!({
+                "task_id": "task-1",
+                "block": true,
+            }))
+            .expect_err("unsupported polling");
+
+        assert!(error.to_string().contains("block/timeout"));
+    }
+
+    #[test]
     fn task_output_reads_persisted_runtime_log_tail() {
         let dir = unique_test_dir("tools-task-output-store");
         let store = TaskStore::new(&dir);
@@ -816,10 +873,33 @@ mod tests {
     }
 
     #[test]
+    fn task_stop_rejects_remote_backends_without_signalling() {
+        let dir = unique_test_dir("tools-task-stop-remote");
+        let store = TaskStore::new(&dir);
+        let task = TaskState::recorded_remote(
+            "cloud review",
+            RemoteTaskState::deferred(RemoteTaskType::Ultrareview, None),
+        );
+        store.write_task(&task).expect("task");
+
+        let error = request_task_stop(&dir, &task.id.to_string()).expect_err("remote backend");
+
+        assert!(error.to_string().contains("cannot stop ultrareview task"));
+    }
+
+    #[test]
     fn task_stop_legacy_fallback_errors_for_missing_task() {
         let dir = unique_test_dir("tools-task-stop");
         let error = request_legacy_task_stop(&dir, "missing").expect_err("missing task");
 
         assert!(error.to_string().contains("task not found"));
+    }
+
+    #[test]
+    fn task_stop_accepts_legacy_shell_id_field() {
+        let tool = TaskStopTool;
+
+        tool.validate_input(&json!({ "shell_id": "task-1" }))
+            .expect("legacy shell id");
     }
 }

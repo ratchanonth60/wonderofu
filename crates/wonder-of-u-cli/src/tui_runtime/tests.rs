@@ -1,0 +1,4157 @@
+use super::*;
+
+use std::{
+    io::{Read, Write},
+    net::{TcpListener, TcpStream},
+    path::Path,
+    thread,
+};
+
+use serde_json::{Value, json};
+use wonder_of_u_agent::{
+    AgentSettings, AuthMaterial, CredentialStore, SettingsStore, StoredCredentials,
+};
+use wonder_of_u_core::{
+    AuthState, InputMode, MessageEnvelope, MessagePayload, PendingLocalToolCall,
+    PendingProviderToolCall, PendingToolApprovalState, PendingToolConversationRound,
+};
+use wonder_of_u_test_support::{EnvVarGuard, unique_test_dir};
+
+use crate::commands;
+
+fn write_provider_config_for(storage_dir: &Path, provider: &str, model: &str, api_base: &str) {
+    let mut settings = AgentSettings {
+        selected_provider: Some(provider.into()),
+        selected_model: Some(model.into()),
+        ..AgentSettings::default()
+    };
+    settings
+        .providers
+        .entry(provider.into())
+        .or_default()
+        .api_base = Some(api_base.into());
+    SettingsStore::new(storage_dir)
+        .write(&settings)
+        .expect("write settings");
+    CredentialStore::new(storage_dir)
+        .write(&StoredCredentials {
+            providers: [(
+                provider.into(),
+                AuthMaterial::ApiKey {
+                    key: "test-key".into(),
+                },
+            )]
+            .into(),
+        })
+        .expect("write credentials");
+}
+
+fn write_provider_config(storage_dir: &Path, api_base: &str) {
+    write_provider_config_for(storage_dir, "openai", "gpt-4.1", api_base);
+}
+
+fn read_http_request(stream: &mut TcpStream) -> (String, Value) {
+    let mut buffer = Vec::new();
+    let mut chunk = [0u8; 4096];
+    let header_end = loop {
+        let read = stream.read(&mut chunk).expect("read request");
+        assert!(read > 0, "expected request bytes");
+        buffer.extend_from_slice(&chunk[..read]);
+        if let Some(position) = buffer.windows(4).position(|window| window == b"\r\n\r\n") {
+            break position + 4;
+        }
+    };
+    let headers = String::from_utf8(buffer[..header_end].to_vec()).expect("headers utf8");
+    let content_length = headers
+        .lines()
+        .find_map(|line| {
+            line.to_ascii_lowercase()
+                .strip_prefix("content-length:")
+                .map(str::trim)
+                .map(|value| value.parse::<usize>().expect("content length"))
+        })
+        .unwrap_or(0);
+    while buffer.len() < header_end + content_length {
+        let read = stream.read(&mut chunk).expect("read body");
+        assert!(read > 0, "expected request body bytes");
+        buffer.extend_from_slice(&chunk[..read]);
+    }
+    let body = serde_json::from_slice(&buffer[header_end..header_end + content_length])
+        .expect("body json");
+    (headers, body)
+}
+
+fn spawn_json_sequence_server(
+    mut assert_request: impl FnMut(usize, String, Value) + Send + 'static,
+    response_bodies: Vec<String>,
+) -> (String, thread::JoinHandle<()>) {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind test server");
+    let address = listener.local_addr().expect("server address");
+    let handle = thread::spawn(move || {
+        for (index, response_body) in response_bodies.into_iter().enumerate() {
+            let (mut stream, _) = listener.accept().expect("accept request");
+            let (headers, body) = read_http_request(&mut stream);
+            assert_request(index, headers, body);
+            write!(
+                stream,
+                concat!(
+                    "HTTP/1.1 200 OK\r\n",
+                    "Content-Type: application/json\r\n",
+                    "Content-Length: {}\r\n",
+                    "Connection: close\r\n\r\n",
+                    "{}"
+                ),
+                response_body.len(),
+                response_body
+            )
+            .expect("write response");
+            stream.flush().expect("flush response");
+        }
+    });
+    (format!("http://{address}/v1"), handle)
+}
+
+fn test_context(cwd: &Path) -> CommandContext {
+    CommandContext {
+        session_id: SessionId::new(),
+        cwd: cwd.to_path_buf(),
+        features: FeatureSet::first_release(),
+        authenticated: false,
+        interactive: true,
+        permission_mode: PermissionMode::Default,
+        theme: None,
+        session_color: None,
+        effort_level: None,
+        brief_mode: false,
+        fast_mode: false,
+        session_tags: Vec::new(),
+        additional_working_directories: Vec::new(),
+    }
+}
+
+fn picker_key(code: KeyCode) -> KeyEvent {
+    KeyEvent {
+        code,
+        modifiers: wonder_of_u_tui::KeyModifiers::default(),
+    }
+}
+
+fn send_dialog_key(
+    controller: &mut TuiController<'_>,
+    key: KeyEvent,
+    resolved: Option<ResolvedKey>,
+) {
+    controller
+        .handle_dialog_key(key, resolved, &mut |_| Ok(()))
+        .expect("handle dialog key");
+}
+
+fn send_prompt_key(controller: &mut TuiController<'_>, key: KeyEvent) {
+    controller
+        .handle_key_event(key, &mut |_| Ok(()))
+        .expect("handle prompt key");
+}
+
+fn ctrl_r_key() -> KeyEvent {
+    KeyEvent {
+        code: KeyCode::Char('r'),
+        modifiers: wonder_of_u_tui::KeyModifiers {
+            control: true,
+            ..wonder_of_u_tui::KeyModifiers::default()
+        },
+    }
+}
+
+fn seed_prompt_history(controller: &mut TuiController<'_>, entries: &[&str]) {
+    let session_id = controller.state.session.id;
+    for entry in entries {
+        controller
+            .state
+            .messages
+            .push(MessageEnvelope::user_text(session_id, *entry));
+    }
+}
+
+#[test]
+fn compose_conversation_prompt_includes_recent_history() {
+    let session_id = SessionId::new();
+    let messages = vec![
+        MessageEnvelope::user_text(session_id, "first question"),
+        MessageEnvelope::new(
+            session_id,
+            MessagePayload::AssistantText {
+                content: "first answer".into(),
+            },
+        ),
+    ];
+
+    let prompt = compose_conversation_prompt(&messages, "next question");
+
+    assert!(prompt.contains("user: first question"));
+    assert!(prompt.contains("assistant: first answer"));
+    assert!(prompt.ends_with("user: next question\nassistant:"));
+}
+
+#[test]
+fn controller_routes_slash_commands_and_updates_provider_context() {
+    let dir = unique_test_dir("tui-slash-model");
+    let registry = commands::registry(Some(dir.clone())).expect("registry");
+    let mut controller = TuiController::new(
+        test_context(&dir),
+        &registry,
+        Some(dir.as_path()),
+        TuiLaunchOptions { session_id: None },
+    )
+    .expect("controller");
+
+    controller
+        .execute_slash_command("/model openai:gpt-4.1")
+        .expect("execute slash");
+
+    assert_eq!(controller.state.provider.as_deref(), Some("openai"));
+    assert_eq!(controller.state.model.as_deref(), Some("gpt-4.1"));
+    assert_eq!(
+        controller.state.auth,
+        AuthState::missing(wonder_of_u_core::AuthMaterialKind::ApiKey)
+    );
+    assert!(matches!(
+        controller.state.messages.last().map(|message| &message.payload),
+        Some(MessagePayload::Command { input, .. })
+            if input == "/model openai:gpt-4.1"
+    ));
+}
+
+#[test]
+fn controller_opens_model_picker_for_bare_model_command() {
+    let dir = unique_test_dir("tui-model-picker-open");
+    let registry = commands::registry(Some(dir.clone())).expect("registry");
+    let mut controller = TuiController::new(
+        test_context(&dir),
+        &registry,
+        Some(dir.as_path()),
+        TuiLaunchOptions { session_id: None },
+    )
+    .expect("controller");
+
+    controller
+        .execute_slash_command("/model")
+        .expect("open model picker");
+
+    assert_eq!(
+        controller.status_note.as_deref(),
+        Some("model picker: type to filter, use Up/Down to choose, Enter to select, Esc to cancel")
+    );
+    assert!(controller.pending_model_picker.is_some());
+    assert!(matches!(
+        controller.dialog.as_ref(),
+        Some(dialog) if dialog.title == "Model picker"
+    ));
+    assert!(!controller.state.messages.iter().any(|message| {
+        matches!(
+            &message.payload,
+            MessagePayload::Command { input, .. } if input == "/model"
+        )
+    }));
+}
+
+#[test]
+fn controller_filters_model_picker_with_visible_query_and_match_count() {
+    let dir = unique_test_dir("tui-model-picker-filter");
+    let registry = commands::registry(Some(dir.clone())).expect("registry");
+    let mut controller = TuiController::new(
+        test_context(&dir),
+        &registry,
+        Some(dir.as_path()),
+        TuiLaunchOptions { session_id: None },
+    )
+    .expect("controller");
+
+    controller
+        .execute_slash_command("/model")
+        .expect("open model picker");
+    for ch in ['h', 'a', 'i', 'k', 'u'] {
+        send_dialog_key(
+            &mut controller,
+            picker_key(KeyCode::Char(ch)),
+            Some(ResolvedKey::InsertChar(ch)),
+        );
+    }
+
+    let picker = controller
+        .pending_model_picker
+        .as_ref()
+        .expect("model picker open");
+    let dialog = controller.dialog.as_ref().expect("dialog");
+    let expected_matches = format!("Matches: 1/{}", picker.options.len());
+    assert_eq!(
+        dialog.body.first().map(String::as_str),
+        Some("Search: haiku")
+    );
+    assert_eq!(
+        dialog.body.get(1).map(String::as_str),
+        Some(expected_matches.as_str())
+    );
+    assert!(dialog.body.iter().any(|line| line.contains("haiku")));
+    assert!(!dialog.body.iter().any(|line| line.contains("sonnet")));
+    assert_eq!(
+        controller.status_note.as_deref(),
+        Some("model picker: type to filter, use Up/Down to choose, Enter to select, Esc to cancel")
+    );
+}
+
+#[test]
+fn controller_selects_model_from_picker() {
+    let dir = unique_test_dir("tui-model-picker-select");
+    let registry = commands::registry(Some(dir.clone())).expect("registry");
+    let mut controller = TuiController::new(
+        test_context(&dir),
+        &registry,
+        Some(dir.as_path()),
+        TuiLaunchOptions { session_id: None },
+    )
+    .expect("controller");
+
+    controller
+        .execute_slash_command("/model")
+        .expect("open picker");
+    send_dialog_key(&mut controller, picker_key(KeyCode::Down), None);
+    send_dialog_key(
+        &mut controller,
+        picker_key(KeyCode::Enter),
+        Some(ResolvedKey::Edit(EditAction::InsertNewline)),
+    );
+
+    assert!(controller.pending_model_picker.is_none());
+    assert!(controller.dialog.is_none());
+    assert_eq!(controller.state.provider.as_deref(), Some("anthropic"));
+    assert_eq!(
+        controller.state.model.as_deref(),
+        Some("claude-3-5-haiku-latest")
+    );
+    assert!(matches!(
+        controller.state.messages.last().map(|message| &message.payload),
+        Some(MessagePayload::Command { input, output })
+            if input == "/model"
+                && output
+                    .as_deref()
+                    .is_some_and(|text| text.contains("provider_selection=anthropic:claude-3-5-haiku-latest"))
+    ));
+}
+
+#[test]
+fn controller_cancels_model_picker() {
+    let dir = unique_test_dir("tui-model-picker-cancel");
+    let registry = commands::registry(Some(dir.clone())).expect("registry");
+    let mut controller = TuiController::new(
+        test_context(&dir),
+        &registry,
+        Some(dir.as_path()),
+        TuiLaunchOptions { session_id: None },
+    )
+    .expect("controller");
+
+    controller
+        .execute_slash_command("/model")
+        .expect("open picker");
+    controller
+        .handle_dialog_key(
+            KeyEvent {
+                code: KeyCode::Esc,
+                modifiers: wonder_of_u_tui::KeyModifiers::default(),
+            },
+            None,
+            &mut |_| Ok(()),
+        )
+        .expect("cancel picker");
+
+    assert!(controller.pending_model_picker.is_none());
+    assert!(controller.dialog.is_none());
+    assert_eq!(
+        controller.status_note.as_deref(),
+        Some("model picker cancelled")
+    );
+    assert!(matches!(
+        controller.state.messages.last().map(|message| &message.payload),
+        Some(MessagePayload::Command { input, output })
+            if input == "/model"
+                && output
+                    .as_deref()
+                    .is_some_and(|text| text.contains("status=model picker cancelled"))
+    ));
+}
+
+#[test]
+fn controller_model_picker_preview_shows_selected_description() {
+    let dir = unique_test_dir("tui-model-picker-preview");
+    let registry = commands::registry(Some(dir.clone())).expect("registry");
+    let mut controller = TuiController::new(
+        test_context(&dir),
+        &registry,
+        Some(dir.as_path()),
+        TuiLaunchOptions { session_id: None },
+    )
+    .expect("controller");
+
+    controller
+        .execute_slash_command("/model")
+        .expect("open model picker");
+
+    let view = controller.view();
+    let pv = view
+        .picker_view
+        .as_ref()
+        .expect("picker_view present while model picker is open");
+    let preview = pv
+        .preview
+        .as_deref()
+        .expect("preview Some when a model option is highlighted");
+    // The preview must name both the provider and the selected model.
+    assert!(
+        preview.contains("Anthropic") || preview.contains("Copilot") || preview.contains("OpenAI"),
+        "preview should contain provider display name, got: {preview:?}"
+    );
+    assert!(!preview.is_empty(), "preview should not be empty");
+}
+
+#[test]
+fn controller_picker_preview_is_none_when_no_matches() {
+    let dir = unique_test_dir("tui-picker-preview-no-matches");
+    let registry = commands::registry(Some(dir.clone())).expect("registry");
+    let mut controller = TuiController::new(
+        test_context(&dir),
+        &registry,
+        Some(dir.as_path()),
+        TuiLaunchOptions { session_id: None },
+    )
+    .expect("controller");
+
+    controller
+        .execute_slash_command("/theme")
+        .expect("open theme picker");
+    // Type a query that matches nothing so the filter is empty.
+    for ch in ['z', 'z', 'z'] {
+        send_dialog_key(
+            &mut controller,
+            picker_key(KeyCode::Char(ch)),
+            Some(ResolvedKey::InsertChar(ch)),
+        );
+    }
+
+    let view = controller.view();
+    let pv = view
+        .picker_view
+        .as_ref()
+        .expect("picker_view present while theme picker is open");
+    assert!(
+        pv.preview.is_none(),
+        "preview should be None when filter has no matches"
+    );
+}
+
+#[test]
+fn controller_opens_theme_picker_for_bare_theme_command() {
+    let dir = unique_test_dir("tui-theme-picker-open");
+    let registry = commands::registry(Some(dir.clone())).expect("registry");
+    let mut controller = TuiController::new(
+        test_context(&dir),
+        &registry,
+        Some(dir.as_path()),
+        TuiLaunchOptions { session_id: None },
+    )
+    .expect("controller");
+
+    controller
+        .execute_slash_command("/theme")
+        .expect("open theme picker");
+
+    assert_eq!(
+        controller.status_note.as_deref(),
+        Some("theme picker: type to filter, use Up/Down to choose, Enter to select, Esc to cancel")
+    );
+    assert!(controller.pending_theme_picker.is_some());
+    assert!(matches!(
+        controller.dialog.as_ref(),
+        Some(dialog) if dialog.title == "Theme picker"
+    ));
+}
+
+#[test]
+fn controller_selects_theme_from_picker() {
+    let dir = unique_test_dir("tui-theme-picker-select");
+    let registry = commands::registry(Some(dir.clone())).expect("registry");
+    let mut controller = TuiController::new(
+        test_context(&dir),
+        &registry,
+        Some(dir.as_path()),
+        TuiLaunchOptions { session_id: None },
+    )
+    .expect("controller");
+
+    controller
+        .execute_slash_command("/theme")
+        .expect("open theme picker");
+    send_dialog_key(&mut controller, picker_key(KeyCode::Down), None);
+    send_dialog_key(
+        &mut controller,
+        picker_key(KeyCode::Enter),
+        Some(ResolvedKey::Edit(EditAction::InsertNewline)),
+    );
+
+    assert!(controller.pending_theme_picker.is_none());
+    assert!(controller.dialog.is_none());
+    assert_eq!(controller.state.theme.as_deref(), Some("midnight"));
+    assert!(controller.view().footer.contains("theme=midnight"));
+    assert!(matches!(
+        controller.state.messages.last().map(|message| &message.payload),
+        Some(MessagePayload::Command { input, output })
+            if input == "/theme"
+                && output
+                    .as_deref()
+                    .is_some_and(|text| text.contains("theme=midnight"))
+    ));
+}
+
+#[test]
+fn controller_shows_theme_notice_dialog() {
+    let dir = unique_test_dir("tui-theme-notice");
+    let registry = commands::registry(Some(dir.clone())).expect("registry");
+    let mut controller = TuiController::new(
+        test_context(&dir),
+        &registry,
+        Some(dir.as_path()),
+        TuiLaunchOptions { session_id: None },
+    )
+    .expect("controller");
+
+    controller
+        .execute_slash_command("/theme show")
+        .expect("show theme");
+
+    assert_eq!(controller.status_note.as_deref(), Some("theme"));
+    assert!(matches!(
+        controller.dialog.as_ref(),
+        Some(dialog) if dialog.title == "Theme"
+    ));
+    assert!(matches!(
+        controller.state.messages.last().map(|message| &message.payload),
+        Some(MessagePayload::Command { input, output })
+            if input == "/theme show"
+                && output
+                    .as_deref()
+                    .is_some_and(|text| text.contains("## Theme"))
+    ));
+}
+
+#[test]
+fn controller_dismisses_theme_notice_dialog_cleanly() {
+    let dir = unique_test_dir("tui-theme-notice-dismiss");
+    let registry = commands::registry(Some(dir.clone())).expect("registry");
+    let mut controller = TuiController::new(
+        test_context(&dir),
+        &registry,
+        Some(dir.as_path()),
+        TuiLaunchOptions { session_id: None },
+    )
+    .expect("controller");
+
+    controller
+        .execute_slash_command("/theme show")
+        .expect("show theme");
+    controller
+        .handle_dialog_key(
+            KeyEvent {
+                code: KeyCode::Esc,
+                modifiers: wonder_of_u_tui::KeyModifiers::default(),
+            },
+            None,
+            &mut |_| Ok(()),
+        )
+        .expect("dismiss theme notice");
+
+    assert!(controller.dialog.is_none());
+    assert_eq!(controller.state.input_mode, InputMode::Prompt);
+    assert_eq!(controller.status_note.as_deref(), Some("theme closed"));
+}
+
+#[test]
+fn apply_command_output_hints_clears_stale_notice_dialog() {
+    let dir = unique_test_dir("tui-notice-clear");
+    let registry = commands::registry(Some(dir.clone())).expect("registry");
+    let mut controller = TuiController::new(
+        test_context(&dir),
+        &registry,
+        Some(dir.as_path()),
+        TuiLaunchOptions { session_id: None },
+    )
+    .expect("controller");
+
+    controller.apply_command_output_hints(Some("## Theme\nCurrent theme: default\n"));
+    assert!(matches!(
+        controller.dialog.as_ref(),
+        Some(dialog) if dialog.title == "Theme"
+    ));
+
+    controller.apply_command_output_hints(Some("status=theme updated\n"));
+
+    assert!(controller.dialog.is_none());
+}
+
+#[test]
+fn controller_hydrates_persisted_fast_and_effort_on_launch() {
+    let dir = unique_test_dir("tui-hydrate-settings");
+    SettingsStore::new(&dir)
+        .write(&AgentSettings {
+            selected_provider: Some("openai".into()),
+            effort_level: Some("high".into()),
+            fast_mode: true,
+            ..AgentSettings::default()
+        })
+        .expect("write settings");
+    let registry = commands::registry(Some(dir.clone())).expect("registry");
+    let controller = TuiController::new(
+        test_context(&dir),
+        &registry,
+        Some(dir.as_path()),
+        TuiLaunchOptions { session_id: None },
+    )
+    .expect("controller");
+
+    assert_eq!(controller.state.effort_level.as_deref(), Some("high"));
+    assert!(controller.state.fast_mode);
+    assert!(controller.view().footer.contains("effort=high"));
+    assert!(controller.view().footer.contains("fast=on"));
+}
+
+#[test]
+fn controller_sets_session_color_from_command() {
+    let dir = unique_test_dir("tui-color-set");
+    let registry = commands::registry(Some(dir.clone())).expect("registry");
+    let mut controller = TuiController::new(
+        test_context(&dir),
+        &registry,
+        Some(dir.as_path()),
+        TuiLaunchOptions { session_id: None },
+    )
+    .expect("controller");
+
+    controller
+        .execute_slash_command("/color purple")
+        .expect("set color");
+
+    assert_eq!(controller.state.session_color.as_deref(), Some("purple"));
+    assert_eq!(controller.status_note.as_deref(), Some("color purple"));
+    assert!(controller.view().footer.contains("color=purple"));
+    assert!(matches!(
+        controller.state.messages.last().map(|message| &message.payload),
+        Some(MessagePayload::Command { input, output })
+            if input == "/color purple"
+                && output
+                    .as_deref()
+                    .is_some_and(|text| text.contains("color=purple"))
+    ));
+}
+
+#[test]
+fn controller_shows_color_notice_dialog() {
+    let dir = unique_test_dir("tui-color-notice");
+    let registry = commands::registry(Some(dir.clone())).expect("registry");
+    let mut controller = TuiController::new(
+        test_context(&dir),
+        &registry,
+        Some(dir.as_path()),
+        TuiLaunchOptions { session_id: None },
+    )
+    .expect("controller");
+
+    controller
+        .execute_slash_command("/color")
+        .expect("show color");
+
+    assert_eq!(controller.status_note.as_deref(), Some("color"));
+    assert!(matches!(
+        controller.dialog.as_ref(),
+        Some(dialog) if dialog.title == "Color"
+    ));
+    assert!(matches!(
+        controller.state.messages.last().map(|message| &message.payload),
+        Some(MessagePayload::Command { input, output })
+            if input == "/color"
+                && output
+                    .as_deref()
+                    .is_some_and(|text| text.contains("## Color"))
+    ));
+}
+
+#[test]
+fn controller_toggles_brief_mode_from_command() {
+    let dir = unique_test_dir("tui-brief-toggle");
+    let registry = commands::registry(Some(dir.clone())).expect("registry");
+    let mut controller = TuiController::new(
+        test_context(&dir),
+        &registry,
+        Some(dir.as_path()),
+        TuiLaunchOptions { session_id: None },
+    )
+    .expect("controller");
+
+    controller
+        .execute_slash_command("/brief")
+        .expect("toggle brief");
+
+    assert!(controller.state.brief_mode);
+    assert_eq!(controller.status_note.as_deref(), Some("brief on"));
+    assert!(controller.view().footer.contains("brief=on"));
+    assert!(matches!(
+        controller.state.messages.last().map(|message| &message.payload),
+        Some(MessagePayload::Command { input, output })
+            if input == "/brief"
+                && output
+                    .as_deref()
+                    .is_some_and(|text| text.contains("brief_mode=true"))
+    ));
+}
+
+#[test]
+fn controller_shows_brief_notice_dialog() {
+    let dir = unique_test_dir("tui-brief-notice");
+    let registry = commands::registry(Some(dir.clone())).expect("registry");
+    let mut controller = TuiController::new(
+        test_context(&dir),
+        &registry,
+        Some(dir.as_path()),
+        TuiLaunchOptions { session_id: None },
+    )
+    .expect("controller");
+
+    controller
+        .execute_slash_command("/brief show")
+        .expect("show brief");
+
+    assert_eq!(controller.status_note.as_deref(), Some("brief"));
+    assert!(matches!(
+        controller.dialog.as_ref(),
+        Some(dialog) if dialog.title == "Brief"
+    ));
+    assert!(matches!(
+        controller.state.messages.last().map(|message| &message.payload),
+        Some(MessagePayload::Command { input, output })
+            if input == "/brief show"
+                && output
+                    .as_deref()
+                    .is_some_and(|text| text.contains("## Brief"))
+    ));
+}
+
+#[test]
+fn controller_toggles_fast_mode_from_command() {
+    let dir = unique_test_dir("tui-fast-toggle");
+    let registry = commands::registry(Some(dir.clone())).expect("registry");
+    let mut controller = TuiController::new(
+        test_context(&dir),
+        &registry,
+        Some(dir.as_path()),
+        TuiLaunchOptions { session_id: None },
+    )
+    .expect("controller");
+
+    controller
+        .execute_slash_command("/fast")
+        .expect("toggle fast");
+
+    assert!(controller.state.fast_mode);
+    assert_eq!(controller.status_note.as_deref(), Some("fast on"));
+    assert!(controller.view().footer.contains("fast=on"));
+    assert!(matches!(
+        controller.state.messages.last().map(|message| &message.payload),
+        Some(MessagePayload::Command { input, output })
+            if input == "/fast"
+                && output
+                    .as_deref()
+                    .is_some_and(|text| text.contains("fast_mode=true"))
+    ));
+}
+
+#[test]
+fn controller_shows_fast_notice_dialog() {
+    let dir = unique_test_dir("tui-fast-notice");
+    let registry = commands::registry(Some(dir.clone())).expect("registry");
+    let mut controller = TuiController::new(
+        test_context(&dir),
+        &registry,
+        Some(dir.as_path()),
+        TuiLaunchOptions { session_id: None },
+    )
+    .expect("controller");
+
+    controller
+        .execute_slash_command("/fast show")
+        .expect("show fast");
+
+    assert_eq!(controller.status_note.as_deref(), Some("fast"));
+    assert!(matches!(
+        controller.dialog.as_ref(),
+        Some(dialog) if dialog.title == "Fast"
+    ));
+    assert!(matches!(
+        controller.state.messages.last().map(|message| &message.payload),
+        Some(MessagePayload::Command { input, output })
+            if input == "/fast show"
+                && output
+                    .as_deref()
+                    .is_some_and(|text| text.contains("## Fast"))
+    ));
+}
+
+#[test]
+fn controller_sets_effort_from_command() {
+    let dir = unique_test_dir("tui-effort-set");
+    let registry = commands::registry(Some(dir.clone())).expect("registry");
+    let mut controller = TuiController::new(
+        test_context(&dir),
+        &registry,
+        Some(dir.as_path()),
+        TuiLaunchOptions { session_id: None },
+    )
+    .expect("controller");
+
+    controller
+        .execute_slash_command("/effort high")
+        .expect("set effort");
+
+    assert_eq!(controller.state.effort_level.as_deref(), Some("high"));
+    assert_eq!(controller.status_note.as_deref(), Some("effort high"));
+    assert!(controller.view().footer.contains("effort=high"));
+    assert!(matches!(
+        controller.state.messages.last().map(|message| &message.payload),
+        Some(MessagePayload::Command { input, output })
+            if input == "/effort high"
+                && output
+                    .as_deref()
+                    .is_some_and(|text| text.contains("effort_level=high"))
+    ));
+}
+
+#[test]
+fn controller_shows_effort_notice_dialog() {
+    let dir = unique_test_dir("tui-effort-notice");
+    let registry = commands::registry(Some(dir.clone())).expect("registry");
+    let mut controller = TuiController::new(
+        test_context(&dir),
+        &registry,
+        Some(dir.as_path()),
+        TuiLaunchOptions { session_id: None },
+    )
+    .expect("controller");
+
+    controller
+        .execute_slash_command("/effort")
+        .expect("show effort");
+
+    assert_eq!(controller.status_note.as_deref(), Some("effort"));
+    assert!(matches!(
+        controller.dialog.as_ref(),
+        Some(dialog) if dialog.title == "Effort"
+    ));
+    assert!(matches!(
+        controller.state.messages.last().map(|message| &message.payload),
+        Some(MessagePayload::Command { input, output })
+            if input == "/effort"
+                && output
+                    .as_deref()
+                    .is_some_and(|text| text.contains("## Effort"))
+    ));
+}
+
+#[test]
+fn controller_shows_feedback_notice_dialog_from_alias() {
+    let dir = unique_test_dir("tui-feedback-notice");
+    let registry = commands::registry(Some(dir.clone())).expect("registry");
+    let mut controller = TuiController::new(
+        test_context(&dir),
+        &registry,
+        Some(dir.as_path()),
+        TuiLaunchOptions { session_id: None },
+    )
+    .expect("controller");
+
+    controller
+        .execute_slash_command("/bug parity gap")
+        .expect("show feedback");
+
+    assert_eq!(controller.status_note.as_deref(), Some("feedback"));
+    assert!(matches!(
+        controller.dialog.as_ref(),
+        Some(dialog) if dialog.title == "Feedback"
+    ));
+    assert!(matches!(
+        controller.state.messages.last().map(|message| &message.payload),
+        Some(MessagePayload::Command { input, output })
+            if input == "/bug parity gap"
+                && output
+                    .as_deref()
+                    .is_some_and(|text| text.contains("## Feedback") && text.contains("parity gap"))
+    ));
+}
+
+#[test]
+fn controller_shows_release_notes_notice_dialog() {
+    let dir = unique_test_dir("tui-release-notes-notice");
+    let registry = commands::registry(Some(dir.clone())).expect("registry");
+    let mut controller = TuiController::new(
+        test_context(&dir),
+        &registry,
+        Some(dir.as_path()),
+        TuiLaunchOptions { session_id: None },
+    )
+    .expect("controller");
+
+    controller
+        .execute_slash_command("/release-notes")
+        .expect("show release notes");
+
+    assert_eq!(controller.status_note.as_deref(), Some("release notes"));
+    assert!(matches!(
+        controller.dialog.as_ref(),
+        Some(dialog) if dialog.title == "Release Notes"
+    ));
+    assert!(matches!(
+        controller.state.messages.last().map(|message| &message.payload),
+        Some(MessagePayload::Command { input, output })
+            if input == "/release-notes"
+                && output
+                    .as_deref()
+                    .is_some_and(|text| text.contains("## Release Notes"))
+    ));
+}
+
+#[test]
+fn controller_shows_version_notice_dialog() {
+    let dir = unique_test_dir("tui-version-notice");
+    let registry = commands::registry(Some(dir.clone())).expect("registry");
+    let mut controller = TuiController::new(
+        test_context(&dir),
+        &registry,
+        Some(dir.as_path()),
+        TuiLaunchOptions { session_id: None },
+    )
+    .expect("controller");
+
+    controller
+        .execute_slash_command("/version")
+        .expect("show version");
+
+    assert_eq!(controller.status_note.as_deref(), Some("version"));
+    assert!(matches!(
+        controller.dialog.as_ref(),
+        Some(dialog) if dialog.title == "Version"
+    ));
+    assert!(matches!(
+        controller.state.messages.last().map(|message| &message.payload),
+        Some(MessagePayload::Command { input, output })
+            if input == "/version"
+                && output
+                    .as_deref()
+                    .is_some_and(|text| text.contains("## Version"))
+    ));
+}
+
+#[test]
+fn controller_shows_desktop_notice_dialog() {
+    let dir = unique_test_dir("tui-desktop-notice");
+    let registry = commands::registry(Some(dir.clone())).expect("registry");
+    let mut controller = TuiController::new(
+        test_context(&dir),
+        &registry,
+        Some(dir.as_path()),
+        TuiLaunchOptions { session_id: None },
+    )
+    .expect("controller");
+
+    controller
+        .execute_slash_command("/desktop")
+        .expect("show desktop");
+
+    assert_eq!(controller.status_note.as_deref(), Some("desktop"));
+    assert!(matches!(
+        controller.dialog.as_ref(),
+        Some(dialog) if dialog.title == "Desktop"
+    ));
+    assert!(matches!(
+        controller.state.messages.last().map(|message| &message.payload),
+        Some(MessagePayload::Command { input, output })
+            if input == "/desktop"
+                && output
+                    .as_deref()
+                    .is_some_and(|text| text.contains("## Desktop") && text.contains("desktop_docs_url="))
+    ));
+}
+
+#[test]
+fn controller_shows_mobile_notice_dialog_from_alias() {
+    let dir = unique_test_dir("tui-mobile-notice");
+    let registry = commands::registry(Some(dir.clone())).expect("registry");
+    let mut controller = TuiController::new(
+        test_context(&dir),
+        &registry,
+        Some(dir.as_path()),
+        TuiLaunchOptions { session_id: None },
+    )
+    .expect("controller");
+
+    controller
+        .execute_slash_command("/ios")
+        .expect("show mobile");
+
+    assert_eq!(controller.status_note.as_deref(), Some("mobile"));
+    assert!(matches!(
+        controller.dialog.as_ref(),
+        Some(dialog) if dialog.title == "Mobile"
+    ));
+    assert!(matches!(
+        controller.state.messages.last().map(|message| &message.payload),
+        Some(MessagePayload::Command { input, output })
+            if input == "/ios"
+                && output
+                    .as_deref()
+                    .is_some_and(|text| text.contains("## Mobile") && text.contains("ios_qr_text="))
+    ));
+}
+
+#[test]
+fn controller_shows_chrome_notice_dialog() {
+    let dir = unique_test_dir("tui-chrome-notice");
+    let registry = commands::registry(Some(dir.clone())).expect("registry");
+    let mut controller = TuiController::new(
+        test_context(&dir),
+        &registry,
+        Some(dir.as_path()),
+        TuiLaunchOptions { session_id: None },
+    )
+    .expect("controller");
+
+    controller
+        .execute_slash_command("/chrome")
+        .expect("show chrome");
+
+    assert_eq!(controller.status_note.as_deref(), Some("chrome"));
+    assert!(matches!(
+        controller.dialog.as_ref(),
+        Some(dialog) if dialog.title == "Chrome"
+    ));
+    assert!(matches!(
+        controller.state.messages.last().map(|message| &message.payload),
+        Some(MessagePayload::Command { input, output })
+            if input == "/chrome"
+                && output
+                    .as_deref()
+                    .is_some_and(|text| text.contains("## Chrome") && text.contains("extension_url="))
+    ));
+}
+
+#[test]
+fn controller_shows_ide_notice_dialog() {
+    let dir = unique_test_dir("tui-ide-notice");
+    let registry = commands::registry(Some(dir.clone())).expect("registry");
+    let mut controller = TuiController::new(
+        test_context(&dir),
+        &registry,
+        Some(dir.as_path()),
+        TuiLaunchOptions { session_id: None },
+    )
+    .expect("controller");
+
+    controller.execute_slash_command("/ide").expect("show ide");
+
+    assert_eq!(controller.status_note.as_deref(), Some("ide integration"));
+    assert!(matches!(
+        controller.dialog.as_ref(),
+        Some(dialog) if dialog.title == "IDE Integration"
+    ));
+    assert!(matches!(
+        controller.state.messages.last().map(|message| &message.payload),
+        Some(MessagePayload::Command { input, output })
+            if input == "/ide"
+                && output
+                    .as_deref()
+                    .is_some_and(|text| text.contains("## IDE Integration") && text.contains("ide_docs_url="))
+    ));
+}
+
+#[test]
+fn controller_routes_permissions_shorthand() {
+    let dir = unique_test_dir("tui-permissions-shorthand");
+    let registry = commands::registry(Some(dir.clone())).expect("registry");
+    let mut controller = TuiController::new(
+        test_context(&dir),
+        &registry,
+        Some(dir.as_path()),
+        TuiLaunchOptions { session_id: None },
+    )
+    .expect("controller");
+
+    controller
+        .execute_slash_command("/permissions accept-edits")
+        .expect("set permissions mode");
+
+    assert_eq!(
+        controller.state.permission_mode,
+        PermissionMode::AcceptEdits
+    );
+    assert!(matches!(
+        controller.state.messages.last().map(|message| &message.payload),
+        Some(MessagePayload::Command { input, output })
+            if input == "/permissions accept-edits"
+                && output
+                    .as_deref()
+                    .is_some_and(|text| text.contains("status=permission mode updated"))
+    ));
+}
+
+#[test]
+fn controller_adds_additional_working_directory_from_slash_command() {
+    let dir = unique_test_dir("tui-add-dir");
+    let extra = dir.join("extra");
+    std::fs::create_dir_all(&extra).expect("create extra dir");
+    let registry = commands::registry(Some(dir.clone())).expect("registry");
+    let mut controller = TuiController::new(
+        test_context(&dir),
+        &registry,
+        Some(dir.as_path()),
+        TuiLaunchOptions { session_id: None },
+    )
+    .expect("controller");
+
+    controller
+        .execute_slash_command("/add-dir extra")
+        .expect("execute add-dir");
+
+    assert_eq!(controller.state.additional_working_directories.len(), 1);
+    assert_eq!(
+        controller.state.additional_working_directories[0].path,
+        extra.canonicalize().expect("canonical extra dir")
+    );
+    assert_eq!(
+        controller
+            .tool_context()
+            .additional_working_directories
+            .len(),
+        1
+    );
+    assert!(matches!(
+        controller.state.messages.last().map(|message| &message.payload),
+        Some(MessagePayload::Command { input, output })
+            if input == "/add-dir extra"
+                && output
+                    .as_deref()
+                    .is_some_and(|text| text.contains("status=added working directory"))
+    ));
+}
+
+#[test]
+fn controller_opens_memory_picker_for_bare_memory_command() {
+    let dir = unique_test_dir("tui-memory-picker-open");
+    let registry = commands::registry(Some(dir.clone())).expect("registry");
+    let mut controller = TuiController::new(
+        test_context(&dir),
+        &registry,
+        Some(dir.as_path()),
+        TuiLaunchOptions { session_id: None },
+    )
+    .expect("controller");
+
+    controller
+        .execute_slash_command("/memory")
+        .expect("open memory picker");
+
+    assert_eq!(
+        controller.status_note.as_deref(),
+        Some("memory: type to filter, use Up/Down to choose, Enter to select, Esc to cancel")
+    );
+    assert!(controller.pending_memory_picker.is_some());
+    assert!(matches!(
+        controller.dialog.as_ref(),
+        Some(dialog) if dialog.title == "Memory"
+    ));
+    assert!(!controller.state.messages.iter().any(|message| {
+        matches!(
+            &message.payload,
+            MessagePayload::Command { input, .. } if input == "/memory"
+        )
+    }));
+}
+
+#[test]
+fn controller_keeps_theme_picker_open_when_search_has_no_matches() {
+    let dir = unique_test_dir("tui-theme-picker-no-matches");
+    let registry = commands::registry(Some(dir.clone())).expect("registry");
+    let mut controller = TuiController::new(
+        test_context(&dir),
+        &registry,
+        Some(dir.as_path()),
+        TuiLaunchOptions { session_id: None },
+    )
+    .expect("controller");
+
+    controller
+        .execute_slash_command("/theme")
+        .expect("open theme picker");
+    for ch in ['z', 'z', 'z'] {
+        send_dialog_key(
+            &mut controller,
+            picker_key(KeyCode::Char(ch)),
+            Some(ResolvedKey::InsertChar(ch)),
+        );
+    }
+    send_dialog_key(
+        &mut controller,
+        picker_key(KeyCode::Enter),
+        Some(ResolvedKey::Edit(EditAction::InsertNewline)),
+    );
+
+    let picker = controller
+        .pending_theme_picker
+        .as_ref()
+        .expect("theme picker still open");
+    let dialog = controller.dialog.as_ref().expect("dialog");
+    let expected_matches = format!("Matches: 0/{}", picker.options.len());
+    assert_eq!(dialog.body.first().map(String::as_str), Some("Search: zzz"));
+    assert_eq!(
+        dialog.body.get(1).map(String::as_str),
+        Some(expected_matches.as_str())
+    );
+    assert_eq!(
+        dialog.body.get(2).map(String::as_str),
+        Some("No matching themes.")
+    );
+    assert_eq!(
+        controller.status_note.as_deref(),
+        Some("theme picker: no matching option to select")
+    );
+}
+
+#[test]
+fn controller_filters_memory_picker_with_search_query() {
+    let dir = unique_test_dir("tui-memory-picker-filter");
+    let registry = commands::registry(Some(dir.clone())).expect("registry");
+    let mut controller = TuiController::new(
+        test_context(&dir),
+        &registry,
+        Some(dir.as_path()),
+        TuiLaunchOptions { session_id: None },
+    )
+    .expect("controller");
+
+    controller
+        .execute_slash_command("/memory")
+        .expect("open memory picker");
+    for ch in ['u', 's', 'e', 'r'] {
+        send_dialog_key(
+            &mut controller,
+            picker_key(KeyCode::Char(ch)),
+            Some(ResolvedKey::InsertChar(ch)),
+        );
+    }
+
+    let picker = controller
+        .pending_memory_picker
+        .as_ref()
+        .expect("memory picker open");
+    let dialog = controller.dialog.as_ref().expect("dialog");
+    let expected_matches = format!("Matches: 1/{}", picker.options.len());
+    assert_eq!(
+        dialog.body.first().map(String::as_str),
+        Some("Search: user")
+    );
+    assert_eq!(
+        dialog.body.get(1).map(String::as_str),
+        Some(expected_matches.as_str())
+    );
+    assert!(dialog.body.iter().any(|line| line.contains("User memory")));
+    assert!(
+        !dialog
+            .body
+            .iter()
+            .any(|line| line.contains("Project memory"))
+    );
+}
+
+#[test]
+fn controller_selects_memory_target_from_picker() {
+    let dir = unique_test_dir("tui-memory-picker-select");
+    let _editor = EnvVarGuard::set("EDITOR", "vi");
+    let registry = commands::registry(Some(dir.clone())).expect("registry");
+    let mut controller = TuiController::new(
+        test_context(&dir),
+        &registry,
+        Some(dir.as_path()),
+        TuiLaunchOptions { session_id: None },
+    )
+    .expect("controller");
+
+    controller
+        .execute_slash_command("/memory")
+        .expect("open picker");
+    send_dialog_key(&mut controller, picker_key(KeyCode::Down), None);
+    send_dialog_key(
+        &mut controller,
+        picker_key(KeyCode::Enter),
+        Some(ResolvedKey::Edit(EditAction::InsertNewline)),
+    );
+
+    assert!(controller.pending_memory_picker.is_none());
+    assert!(controller.dialog.is_none());
+    assert_eq!(
+        controller.pending_external_editor.as_ref(),
+        Some(&ExternalEditorRequest {
+            cwd: dir.clone(),
+            path: dir.join("config/CLAUDE.md"),
+        })
+    );
+    assert_eq!(
+        controller.status_note.as_deref(),
+        Some("opening file in editor")
+    );
+    assert!(matches!(
+        controller.state.messages.last().map(|message| &message.payload),
+        Some(MessagePayload::Command { input, output })
+            if input == "/memory"
+                && output
+                    .as_deref()
+                    .is_some_and(|text| text.contains("memory_target=user"))
+    ));
+}
+
+#[test]
+fn controller_cancels_memory_picker() {
+    let dir = unique_test_dir("tui-memory-picker-cancel");
+    let registry = commands::registry(Some(dir.clone())).expect("registry");
+    let mut controller = TuiController::new(
+        test_context(&dir),
+        &registry,
+        Some(dir.as_path()),
+        TuiLaunchOptions { session_id: None },
+    )
+    .expect("controller");
+
+    controller
+        .execute_slash_command("/memory")
+        .expect("open picker");
+    controller
+        .handle_dialog_key(
+            KeyEvent {
+                code: KeyCode::Esc,
+                modifiers: wonder_of_u_tui::KeyModifiers::default(),
+            },
+            None,
+            &mut |_| Ok(()),
+        )
+        .expect("cancel picker");
+
+    assert!(controller.pending_memory_picker.is_none());
+    assert!(controller.dialog.is_none());
+    assert_eq!(
+        controller.status_note.as_deref(),
+        Some("memory picker cancelled")
+    );
+    assert!(matches!(
+        controller.state.messages.last().map(|message| &message.payload),
+        Some(MessagePayload::Command { input, output })
+            if input == "/memory"
+                && output
+                    .as_deref()
+                    .is_some_and(|text| text.contains("status=memory picker cancelled"))
+    ));
+}
+
+#[test]
+fn controller_opens_tag_removal_confirmation_for_matching_tag() {
+    let dir = unique_test_dir("tui-tag-remove-confirm");
+    let registry = commands::registry(Some(dir.clone())).expect("registry");
+    let mut controller = TuiController::new(
+        test_context(&dir),
+        &registry,
+        Some(dir.as_path()),
+        TuiLaunchOptions { session_id: None },
+    )
+    .expect("controller");
+    controller.state.set_session_tags(vec!["bugfix".into()]);
+    controller
+        .persist_state_snapshot()
+        .expect("persist tagged state");
+
+    controller
+        .execute_slash_command("/tag bugfix")
+        .expect("open tag removal dialog");
+
+    assert!(matches!(
+        controller.pending_tag_removal.as_ref(),
+        Some(pending) if pending.tag == "bugfix"
+    ));
+    assert!(matches!(
+        controller.dialog.as_ref(),
+        Some(dialog) if dialog.title == "Remove tag?"
+    ));
+    assert!(!controller.state.messages.iter().any(|message| {
+        matches!(
+            &message.payload,
+            MessagePayload::Command { input, .. } if input == "/tag bugfix"
+        )
+    }));
+}
+
+#[test]
+fn controller_confirms_tag_removal() {
+    let dir = unique_test_dir("tui-tag-remove-complete");
+    let registry = commands::registry(Some(dir.clone())).expect("registry");
+    let mut controller = TuiController::new(
+        test_context(&dir),
+        &registry,
+        Some(dir.as_path()),
+        TuiLaunchOptions { session_id: None },
+    )
+    .expect("controller");
+    controller.state.set_session_tags(vec!["bugfix".into()]);
+    controller
+        .persist_state_snapshot()
+        .expect("persist tagged state");
+    controller
+        .execute_slash_command("/tag bugfix")
+        .expect("open tag removal dialog");
+
+    controller
+        .handle_dialog_key(
+            KeyEvent {
+                code: KeyCode::Enter,
+                modifiers: wonder_of_u_tui::KeyModifiers::default(),
+            },
+            Some(ResolvedKey::Edit(EditAction::InsertNewline)),
+            &mut |_| Ok(()),
+        )
+        .expect("confirm tag removal");
+
+    assert!(controller.pending_tag_removal.is_none());
+    assert!(controller.state.session.tags.is_empty());
+    assert_eq!(controller.status_note.as_deref(), Some("removed #bugfix"));
+    assert!(matches!(
+        controller.state.messages.last().map(|message| &message.payload),
+        Some(MessagePayload::Command { input, output })
+            if input == "/tag bugfix"
+                && output
+                    .as_deref()
+                    .is_some_and(|text| text.contains("session_tags="))
+    ));
+}
+
+#[test]
+fn controller_shows_context_notice_dialog() {
+    let dir = unique_test_dir("tui-context-notice");
+    let registry = commands::registry(Some(dir.clone())).expect("registry");
+    let mut controller = TuiController::new(
+        test_context(&dir),
+        &registry,
+        Some(dir.as_path()),
+        TuiLaunchOptions { session_id: None },
+    )
+    .expect("controller");
+
+    controller
+        .execute_slash_command("/context")
+        .expect("show context");
+
+    assert_eq!(controller.status_note.as_deref(), Some("context usage"));
+    assert!(matches!(
+        controller.dialog.as_ref(),
+        Some(dialog) if dialog.title == "Context Usage"
+    ));
+    assert!(matches!(
+        controller.state.messages.last().map(|message| &message.payload),
+        Some(MessagePayload::Command { input, output })
+            if input == "/context"
+                && output
+                    .as_deref()
+                    .is_some_and(|text| text.contains("## Context Usage"))
+    ));
+}
+
+#[test]
+fn controller_shows_stats_notice_dialog() {
+    let dir = unique_test_dir("tui-stats-notice");
+    let registry = commands::registry(Some(dir.clone())).expect("registry");
+    let mut controller = TuiController::new(
+        test_context(&dir),
+        &registry,
+        Some(dir.as_path()),
+        TuiLaunchOptions { session_id: None },
+    )
+    .expect("controller");
+
+    controller
+        .execute_slash_command("/stats")
+        .expect("show stats");
+
+    assert_eq!(controller.status_note.as_deref(), Some("activity stats"));
+    assert!(matches!(
+        controller.dialog.as_ref(),
+        Some(dialog) if dialog.title == "Activity Stats"
+    ));
+    assert!(matches!(
+        controller.state.messages.last().map(|message| &message.payload),
+        Some(MessagePayload::Command { input, output })
+            if input == "/stats"
+                && output
+                    .as_deref()
+                    .is_some_and(|text| text.contains("## Activity Stats"))
+    ));
+}
+
+#[test]
+fn controller_shows_usage_notice_dialog() {
+    let dir = unique_test_dir("tui-usage-notice");
+    let registry = commands::registry(Some(dir.clone())).expect("registry");
+    let mut controller = TuiController::new(
+        test_context(&dir),
+        &registry,
+        Some(dir.as_path()),
+        TuiLaunchOptions { session_id: None },
+    )
+    .expect("controller");
+
+    controller
+        .execute_slash_command("/usage")
+        .expect("show usage");
+
+    assert_eq!(controller.status_note.as_deref(), Some("usage"));
+    assert!(matches!(
+        controller.dialog.as_ref(),
+        Some(dialog) if dialog.title == "Usage"
+    ));
+    assert!(matches!(
+        controller.state.messages.last().map(|message| &message.payload),
+        Some(MessagePayload::Command { input, output })
+            if input == "/usage"
+                && output
+                    .as_deref()
+                    .is_some_and(|text| text.contains("## Usage"))
+    ));
+}
+
+#[test]
+fn controller_shows_keybindings_notice_dialog() {
+    let dir = unique_test_dir("tui-keybindings-notice");
+    let registry = commands::registry(Some(dir.clone())).expect("registry");
+    let mut controller = TuiController::new(
+        test_context(&dir),
+        &registry,
+        Some(dir.as_path()),
+        TuiLaunchOptions { session_id: None },
+    )
+    .expect("controller");
+
+    controller
+        .execute_slash_command("/keybindings")
+        .expect("show keybindings");
+
+    assert_eq!(controller.status_note.as_deref(), Some("keybindings"));
+    assert!(matches!(
+        controller.dialog.as_ref(),
+        Some(dialog) if dialog.title == "Keybindings"
+    ));
+    assert!(matches!(
+        controller.state.messages.last().map(|message| &message.payload),
+        Some(MessagePayload::Command { input, output })
+            if input == "/keybindings"
+                && output
+                    .as_deref()
+                    .is_some_and(|text| text.contains("## Keybindings"))
+    ));
+}
+
+#[test]
+fn controller_shows_hooks_notice_dialog() {
+    let dir = unique_test_dir("tui-hooks-notice");
+    let registry = commands::registry(Some(dir.clone())).expect("registry");
+    let mut controller = TuiController::new(
+        test_context(&dir),
+        &registry,
+        Some(dir.as_path()),
+        TuiLaunchOptions { session_id: None },
+    )
+    .expect("controller");
+
+    controller
+        .execute_slash_command("/hooks")
+        .expect("show hooks");
+
+    assert_eq!(controller.status_note.as_deref(), Some("hooks"));
+    assert!(matches!(
+        controller.dialog.as_ref(),
+        Some(dialog) if dialog.title == "Hooks"
+    ));
+    assert!(matches!(
+        controller.state.messages.last().map(|message| &message.payload),
+        Some(MessagePayload::Command { input, output })
+            if input == "/hooks"
+                && output
+                    .as_deref()
+                    .is_some_and(|text| text.contains("## Hooks"))
+    ));
+}
+
+#[test]
+fn controller_shows_privacy_settings_notice_dialog() {
+    let dir = unique_test_dir("tui-privacy-settings-notice");
+    let registry = commands::registry(Some(dir.clone())).expect("registry");
+    let mut controller = TuiController::new(
+        test_context(&dir),
+        &registry,
+        Some(dir.as_path()),
+        TuiLaunchOptions { session_id: None },
+    )
+    .expect("controller");
+
+    controller
+        .execute_slash_command("/privacy-settings")
+        .expect("show privacy settings");
+
+    assert_eq!(controller.status_note.as_deref(), Some("privacy settings"));
+    assert!(matches!(
+        controller.dialog.as_ref(),
+        Some(dialog) if dialog.title == "Privacy Settings"
+    ));
+    assert!(matches!(
+        controller.state.messages.last().map(|message| &message.payload),
+        Some(MessagePayload::Command { input, output })
+            if input == "/privacy-settings"
+                && output
+                    .as_deref()
+                    .is_some_and(|text| text.contains("## Privacy Settings"))
+    ));
+}
+
+#[test]
+fn controller_shows_terminal_setup_notice_dialog() {
+    let dir = unique_test_dir("tui-terminal-setup-notice");
+    let registry = commands::registry(Some(dir.clone())).expect("registry");
+    let mut controller = TuiController::new(
+        test_context(&dir),
+        &registry,
+        Some(dir.as_path()),
+        TuiLaunchOptions { session_id: None },
+    )
+    .expect("controller");
+
+    controller
+        .execute_slash_command("/terminal-setup")
+        .expect("show terminal setup");
+
+    assert_eq!(controller.status_note.as_deref(), Some("terminal setup"));
+    assert!(matches!(
+        controller.dialog.as_ref(),
+        Some(dialog) if dialog.title == "Terminal Setup"
+    ));
+    assert!(matches!(
+        controller.state.messages.last().map(|message| &message.payload),
+        Some(MessagePayload::Command { input, output })
+            if input == "/terminal-setup"
+                && output
+                    .as_deref()
+                    .is_some_and(|text| text.contains("## Terminal Setup"))
+    ));
+}
+
+#[test]
+fn controller_toggles_vim_mode_from_slash_command() {
+    let dir = unique_test_dir("tui-vim-command");
+    let registry = commands::registry(Some(dir.clone())).expect("registry");
+    let mut controller = TuiController::new(
+        test_context(&dir),
+        &registry,
+        Some(dir.as_path()),
+        TuiLaunchOptions { session_id: None },
+    )
+    .expect("controller");
+
+    assert_eq!(controller.vim.mode(), VimMode::Insert);
+
+    controller
+        .execute_slash_command("/vim")
+        .expect("toggle vim");
+    assert_eq!(controller.vim.mode(), VimMode::Normal);
+    assert_eq!(controller.status_note.as_deref(), Some("vim normal"));
+
+    controller
+        .execute_slash_command("/vim insert")
+        .expect("set vim insert");
+    assert_eq!(controller.vim.mode(), VimMode::Insert);
+    assert_eq!(controller.status_note.as_deref(), Some("vim insert"));
+}
+
+#[test]
+fn controller_opens_permissions_picker() {
+    let dir = unique_test_dir("tui-permissions-picker-open");
+    let registry = commands::registry(Some(dir.clone())).expect("registry");
+    let mut controller = TuiController::new(
+        test_context(&dir),
+        &registry,
+        Some(dir.as_path()),
+        TuiLaunchOptions { session_id: None },
+    )
+    .expect("controller");
+
+    controller
+        .execute_slash_command("/permissions")
+        .expect("open permissions picker");
+
+    assert_eq!(
+        controller.status_note.as_deref(),
+        Some(
+            "permission mode: type to filter, use Up/Down to choose, Enter to select, Esc to cancel"
+        )
+    );
+    assert!(controller.pending_permission_picker.is_some());
+    assert!(matches!(
+        controller.dialog.as_ref(),
+        Some(dialog) if dialog.title == "Permission mode"
+    ));
+    assert!(!controller.state.messages.iter().any(|message| {
+        matches!(
+            &message.payload,
+            MessagePayload::Command { input, .. } if input == "/permissions"
+        )
+    }));
+}
+
+#[test]
+fn controller_clears_permission_picker_search_back_to_full_list() {
+    let dir = unique_test_dir("tui-permissions-picker-clear-search");
+    let registry = commands::registry(Some(dir.clone())).expect("registry");
+    let mut controller = TuiController::new(
+        test_context(&dir),
+        &registry,
+        Some(dir.as_path()),
+        TuiLaunchOptions { session_id: None },
+    )
+    .expect("controller");
+
+    controller
+        .execute_slash_command("/permissions")
+        .expect("open permissions picker");
+    for ch in ['p', 'l', 'a', 'n'] {
+        send_dialog_key(
+            &mut controller,
+            picker_key(KeyCode::Char(ch)),
+            Some(ResolvedKey::InsertChar(ch)),
+        );
+    }
+    for _ in 0..4 {
+        send_dialog_key(
+            &mut controller,
+            picker_key(KeyCode::Backspace),
+            Some(ResolvedKey::Edit(EditAction::Backspace)),
+        );
+    }
+
+    let picker = controller
+        .pending_permission_picker
+        .as_ref()
+        .expect("permission picker open");
+    let dialog = controller.dialog.as_ref().expect("dialog");
+    let expected_matches = format!("Matches: {0}/{0}", picker.options.len());
+    assert_eq!(
+        dialog.body.first().map(String::as_str),
+        Some("Search: (all)")
+    );
+    assert_eq!(
+        dialog.body.get(1).map(String::as_str),
+        Some(expected_matches.as_str())
+    );
+    assert!(dialog.body.iter().any(|line| line.contains("Default")));
+    assert!(dialog.body.iter().any(|line| line.contains("Plan")));
+}
+
+#[test]
+fn controller_selects_permission_mode_from_picker() {
+    let dir = unique_test_dir("tui-permissions-picker-select");
+    let registry = commands::registry(Some(dir.clone())).expect("registry");
+    let mut controller = TuiController::new(
+        test_context(&dir),
+        &registry,
+        Some(dir.as_path()),
+        TuiLaunchOptions { session_id: None },
+    )
+    .expect("controller");
+
+    controller
+        .execute_slash_command("/permissions")
+        .expect("open permissions picker");
+    send_dialog_key(&mut controller, picker_key(KeyCode::Down), None);
+    send_dialog_key(
+        &mut controller,
+        picker_key(KeyCode::Enter),
+        Some(ResolvedKey::Edit(EditAction::InsertNewline)),
+    );
+
+    assert!(controller.pending_permission_picker.is_none());
+    assert!(controller.dialog.is_none());
+    assert_eq!(
+        controller.state.permission_mode,
+        PermissionMode::AcceptEdits
+    );
+    assert!(matches!(
+        controller.state.messages.last().map(|message| &message.payload),
+        Some(MessagePayload::Command { input, output })
+            if input == "/permissions"
+                && output
+                    .as_deref()
+                    .is_some_and(|text| text.contains("permission_mode=accept-edits"))
+    ));
+}
+
+#[test]
+fn controller_routes_plan_mode_slash_commands() {
+    let dir = unique_test_dir("tui-slash-plan");
+    std::fs::write(dir.join("plan.md"), "# queued plan\n- keep parity\n").expect("write plan");
+    let registry = commands::registry(Some(dir.clone())).expect("registry");
+    let mut controller = TuiController::new(
+        test_context(&dir),
+        &registry,
+        Some(dir.as_path()),
+        TuiLaunchOptions { session_id: None },
+    )
+    .expect("controller");
+
+    controller
+        .execute_slash_command("/plan")
+        .expect("enter plan mode");
+    assert_eq!(controller.state.permission_mode, PermissionMode::Plan);
+    assert!(matches!(
+        controller.state.messages.last().map(|message| &message.payload),
+        Some(MessagePayload::Command { input, output })
+            if input == "/plan"
+                && output.as_deref().is_some_and(|text| text.contains("status=plan mode enabled"))
+    ));
+
+    controller
+        .execute_slash_command("/plan")
+        .expect("show current plan");
+    assert!(matches!(
+        controller.state.messages.last().map(|message| &message.payload),
+        Some(MessagePayload::Command { input, output })
+            if input == "/plan"
+                && output.as_deref().is_some_and(|text| {
+                    text.contains("plan_exists=true")
+                        && text.contains("Current Plan")
+                        && text.contains("- keep parity")
+                })
+    ));
+
+    controller
+        .execute_slash_command("/plan exit")
+        .expect("exit plan mode");
+    assert_eq!(controller.state.permission_mode, PermissionMode::Default);
+    assert!(matches!(
+        controller.state.messages.last().map(|message| &message.payload),
+        Some(MessagePayload::Command { input, output })
+            if input == "/plan exit"
+                && output.as_deref().is_some_and(|text| text.contains("status=plan mode disabled"))
+    ));
+}
+
+#[test]
+fn controller_executes_queued_plan_prompt() {
+    let dir = unique_test_dir("tui-slash-plan-prompt");
+    let (api_base, handle) = spawn_json_sequence_server(
+        |_index, _headers, body| {
+            assert_eq!(body["model"], "claude-3-7-sonnet-latest");
+            assert_eq!(
+                body.pointer("/messages/0/content/0/text")
+                    .and_then(Value::as_str),
+                Some("draft the migration plan")
+            );
+        },
+        vec![
+            json!({
+                "id": "msg_plan_prompt_1",
+                "type": "message",
+                "role": "assistant",
+                "content": [{
+                    "type": "text",
+                    "text": "queued plan reply"
+                }],
+                "stop_reason": "end_turn",
+                "usage": {
+                    "input_tokens": 8,
+                    "output_tokens": 4
+                }
+            })
+            .to_string(),
+        ],
+    );
+    write_provider_config_for(&dir, "anthropic", "claude-3-7-sonnet-latest", &api_base);
+    let registry = commands::registry(Some(dir.clone())).expect("registry");
+    let mut controller = TuiController::new(
+        test_context(&dir),
+        &registry,
+        Some(dir.as_path()),
+        TuiLaunchOptions { session_id: None },
+    )
+    .expect("controller");
+
+    let mut render_calls = 0usize;
+    controller
+        .execute_slash_command_with("/plan draft the migration plan", &mut |_| {
+            render_calls += 1;
+            Ok(())
+        })
+        .expect("execute plan prompt");
+
+    handle.join().expect("server join");
+
+    assert_eq!(controller.state.permission_mode, PermissionMode::Plan);
+    assert!(render_calls >= 2);
+    assert!(controller.state.messages.iter().any(|message| {
+        matches!(
+            &message.payload,
+            MessagePayload::Command { input, output }
+                if input == "/plan draft the migration plan"
+                    && output.as_deref().is_some_and(|text| {
+                        text.contains("status=plan mode enabled")
+                            && text.contains("enqueue_prompt=draft the migration plan")
+                    })
+        )
+    }));
+    assert!(controller.state.messages.iter().any(|message| {
+        matches!(
+            &message.payload,
+            MessagePayload::UserText { content } if content == "draft the migration plan"
+        )
+    }));
+    assert!(controller.state.messages.iter().any(|message| {
+        matches!(
+            &message.payload,
+            MessagePayload::AssistantText { content } if content == "queued plan reply"
+        )
+    }));
+}
+
+#[test]
+fn queued_commands_view_updates_as_prompts_drain() {
+    let dir = unique_test_dir("tui-queued-visibility");
+    let (api_base, handle) = spawn_json_sequence_server(
+        |index, _headers, body| {
+            let prompt = body
+                .pointer("/messages/0/content/0/text")
+                .and_then(Value::as_str)
+                .expect("prompt text");
+            match index {
+                0 => assert_eq!(prompt, "first queued prompt"),
+                1 => assert!(prompt.contains("user: second queued prompt")),
+                _ => panic!("unexpected request index {index}"),
+            }
+        },
+        vec![
+            json!({
+                "id": "msg_queue_prompt_1",
+                "type": "message",
+                "role": "assistant",
+                "content": [{
+                    "type": "text",
+                    "text": "first queued reply"
+                }],
+                "stop_reason": "end_turn",
+                "usage": {
+                    "input_tokens": 8,
+                    "output_tokens": 4
+                }
+            })
+            .to_string(),
+            json!({
+                "id": "msg_queue_prompt_2",
+                "type": "message",
+                "role": "assistant",
+                "content": [{
+                    "type": "text",
+                    "text": "second queued reply"
+                }],
+                "stop_reason": "end_turn",
+                "usage": {
+                    "input_tokens": 8,
+                    "output_tokens": 4
+                }
+            })
+            .to_string(),
+        ],
+    );
+    write_provider_config_for(&dir, "anthropic", "claude-3-7-sonnet-latest", &api_base);
+    let registry = commands::registry(Some(dir.clone())).expect("registry");
+    let mut controller = TuiController::new(
+        test_context(&dir),
+        &registry,
+        Some(dir.as_path()),
+        TuiLaunchOptions { session_id: None },
+    )
+    .expect("controller");
+    controller
+        .state
+        .queue_command("first queued prompt", wonder_of_u_core::QueuePlacement::Now);
+    controller.state.queue_command(
+        "second queued prompt",
+        wonder_of_u_core::QueuePlacement::Later,
+    );
+
+    let mut queued_snapshots = Vec::new();
+    controller
+        .drain_queued_commands(&mut |controller| {
+            queued_snapshots.push(controller.view().queued_panel.clone());
+            Ok(())
+        })
+        .expect("drain queued prompts");
+
+    handle.join().expect("server join");
+
+    assert!(queued_snapshots.iter().any(|panel| {
+        panel.as_ref().is_some_and(|panel| {
+            panel.lines
+                == vec![wonder_of_u_tui::message::MessageLineView::new(
+                    "1. second queued prompt",
+                    wonder_of_u_tui::message::MessageRole::Progress,
+                )]
+        })
+    }));
+    assert!(queued_snapshots.iter().any(Option::is_none));
+    assert!(controller.state.queued_commands.is_empty());
+    assert!(controller.state.messages.iter().any(|message| {
+        matches!(
+            &message.payload,
+            MessagePayload::AssistantText { content } if content == "second queued reply"
+        )
+    }));
+}
+
+#[test]
+fn controller_queues_external_editor_for_plan_open() {
+    let dir = unique_test_dir("tui-slash-plan-open");
+    std::fs::write(dir.join("plan.md"), "# plan\n").expect("write plan");
+    let _editor = EnvVarGuard::set("EDITOR", "vi");
+    let registry = commands::registry(Some(dir.clone())).expect("registry");
+    let mut controller = TuiController::new(
+        test_context(&dir),
+        &registry,
+        Some(dir.as_path()),
+        TuiLaunchOptions { session_id: None },
+    )
+    .expect("controller");
+
+    controller
+        .execute_slash_command("/plan open")
+        .expect("open plan");
+
+    assert_eq!(
+        controller.status_note.as_deref(),
+        Some("opening file in editor")
+    );
+    assert_eq!(
+        controller.pending_external_editor.as_ref(),
+        Some(&ExternalEditorRequest {
+            cwd: dir.clone(),
+            path: dir.join("plan.md"),
+        })
+    );
+    assert!(!controller.state.messages.iter().any(|message| {
+        matches!(
+            &message.payload,
+            MessagePayload::Command { input, .. } if input == "/plan open"
+        )
+    }));
+}
+
+#[test]
+fn controller_queues_external_editor_for_memory_open() {
+    let dir = unique_test_dir("tui-slash-memory-open");
+    let _editor = EnvVarGuard::set("EDITOR", "vi");
+    let registry = commands::registry(Some(dir.clone())).expect("registry");
+    let mut controller = TuiController::new(
+        test_context(&dir),
+        &registry,
+        Some(dir.as_path()),
+        TuiLaunchOptions { session_id: None },
+    )
+    .expect("controller");
+
+    controller
+        .execute_slash_command("/memory open project")
+        .expect("open project memory");
+
+    assert_eq!(
+        controller.status_note.as_deref(),
+        Some("opening file in editor")
+    );
+    assert_eq!(
+        controller.pending_external_editor.as_ref(),
+        Some(&ExternalEditorRequest {
+            cwd: dir.clone(),
+            path: dir.join("CLAUDE.md"),
+        })
+    );
+    assert!(!controller.state.messages.iter().any(|message| {
+        matches!(
+            &message.payload,
+            MessagePayload::Command { input, .. } if input == "/memory open project"
+        )
+    }));
+}
+
+#[test]
+fn clear_reloads_live_view_without_recording_command_message() {
+    let dir = unique_test_dir("tui-slash-clear");
+    let registry = commands::registry(Some(dir.clone())).expect("registry");
+    let mut controller = TuiController::new(
+        test_context(&dir),
+        &registry,
+        Some(dir.as_path()),
+        TuiLaunchOptions { session_id: None },
+    )
+    .expect("controller");
+    let session_id = controller.state.session.id;
+    let user = MessageEnvelope::user_text(session_id, "first message");
+    let assistant = MessageEnvelope::new(
+        session_id,
+        MessagePayload::AssistantText {
+            content: "second message".into(),
+        },
+    );
+    controller
+        .state
+        .push_message(user.clone())
+        .expect("push user");
+    controller
+        .state
+        .push_message(assistant.clone())
+        .expect("push assistant");
+    controller
+        .persist_messages(&[user, assistant])
+        .expect("persist messages");
+
+    controller
+        .execute_slash_command("/clear")
+        .expect("clear view");
+
+    assert_eq!(
+        controller.status_note.as_deref(),
+        Some("conversation cleared")
+    );
+    assert_eq!(controller.state.messages.len(), 1);
+    assert!(matches!(
+        &controller.state.messages[0].payload,
+        MessagePayload::CompactBoundary { summary }
+            if summary.contains("Cleared the visible transcript")
+    ));
+    assert!(!controller.state.messages.iter().any(|message| {
+        matches!(
+            &message.payload,
+            MessagePayload::Command { input, .. } if input == "/clear"
+        )
+    }));
+}
+
+#[test]
+fn compact_reloads_live_view_and_preserves_tail_messages() {
+    let dir = unique_test_dir("tui-slash-compact");
+    let registry = commands::registry(Some(dir.clone())).expect("registry");
+    let mut controller = TuiController::new(
+        test_context(&dir),
+        &registry,
+        Some(dir.as_path()),
+        TuiLaunchOptions { session_id: None },
+    )
+    .expect("controller");
+    let session_id = controller.state.session.id;
+    let user = MessageEnvelope::user_text(session_id, "older user");
+    let assistant = MessageEnvelope::new(
+        session_id,
+        MessagePayload::AssistantText {
+            content: "older assistant".into(),
+        },
+    );
+    let recent_user = MessageEnvelope::user_text(session_id, "recent user");
+    let recent_assistant = MessageEnvelope::new(
+        session_id,
+        MessagePayload::AssistantText {
+            content: "recent assistant".into(),
+        },
+    );
+    for message in [
+        user.clone(),
+        assistant.clone(),
+        recent_user.clone(),
+        recent_assistant.clone(),
+    ] {
+        controller
+            .state
+            .push_message(message)
+            .expect("push seeded message");
+    }
+    controller
+        .persist_messages(&[
+            user,
+            assistant,
+            recent_user.clone(),
+            recent_assistant.clone(),
+        ])
+        .expect("persist messages");
+
+    controller
+        .execute_slash_command("/compact --keep-last 2")
+        .expect("compact view");
+
+    assert_eq!(
+        controller.status_note.as_deref(),
+        Some("conversation compacted")
+    );
+    assert_eq!(controller.state.messages.len(), 3);
+    assert!(matches!(
+        &controller.state.messages[0].payload,
+        MessagePayload::CompactBoundary { summary }
+            if summary.contains("Compacted")
+    ));
+    assert!(matches!(
+        &controller.state.messages[1].payload,
+        MessagePayload::UserText { content } if content == "recent user"
+    ));
+    assert!(matches!(
+        &controller.state.messages[2].payload,
+        MessagePayload::AssistantText { content } if content == "recent assistant"
+    ));
+    assert!(!controller.state.messages.iter().any(|message| {
+        matches!(
+            &message.payload,
+            MessagePayload::Command { input, .. } if input == "/compact --keep-last 2"
+        )
+    }));
+}
+
+#[test]
+fn controller_submits_prompt_and_persists_session() {
+    let dir = unique_test_dir("tui-prompt-submit");
+    let (api_base, handle) = spawn_json_sequence_server(
+        |_index, _headers, body| {
+            assert_eq!(body["model"], "claude-3-7-sonnet-latest");
+            assert_eq!(
+                body.pointer("/messages/0/content/0/text")
+                    .and_then(Value::as_str),
+                Some("hello from tui")
+            );
+            assert_eq!(body["max_tokens"], 1024);
+            assert_eq!(
+                body.pointer("/tool_choice/type").and_then(Value::as_str),
+                Some("auto")
+            );
+        },
+        vec![
+            json!({
+                "id": "msg_tui_1",
+                "type": "message",
+                "role": "assistant",
+                "content": [{
+                    "type": "text",
+                    "text": "hello back"
+                }],
+                "stop_reason": "end_turn",
+                "usage": {
+                    "input_tokens": 4,
+                    "output_tokens": 2
+                }
+            })
+            .to_string(),
+        ],
+    );
+    write_provider_config_for(&dir, "anthropic", "claude-3-7-sonnet-latest", &api_base);
+    let registry = commands::registry(Some(dir.clone())).expect("registry");
+    let mut controller = TuiController::new(
+        test_context(&dir),
+        &registry,
+        Some(dir.as_path()),
+        TuiLaunchOptions { session_id: None },
+    )
+    .expect("controller");
+
+    controller.prompt.insert_text("hello from tui");
+    let mut render_calls = 0usize;
+    controller
+        .submit_prompt(&mut |_| {
+            render_calls += 1;
+            Ok(())
+        })
+        .expect("submit prompt");
+
+    handle.join().expect("server join");
+
+    assert_eq!(controller.prompt.text(), "");
+    assert_eq!(controller.turn_state, TurnState::Completed);
+    assert_eq!(controller.state.messages.len(), 2);
+    assert!(render_calls >= 2);
+    assert!(matches!(
+        &controller.state.messages[0].payload,
+        MessagePayload::UserText { content } if content == "hello from tui"
+    ));
+    assert!(matches!(
+        &controller.state.messages[1].payload,
+        MessagePayload::AssistantText { content } if content == "hello back"
+    ));
+    assert_eq!(controller.state.provider.as_deref(), Some("anthropic"));
+    assert_eq!(
+        controller.state.model.as_deref(),
+        Some("claude-3-7-sonnet-latest")
+    );
+    assert_eq!(
+        controller.status_note.as_deref(),
+        Some("model response recorded")
+    );
+
+    let restored = TranscriptStore::new(&dir)
+        .restore_session(controller.state.session.id)
+        .expect("restore session");
+    assert_eq!(restored.state.messages.len(), 2);
+    assert_eq!(restored.metadata.entrypoint.as_deref(), Some("tui"));
+}
+
+#[test]
+fn controller_executes_tool_loop_and_persists_tool_messages() {
+    let dir = unique_test_dir("tui-tool-loop");
+    std::fs::write(dir.join("note.txt"), "hello from file\n").expect("write note");
+    let (api_base, handle) = spawn_json_sequence_server(
+        |request_index, _headers, body| match request_index {
+            0 => {
+                assert_eq!(body["model"], "gpt-4.1");
+                assert_eq!(body["messages"][0]["content"], "read the note");
+                assert_eq!(body["tool_choice"], "auto");
+                assert!(
+                    body["tools"]
+                        .as_array()
+                        .expect("tools array")
+                        .iter()
+                        .any(|tool| tool["function"]["name"] == "file_read")
+                );
+            }
+            1 => {
+                assert_eq!(body["messages"][0]["content"], "read the note");
+                assert_eq!(
+                    body["messages"][1]["tool_calls"][0]["function"]["name"],
+                    "file_read"
+                );
+                assert_eq!(body["messages"][2]["role"], "tool");
+                assert!(
+                    body["messages"][2]["content"]
+                        .as_str()
+                        .expect("tool content")
+                        .contains("hello from file")
+                );
+            }
+            other => panic!("unexpected request index {other}"),
+        },
+        vec![
+            serde_json::to_string(&serde_json::json!({
+                "choices": [{
+                    "finish_reason": "tool_calls",
+                    "message": {
+                        "content": null,
+                        "tool_calls": [{
+                            "id": "call_note",
+                            "type": "function",
+                            "function": {
+                                "name": "file_read",
+                                "arguments": "{\"path\":\"note.txt\"}"
+                            }
+                        }]
+                    }
+                }],
+                "usage": {
+                    "prompt_tokens": 12,
+                    "completion_tokens": 3
+                }
+            }))
+            .expect("serialize tool response"),
+            serde_json::to_string(&serde_json::json!({
+                "choices": [{
+                    "finish_reason": "stop",
+                    "message": {
+                        "content": "The note says hello from file."
+                    }
+                }],
+                "usage": {
+                    "prompt_tokens": 18,
+                    "completion_tokens": 6
+                }
+            }))
+            .expect("serialize final response"),
+        ],
+    );
+    write_provider_config(&dir, &api_base);
+    let registry = commands::registry(Some(dir.clone())).expect("registry");
+    let mut controller = TuiController::new(
+        test_context(&dir),
+        &registry,
+        Some(dir.as_path()),
+        TuiLaunchOptions { session_id: None },
+    )
+    .expect("controller");
+
+    controller.prompt.insert_text("read the note");
+    let mut render_calls = 0usize;
+    controller
+        .submit_prompt(&mut |_| {
+            render_calls += 1;
+            Ok(())
+        })
+        .expect("submit prompt");
+
+    handle.join().expect("server join");
+
+    assert_eq!(controller.turn_state, TurnState::Completed);
+    assert!(render_calls >= 4);
+    assert_eq!(controller.state.messages.len(), 4);
+    assert!(matches!(
+        &controller.state.messages[0].payload,
+        MessagePayload::UserText { content } if content == "read the note"
+    ));
+    assert!(matches!(
+        &controller.state.messages[1].payload,
+        MessagePayload::AssistantToolUse { tool, input, .. }
+            if tool == "file_read" && input["path"] == "note.txt"
+    ));
+    assert!(matches!(
+        &controller.state.messages[2].payload,
+        MessagePayload::ToolResult { tool, success, content, .. }
+            if tool == "file_read" && *success && content.contains("hello from file")
+    ));
+    assert!(matches!(
+        &controller.state.messages[3].payload,
+        MessagePayload::AssistantText { content }
+            if content == "The note says hello from file."
+    ));
+    assert_eq!(
+        controller.status_note.as_deref(),
+        Some("tool loop response recorded")
+    );
+
+    let restored = TranscriptStore::new(&dir)
+        .restore_session(controller.state.session.id)
+        .expect("restore session");
+    assert_eq!(restored.state.messages.len(), 4);
+    assert!(matches!(
+        &restored.state.messages[1].payload,
+        MessagePayload::AssistantToolUse { .. }
+    ));
+    assert!(matches!(
+        &restored.state.messages[2].payload,
+        MessagePayload::ToolResult { .. }
+    ));
+}
+
+#[test]
+fn controller_approves_permission_and_resumes_tool_loop() {
+    let dir = unique_test_dir("tui-tool-permission-approve");
+    let (api_base, handle) = spawn_json_sequence_server(
+            |request_index, _headers, body| match request_index {
+                0 => {
+                    assert_eq!(body["messages"][0]["content"], "write the note");
+                    assert!(
+                        body["tools"]
+                            .as_array()
+                            .expect("tools array")
+                            .iter()
+                            .any(|tool| tool["function"]["name"] == "file_write")
+                    );
+                }
+                1 => {
+                    assert_eq!(body["messages"][0]["content"], "write the note");
+                    assert_eq!(
+                        body["messages"][1]["tool_calls"][0]["function"]["name"],
+                        "file_write"
+                    );
+                    assert_eq!(body["messages"][2]["role"], "tool");
+                    assert!(
+                        body["messages"][2]["content"]
+                            .as_str()
+                            .expect("tool content")
+                            .contains("note.txt")
+                    );
+                }
+                other => panic!("unexpected request index {other}"),
+            },
+            vec![
+                serde_json::to_string(&serde_json::json!({
+                    "choices": [{
+                        "finish_reason": "tool_calls",
+                        "message": {
+                            "content": null,
+                            "tool_calls": [{
+                                "id": "call_write",
+                                "type": "function",
+                                "function": {
+                                    "name": "file_write",
+                                    "arguments": "{\"path\":\"note.txt\",\"content\":\"hello after approval\\n\"}"
+                                }
+                            }]
+                        }
+                    }],
+                    "usage": {
+                        "prompt_tokens": 10,
+                        "completion_tokens": 3
+                    }
+                }))
+                .expect("serialize tool response"),
+                serde_json::to_string(&serde_json::json!({
+                    "choices": [{
+                        "finish_reason": "stop",
+                        "message": {
+                            "content": "The note has been written."
+                        }
+                    }],
+                    "usage": {
+                        "prompt_tokens": 16,
+                        "completion_tokens": 5
+                    }
+                }))
+                .expect("serialize final response"),
+            ],
+        );
+    write_provider_config(&dir, &api_base);
+    let registry = commands::registry(Some(dir.clone())).expect("registry");
+    let mut controller = TuiController::new(
+        test_context(&dir),
+        &registry,
+        Some(dir.as_path()),
+        TuiLaunchOptions { session_id: None },
+    )
+    .expect("controller");
+
+    controller.prompt.insert_text("write the note");
+    let mut render_calls = 0usize;
+    controller
+        .submit_prompt(&mut |_| {
+            render_calls += 1;
+            Ok(())
+        })
+        .expect("submit prompt");
+
+    assert_eq!(controller.turn_state, TurnState::ToolPermissionPending);
+    assert_eq!(controller.state.input_mode, InputMode::PermissionPending);
+    assert!(controller.state.pending_tool_approval.is_some());
+    let dialog = controller.view().dialog.expect("permission dialog");
+    assert_eq!(dialog.title, "Permission: Write file");
+    assert_eq!(
+        controller.status_note.as_deref(),
+        Some("approval required: file_write")
+    );
+    assert_eq!(dialog.body[0], "Allow Claude to write this file?");
+    assert!(
+        dialog
+            .body
+            .iter()
+            .any(|line| line == "Access: changes allowed")
+    );
+    assert!(dialog.body.iter().any(|line| {
+        line.strip_prefix("Reason: ")
+            .is_some_and(|value| !value.trim().is_empty())
+    }));
+    assert!(dialog.body.iter().any(|line| line.starts_with("Path: ")));
+
+    controller
+        .handle_key_event(
+            wonder_of_u_tui::KeyEvent {
+                code: wonder_of_u_tui::KeyCode::Enter,
+                modifiers: wonder_of_u_tui::KeyModifiers::default(),
+            },
+            &mut |_| {
+                render_calls += 1;
+                Ok(())
+            },
+        )
+        .expect("approve permission");
+
+    handle.join().expect("server join");
+
+    assert_eq!(
+        std::fs::read_to_string(dir.join("note.txt")).expect("read note"),
+        "hello after approval\n"
+    );
+    assert_eq!(controller.turn_state, TurnState::Completed);
+    assert_eq!(controller.state.input_mode, InputMode::Prompt);
+    assert!(controller.state.pending_tool_approval.is_none());
+    assert!(controller.view().dialog.is_none());
+    assert!(render_calls >= 5);
+    assert!(matches!(
+        &controller.state.messages[2].payload,
+        MessagePayload::Permission { tool, decision, .. }
+            if tool == "file_write" && decision == "ask"
+    ));
+    assert!(matches!(
+        &controller.state.messages[3].payload,
+        MessagePayload::Permission { tool, decision, .. }
+            if tool == "file_write" && decision == "allow"
+    ));
+    assert!(matches!(
+        &controller.state.messages[4].payload,
+        MessagePayload::ToolResult { tool, success, .. }
+            if tool == "file_write" && *success
+    ));
+    assert!(matches!(
+        controller.state.messages.last().map(|message| &message.payload),
+        Some(MessagePayload::AssistantText { content })
+            if content == "The note has been written."
+    ));
+    assert_eq!(
+        controller.status_note.as_deref(),
+        Some("tool loop response recorded")
+    );
+}
+
+#[test]
+fn controller_denies_permission_and_resumes_tool_loop() {
+    let dir = unique_test_dir("tui-tool-permission-deny");
+    let (api_base, handle) = spawn_json_sequence_server(
+            |request_index, _headers, body| match request_index {
+                0 => {
+                    assert_eq!(body["messages"][0]["content"], "write the note");
+                }
+                1 => {
+                    assert_eq!(
+                        body["messages"][1]["tool_calls"][0]["function"]["name"],
+                        "file_write"
+                    );
+                    assert_eq!(body["messages"][2]["role"], "tool");
+                    let content = body["messages"][2]["content"]
+                        .as_str()
+                        .expect("tool content");
+                    assert!(content.contains("ERROR:"));
+                    assert!(content.contains("denied by user"));
+                }
+                other => panic!("unexpected request index {other}"),
+            },
+            vec![
+                serde_json::to_string(&serde_json::json!({
+                    "choices": [{
+                        "finish_reason": "tool_calls",
+                        "message": {
+                            "content": null,
+                            "tool_calls": [{
+                                "id": "call_write_deny",
+                                "type": "function",
+                                "function": {
+                                    "name": "file_write",
+                                    "arguments": "{\"path\":\"note.txt\",\"content\":\"should not be written\\n\"}"
+                                }
+                            }]
+                        }
+                    }],
+                    "usage": {
+                        "prompt_tokens": 10,
+                        "completion_tokens": 3
+                    }
+                }))
+                .expect("serialize tool response"),
+                serde_json::to_string(&serde_json::json!({
+                    "choices": [{
+                        "finish_reason": "stop",
+                        "message": {
+                            "content": "Okay, I did not write the note."
+                        }
+                    }],
+                    "usage": {
+                        "prompt_tokens": 16,
+                        "completion_tokens": 5
+                    }
+                }))
+                .expect("serialize final response"),
+            ],
+        );
+    write_provider_config(&dir, &api_base);
+    let registry = commands::registry(Some(dir.clone())).expect("registry");
+    let mut controller = TuiController::new(
+        test_context(&dir),
+        &registry,
+        Some(dir.as_path()),
+        TuiLaunchOptions { session_id: None },
+    )
+    .expect("controller");
+
+    controller.prompt.insert_text("write the note");
+    controller
+        .submit_prompt(&mut |_| Ok(()))
+        .expect("submit prompt");
+
+    let dialog = controller.view().dialog.expect("permission dialog");
+    assert_eq!(dialog.title, "Permission: Write file");
+    assert_eq!(
+        controller.status_note.as_deref(),
+        Some("approval required: file_write")
+    );
+
+    controller
+        .handle_key_event(
+            wonder_of_u_tui::KeyEvent {
+                code: wonder_of_u_tui::KeyCode::Esc,
+                modifiers: wonder_of_u_tui::KeyModifiers::default(),
+            },
+            &mut |_| Ok(()),
+        )
+        .expect("deny permission");
+
+    handle.join().expect("server join");
+
+    assert!(!dir.join("note.txt").exists());
+    assert_eq!(controller.turn_state, TurnState::Completed);
+    assert_eq!(controller.state.input_mode, InputMode::Prompt);
+    assert!(controller.state.pending_tool_approval.is_none());
+    assert!(controller.view().dialog.is_none());
+    assert!(matches!(
+        &controller.state.messages[2].payload,
+        MessagePayload::Permission { tool, decision, .. }
+            if tool == "file_write" && decision == "ask"
+    ));
+    assert!(matches!(
+        &controller.state.messages[3].payload,
+        MessagePayload::Permission { tool, decision, .. }
+            if tool == "file_write" && decision == "deny"
+    ));
+    assert!(matches!(
+        &controller.state.messages[4].payload,
+        MessagePayload::ToolResult { tool, success, content, .. }
+            if tool == "file_write"
+                && !success
+                && content.contains("tool execution denied by user")
+    ));
+    assert!(matches!(
+        controller.state.messages.last().map(|message| &message.payload),
+        Some(MessagePayload::AssistantText { content })
+            if content == "Okay, I did not write the note."
+    ));
+    assert_eq!(
+        controller.status_note.as_deref(),
+        Some("tool loop response recorded")
+    );
+}
+
+#[test]
+fn controller_restores_pending_permission_and_resumes_tool_loop() {
+    let dir = unique_test_dir("tui-tool-permission-resume");
+    let (api_base, handle) = spawn_json_sequence_server(
+            |request_index, _headers, body| match request_index {
+                0 => {
+                    assert_eq!(body["messages"][0]["content"], "write the note");
+                }
+                1 => {
+                    assert_eq!(
+                        body["messages"][1]["tool_calls"][0]["function"]["name"],
+                        "file_write"
+                    );
+                    assert_eq!(body["messages"][2]["role"], "tool");
+                }
+                other => panic!("unexpected request index {other}"),
+            },
+            vec![
+                serde_json::to_string(&serde_json::json!({
+                    "choices": [{
+                        "finish_reason": "tool_calls",
+                        "message": {
+                            "content": null,
+                            "tool_calls": [{
+                                "id": "call_write_resume",
+                                "type": "function",
+                                "function": {
+                                    "name": "file_write",
+                                    "arguments": "{\"path\":\"note.txt\",\"content\":\"hello after resume\\n\"}"
+                                }
+                            }]
+                        }
+                    }],
+                    "usage": {
+                        "prompt_tokens": 10,
+                        "completion_tokens": 3
+                    }
+                }))
+                .expect("serialize tool response"),
+                serde_json::to_string(&serde_json::json!({
+                    "choices": [{
+                        "finish_reason": "stop",
+                        "message": {
+                            "content": "The note has been written after resume."
+                        }
+                    }],
+                    "usage": {
+                        "prompt_tokens": 16,
+                        "completion_tokens": 5
+                    }
+                }))
+                .expect("serialize final response"),
+            ],
+        );
+    write_provider_config(&dir, &api_base);
+    let registry = commands::registry(Some(dir.clone())).expect("registry");
+    let mut controller = TuiController::new(
+        test_context(&dir),
+        &registry,
+        Some(dir.as_path()),
+        TuiLaunchOptions { session_id: None },
+    )
+    .expect("controller");
+
+    controller.prompt.insert_text("write the note");
+    controller
+        .submit_prompt(&mut |_| Ok(()))
+        .expect("submit prompt");
+    assert!(controller.state.pending_tool_approval.is_some());
+    let session_id = controller.state.session.id.to_string();
+    drop(controller);
+
+    let mut restored = TuiController::new(
+        test_context(&dir),
+        &registry,
+        Some(dir.as_path()),
+        TuiLaunchOptions {
+            session_id: Some(session_id),
+        },
+    )
+    .expect("restored controller");
+
+    assert_eq!(restored.turn_state, TurnState::ToolPermissionPending);
+    assert_eq!(restored.state.input_mode, InputMode::PermissionPending);
+    assert!(restored.state.pending_tool_approval.is_some());
+    let dialog = restored.view().dialog.expect("permission dialog");
+    assert_eq!(dialog.title, "Permission: Write file");
+    assert_eq!(
+        restored.status_note.as_deref(),
+        Some("approval required: file_write")
+    );
+    assert_eq!(dialog.body[0], "Allow Claude to write this file?");
+    assert!(
+        dialog
+            .body
+            .iter()
+            .any(|line| line == "Access: changes allowed")
+    );
+    assert!(dialog.body.iter().any(|line| {
+        line.strip_prefix("Reason: ")
+            .is_some_and(|value| !value.trim().is_empty())
+    }));
+    assert!(dialog.body.iter().any(|line| line.starts_with("Path: ")));
+
+    restored
+        .handle_key_event(
+            wonder_of_u_tui::KeyEvent {
+                code: wonder_of_u_tui::KeyCode::Enter,
+                modifiers: wonder_of_u_tui::KeyModifiers::default(),
+            },
+            &mut |_| Ok(()),
+        )
+        .expect("approve restored permission");
+
+    handle.join().expect("server join");
+
+    assert_eq!(
+        std::fs::read_to_string(dir.join("note.txt")).expect("read note"),
+        "hello after resume\n"
+    );
+    assert_eq!(restored.turn_state, TurnState::Completed);
+    assert_eq!(restored.state.input_mode, InputMode::Prompt);
+    assert!(restored.state.pending_tool_approval.is_none());
+    assert!(restored.view().dialog.is_none());
+    assert!(matches!(
+        restored.state.messages.last().map(|message| &message.payload),
+        Some(MessagePayload::AssistantText { content })
+            if content == "The note has been written after resume."
+    ));
+}
+
+#[test]
+fn controller_opens_task_notice_when_task_finishes() {
+    let dir = unique_test_dir("tui-task-notice");
+    let registry = commands::registry(Some(dir.clone())).expect("registry");
+    let mut controller = TuiController::new(
+        test_context(&dir),
+        &registry,
+        Some(dir.as_path()),
+        TuiLaunchOptions { session_id: None },
+    )
+    .expect("controller");
+    let store = TaskStore::new(&dir);
+    let mut task = TaskState::pending("run tests");
+    task.status = TaskStatus::Running;
+    store.write_task(&task).expect("write running task");
+
+    controller
+        .refresh_runtime_state()
+        .expect("load running task");
+    assert!(controller.dialog.is_none());
+
+    task.mark_finished(
+        TaskStatus::Completed,
+        Some(0),
+        Some("all tests passed".into()),
+    );
+    store.write_task(&task).expect("write completed task");
+
+    controller
+        .refresh_runtime_state()
+        .expect("load completed task");
+
+    assert_eq!(controller.state.input_mode, InputMode::TaskNotification);
+    assert_eq!(
+        controller.status_note.as_deref(),
+        Some("task completed: run tests")
+    );
+    let dialog = controller.view().dialog.expect("task notification dialog");
+    assert_eq!(dialog.title, "Task update");
+    assert!(dialog.body.iter().any(|line| line.contains("run tests")));
+    assert!(
+        dialog
+            .body
+            .iter()
+            .any(|line| line.contains("all tests passed"))
+    );
+
+    controller
+        .handle_dialog_key(
+            KeyEvent {
+                code: KeyCode::Esc,
+                modifiers: wonder_of_u_tui::KeyModifiers::default(),
+            },
+            None,
+            &mut |_| Ok(()),
+        )
+        .expect("dismiss task notice");
+
+    assert!(controller.dialog.is_none());
+    assert_eq!(controller.state.input_mode, InputMode::Prompt);
+    assert_eq!(
+        controller.status_note.as_deref(),
+        Some("task update closed")
+    );
+}
+
+#[test]
+fn controller_task_notice_clears_after_ttl_ticks() {
+    let dir = unique_test_dir("tui-task-notice-ttl");
+    let registry = commands::registry(Some(dir.clone())).expect("registry");
+    let mut controller = TuiController::new(
+        test_context(&dir),
+        &registry,
+        Some(dir.as_path()),
+        TuiLaunchOptions { session_id: None },
+    )
+    .expect("controller");
+    let store = TaskStore::new(&dir);
+    let mut task = TaskState::pending("run tests");
+    task.status = TaskStatus::Running;
+    store.write_task(&task).expect("write running task");
+    controller
+        .refresh_runtime_state()
+        .expect("load running task");
+
+    task.mark_finished(TaskStatus::Completed, Some(0), Some("done".into()));
+    store.write_task(&task).expect("write completed task");
+    controller
+        .refresh_runtime_state()
+        .expect("load completed task");
+
+    assert!(
+        controller.task_notice_ttl.is_some(),
+        "TTL should be set after task notification"
+    );
+    assert!(controller.dialog.is_some(), "dialog should be open");
+
+    // Tick until TTL expires (TASK_NOTICE_TTL ticks to decrement to 0, then one more to dismiss)
+    for _ in 0..=TASK_NOTICE_TTL {
+        controller
+            .handle_event(UiEvent::Tick, |_| Ok(()))
+            .expect("tick");
+    }
+
+    assert!(
+        controller.dialog.is_none(),
+        "dialog should be dismissed after TTL ticks"
+    );
+    assert_eq!(controller.task_notice_ttl, None);
+    assert!(
+        controller.view().notifications.is_empty(),
+        "overlay toast should expire with the dialog TTL"
+    );
+}
+
+#[test]
+fn controller_task_notice_esc_dismisses_immediately() {
+    let dir = unique_test_dir("tui-task-notice-esc");
+    let registry = commands::registry(Some(dir.clone())).expect("registry");
+    let mut controller = TuiController::new(
+        test_context(&dir),
+        &registry,
+        Some(dir.as_path()),
+        TuiLaunchOptions { session_id: None },
+    )
+    .expect("controller");
+    let store = TaskStore::new(&dir);
+    let mut task = TaskState::pending("build project");
+    task.status = TaskStatus::Running;
+    store.write_task(&task).expect("write running task");
+    controller
+        .refresh_runtime_state()
+        .expect("load running task");
+
+    task.mark_finished(TaskStatus::Completed, Some(0), None);
+    store.write_task(&task).expect("write completed task");
+    controller
+        .refresh_runtime_state()
+        .expect("load completed task");
+
+    assert!(controller.dialog.is_some(), "dialog should be open");
+
+    controller
+        .handle_dialog_key(
+            KeyEvent {
+                code: KeyCode::Esc,
+                modifiers: wonder_of_u_tui::KeyModifiers::default(),
+            },
+            None,
+            &mut |_| Ok(()),
+        )
+        .expect("dismiss via Esc");
+
+    assert!(
+        controller.dialog.is_none(),
+        "dialog should be gone immediately after Esc"
+    );
+    assert_eq!(controller.state.input_mode, InputMode::Prompt);
+}
+
+#[test]
+fn controller_task_notice_populates_notification_overlay() {
+    let dir = unique_test_dir("tui-task-overlay");
+    let registry = commands::registry(Some(dir.clone())).expect("registry");
+    let mut controller = TuiController::new(
+        test_context(&dir),
+        &registry,
+        Some(dir.as_path()),
+        TuiLaunchOptions { session_id: None },
+    )
+    .expect("controller");
+    let store = TaskStore::new(&dir);
+    let mut task = TaskState::pending("index workspace");
+    task.status = TaskStatus::Running;
+    store.write_task(&task).expect("write running task");
+    controller
+        .refresh_runtime_state()
+        .expect("load running task");
+
+    task.mark_finished(TaskStatus::Completed, Some(0), Some("all done".into()));
+    store.write_task(&task).expect("write completed task");
+    controller
+        .refresh_runtime_state()
+        .expect("load completed task");
+
+    let notifications = controller.view().notifications;
+    assert_eq!(notifications.len(), 1);
+    assert_eq!(notifications[0].title, "Task update");
+    assert_eq!(notifications[0].severity, NotificationSeverity::Success);
+    assert!(notifications[0].focused);
+    assert!(
+        notifications[0]
+            .lines
+            .iter()
+            .any(|line| line.contains("all done"))
+    );
+}
+
+#[test]
+fn controller_notification_overlay_pauses_while_terminal_is_unfocused() {
+    let dir = unique_test_dir("tui-task-overlay-focus");
+    let registry = commands::registry(Some(dir.clone())).expect("registry");
+    let mut controller = TuiController::new(
+        test_context(&dir),
+        &registry,
+        Some(dir.as_path()),
+        TuiLaunchOptions { session_id: None },
+    )
+    .expect("controller");
+    controller.push_notification(
+        "source-status",
+        NotificationSeverity::Info,
+        "Source status",
+        ["workspace refreshed"],
+        Some(1),
+        true,
+    );
+
+    controller
+        .handle_event(UiEvent::FocusLost, |_| Ok(()))
+        .expect("lose focus");
+    controller
+        .handle_event(UiEvent::Tick, |_| Ok(()))
+        .expect("tick");
+    assert_eq!(
+        controller.view().notifications.len(),
+        1,
+        "TTL should pause while the terminal is unfocused"
+    );
+
+    controller
+        .handle_event(UiEvent::FocusGained, |_| Ok(()))
+        .expect("gain focus");
+    controller
+        .handle_event(UiEvent::Tick, |_| Ok(()))
+        .expect("tick");
+    assert!(
+        controller.view().notifications.is_empty(),
+        "notification should expire once focus returns and ticks resume"
+    );
+}
+
+#[test]
+fn controller_empty_task_panel_shows_notice_when_opened() {
+    let dir = unique_test_dir("tui-empty-tasks-notice");
+    let registry = commands::registry(Some(dir.clone())).expect("registry");
+    let mut controller = TuiController::new(
+        test_context(&dir),
+        &registry,
+        Some(dir.as_path()),
+        TuiLaunchOptions { session_id: None },
+    )
+    .expect("controller");
+
+    // No tasks exist — run bare /tasks command
+    controller
+        .execute_slash_command("/tasks")
+        .expect("run /tasks with no tasks");
+
+    assert_eq!(
+        controller.status_note.as_deref(),
+        Some("no background tasks running"),
+        "status note should indicate no tasks"
+    );
+    assert!(
+        controller.task_notice_ttl.is_some(),
+        "TTL should be set for empty-tasks notice"
+    );
+    let dialog = controller
+        .view()
+        .dialog
+        .expect("notice dialog should be shown");
+    assert_eq!(dialog.title, "Background Tasks");
+    assert!(
+        dialog
+            .body
+            .iter()
+            .any(|l| l.contains("No background tasks")),
+        "dialog body should mention no background tasks"
+    );
+}
+
+#[test]
+fn controller_active_overlay_is_none_when_idle() {
+    let dir = unique_test_dir("tui-overlay-none");
+    let registry = commands::registry(Some(dir.clone())).expect("registry");
+    let controller = TuiController::new(
+        test_context(&dir),
+        &registry,
+        Some(dir.as_path()),
+        TuiLaunchOptions { session_id: None },
+    )
+    .expect("controller");
+
+    assert_eq!(controller.active_overlay(), ActiveOverlay::None);
+}
+
+#[test]
+fn controller_active_overlay_is_picker_when_picker_open() {
+    let dir = unique_test_dir("tui-overlay-picker");
+    let registry = commands::registry(Some(dir.clone())).expect("registry");
+    let mut controller = TuiController::new(
+        test_context(&dir),
+        &registry,
+        Some(dir.as_path()),
+        TuiLaunchOptions { session_id: None },
+    )
+    .expect("controller");
+
+    controller
+        .execute_slash_command("/model")
+        .expect("open model picker");
+
+    assert_eq!(controller.active_overlay(), ActiveOverlay::Picker);
+}
+
+#[test]
+fn controller_opening_picker_clears_stale_notice() {
+    let dir = unique_test_dir("tui-picker-clears-notice");
+    let registry = commands::registry(Some(dir.clone())).expect("registry");
+    let mut controller = TuiController::new(
+        test_context(&dir),
+        &registry,
+        Some(dir.as_path()),
+        TuiLaunchOptions { session_id: None },
+    )
+    .expect("controller");
+
+    // Simulate a stale status_note from a previous interaction.
+    controller.status_note = Some("stale: task update closed".into());
+
+    controller
+        .execute_slash_command("/model")
+        .expect("open model picker");
+
+    let note = controller
+        .status_note
+        .as_deref()
+        .expect("status note should be set");
+    assert!(
+        note.contains("model picker"),
+        "status note should be from the picker, not stale: {note:?}"
+    );
+}
+
+#[test]
+fn controller_setting_notice_clears_picker() {
+    let dir = unique_test_dir("tui-notice-clears-picker");
+    let registry = commands::registry(Some(dir.clone())).expect("registry");
+    let mut controller = TuiController::new(
+        test_context(&dir),
+        &registry,
+        Some(dir.as_path()),
+        TuiLaunchOptions { session_id: None },
+    )
+    .expect("controller");
+
+    // Open model picker.
+    controller
+        .execute_slash_command("/model")
+        .expect("open model picker");
+    assert!(controller.pending_model_picker.is_some(), "picker open");
+
+    // Simulate a task finishing which triggers a notice.
+    let store = TaskStore::new(&dir);
+    let mut task = TaskState::pending("index workspace");
+    task.status = TaskStatus::Running;
+    store.write_task(&task).expect("write running task");
+    controller
+        .refresh_runtime_state()
+        .expect("load running task");
+
+    task.mark_finished(TaskStatus::Completed, Some(0), None);
+    store.write_task(&task).expect("write completed task");
+    controller
+        .refresh_runtime_state()
+        .expect("load completed task — triggers notice");
+
+    // The task notice should be showing and the picker should be gone.
+    assert_eq!(controller.state.input_mode, InputMode::TaskNotification);
+    assert!(
+        controller.pending_model_picker.is_none(),
+        "picker should be cleared when a notice is shown"
+    );
+    assert!(controller.dialog.is_some(), "notice dialog should be open");
+}
+
+#[test]
+fn controller_confirms_exit_when_session_has_activity() {
+    let dir = unique_test_dir("tui-exit-confirm");
+    let registry = commands::registry(Some(dir.clone())).expect("registry");
+    let mut controller = TuiController::new(
+        test_context(&dir),
+        &registry,
+        Some(dir.as_path()),
+        TuiLaunchOptions { session_id: None },
+    )
+    .expect("controller");
+    controller.prompt.insert_text("unsent prompt");
+
+    controller
+        .handle_key_event(
+            wonder_of_u_tui::KeyEvent {
+                code: wonder_of_u_tui::KeyCode::Char('c'),
+                modifiers: wonder_of_u_tui::KeyModifiers {
+                    control: true,
+                    ..wonder_of_u_tui::KeyModifiers::default()
+                },
+            },
+            &mut |_| Ok(()),
+        )
+        .expect("interrupt");
+
+    assert!(!controller.exit_requested);
+    assert_eq!(controller.status_note.as_deref(), Some("confirm exit"));
+    assert!(controller.dialog.is_some());
+
+    controller
+        .handle_key_event(
+            wonder_of_u_tui::KeyEvent {
+                code: wonder_of_u_tui::KeyCode::Enter,
+                modifiers: wonder_of_u_tui::KeyModifiers::default(),
+            },
+            &mut |_| Ok(()),
+        )
+        .expect("confirm exit");
+
+    assert!(controller.exit_requested);
+    assert_eq!(controller.turn_state, TurnState::Interrupted);
+}
+
+#[test]
+fn controller_executes_vim_normal_mode_edits() {
+    let dir = unique_test_dir("tui-vim-mode");
+    let registry = commands::registry(Some(dir.clone())).expect("registry");
+    let mut controller = TuiController::new(
+        test_context(&dir),
+        &registry,
+        Some(dir.as_path()),
+        TuiLaunchOptions { session_id: None },
+    )
+    .expect("controller");
+    controller.prompt.insert_text("abc");
+
+    controller
+        .handle_key_event(
+            wonder_of_u_tui::KeyEvent {
+                code: wonder_of_u_tui::KeyCode::Esc,
+                modifiers: wonder_of_u_tui::KeyModifiers::default(),
+            },
+            &mut |_| Ok(()),
+        )
+        .expect("enter normal mode");
+    assert_eq!(controller.vim.mode(), VimMode::Normal);
+    assert_eq!(controller.prompt.cursor(), 2);
+
+    controller
+        .handle_key_event(
+            wonder_of_u_tui::KeyEvent {
+                code: wonder_of_u_tui::KeyCode::Char('x'),
+                modifiers: wonder_of_u_tui::KeyModifiers::default(),
+            },
+            &mut |_| Ok(()),
+        )
+        .expect("delete char");
+    assert_eq!(controller.prompt.text(), "ab");
+
+    controller
+        .handle_key_event(
+            wonder_of_u_tui::KeyEvent {
+                code: wonder_of_u_tui::KeyCode::Char('a'),
+                modifiers: wonder_of_u_tui::KeyModifiers::default(),
+            },
+            &mut |_| Ok(()),
+        )
+        .expect("append after cursor");
+    assert_eq!(controller.vim.mode(), VimMode::Insert);
+
+    controller
+        .handle_key_event(
+            wonder_of_u_tui::KeyEvent {
+                code: wonder_of_u_tui::KeyCode::Char('z'),
+                modifiers: wonder_of_u_tui::KeyModifiers::default(),
+            },
+            &mut |_| Ok(()),
+        )
+        .expect("insert after append");
+    assert_eq!(controller.prompt.text(), "abz");
+    assert_eq!(controller.status_note, None);
+    assert!(controller.view().footer.contains("vim=insert"));
+}
+
+#[test]
+fn controller_enters_history_search_with_ctrl_r() {
+    let dir = unique_test_dir("tui-history-search-enter");
+    let registry = commands::registry(Some(dir.clone())).expect("registry");
+    let mut controller = TuiController::new(
+        test_context(&dir),
+        &registry,
+        Some(dir.as_path()),
+        TuiLaunchOptions { session_id: None },
+    )
+    .expect("controller");
+    controller.prompt = TextBuffer::from_text("draft", false);
+    seed_prompt_history(&mut controller, &["first prompt", "second prompt"]);
+
+    send_prompt_key(&mut controller, ctrl_r_key());
+
+    let history = controller
+        .history_search
+        .as_ref()
+        .expect("history search active");
+    let view = controller.view();
+    let overlay = view.history_search.as_ref().expect("history overlay");
+    assert!(history.query.is_empty());
+    assert_eq!(history.saved_buffer.text(), "draft");
+    assert_eq!(controller.prompt.text(), "draft");
+    assert_eq!(view.prompt, "second prompt");
+    assert_eq!(overlay.match_text.as_deref(), Some("second prompt"));
+    assert_eq!(overlay.match_total, 2);
+    let expected_note = history_search_status_note(true);
+    assert_eq!(
+        controller.status_note.as_deref(),
+        Some(expected_note.as_str())
+    );
+}
+
+#[test]
+fn controller_filters_history_search_with_substring_query() {
+    let dir = unique_test_dir("tui-history-search-filter");
+    let registry = commands::registry(Some(dir.clone())).expect("registry");
+    let mut controller = TuiController::new(
+        test_context(&dir),
+        &registry,
+        Some(dir.as_path()),
+        TuiLaunchOptions { session_id: None },
+    )
+    .expect("controller");
+    controller.prompt = TextBuffer::from_text("draft", false);
+    seed_prompt_history(
+        &mut controller,
+        &["Ship docs", "Review parity closeout", "Ship checklist"],
+    );
+
+    send_prompt_key(&mut controller, ctrl_r_key());
+    send_prompt_key(&mut controller, picker_key(KeyCode::Char('s')));
+    send_prompt_key(&mut controller, picker_key(KeyCode::Char('H')));
+    send_prompt_key(&mut controller, picker_key(KeyCode::Char('I')));
+
+    let view = controller.view();
+    let overlay = view.history_search.as_ref().expect("history overlay");
+    assert_eq!(controller.prompt.text(), "draft");
+    assert_eq!(overlay.query, "sHI");
+    assert_eq!(overlay.match_total, 2);
+    assert_eq!(overlay.match_text.as_deref(), Some("Ship checklist"));
+    assert_eq!(view.prompt, "Ship checklist");
+}
+
+#[test]
+fn controller_history_search_cycles_through_matches() {
+    let dir = unique_test_dir("tui-history-search-cycle");
+    let registry = commands::registry(Some(dir.clone())).expect("registry");
+    let mut controller = TuiController::new(
+        test_context(&dir),
+        &registry,
+        Some(dir.as_path()),
+        TuiLaunchOptions { session_id: None },
+    )
+    .expect("controller");
+    seed_prompt_history(
+        &mut controller,
+        &["deploy plan", "draft plan", "plan update"],
+    );
+
+    send_prompt_key(&mut controller, ctrl_r_key());
+    send_prompt_key(&mut controller, picker_key(KeyCode::Char('p')));
+    send_prompt_key(&mut controller, picker_key(KeyCode::Char('l')));
+    send_prompt_key(&mut controller, picker_key(KeyCode::Char('a')));
+    send_prompt_key(&mut controller, picker_key(KeyCode::Char('n')));
+    assert_eq!(
+        controller
+            .view()
+            .history_search
+            .and_then(|overlay| overlay.match_text)
+            .as_deref(),
+        Some("plan update")
+    );
+
+    send_prompt_key(&mut controller, ctrl_r_key());
+    assert_eq!(
+        controller
+            .view()
+            .history_search
+            .and_then(|overlay| overlay.match_text)
+            .as_deref(),
+        Some("draft plan")
+    );
+
+    send_prompt_key(&mut controller, picker_key(KeyCode::Up));
+    assert_eq!(
+        controller
+            .view()
+            .history_search
+            .and_then(|overlay| overlay.match_text)
+            .as_deref(),
+        Some("deploy plan")
+    );
+
+    send_prompt_key(&mut controller, picker_key(KeyCode::Down));
+    assert_eq!(
+        controller
+            .view()
+            .history_search
+            .and_then(|overlay| overlay.match_text)
+            .as_deref(),
+        Some("draft plan")
+    );
+}
+
+#[test]
+fn controller_history_search_enter_accepts_match() {
+    let dir = unique_test_dir("tui-history-search-accept");
+    let registry = commands::registry(Some(dir.clone())).expect("registry");
+    let mut controller = TuiController::new(
+        test_context(&dir),
+        &registry,
+        Some(dir.as_path()),
+        TuiLaunchOptions { session_id: None },
+    )
+    .expect("controller");
+    controller.prompt = TextBuffer::from_text("draft", false);
+    seed_prompt_history(&mut controller, &["first prompt", "second prompt"]);
+
+    send_prompt_key(&mut controller, ctrl_r_key());
+    send_prompt_key(&mut controller, picker_key(KeyCode::Char('f')));
+    send_prompt_key(&mut controller, picker_key(KeyCode::Enter));
+
+    assert!(controller.history_search.is_none());
+    assert_eq!(controller.prompt.text(), "first prompt");
+    assert_eq!(controller.prompt.cursor(), "first prompt".chars().count());
+    assert!(controller.view().history_search.is_none());
+}
+
+#[test]
+fn controller_history_search_esc_restores_prior_buffer() {
+    let dir = unique_test_dir("tui-history-search-esc");
+    let registry = commands::registry(Some(dir.clone())).expect("registry");
+    let mut controller = TuiController::new(
+        test_context(&dir),
+        &registry,
+        Some(dir.as_path()),
+        TuiLaunchOptions { session_id: None },
+    )
+    .expect("controller");
+    controller.prompt = TextBuffer::from_text("draft note", false);
+    seed_prompt_history(&mut controller, &["first prompt", "second prompt"]);
+
+    send_prompt_key(&mut controller, ctrl_r_key());
+    send_prompt_key(&mut controller, picker_key(KeyCode::Char('f')));
+    send_prompt_key(&mut controller, picker_key(KeyCode::Esc));
+
+    assert!(controller.history_search.is_none());
+    assert_eq!(controller.prompt.text(), "draft note");
+    assert!(controller.view().history_search.is_none());
+}
+
+#[test]
+fn controller_history_search_reports_no_matches() {
+    let dir = unique_test_dir("tui-history-search-no-match");
+    let registry = commands::registry(Some(dir.clone())).expect("registry");
+    let mut controller = TuiController::new(
+        test_context(&dir),
+        &registry,
+        Some(dir.as_path()),
+        TuiLaunchOptions { session_id: None },
+    )
+    .expect("controller");
+    controller.prompt = TextBuffer::from_text("draft", false);
+    seed_prompt_history(&mut controller, &["first prompt", "second prompt"]);
+
+    send_prompt_key(&mut controller, ctrl_r_key());
+    for ch in ['z', 'z', 'z'] {
+        send_prompt_key(&mut controller, picker_key(KeyCode::Char(ch)));
+    }
+
+    let view = controller.view();
+    let overlay = view.history_search.as_ref().expect("history overlay");
+    assert_eq!(overlay.match_total, 0);
+    assert_eq!(overlay.match_text, None);
+    assert_eq!(view.prompt, "draft");
+    let expected_note = history_search_status_note(false);
+    assert_eq!(
+        controller.status_note.as_deref(),
+        Some(expected_note.as_str())
+    );
+}
+
+#[test]
+fn controller_history_search_with_empty_history_is_safe() {
+    let dir = unique_test_dir("tui-history-search-empty");
+    let registry = commands::registry(Some(dir.clone())).expect("registry");
+    let mut controller = TuiController::new(
+        test_context(&dir),
+        &registry,
+        Some(dir.as_path()),
+        TuiLaunchOptions { session_id: None },
+    )
+    .expect("controller");
+    controller.prompt = TextBuffer::from_text("draft", false);
+
+    send_prompt_key(&mut controller, ctrl_r_key());
+    send_prompt_key(&mut controller, picker_key(KeyCode::Up));
+    send_prompt_key(&mut controller, picker_key(KeyCode::Enter));
+
+    let view = controller.view();
+    let overlay = view.history_search.as_ref().expect("history overlay");
+    assert_eq!(overlay.match_total, 0);
+    assert_eq!(overlay.match_text, None);
+    assert_eq!(controller.prompt.text(), "draft");
+    let expected_note = history_search_status_note(false);
+    assert_eq!(
+        controller.status_note.as_deref(),
+        Some(expected_note.as_str())
+    );
+}
+
+#[test]
+fn controller_restores_permission_dialog_from_snapshot_resume() {
+    let dir = unique_test_dir("tui-resume-permission-dialog");
+    let registry = commands::registry(Some(dir.clone())).expect("registry");
+    let mut state = AppState::new(dir.clone());
+    state.input_mode = InputMode::PermissionPending;
+    state.pending_tool_approval = Some(PendingToolApprovalState {
+        request_prompt: "write the note".into(),
+        rounds: Vec::new(),
+        current_round: PendingToolConversationRound {
+            assistant_text: None,
+            calls: vec![PendingProviderToolCall {
+                call_id: "call_bash".into(),
+                tool_name: "bash".into(),
+                arguments: serde_json::json!({ "command": "echo hi" }),
+            }],
+            results: Vec::new(),
+        },
+        pending_call: PendingLocalToolCall {
+            provider_call: PendingProviderToolCall {
+                call_id: "call_bash".into(),
+                tool_name: "bash".into(),
+                arguments: serde_json::json!({ "command": "echo hi" }),
+            },
+            use_id: ToolUseId::new(),
+        },
+        remaining_calls: Vec::new(),
+        reason: "workspace write requires approval".into(),
+    });
+    let permission = MessageEnvelope::new(
+        state.session.id,
+        MessagePayload::Permission {
+            tool: "bash".into(),
+            decision: "ask".into(),
+            reason: "workspace write requires approval".into(),
+        },
+    );
+    state
+        .push_message(permission.clone())
+        .expect("push permission");
+    let store = TranscriptStore::new(&dir);
+    store
+        .write_metadata(
+            &wonder_of_u_storage::SessionMetadata::from_state_with_transcript(&state, 1),
+        )
+        .expect("write metadata");
+    store
+        .append_message(&permission)
+        .expect("append transcript");
+    store
+        .write_snapshot(&wonder_of_u_storage::SessionSnapshot::from_app_state(
+            &state, 1, 0,
+        ))
+        .expect("write snapshot");
+
+    let controller = TuiController::new(
+        test_context(&dir),
+        &registry,
+        Some(dir.as_path()),
+        TuiLaunchOptions {
+            session_id: Some(state.session.id.to_string()),
+        },
+    )
+    .expect("controller");
+
+    assert_eq!(controller.state.input_mode, InputMode::PermissionPending);
+    assert_eq!(controller.turn_state, TurnState::ToolPermissionPending);
+    assert_eq!(
+        controller.status_note.as_deref(),
+        Some("approval required: bash")
+    );
+    let dialog = controller.view().dialog.expect("permission dialog");
+    assert_eq!(dialog.title, "Permission: Run shell command");
+    assert_eq!(dialog.body[0], "Allow Claude to run this shell command?");
+    assert!(dialog.body.iter().any(|line| line == "Access: destructive"));
+    assert!(
+        dialog
+            .body
+            .iter()
+            .any(|line| line == "Reason: workspace write requires approval")
+    );
+    assert!(dialog.body.iter().any(|line| line == "Command: echo hi"));
+}
+
+#[test]
+fn controller_restores_task_notice_from_snapshot_resume() {
+    let dir = unique_test_dir("tui-resume-task-dialog");
+    let registry = commands::registry(Some(dir.clone())).expect("registry");
+    let mut state = AppState::new(dir.clone());
+    state.input_mode = InputMode::TaskNotification;
+    let mut task = TaskState::pending("run tests");
+    task.mark_finished(
+        TaskStatus::Completed,
+        Some(0),
+        Some("all tests passed".into()),
+    );
+    state.upsert_task(task.clone());
+    let message = MessageEnvelope::system(state.session.id, "session resumed");
+    state.push_message(message.clone()).expect("push message");
+    let store = TranscriptStore::new(&dir);
+    store
+        .write_metadata(
+            &wonder_of_u_storage::SessionMetadata::from_state_with_transcript(&state, 1),
+        )
+        .expect("write metadata");
+    store.append_message(&message).expect("append transcript");
+    store
+        .write_snapshot(&wonder_of_u_storage::SessionSnapshot::from_app_state(
+            &state, 1, 0,
+        ))
+        .expect("write snapshot");
+
+    let controller = TuiController::new(
+        test_context(&dir),
+        &registry,
+        Some(dir.as_path()),
+        TuiLaunchOptions {
+            session_id: Some(state.session.id.to_string()),
+        },
+    )
+    .expect("controller");
+
+    assert_eq!(controller.state.input_mode, InputMode::TaskNotification);
+    assert_eq!(controller.turn_state, TurnState::Completed);
+    assert_eq!(
+        controller.status_note.as_deref(),
+        Some("task completed: run tests")
+    );
+    let dialog = controller.view().dialog.expect("task dialog");
+    assert_eq!(dialog.title, "Task update");
+    assert!(dialog.body.iter().any(|line| line.contains("run tests")));
+    assert!(
+        dialog
+            .body
+            .iter()
+            .any(|line| line.contains("all tests passed"))
+    );
+}
+
+#[test]
+fn controller_restores_notice_dialog_from_snapshot_resume() {
+    let dir = unique_test_dir("tui-resume-notice-dialog");
+    let registry = commands::registry(Some(dir.clone())).expect("registry");
+    let mut state = AppState::new(dir.clone());
+    let message = MessageEnvelope::new(
+        state.session.id,
+        MessagePayload::Command {
+            input: "/context".into(),
+            output: Some("## Context Usage\nTokens: 42\nWindow: 8 messages\n".into()),
+        },
+    );
+    state.push_message(message.clone()).expect("push command");
+    let store = TranscriptStore::new(&dir);
+    store
+        .write_metadata(
+            &wonder_of_u_storage::SessionMetadata::from_state_with_transcript(&state, 1),
+        )
+        .expect("write metadata");
+    store.append_message(&message).expect("append transcript");
+    store
+        .write_snapshot(&wonder_of_u_storage::SessionSnapshot::from_app_state(
+            &state, 1, 0,
+        ))
+        .expect("write snapshot");
+
+    let controller = TuiController::new(
+        test_context(&dir),
+        &registry,
+        Some(dir.as_path()),
+        TuiLaunchOptions {
+            session_id: Some(state.session.id.to_string()),
+        },
+    )
+    .expect("controller");
+
+    assert_eq!(controller.state.input_mode, InputMode::Prompt);
+    assert_eq!(controller.turn_state, TurnState::Completed);
+    assert_eq!(controller.status_note.as_deref(), Some("context usage"));
+    let dialog = controller.view().dialog.expect("restored notice dialog");
+    assert_eq!(dialog.title, "Context Usage");
+    assert!(dialog.body.iter().any(|line| line.contains("Tokens: 42")));
+}
+
+#[test]
+fn controller_restores_status_note_from_snapshot_resume() {
+    let dir = unique_test_dir("tui-resume-status-note");
+    let registry = commands::registry(Some(dir.clone())).expect("registry");
+    let mut state = AppState::new(dir.clone());
+    state.set_session_color(Some("purple".into()));
+    let message = MessageEnvelope::new(
+        state.session.id,
+        MessagePayload::Command {
+            input: "/color purple".into(),
+            output: Some("color=purple\nstatus=color updated\n".into()),
+        },
+    );
+    state.push_message(message.clone()).expect("push command");
+    let store = TranscriptStore::new(&dir);
+    store
+        .write_metadata(
+            &wonder_of_u_storage::SessionMetadata::from_state_with_transcript(&state, 1),
+        )
+        .expect("write metadata");
+    store.append_message(&message).expect("append transcript");
+    store
+        .write_snapshot(&wonder_of_u_storage::SessionSnapshot::from_app_state(
+            &state, 1, 0,
+        ))
+        .expect("write snapshot");
+
+    let controller = TuiController::new(
+        test_context(&dir),
+        &registry,
+        Some(dir.as_path()),
+        TuiLaunchOptions {
+            session_id: Some(state.session.id.to_string()),
+        },
+    )
+    .expect("controller");
+
+    assert_eq!(controller.state.session_color.as_deref(), Some("purple"));
+    assert_eq!(controller.status_note.as_deref(), Some("color purple"));
+    assert!(controller.view().dialog.is_none());
+    assert!(controller.view().footer.contains("color=purple"));
+}
+
+#[test]
+fn controller_preserves_restored_permission_mode_on_resume() {
+    let dir = unique_test_dir("tui-resume-permission-mode");
+    let registry = commands::registry(Some(dir.clone())).expect("registry");
+    let mut state = AppState::new(dir.clone());
+    state.permission_mode = PermissionMode::Plan;
+    let store = TranscriptStore::new(&dir);
+    store.ensure_layout().expect("ensure layout");
+    std::fs::write(store.paths().transcript_path(state.session.id), "").expect("write transcript");
+    store
+        .write_metadata(
+            &wonder_of_u_storage::SessionMetadata::from_state_with_transcript(&state, 0),
+        )
+        .expect("write metadata");
+    store
+        .write_snapshot(&wonder_of_u_storage::SessionSnapshot::from_app_state(
+            &state, 0, 0,
+        ))
+        .expect("write snapshot");
+
+    let controller = TuiController::new(
+        test_context(&dir),
+        &registry,
+        Some(dir.as_path()),
+        TuiLaunchOptions {
+            session_id: Some(state.session.id.to_string()),
+        },
+    )
+    .expect("controller");
+
+    assert_eq!(controller.state.permission_mode, PermissionMode::Plan);
+    assert!(controller.view().footer.contains("permission=plan"));
+}
+
+#[test]
+fn controller_preserves_restored_provider_selection_on_resume() {
+    let dir = unique_test_dir("tui-resume-provider-selection");
+    SettingsStore::new(&dir)
+        .write(&AgentSettings {
+            selected_provider: Some("openai".into()),
+            selected_model: Some("gpt-4.1".into()),
+            ..AgentSettings::default()
+        })
+        .expect("write settings");
+    CredentialStore::new(&dir)
+        .write(&StoredCredentials {
+            providers: [
+                (
+                    "openai".into(),
+                    AuthMaterial::ApiKey {
+                        key: "openai-key".into(),
+                    },
+                ),
+                (
+                    "anthropic".into(),
+                    AuthMaterial::ApiKey {
+                        key: "anthropic-key".into(),
+                    },
+                ),
+            ]
+            .into(),
+        })
+        .expect("write credentials");
+    let registry = commands::registry(Some(dir.clone())).expect("registry");
+    let mut state = AppState::new(dir.clone());
+    state.set_provider_context(
+        Some("anthropic".into()),
+        Some("claude-3-7-sonnet-latest".into()),
+        AuthState::default(),
+    );
+    let store = TranscriptStore::new(&dir);
+    store.ensure_layout().expect("ensure layout");
+    std::fs::write(store.paths().transcript_path(state.session.id), "").expect("write transcript");
+    store
+        .write_metadata(
+            &wonder_of_u_storage::SessionMetadata::from_state_with_transcript(&state, 0),
+        )
+        .expect("write metadata");
+    store
+        .write_snapshot(&wonder_of_u_storage::SessionSnapshot::from_app_state(
+            &state, 0, 0,
+        ))
+        .expect("write snapshot");
+
+    let controller = TuiController::new(
+        test_context(&dir),
+        &registry,
+        Some(dir.as_path()),
+        TuiLaunchOptions {
+            session_id: Some(state.session.id.to_string()),
+        },
+    )
+    .expect("controller");
+
+    assert_eq!(controller.state.provider.as_deref(), Some("anthropic"));
+    assert_eq!(
+        controller.state.model.as_deref(),
+        Some("claude-3-7-sonnet-latest")
+    );
+    assert!(controller.state.auth.is_ready());
+    assert!(
+        controller
+            .view()
+            .status
+            .contains("anthropic:claude-3-7-sonnet-latest")
+    );
+}
+
+#[test]
+fn prompt_cursor_tracks_edit_position_inside_prompt_panel() {
+    let (x, y) = prompt_cursor_position(40, 10, "abc", 2);
+    assert_eq!((x, y), (2, 7));
+}
+
+/// Verify that enabling brief mode injects the hint into the system prompt
+/// field exactly once and never into the messages array.
+#[test]
+fn controller_brief_mode_injects_system_prompt_once() {
+    let dir = unique_test_dir("tui-brief-system-prompt");
+    let (api_base, handle) = spawn_json_sequence_server(
+        |_index, _headers, body| {
+            let system = body["system"].as_str().expect("system field present");
+            let brief_hint = "Be brief.";
+            assert!(
+                system.contains(brief_hint),
+                "system prompt should contain the brief hint"
+            );
+            assert_eq!(
+                system.matches(brief_hint).count(),
+                1,
+                "brief hint should appear exactly once in system prompt"
+            );
+            let messages = body["messages"].as_array().expect("messages array");
+            assert_eq!(messages.len(), 1, "exactly one user message");
+            assert_eq!(messages[0]["role"].as_str(), Some("user"));
+            // The brief hint must NOT appear in the user message content.
+            let content_text = messages[0]["content"][0]["text"]
+                .as_str()
+                .unwrap_or_default();
+            assert!(
+                !content_text.contains(brief_hint),
+                "brief hint must not appear in user message content"
+            );
+        },
+        vec![
+            json!({
+                "id": "msg_brief_test_1",
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "text", "text": "brief reply"}],
+                "stop_reason": "end_turn",
+                "usage": {"input_tokens": 5, "output_tokens": 2}
+            })
+            .to_string(),
+        ],
+    );
+    write_provider_config_for(&dir, "anthropic", "claude-3-7-sonnet-latest", &api_base);
+    let registry = commands::registry(Some(dir.clone())).expect("registry");
+    let mut controller = TuiController::new(
+        test_context(&dir),
+        &registry,
+        Some(dir.as_path()),
+        TuiLaunchOptions { session_id: None },
+    )
+    .expect("controller");
+
+    controller
+        .execute_slash_command("/brief")
+        .expect("enable brief");
+    assert!(controller.state.brief_mode, "brief mode should be enabled");
+
+    controller
+        .state
+        .queue_command("hello", wonder_of_u_core::QueuePlacement::Now);
+    controller
+        .drain_queued_commands(&mut |_| Ok(()))
+        .expect("drain prompt");
+
+    handle.join().expect("server join");
+}
+
+/// Verify that the brief flag survives a `/clear` command (i.e. it is
+/// persisted in the session snapshot and restored on reload).
+#[test]
+fn controller_brief_flag_persists_across_clear() {
+    let dir = unique_test_dir("tui-brief-persists-clear");
+    let registry = commands::registry(Some(dir.clone())).expect("registry");
+    let mut controller = TuiController::new(
+        test_context(&dir),
+        &registry,
+        Some(dir.as_path()),
+        TuiLaunchOptions { session_id: None },
+    )
+    .expect("controller");
+
+    controller
+        .execute_slash_command("/brief")
+        .expect("enable brief");
+    assert!(controller.state.brief_mode, "brief mode should be on");
+
+    controller
+        .execute_slash_command("/clear")
+        .expect("clear session");
+
+    assert!(
+        controller.state.brief_mode,
+        "brief mode should persist across /clear"
+    );
+}
+
+// ── ratatui TestBackend snapshot tests ──────────────────────────────────
+
+/// Renders a `ShellView` into a ratatui `TestBackend` at the given size and
+/// returns each row as a plain-text string (no ANSI codes) so tests can
+/// make simple string assertions without depending on exact cell styles.
+fn render_to_test_backend(
+    width: u16,
+    height: u16,
+    view: &wonder_of_u_tui::ShellView,
+    theme: &wonder_of_u_tui::Theme,
+) -> Vec<String> {
+    use ratatui::{Terminal, backend::TestBackend};
+
+    let backend = TestBackend::new(width, height);
+    let mut terminal = Terminal::new(backend).expect("test terminal");
+    terminal
+        .draw(|frame| {
+            render_to_ratatui_frame(frame, view, theme);
+        })
+        .expect("draw");
+    let buffer = terminal.backend().buffer().clone();
+    (0..height)
+        .map(|y| {
+            (0..width)
+                .map(|x| buffer[(x, y)].symbol().chars().next().unwrap_or(' '))
+                .collect()
+        })
+        .collect()
+}
+
+#[test]
+fn ratatui_empty_repl_renders_header_and_status() {
+    // An empty ShellView should still render a header and status line.
+    let view = wonder_of_u_tui::ShellView {
+        title: "Test Session".into(),
+        status: "claude-3-5-sonnet · default".into(),
+        footer: "Ctrl+C to quit".into(),
+        ..wonder_of_u_tui::ShellView::default()
+    };
+    let theme = wonder_of_u_tui::Theme::default();
+    let rows = render_to_test_backend(60, 20, &view, &theme);
+
+    // There must be at least one row containing the session title.
+    let has_title = rows.iter().any(|r| r.contains("Test Session"));
+    assert!(
+        has_title,
+        "title 'Test Session' not found in rendered output"
+    );
+
+    // Status line must contain the model/mode text.
+    let has_status = rows
+        .iter()
+        .any(|r| r.contains("claude") || r.contains("default"));
+    assert!(has_status, "status text not found in rendered output");
+}
+
+#[test]
+fn ratatui_prompt_text_appears_in_frame() {
+    // A non-empty prompt string should appear verbatim in the rendered frame.
+    let view = wonder_of_u_tui::ShellView {
+        title: String::new(),
+        prompt: "hello world".into(),
+        status: "model · default".into(),
+        footer: String::new(),
+        ..wonder_of_u_tui::ShellView::default()
+    };
+    let theme = wonder_of_u_tui::Theme::default();
+    let rows = render_to_test_backend(80, 24, &view, &theme);
+
+    let has_prompt = rows.iter().any(|r| r.contains("hello world"));
+    assert!(has_prompt, "prompt text 'hello world' not found in frame");
+}
+
+#[test]
+fn ratatui_message_text_appears_in_frame() {
+    use wonder_of_u_tui::{MessageLineView, MessageRole};
+
+    // A user message line should be visible in the messages panel.
+    let view = wonder_of_u_tui::ShellView {
+        title: "S".into(),
+        messages: vec![MessageLineView {
+            role: MessageRole::User,
+            text: "test user message".into(),
+        }],
+        status: "m".into(),
+        footer: "f".into(),
+        ..wonder_of_u_tui::ShellView::default()
+    };
+    let theme = wonder_of_u_tui::Theme::default();
+    let rows = render_to_test_backend(80, 24, &view, &theme);
+
+    let has_msg = rows.iter().any(|r| r.contains("test user message"));
+    assert!(has_msg, "user message text not found in frame");
+}
+
+#[test]
+fn ratatui_frame_fills_full_terminal_size() {
+    // Every row must have exactly `width` characters — no short rows.
+    let width: u16 = 72;
+    let height: u16 = 18;
+    let view = wonder_of_u_tui::ShellView::default();
+    let theme = wonder_of_u_tui::Theme::default();
+    let rows = render_to_test_backend(width, height, &view, &theme);
+
+    assert_eq!(rows.len(), height as usize, "wrong number of rows");
+    for (i, row) in rows.iter().enumerate() {
+        assert_eq!(
+            row.chars().count(),
+            width as usize,
+            "row {i} has wrong width"
+        );
+    }
+}
+
+#[test]
+fn ratatui_midnight_theme_renders_without_panic() {
+    // Verify that the midnight theme variant flows through without panicking.
+    let view = wonder_of_u_tui::ShellView {
+        title: "midnight".into(),
+        prompt: "type here".into(),
+        status: "claude · default".into(),
+        footer: "hints".into(),
+        ..wonder_of_u_tui::ShellView::default()
+    };
+    let theme = theme_for_state(Some("midnight"), None);
+    // Should not panic.
+    let rows = render_to_test_backend(80, 24, &view, &theme);
+    assert_eq!(rows.len(), 24);
+}

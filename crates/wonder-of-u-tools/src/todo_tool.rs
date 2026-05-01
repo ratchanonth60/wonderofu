@@ -4,7 +4,7 @@ use std::{fs, path::Path};
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{Value, json};
 use wonder_of_u_core::{
     Result, Tool, ToolContext, ToolKind, ToolResult, ToolSchema, ToolSpec, ToolUseId, WonderError,
 };
@@ -53,6 +53,61 @@ impl TodoInput {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum SourceTodoStatus {
+    Pending,
+    InProgress,
+    Completed,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SourceTodoItem {
+    content: String,
+    status: SourceTodoStatus,
+    #[serde(rename = "activeForm", alias = "active_form")]
+    active_form: String,
+}
+
+impl SourceTodoItem {
+    fn validate(&self) -> Result<()> {
+        require_non_empty_text("todo", "todos[].content", &self.content)?;
+        require_non_empty_text("todo", "todos[].activeForm", &self.active_form)?;
+        if self.status == SourceTodoStatus::InProgress {
+            return Err(WonderError::validation(
+                "todo todos[].status `in_progress` is not supported in the markdown todo runtime",
+            ));
+        }
+        Ok(())
+    }
+
+    fn to_markdown_item(&self) -> TodoItem {
+        TodoItem {
+            checked: self.status == SourceTodoStatus::Completed,
+            text: self.content.trim().to_string(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TodoWriteCompatInput {
+    todos: Vec<SourceTodoItem>,
+}
+
+impl TodoWriteCompatInput {
+    fn validate(&self) -> Result<()> {
+        self.todos.iter().try_for_each(SourceTodoItem::validate)
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum ParsedTodoInput {
+    Action(TodoInput),
+    Replace(TodoWriteCompatInput),
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct TodoItem {
     checked: bool,
@@ -65,28 +120,53 @@ pub struct TodoTool;
 #[async_trait]
 impl Tool for TodoTool {
     fn spec(&self) -> ToolSpec {
-        base_spec(
+        let mut spec = base_spec(
             "todo",
             "Manage todos.md in the current directory",
             ToolKind::Planning,
         )
-        .with_input_schema(
-            ToolSchema::object()
-                .property(
-                    "action",
-                    ToolSchema::enumeration(
-                        "todo operation to perform",
-                        ["add", "remove", "list", "check", "uncheck"],
-                    ),
-                )
-                .property("text", ToolSchema::string("todo text for add"))
-                .property("index", ToolSchema::integer("1-indexed todo item position"))
-                .required("action"),
-        )
+        .with_input_schema(ToolSchema::object());
+        spec.input_schema = json!({
+            "type": "object",
+            "properties": {
+                "action": ToolSchema::enumeration(
+                    "todo operation to perform",
+                    ["add", "remove", "list", "check", "uncheck"],
+                ),
+                "text": ToolSchema::string("todo text for add"),
+                "index": ToolSchema::integer("1-indexed todo item position"),
+                "todos": {
+                    "type": "array",
+                    "description": "source-compatible todo list replacement payload",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "content": ToolSchema::string("todo text"),
+                            "status": ToolSchema::enumeration(
+                                "source-compatible todo status",
+                                ["pending", "in_progress", "completed"],
+                            ),
+                            "activeForm": ToolSchema::string(
+                                "source-compatible active-form progress label",
+                            ),
+                        },
+                        "required": ["content", "status", "activeForm"],
+                        "additionalProperties": false,
+                    },
+                },
+            },
+            "oneOf": [
+                { "required": ["action"] },
+                { "required": ["todos"] }
+            ],
+            "additionalProperties": false,
+        });
+        spec.aliases.push("TodoWrite".into());
+        spec
     }
 
     fn validate_input(&self, input: &Value) -> Result<()> {
-        parse_input::<TodoInput>("todo", input)?.validate()
+        parse_todo_input(input)?.validate()
     }
 
     async fn execute(
@@ -95,13 +175,45 @@ impl Tool for TodoTool {
         use_id: ToolUseId,
         input: Value,
     ) -> Result<ToolResult> {
-        let input = parse_input::<TodoInput>("todo", &input)?;
+        let input = parse_todo_input(&input)?;
         input.validate()?;
 
         let path = context.cwd.join("todos.md");
-        let content = execute_todo_action(&path, &input)?;
+        let content = match input {
+            ParsedTodoInput::Action(input) => execute_todo_action(&path, &input)?,
+            ParsedTodoInput::Replace(input) => execute_todo_replace(&path, &input)?,
+        };
         Ok(ToolResult::success(use_id, content))
     }
+}
+
+impl ParsedTodoInput {
+    fn validate(&self) -> Result<()> {
+        match self {
+            Self::Action(input) => input.validate(),
+            Self::Replace(input) => input.validate(),
+        }
+    }
+}
+
+fn parse_todo_input(input: &Value) -> Result<ParsedTodoInput> {
+    let object = input
+        .as_object()
+        .ok_or_else(|| WonderError::validation("invalid todo input: expected an object"))?;
+    let has_action = object.contains_key("action");
+    let has_todos = object.contains_key("todos");
+
+    if has_action && has_todos {
+        return Err(WonderError::validation(
+            "todo accepts either action-based input or source-compatible `todos`, not both",
+        ));
+    }
+
+    if has_todos {
+        return parse_input::<TodoWriteCompatInput>("todo", input).map(ParsedTodoInput::Replace);
+    }
+
+    parse_input::<TodoInput>("todo", input).map(ParsedTodoInput::Action)
 }
 
 fn execute_todo_action(path: &Path, input: &TodoInput) -> Result<String> {
@@ -131,6 +243,25 @@ fn execute_todo_action(path: &Path, input: &TodoInput) -> Result<String> {
             write_todos(path, &todos)?;
         }
     }
+    Ok(render_todos(&todos))
+}
+
+fn execute_todo_replace(path: &Path, input: &TodoWriteCompatInput) -> Result<String> {
+    let all_completed = !input.todos.is_empty()
+        && input
+            .todos
+            .iter()
+            .all(|todo| todo.status == SourceTodoStatus::Completed);
+    let todos = if all_completed {
+        Vec::new()
+    } else {
+        input
+            .todos
+            .iter()
+            .map(SourceTodoItem::to_markdown_item)
+            .collect()
+    };
+    write_todos(path, &todos)?;
     Ok(render_todos(&todos))
 }
 
@@ -211,7 +342,7 @@ fn todo_index(index: Option<u32>, len: usize) -> Result<usize> {
 
 #[cfg(test)]
 mod tests {
-    use std::{fs, path::PathBuf};
+    use std::{collections::BTreeSet, fs, path::PathBuf};
 
     use futures::executor::block_on;
     use serde_json::json;
@@ -262,6 +393,116 @@ mod tests {
     }
 
     #[test]
+    fn todo_source_write_alias_replaces_existing_list() {
+        let dir = unique_test_dir("tools-todo-source-write");
+        let tool = TodoTool;
+
+        block_on(tool.execute(
+            tool_context(dir.clone()),
+            ToolUseId::new(),
+            json!({ "action": "add", "text": "draft release notes" }),
+        ))
+        .expect("seed todo");
+
+        let result = block_on(tool.execute(
+            tool_context(dir.clone()),
+            ToolUseId::new(),
+            json!({
+                "todos": [
+                    {
+                        "content": "draft release notes",
+                        "status": "completed",
+                        "activeForm": "drafting release notes"
+                    },
+                    {
+                        "content": "ship release",
+                        "status": "pending",
+                        "activeForm": "shipping release"
+                    }
+                ]
+            }),
+        ))
+        .expect("replace todos");
+
+        assert_eq!(
+            result.content,
+            "1. [x] draft release notes\n2. [ ] ship release"
+        );
+        assert_eq!(
+            block_on(tool.execute(
+                tool_context(dir.clone()),
+                ToolUseId::new(),
+                json!({ "action": "list" }),
+            ))
+            .expect("list todos")
+            .content,
+            "1. [x] draft release notes\n2. [ ] ship release"
+        );
+    }
+
+    #[test]
+    fn todo_source_write_clears_when_everything_is_completed() {
+        let dir = unique_test_dir("tools-todo-source-clear");
+        let tool = TodoTool;
+
+        let result = block_on(tool.execute(
+            tool_context(dir.clone()),
+            ToolUseId::new(),
+            json!({
+                "todos": [
+                    {
+                        "content": "ship release",
+                        "status": "completed",
+                        "activeForm": "shipping release"
+                    }
+                ]
+            }),
+        ))
+        .expect("replace todos");
+
+        assert_eq!(result.content, "No todos.");
+        assert_eq!(
+            fs::read_to_string(dir.join("todos.md")).expect("todo file"),
+            ""
+        );
+    }
+
+    #[test]
+    fn todo_source_validation_rejects_in_progress_status() {
+        let tool = TodoTool;
+        let error = tool
+            .validate_input(&json!({
+                "todos": [
+                    {
+                        "content": "ship release",
+                        "status": "in_progress",
+                        "activeForm": "shipping release"
+                    }
+                ]
+            }))
+            .expect_err("unsupported status");
+
+        assert!(error.to_string().contains("in_progress"));
+    }
+
+    #[test]
+    fn todo_validation_rejects_mixed_action_and_todos_inputs() {
+        let tool = TodoTool;
+        let error = tool
+            .validate_input(&json!({
+                "action": "list",
+                "todos": [],
+            }))
+            .expect_err("mixed todo inputs");
+
+        assert!(
+            error
+                .to_string()
+                .contains("either action-based input or source-compatible `todos`")
+        );
+    }
+
+    #[test]
     fn todo_rejects_out_of_range_index() {
         let dir = unique_test_dir("tools-todo-range");
         let error = execute_todo_action(
@@ -275,5 +516,13 @@ mod tests {
         .expect_err("invalid index");
 
         assert!(error.to_string().contains("out of range"));
+    }
+
+    #[test]
+    fn todo_spec_exposes_source_alias() {
+        let tool = TodoTool;
+        let aliases = tool.spec().aliases.into_iter().collect::<BTreeSet<_>>();
+
+        assert_eq!(aliases, BTreeSet::from(["TodoWrite".to_string()]));
     }
 }

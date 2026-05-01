@@ -4,9 +4,10 @@ use std::{fs, path::PathBuf};
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{Value, json};
 use wonder_of_u_core::{
-    Result, Tool, ToolContext, ToolKind, ToolResult, ToolSchema, ToolSpec, ToolUseId, resolve_path,
+    Result, Tool, ToolContext, ToolKind, ToolResult, ToolSchema, ToolSpec, ToolUseId, WonderError,
+    resolve_path,
 };
 
 use crate::{base_spec, parse_input, require_non_empty_path};
@@ -44,11 +45,65 @@ impl PlanWriteInput {
     }
 }
 
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct EnterPlanModeInput {}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ExitPlanModeAllowedPrompt {
+    pub tool: String,
+    pub prompt: String,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ExitPlanModeInput {
+    #[serde(default, rename = "allowedPrompts", alias = "allowed_prompts")]
+    pub allowed_prompts: Option<Vec<ExitPlanModeAllowedPrompt>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plan: Option<String>,
+    #[serde(
+        default,
+        rename = "planFilePath",
+        alias = "plan_file_path",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub plan_file_path: Option<PathBuf>,
+}
+
+impl ExitPlanModeInput {
+    fn validate(&self) -> Result<()> {
+        if self.allowed_prompts.is_some() {
+            return Err(WonderError::validation(
+                "exit_plan_mode source-compatible `allowedPrompts` is not supported in wonder-of-u-tools",
+            ));
+        }
+        if self.plan.is_some() {
+            return Err(WonderError::validation(
+                "exit_plan_mode source-compatible `plan` injection is not supported in wonder-of-u-tools",
+            ));
+        }
+        if self.plan_file_path.is_some() {
+            return Err(WonderError::validation(
+                "exit_plan_mode source-compatible `planFilePath` is not supported in wonder-of-u-tools",
+            ));
+        }
+        Ok(())
+    }
+}
+
 #[derive(Debug, Default)]
 pub struct PlanReadTool;
 
 #[derive(Debug, Default)]
 pub struct PlanWriteTool;
+
+#[derive(Debug, Default)]
+pub struct EnterPlanModeTool;
+
+#[derive(Debug, Default)]
+pub struct ExitPlanModeTool;
 
 #[async_trait]
 impl Tool for PlanReadTool {
@@ -109,6 +164,96 @@ impl Tool for PlanWriteTool {
         let path = resolve_plan_path(&context, input.path.as_deref());
         fs::write(path, input.content)?;
         Ok(ToolResult::success(use_id, "plan written"))
+    }
+}
+
+#[async_trait]
+impl Tool for EnterPlanModeTool {
+    fn spec(&self) -> ToolSpec {
+        let mut spec = base_spec(
+            "enter_plan_mode",
+            "Source-compatible EnterPlanMode alias; runtime plan mode is unsupported in wonder-of-u-tools",
+            ToolKind::Planning,
+        )
+        .with_input_schema(ToolSchema::object());
+        spec.aliases.push("EnterPlanMode".into());
+        spec.read_only = true;
+        spec.concurrency_safe = true;
+        spec
+    }
+
+    fn validate_input(&self, input: &Value) -> Result<()> {
+        parse_input::<EnterPlanModeInput>("enter_plan_mode", input)?;
+        Ok(())
+    }
+
+    async fn execute(
+        &self,
+        _context: ToolContext,
+        _use_id: ToolUseId,
+        input: Value,
+    ) -> Result<ToolResult> {
+        parse_input::<EnterPlanModeInput>("enter_plan_mode", &input)?;
+        Err(WonderError::validation(
+            "enter_plan_mode is not supported in wonder-of-u-tools because the Rust runtime does not implement interactive plan mode",
+        ))
+    }
+}
+
+#[async_trait]
+impl Tool for ExitPlanModeTool {
+    fn spec(&self) -> ToolSpec {
+        let mut spec = base_spec(
+            "exit_plan_mode",
+            "Source-compatible ExitPlanMode alias; runtime plan approval is unsupported in wonder-of-u-tools",
+            ToolKind::Planning,
+        )
+        .with_input_schema(ToolSchema::object());
+        spec.input_schema = json!({
+            "type": "object",
+            "properties": {
+                "allowedPrompts": {
+                    "type": "array",
+                    "description": "source-compatible prompt permission requests; unsupported in wonder-of-u-tools",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "tool": ToolSchema::string("tool name"),
+                            "prompt": ToolSchema::string("semantic prompt description"),
+                        },
+                        "required": ["tool", "prompt"],
+                        "additionalProperties": false,
+                    },
+                },
+                "plan": ToolSchema::string(
+                    "source-compatible plan content injection; unsupported in wonder-of-u-tools",
+                ),
+                "planFilePath": ToolSchema::string(
+                    "source-compatible plan file path injection; unsupported in wonder-of-u-tools",
+                ),
+            },
+            "additionalProperties": false,
+        });
+        spec.aliases.push("ExitPlanMode".into());
+        spec.concurrency_safe = true;
+        spec
+    }
+
+    fn validate_input(&self, input: &Value) -> Result<()> {
+        parse_input::<ExitPlanModeInput>("exit_plan_mode", input)?.validate()
+    }
+
+    async fn execute(
+        &self,
+        _context: ToolContext,
+        _use_id: ToolUseId,
+        input: Value,
+    ) -> Result<ToolResult> {
+        let input = parse_input::<ExitPlanModeInput>("exit_plan_mode", &input)?;
+        input.validate()?;
+        Err(WonderError::validation(
+            "exit_plan_mode is not supported in wonder-of-u-tools because the Rust runtime does not implement interactive plan approval or mode switching",
+        ))
     }
 }
 
@@ -178,5 +323,48 @@ mod tests {
             .expect_err("empty path");
 
         assert!(error.to_string().contains("path"));
+    }
+
+    #[test]
+    fn enter_plan_mode_is_explicitly_unsupported() {
+        let dir = unique_test_dir("tools-enter-plan-mode");
+        let tool = EnterPlanModeTool;
+        let error = block_on(tool.execute(tool_context(dir), ToolUseId::new(), json!({})))
+            .expect_err("unsupported enter plan mode");
+
+        assert!(error.to_string().contains("not supported"));
+    }
+
+    #[test]
+    fn exit_plan_mode_rejects_source_allowed_prompts() {
+        let tool = ExitPlanModeTool;
+        let error = tool
+            .validate_input(&json!({
+                "allowedPrompts": [
+                    { "tool": "Bash", "prompt": "run tests" }
+                ]
+            }))
+            .expect_err("unsupported allowedPrompts");
+
+        assert!(error.to_string().contains("allowedPrompts"));
+    }
+
+    #[test]
+    fn exit_plan_mode_is_explicitly_unsupported_without_source_fields() {
+        let dir = unique_test_dir("tools-exit-plan-mode");
+        let tool = ExitPlanModeTool;
+        let error = block_on(tool.execute(tool_context(dir), ToolUseId::new(), json!({})))
+            .expect_err("unsupported exit plan mode");
+
+        assert!(error.to_string().contains("not supported"));
+    }
+
+    #[test]
+    fn plan_mode_specs_expose_source_aliases() {
+        let enter = EnterPlanModeTool;
+        let exit = ExitPlanModeTool;
+
+        assert_eq!(enter.spec().aliases, vec!["EnterPlanMode".to_string()]);
+        assert_eq!(exit.spec().aliases, vec!["ExitPlanMode".to_string()]);
     }
 }

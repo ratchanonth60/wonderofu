@@ -187,6 +187,7 @@ pub enum TaskKind {
     #[default]
     LocalShell,
     LocalAgent,
+    RemoteAgent,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -216,6 +217,213 @@ pub enum AgentRuntime {
     MetadataOnly,
     PromptSubprocess,
     Deferred,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TaskBackendSupport {
+    Supported,
+    Unsupported,
+    Deferred,
+}
+
+impl TaskBackendSupport {
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Supported => "supported",
+            Self::Unsupported => "unsupported",
+            Self::Deferred => "deferred",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TaskBackendFlow {
+    Transport,
+    Monitor,
+    Checker,
+}
+
+impl TaskBackendFlow {
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Transport => "transport",
+            Self::Monitor => "monitor",
+            Self::Checker => "checker",
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct TaskBackendState {
+    pub flow: TaskBackendFlow,
+    pub support: TaskBackendSupport,
+    pub reason: String,
+}
+
+impl TaskBackendState {
+    #[must_use]
+    pub fn supported(flow: TaskBackendFlow, reason: impl Into<String>) -> Self {
+        Self {
+            flow,
+            support: TaskBackendSupport::Supported,
+            reason: reason.into(),
+        }
+    }
+
+    #[must_use]
+    pub fn unsupported(flow: TaskBackendFlow, reason: impl Into<String>) -> Self {
+        Self {
+            flow,
+            support: TaskBackendSupport::Unsupported,
+            reason: reason.into(),
+        }
+    }
+
+    #[must_use]
+    pub fn deferred(flow: TaskBackendFlow, reason: impl Into<String>) -> Self {
+        Self {
+            flow,
+            support: TaskBackendSupport::Deferred,
+            reason: reason.into(),
+        }
+    }
+
+    #[must_use]
+    pub fn summary(&self) -> String {
+        format!(
+            "{} is {}: {}",
+            self.flow.label(),
+            self.support.label(),
+            self.reason
+        )
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum RemoteTaskType {
+    RemoteAgent,
+    BackgroundPr,
+    AutofixPr,
+    Ultraplan,
+    Ultrareview,
+}
+
+impl RemoteTaskType {
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::RemoteAgent => "remote-agent",
+            Self::BackgroundPr => "background-pr",
+            Self::AutofixPr => "autofix-pr",
+            Self::Ultraplan => "ultraplan",
+            Self::Ultrareview => "ultrareview",
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum RemoteTaskMetadata {
+    PullRequest {
+        owner: String,
+        repo: String,
+        pr_number: u64,
+    },
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct RemoteTaskState {
+    pub task_type: RemoteTaskType,
+    pub transport: TaskBackendState,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub monitor: Option<TaskBackendState>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub checker: Option<TaskBackendState>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<RemoteTaskMetadata>,
+    #[serde(default)]
+    pub long_running: bool,
+}
+
+impl RemoteTaskState {
+    #[must_use]
+    pub fn deferred(task_type: RemoteTaskType, metadata: Option<RemoteTaskMetadata>) -> Self {
+        let task_label = task_type.label();
+        let transport = TaskBackendState::deferred(
+            TaskBackendFlow::Transport,
+            format!(
+                "{task_label} tasks require a remote session transport that is not implemented in this Rust runtime"
+            ),
+        );
+        let monitor = match task_type {
+            RemoteTaskType::AutofixPr | RemoteTaskType::Ultraplan | RemoteTaskType::Ultrareview => {
+                Some(TaskBackendState::unsupported(
+                    TaskBackendFlow::Monitor,
+                    format!("{task_label} monitor flow is not implemented in this Rust runtime"),
+                ))
+            }
+            RemoteTaskType::RemoteAgent | RemoteTaskType::BackgroundPr => None,
+        };
+        let checker = match task_type {
+            RemoteTaskType::BackgroundPr | RemoteTaskType::AutofixPr => {
+                Some(TaskBackendState::unsupported(
+                    TaskBackendFlow::Checker,
+                    format!(
+                        "{task_label} completion checker flow is not implemented in this Rust runtime"
+                    ),
+                ))
+            }
+            RemoteTaskType::RemoteAgent
+            | RemoteTaskType::Ultraplan
+            | RemoteTaskType::Ultrareview => None,
+        };
+        Self {
+            task_type,
+            transport,
+            monitor,
+            checker,
+            session_id: None,
+            metadata,
+            long_running: matches!(task_type, RemoteTaskType::AutofixPr),
+        }
+    }
+
+    #[must_use]
+    pub fn status_summary(&self) -> String {
+        let mut parts = vec![self.transport.summary()];
+        if let Some(monitor) = &self.monitor {
+            parts.push(monitor.summary());
+        }
+        if let Some(checker) = &self.checker {
+            parts.push(checker.summary());
+        }
+        format!("{} backend: {}", self.task_type.label(), parts.join("; "))
+    }
+
+    #[must_use]
+    pub fn start_error_message(&self) -> String {
+        format!(
+            "cannot start {} task: {}",
+            self.task_type.label(),
+            self.status_summary()
+        )
+    }
+
+    #[must_use]
+    pub fn stop_error_message(&self) -> String {
+        format!(
+            "cannot stop {} task: {}",
+            self.task_type.label(),
+            self.status_summary()
+        )
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -289,6 +497,8 @@ pub struct TaskState {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent: Option<AgentTaskState>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remote: Option<RemoteTaskState>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub output_log: Option<PathBuf>,
     #[serde(with = "time::serde::rfc3339")]
     pub started_at: OffsetDateTime,
@@ -313,6 +523,7 @@ impl TaskState {
             last_heartbeat_at: None,
             exit_code: None,
             agent: None,
+            remote: None,
             output_log: None,
             started_at: OffsetDateTime::now_utc(),
             finished_at: None,
@@ -349,6 +560,15 @@ impl TaskState {
             .into(),
         );
         task.agent = Some(agent);
+        task
+    }
+
+    #[must_use]
+    pub fn recorded_remote(description: impl Into<String>, remote: RemoteTaskState) -> Self {
+        let mut task = Self::pending(description);
+        task.kind = TaskKind::RemoteAgent;
+        task.status_message = Some(remote.status_summary());
+        task.remote = Some(remote);
         task
     }
 
@@ -603,9 +823,17 @@ pub fn session_status_text(app: &AppState) -> String {
             .values()
             .filter(|task| matches!(task.kind, TaskKind::LocalAgent))
             .count();
+        let remote = app
+            .background_tasks
+            .values()
+            .filter(|task| matches!(task.kind, TaskKind::RemoteAgent))
+            .count();
         parts.push(format!("tasks {running}r/{pending}p/{total_tasks}t"));
         if agents > 0 {
             parts.push(format!("agents={agents}"));
+        }
+        if remote > 0 {
+            parts.push(format!("remote={remote}"));
         }
     }
 
@@ -812,6 +1040,31 @@ mod tests {
             prompt_agent.status_message.as_deref(),
             Some("local agent prompt subprocess is queued for launch")
         );
+
+        let remote = TaskState::recorded_remote(
+            "background review",
+            RemoteTaskState::deferred(
+                RemoteTaskType::Ultrareview,
+                Some(RemoteTaskMetadata::PullRequest {
+                    owner: "wonder".into(),
+                    repo: "of-u".into(),
+                    pr_number: 42,
+                }),
+            ),
+        );
+        assert_eq!(remote.kind, TaskKind::RemoteAgent);
+        assert!(
+            remote.status_message.as_deref().is_some_and(
+                |message| message.contains("ultrareview backend: transport is deferred")
+            )
+        );
+        assert!(
+            remote
+                .remote
+                .as_ref()
+                .and_then(|remote| remote.monitor.as_ref())
+                .is_some()
+        );
     }
 
     #[test]
@@ -849,6 +1102,52 @@ mod tests {
             permission_mode_label(PermissionMode::AcceptEdits),
             "accept-edits"
         );
+    }
+
+    #[test]
+    fn remote_task_state_serializes_backend_support_and_metadata() {
+        let remote = RemoteTaskState::deferred(
+            RemoteTaskType::AutofixPr,
+            Some(RemoteTaskMetadata::PullRequest {
+                owner: "wonder".into(),
+                repo: "of-u".into(),
+                pr_number: 7,
+            }),
+        );
+
+        let value = serde_json::to_value(&remote).expect("serialize remote task");
+
+        assert_eq!(value["task_type"], "autofix-pr");
+        assert_eq!(value["transport"]["flow"], "transport");
+        assert_eq!(value["transport"]["support"], "deferred");
+        assert_eq!(value["monitor"]["flow"], "monitor");
+        assert_eq!(value["monitor"]["support"], "unsupported");
+        assert_eq!(value["checker"]["flow"], "checker");
+        assert_eq!(value["checker"]["support"], "unsupported");
+        assert_eq!(value["metadata"]["kind"], "pull_request");
+        assert_eq!(value["metadata"]["pr_number"], 7);
+        assert!(
+            remote
+                .start_error_message()
+                .contains("cannot start autofix-pr task")
+        );
+    }
+
+    #[test]
+    fn session_status_text_reports_remote_task_counts() {
+        let mut state = AppState::new(PathBuf::from("/workspace"));
+        state.background_tasks.insert(
+            TaskId::new(),
+            TaskState::recorded_remote(
+                "cloud review",
+                RemoteTaskState::deferred(RemoteTaskType::Ultrareview, None),
+            ),
+        );
+
+        let status = session_status_text(&state);
+
+        assert!(status.contains("tasks 0r/1p/1t"));
+        assert!(status.contains("remote=1"));
     }
 
     #[test]

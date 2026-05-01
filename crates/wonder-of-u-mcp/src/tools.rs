@@ -69,6 +69,7 @@ impl Tool for McpResourceListTool {
                 "server",
                 ToolSchema::string("optional MCP server name filter"),
             ));
+        spec.aliases.push("ListMcpResourcesTool".into());
         spec.read_only = true;
         spec.concurrency_safe = true;
         spec.required_features.insert(FeatureFlag::Tools);
@@ -112,6 +113,7 @@ impl Tool for McpResourceReadTool {
                     )
                     .required("resource_name"),
             );
+        spec.aliases.push("ReadMcpResourceTool".into());
         spec.read_only = true;
         spec.concurrency_safe = true;
         spec.required_features.insert(FeatureFlag::Tools);
@@ -293,6 +295,15 @@ mod tests {
             .expect_err("empty resource name");
 
         assert!(error.to_string().contains("resource_name"));
+    }
+
+    #[test]
+    fn read_spec_captures_permission_metadata_and_alias() {
+        let spec = McpResourceReadTool.spec();
+
+        assert!(spec.read_only);
+        assert!(spec.concurrency_safe);
+        assert!(spec.aliases.contains(&"ReadMcpResourceTool".to_string()));
     }
 
     #[test]

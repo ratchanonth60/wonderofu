@@ -7,4 +7,7 @@ publish = false
 
 [dependencies]
 crossterm.workspace = true
+serde_json.workspace = true
+unicode-segmentation.workspace = true
+unicode-width.workspace = true
 wonder-of-u-core.workspace = true

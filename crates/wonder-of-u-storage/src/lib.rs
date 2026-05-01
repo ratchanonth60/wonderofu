@@ -1,6 +1,7 @@
 //! Append-only session storage primitives.
 
 use std::{
+    collections::BTreeMap,
     ffi::OsStr,
     fs::{self, File, OpenOptions},
     io::ErrorKind,
@@ -12,8 +13,8 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 use wonder_of_u_core::{
-    AppState, CostState, MESSAGE_SCHEMA_VERSION, MessageEnvelope, MessagePayload, Result,
-    SessionId, TaskId, TaskState, WonderError,
+    AppState, CostState, MESSAGE_SCHEMA_VERSION, MessageEnvelope, MessageId, MessagePayload,
+    Result, SessionId, TaskId, TaskState, WonderError,
 };
 
 pub const STORAGE_SCHEMA_VERSION: u16 = 1;
@@ -51,6 +52,21 @@ fn write_json_atomically<T: Serialize>(path: &Path, value: &T) -> Result<()> {
     writer.write_all(b"\n")?;
     writer.flush()?;
     writer.get_ref().sync_all()?;
+    fs::rename(pending_path, path)?;
+    Ok(())
+}
+
+fn write_text_atomically(path: &Path, content: &str) -> Result<()> {
+    let next_extension = match path.extension().and_then(OsStr::to_str) {
+        Some(extension) => format!("{extension}.next"),
+        None => "next".into(),
+    };
+    let pending_path = path.with_extension(next_extension);
+
+    let mut file = File::create(&pending_path)?;
+    file.write_all(content.as_bytes())?;
+    file.flush()?;
+    file.sync_all()?;
     fs::rename(pending_path, path)?;
     Ok(())
 }
@@ -114,6 +130,17 @@ impl StoragePaths {
     }
 
     #[must_use]
+    pub fn session_memory_index_dir(&self) -> PathBuf {
+        self.sessions_dir().join(".memory-index")
+    }
+
+    #[must_use]
+    pub fn session_memory_index_path(&self, session_id: SessionId) -> PathBuf {
+        self.session_memory_index_dir()
+            .join(format!("{session_id}.json"))
+    }
+
+    #[must_use]
     pub fn cost_path(&self, session_id: SessionId) -> PathBuf {
         self.sessions_dir().join(format!("{session_id}.costs"))
     }
@@ -141,6 +168,11 @@ impl StoragePaths {
     #[must_use]
     pub fn settings_path(&self) -> PathBuf {
         self.config_dir().join("settings.json")
+    }
+
+    #[must_use]
+    pub fn user_memory_path(&self) -> PathBuf {
+        self.config_dir().join("CLAUDE.md")
     }
 
     #[must_use]
@@ -421,6 +453,434 @@ impl TranscriptStore {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SyncSupport {
+    LocalOnly,
+    Unsupported,
+    Deferred,
+}
+
+impl SyncSupport {
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::LocalOnly => "local_only",
+            Self::Unsupported => "unsupported",
+            Self::Deferred => "deferred",
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct SettingsSyncStatus {
+    #[serde(default = "default_storage_schema_version")]
+    pub schema_version: u16,
+    pub status: SyncSupport,
+    pub cloud_status: SyncSupport,
+    pub settings_path: PathBuf,
+    pub settings_exists: bool,
+    pub user_memory_path: PathBuf,
+    pub user_memory_exists: bool,
+    pub cloud_attempted: bool,
+    pub reason: String,
+}
+
+impl SettingsSyncStatus {
+    #[must_use]
+    pub fn inspect(paths: &StoragePaths) -> Self {
+        let settings_path = paths.settings_path();
+        let user_memory_path = paths.user_memory_path();
+        Self {
+            schema_version: STORAGE_SCHEMA_VERSION,
+            status: SyncSupport::LocalOnly,
+            cloud_status: SyncSupport::Unsupported,
+            settings_exists: settings_path.exists(),
+            user_memory_exists: user_memory_path.exists(),
+            settings_path,
+            user_memory_path,
+            cloud_attempted: false,
+            reason: "local settings and user memory stay on disk; cloud upload/download backends are unavailable in this Rust port".into(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct RemoteSurfaceStatus {
+    #[serde(default = "default_storage_schema_version")]
+    pub schema_version: u16,
+    pub service: String,
+    pub status: SyncSupport,
+    pub cloud_attempted: bool,
+    pub reason: String,
+}
+
+impl RemoteSurfaceStatus {
+    #[must_use]
+    pub fn unsupported(service: impl Into<String>, reason: impl Into<String>) -> Self {
+        Self {
+            schema_version: STORAGE_SCHEMA_VERSION,
+            service: service.into(),
+            status: SyncSupport::Unsupported,
+            cloud_attempted: false,
+            reason: reason.into(),
+        }
+    }
+
+    #[must_use]
+    pub fn deferred(service: impl Into<String>, reason: impl Into<String>) -> Self {
+        Self {
+            schema_version: STORAGE_SCHEMA_VERSION,
+            service: service.into(),
+            status: SyncSupport::Deferred,
+            cloud_attempted: false,
+            reason: reason.into(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct SyncStatusReport {
+    pub settings_sync: SettingsSyncStatus,
+    pub remote_managed_settings: RemoteSurfaceStatus,
+    pub team_memory_sync: RemoteSurfaceStatus,
+}
+
+impl SyncStatusReport {
+    #[must_use]
+    pub fn inspect(paths: &StoragePaths) -> Self {
+        Self {
+            settings_sync: SettingsSyncStatus::inspect(paths),
+            remote_managed_settings: RemoteSurfaceStatus::deferred(
+                "remote_managed_settings",
+                "enterprise-managed remote settings are deferred until a real policy backend exists",
+            ),
+            team_memory_sync: RemoteSurfaceStatus::unsupported(
+                "team_memory_sync",
+                "repo-scoped cloud memory sync is unsupported; session memory remains local-only",
+            ),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SessionMemorySource {
+    User,
+    Assistant,
+    Tool,
+    System,
+}
+
+impl SessionMemorySource {
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::User => "user",
+            Self::Assistant => "assistant",
+            Self::Tool => "tool",
+            Self::System => "system",
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct SessionMemoryEntry {
+    pub key: String,
+    pub source: SessionMemorySource,
+    pub summary: String,
+    pub occurrences: usize,
+    pub first_message_id: MessageId,
+    pub last_message_id: MessageId,
+    #[serde(with = "time::serde::rfc3339")]
+    pub first_seen_at: OffsetDateTime,
+    #[serde(with = "time::serde::rfc3339")]
+    pub last_seen_at: OffsetDateTime,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct SessionMemoryIndex {
+    #[serde(default = "default_storage_schema_version")]
+    pub schema_version: u16,
+    pub session_id: SessionId,
+    pub transcript_message_count: usize,
+    pub indexed_message_count: usize,
+    #[serde(with = "time::serde::rfc3339")]
+    pub indexed_at: OffsetDateTime,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub entries: Vec<SessionMemoryEntry>,
+}
+
+impl SessionMemoryIndex {
+    #[must_use]
+    pub fn extract(session_id: SessionId, messages: &[MessageEnvelope]) -> Self {
+        let mut entries = BTreeMap::<String, SessionMemoryEntry>::new();
+        let mut indexed_message_count = 0;
+
+        for message in messages {
+            let Some((source, text)) = session_memory_text(&message.payload) else {
+                continue;
+            };
+            let normalized = normalize_memory_text(&text);
+            if normalized.is_empty() {
+                continue;
+            }
+
+            indexed_message_count += 1;
+            let key = format!(
+                "{}:{:x}",
+                source.label(),
+                Sha256::digest(normalized.as_bytes())
+            );
+            let summary = truncate_memory_summary(&normalized, 160);
+
+            if let Some(entry) = entries.get_mut(&key) {
+                entry.occurrences += 1;
+                entry.last_message_id = message.id;
+                entry.last_seen_at = message.timestamp;
+                continue;
+            }
+
+            entries.insert(
+                key.clone(),
+                SessionMemoryEntry {
+                    key,
+                    source,
+                    summary,
+                    occurrences: 1,
+                    first_message_id: message.id,
+                    last_message_id: message.id,
+                    first_seen_at: message.timestamp,
+                    last_seen_at: message.timestamp,
+                },
+            );
+        }
+
+        let mut entries = entries.into_values().collect::<Vec<_>>();
+        entries.sort_by(|left, right| {
+            left.first_seen_at
+                .cmp(&right.first_seen_at)
+                .then_with(|| left.key.cmp(&right.key))
+        });
+
+        Self {
+            schema_version: STORAGE_SCHEMA_VERSION,
+            session_id,
+            transcript_message_count: messages.len(),
+            indexed_message_count,
+            indexed_at: OffsetDateTime::now_utc(),
+            entries,
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct SessionMemoryIndexStore {
+    paths: StoragePaths,
+}
+
+impl SessionMemoryIndexStore {
+    #[must_use]
+    pub fn new(base_dir: impl Into<PathBuf>) -> Self {
+        Self {
+            paths: StoragePaths::new(base_dir),
+        }
+    }
+
+    #[must_use]
+    pub fn paths(&self) -> &StoragePaths {
+        &self.paths
+    }
+
+    pub fn ensure_layout(&self) -> Result<()> {
+        fs::create_dir_all(self.paths.session_memory_index_dir())?;
+        Ok(())
+    }
+
+    pub fn write(&self, index: &SessionMemoryIndex) -> Result<()> {
+        self.ensure_layout()?;
+        write_json_atomically(
+            &self.paths.session_memory_index_path(index.session_id),
+            index,
+        )
+    }
+
+    pub fn read(&self, session_id: SessionId) -> Result<SessionMemoryIndex> {
+        let path = self.paths.session_memory_index_path(session_id);
+        if !path.exists() {
+            return Err(WonderError::not_found(
+                "session memory index",
+                session_id.to_string(),
+            ));
+        }
+
+        let index: SessionMemoryIndex = serde_json::from_str(&fs::read_to_string(path)?)?;
+        ensure_supported_schema("session memory index", index.schema_version)?;
+        if index.session_id != session_id {
+            return Err(WonderError::validation(format!(
+                "session memory index id mismatch for {session_id}"
+            )));
+        }
+        Ok(index)
+    }
+
+    pub fn read_if_exists(&self, session_id: SessionId) -> Result<Option<SessionMemoryIndex>> {
+        match self.read(session_id) {
+            Ok(index) => Ok(Some(index)),
+            Err(WonderError::NotFound { .. }) => Ok(None),
+            Err(error) => Err(error),
+        }
+    }
+
+    pub fn list(&self) -> Result<Vec<SessionMemoryIndex>> {
+        let dir = self.paths.session_memory_index_dir();
+        match fs::read_dir(dir) {
+            Ok(entries) => {
+                let mut indexes = Vec::new();
+                for entry in entries {
+                    let entry = entry?;
+                    if !entry.file_type()?.is_file() {
+                        continue;
+                    }
+                    if entry.path().extension().and_then(OsStr::to_str) != Some("json") {
+                        continue;
+                    }
+
+                    let index: SessionMemoryIndex =
+                        serde_json::from_str(&fs::read_to_string(entry.path())?)?;
+                    ensure_supported_schema("session memory index", index.schema_version)?;
+                    indexes.push(index);
+                }
+
+                indexes.sort_by(|left, right| {
+                    right
+                        .indexed_at
+                        .cmp(&left.indexed_at)
+                        .then_with(|| left.session_id.cmp(&right.session_id))
+                });
+                Ok(indexes)
+            }
+            Err(error) if error.kind() == ErrorKind::NotFound => Ok(Vec::new()),
+            Err(error) => Err(error.into()),
+        }
+    }
+
+    pub fn rebuild_from_messages(
+        &self,
+        session_id: SessionId,
+        messages: &[MessageEnvelope],
+    ) -> Result<SessionMemoryIndex> {
+        let index = SessionMemoryIndex::extract(session_id, messages);
+        self.write(&index)?;
+        Ok(index)
+    }
+
+    pub fn rebuild_from_transcript(
+        &self,
+        store: &TranscriptStore,
+        session_id: SessionId,
+    ) -> Result<SessionMemoryIndex> {
+        let transcript = store.load_session(session_id)?;
+        self.rebuild_from_messages(session_id, &transcript.messages)
+    }
+}
+
+fn session_memory_text(payload: &MessagePayload) -> Option<(SessionMemorySource, String)> {
+    match payload {
+        MessagePayload::UserText { content } => Some((SessionMemorySource::User, content.clone())),
+        MessagePayload::UserAttachment { label, uri } => {
+            Some((SessionMemorySource::User, format!("{label} {uri}")))
+        }
+        MessagePayload::UserPasteReference { sha256, bytes } => Some((
+            SessionMemorySource::User,
+            format!("pasted {bytes} bytes ({sha256})"),
+        )),
+        MessagePayload::AssistantText { content }
+        | MessagePayload::AssistantThinking { content, .. } => {
+            Some((SessionMemorySource::Assistant, content.clone()))
+        }
+        MessagePayload::AssistantToolUse { tool, input, .. } => {
+            Some((SessionMemorySource::Tool, format!("tool {tool} {}", input)))
+        }
+        MessagePayload::ToolResult { tool, content, .. } => {
+            Some((SessionMemorySource::Tool, format!("{tool} {content}")))
+        }
+        MessagePayload::BashOutput {
+            stdout,
+            stderr,
+            exit_code,
+        } => {
+            let combined = [stdout.trim(), stderr.trim()]
+                .into_iter()
+                .filter(|segment| !segment.is_empty())
+                .collect::<Vec<_>>()
+                .join(" ");
+            let detail = if combined.is_empty() {
+                exit_code
+                    .map(|code| format!("bash exited with {code}"))
+                    .unwrap_or_default()
+            } else if let Some(code) = exit_code {
+                format!("{combined} (exit {code})")
+            } else {
+                combined
+            };
+            Some((SessionMemorySource::Tool, detail))
+        }
+        MessagePayload::System { content } => Some((SessionMemorySource::System, content.clone())),
+        MessagePayload::Progress { label, detail } => Some((
+            SessionMemorySource::System,
+            detail
+                .as_ref()
+                .map_or_else(|| label.clone(), |detail| format!("{label} {detail}")),
+        )),
+        MessagePayload::Command { input, output } => Some((
+            SessionMemorySource::System,
+            output
+                .as_ref()
+                .map_or_else(|| input.clone(), |output| format!("{input} {output}")),
+        )),
+        MessagePayload::HookResult { hook, output, .. } => {
+            Some((SessionMemorySource::Tool, format!("{hook} {output}")))
+        }
+        MessagePayload::CompactBoundary { summary } => {
+            Some((SessionMemorySource::System, summary.clone()))
+        }
+        MessagePayload::Task { message, .. } => {
+            Some((SessionMemorySource::System, message.clone()))
+        }
+        MessagePayload::Permission {
+            tool,
+            decision,
+            reason,
+        } => Some((
+            SessionMemorySource::System,
+            format!("{tool} {decision} {reason}"),
+        )),
+        MessagePayload::PlanApproval { summary, approved } => Some((
+            SessionMemorySource::System,
+            format!(
+                "plan {} {summary}",
+                if *approved { "approved" } else { "rejected" }
+            ),
+        )),
+    }
+}
+
+fn normalize_memory_text(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn truncate_memory_summary(text: &str, max_chars: usize) -> String {
+    let char_count = text.chars().count();
+    if char_count <= max_chars {
+        return text.to_string();
+    }
+
+    let keep = max_chars.saturating_sub(1);
+    let truncated = text.chars().take(keep).collect::<String>();
+    format!("{truncated}…")
+}
+
 #[derive(Clone, Debug)]
 pub struct CostStore {
     paths: StoragePaths,
@@ -576,18 +1036,15 @@ impl TaskStore {
 
     pub fn write_heartbeat_at(&self, task_id: TaskId, heartbeat_at: OffsetDateTime) -> Result<()> {
         self.ensure_layout()?;
-        let mut file = File::create(self.paths.task_heartbeat_path(task_id))?;
-        writeln!(
-            file,
-            "{}",
+        let content = format!(
+            "{}\n",
             heartbeat_at
                 .format(&Rfc3339)
                 .map_err(|error| WonderError::validation(format!(
                     "invalid heartbeat timestamp: {error}"
                 )))?
-        )?;
-        file.sync_all()?;
-        Ok(())
+        );
+        write_text_atomically(&self.paths.task_heartbeat_path(task_id), &content)
     }
 
     pub fn read_exit_code(&self, task_id: TaskId) -> Result<Option<i32>> {
@@ -878,7 +1335,8 @@ mod tests {
     use time::format_description::well_known::Rfc3339;
     use wonder_of_u_core::{
         AgentTaskState, AppState, InputMode, MessageEnvelope, MessagePayload, QueuePlacement,
-        TaskId, TaskKind, TaskState, TaskStatus, TokenUsage, ToolUseId,
+        RemoteTaskMetadata, RemoteTaskState, RemoteTaskType, TaskId, TaskKind, TaskState,
+        TaskStatus, TokenUsage, ToolUseId,
     };
     use wonder_of_u_test_support::unique_test_dir;
 
@@ -1158,6 +1616,96 @@ mod tests {
     }
 
     #[test]
+    fn session_memory_index_rebuilds_and_deduplicates_messages() {
+        let dir = temp_dir();
+        let transcript = TranscriptStore::new(dir.path());
+        let index_store = SessionMemoryIndexStore::new(dir.path());
+        let session_id = SessionId::new();
+        let user = transcript_message(
+            session_id,
+            MessagePayload::UserText {
+                content: "Remember the release checklist".into(),
+            },
+        );
+        let assistant = transcript_message(
+            session_id,
+            MessagePayload::AssistantText {
+                content: "Remember the release checklist".into(),
+            },
+        );
+        let repeated = transcript_message(
+            session_id,
+            MessagePayload::UserText {
+                content: "Remember   the release checklist".into(),
+            },
+        );
+
+        transcript.append_message(&user).expect("append user");
+        transcript
+            .append_message(&assistant)
+            .expect("append assistant");
+        transcript
+            .append_message(&repeated)
+            .expect("append repeated user");
+
+        let index = index_store
+            .rebuild_from_transcript(&transcript, session_id)
+            .expect("rebuild index");
+
+        assert_eq!(index.transcript_message_count, 3);
+        assert_eq!(index.indexed_message_count, 3);
+        assert_eq!(index.entries.len(), 2);
+        let user_entry = index
+            .entries
+            .iter()
+            .find(|entry| entry.source == SessionMemorySource::User)
+            .expect("user entry");
+        assert_eq!(user_entry.occurrences, 2);
+        assert_eq!(user_entry.first_message_id, user.id);
+        assert_eq!(user_entry.last_message_id, repeated.id);
+        assert_eq!(
+            index_store.read(session_id).expect("read persisted index"),
+            index
+        );
+    }
+
+    #[test]
+    fn sync_status_report_marks_settings_sync_local_only_and_remote_surfaces_unavailable() {
+        let dir = temp_dir();
+        let paths = StoragePaths::new(dir.path());
+        fs::create_dir_all(paths.config_dir()).expect("create config dir");
+        fs::write(paths.settings_path(), "{}\n").expect("write settings");
+        fs::write(paths.user_memory_path(), "# user memory\n").expect("write user memory");
+
+        let report = SyncStatusReport::inspect(&paths);
+
+        assert_eq!(report.settings_sync.status, SyncSupport::LocalOnly);
+        assert_eq!(report.settings_sync.cloud_status, SyncSupport::Unsupported);
+        assert!(report.settings_sync.settings_exists);
+        assert!(report.settings_sync.user_memory_exists);
+        assert!(!report.settings_sync.cloud_attempted);
+        assert_eq!(report.remote_managed_settings.status, SyncSupport::Deferred);
+        assert_eq!(report.team_memory_sync.status, SyncSupport::Unsupported);
+        assert!(!report.remote_managed_settings.cloud_attempted);
+        assert!(!report.team_memory_sync.cloud_attempted);
+    }
+
+    #[test]
+    fn sync_status_inspection_has_no_cloud_side_effects() {
+        let dir = temp_dir();
+        let paths = StoragePaths::new(dir.path());
+
+        let report = SyncStatusReport::inspect(&paths);
+
+        assert_eq!(report.settings_sync.status, SyncSupport::LocalOnly);
+        let entries = fs::read_dir(dir.path())
+            .expect("read temp dir")
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .expect("collect entries");
+        assert!(entries.is_empty());
+    }
+
+    #[test]
     fn session_metadata_atomic_write() {
         let dir = temp_dir();
         let store = TranscriptStore::new(dir.path());
@@ -1356,10 +1904,37 @@ mod tests {
         agent.output_log = Some(store.paths().task_log_path(agent.id));
         store.write_task(&agent).expect("write agent task");
 
+        let mut remote = TaskState::recorded_remote(
+            "cloud review",
+            RemoteTaskState::deferred(
+                RemoteTaskType::Ultrareview,
+                Some(RemoteTaskMetadata::PullRequest {
+                    owner: "wonder".into(),
+                    repo: "of-u".into(),
+                    pr_number: 9,
+                }),
+            ),
+        );
+        remote.output_log = Some(store.paths().task_log_path(remote.id));
+        store.write_task(&remote).expect("write remote task");
+
         let listed = store.list_tasks().expect("list tasks");
-        assert_eq!(listed.len(), 2);
+        assert_eq!(listed.len(), 3);
         assert!(listed.iter().any(|task| task.kind == TaskKind::LocalShell));
         assert!(listed.iter().any(|task| task.kind == TaskKind::LocalAgent));
+        assert!(listed.iter().any(|task| task.kind == TaskKind::RemoteAgent));
+        let restored_remote = listed
+            .iter()
+            .find(|task| task.kind == TaskKind::RemoteAgent)
+            .expect("remote task");
+        assert_eq!(
+            restored_remote
+                .remote
+                .as_ref()
+                .expect("remote backend")
+                .task_type,
+            RemoteTaskType::Ultrareview
+        );
         assert_eq!(store.read_exit_code(shell.id).expect("exit code"), Some(0));
         assert_eq!(
             store.read_heartbeat_at(shell.id).expect("heartbeat"),
