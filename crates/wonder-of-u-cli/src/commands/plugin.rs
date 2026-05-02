@@ -1,4 +1,5 @@
 use std::{
+    fs,
     path::{Path, PathBuf},
     process::{Command as ProcessCommand, Output, Stdio},
     sync::Arc,
@@ -15,7 +16,7 @@ use wonder_of_u_core::{
 };
 use wonder_of_u_plugins::{
     PluginCatalog, PluginCatalogEntry, PluginCommandRegistration, PluginConfig, PluginConfigStore,
-    PluginReadiness, PluginTrustDecision, normalize_plugin_id,
+    PluginManifest, PluginReadiness, PluginTrustDecision, normalize_plugin_id,
 };
 use wonder_of_u_skills::SkillCatalog;
 
@@ -95,6 +96,12 @@ enum PluginSubcommand {
     List,
     Status,
     Trust(PluginTrustArgs),
+    Enable(PluginEnableArgs),
+    Disable(PluginDisableArgs),
+    Install(PluginInstallArgs),
+    Uninstall(PluginUninstallArgs),
+    Validate(PluginValidateArgs),
+    Marketplace(PluginMarketplaceArgs),
     Run(PluginRunArgs),
 }
 
@@ -133,6 +140,63 @@ impl PluginTrustStateArg {
     }
 }
 
+#[derive(Debug, Args)]
+struct PluginEnableArgs {
+    /// Plugin ID to enable (set trust to trusted)
+    #[arg()]
+    plugin: String,
+}
+
+#[derive(Debug, Args)]
+struct PluginDisableArgs {
+    /// Plugin ID to disable (set trust to untrusted)
+    #[arg()]
+    plugin: String,
+}
+
+#[derive(Debug, Args)]
+struct PluginInstallArgs {
+    /// Local filesystem path to a plugin directory containing a wonder-of-u-plugin.json manifest
+    #[arg()]
+    path: PathBuf,
+}
+
+#[derive(Debug, Args)]
+struct PluginUninstallArgs {
+    /// Plugin ID or local path to remove from the plugin search directories
+    #[arg()]
+    plugin: String,
+}
+
+#[derive(Debug, Args)]
+struct PluginValidateArgs {
+    /// Path to a plugin directory or manifest file to validate (defaults to current directory)
+    #[arg(default_value = ".")]
+    path: PathBuf,
+}
+
+#[derive(Debug, Args)]
+struct PluginMarketplaceArgs {
+    #[command(subcommand)]
+    action: Option<MarketplaceSubcommand>,
+}
+
+#[derive(Debug, Subcommand)]
+enum MarketplaceSubcommand {
+    /// List configured marketplace sources
+    List,
+    /// Add a marketplace source URL or local path
+    Add {
+        #[arg()]
+        source: String,
+    },
+    /// Remove a marketplace source
+    Remove {
+        #[arg()]
+        source: String,
+    },
+}
+
 #[async_trait]
 impl Command for PluginCommand {
     fn spec(&self) -> CommandSpec {
@@ -156,6 +220,14 @@ impl Command for PluginCommand {
                 render_plugin_status(&plugins, &skills)
             }
             PluginSubcommand::Trust(args) => self.set_trust(&context.cwd, &args)?,
+            PluginSubcommand::Enable(args) => self.enable_plugin(&context.cwd, &args.plugin)?,
+            PluginSubcommand::Disable(args) => self.disable_plugin(&context.cwd, &args.plugin)?,
+            PluginSubcommand::Install(args) => self.install_plugin(&context.cwd, &args.path)?,
+            PluginSubcommand::Uninstall(args) => {
+                self.uninstall_plugin(&context.cwd, &args.plugin)?
+            }
+            PluginSubcommand::Validate(args) => validate_plugin_path(&args.path)?,
+            PluginSubcommand::Marketplace(args) => handle_marketplace(&args)?,
             PluginSubcommand::Run(args) => self.run_plugin(&context, &args)?,
         };
         Ok(CommandOutput::Text(output))
@@ -260,6 +332,146 @@ impl PluginCommand {
             plugin.trust.label(),
             plugin.readiness.label(),
         ))
+    }
+
+    fn enable_plugin(&self, cwd: &Path, plugin_name: &str) -> Result<String> {
+        let trust_args = PluginTrustArgs {
+            plugin: plugin_name.to_string(),
+            state: PluginTrustStateArg::Trusted,
+        };
+        self.set_trust(cwd, &trust_args)
+    }
+
+    fn disable_plugin(&self, cwd: &Path, plugin_name: &str) -> Result<String> {
+        let trust_args = PluginTrustArgs {
+            plugin: plugin_name.to_string(),
+            state: PluginTrustStateArg::Untrusted,
+        };
+        self.set_trust(cwd, &trust_args)
+    }
+
+    fn install_plugin(&self, _cwd: &Path, path: &Path) -> Result<String> {
+        let abs_path = if path.is_absolute() {
+            path.to_path_buf()
+        } else {
+            std::env::current_dir()
+                .unwrap_or_else(|_| PathBuf::from("."))
+                .join(path)
+        };
+        let abs_path = fs::canonicalize(&abs_path).map_err(|e| {
+            WonderError::not_found("plugin path", format!("{}: {e}", abs_path.display()))
+        })?;
+        // Validate manifest exists
+        let manifest_path = if abs_path.is_dir() {
+            abs_path.join("wonder-of-u-plugin.json")
+        } else {
+            abs_path.clone()
+        };
+        if !manifest_path.exists() {
+            return Err(WonderError::not_found(
+                "plugin manifest",
+                format!(
+                    "{} — ensure wonder-of-u-plugin.json exists in the directory",
+                    manifest_path.display()
+                ),
+            ));
+        }
+        // Validate manifest can be parsed
+        let contents = fs::read_to_string(&manifest_path)?;
+        let _manifest: PluginManifest = serde_json::from_str(&contents).map_err(|e| {
+            WonderError::validation(format!(
+                "invalid plugin manifest at {}: {e}",
+                manifest_path.display()
+            ))
+        })?;
+        let plugin_dir = if abs_path.is_dir() {
+            abs_path.clone()
+        } else {
+            abs_path.parent().unwrap_or(Path::new(".")).to_path_buf()
+        };
+        let storage_dir = require_storage_dir(self.storage_dir.clone())?;
+        let store = PluginConfigStore::new(&storage_dir);
+        store.add_plugin_dir(&plugin_dir)?;
+        Ok(format!(
+            "installed=true\npath={}\nnote=plugin directory added to search paths; run `plugin list` to see discovered plugins",
+            plugin_dir.display()
+        ))
+    }
+
+    fn uninstall_plugin(&self, _cwd: &Path, plugin_name: &str) -> Result<String> {
+        let storage_dir = require_storage_dir(self.storage_dir.clone())?;
+        let store = PluginConfigStore::new(&storage_dir);
+        let removed = store.remove_plugin_dir_by_id(plugin_name)?;
+        if removed {
+            Ok(format!(
+                "uninstalled=true\nplugin={plugin_name}\nnote=plugin removed from search paths"
+            ))
+        } else {
+            // If not a dir match, block it by ID
+            store.set_trust(plugin_name, PluginTrustDecision::Blocked)?;
+            Ok(format!(
+                "uninstalled=true\nplugin={plugin_name}\naction=blocked\nnote=plugin blocked; it will not run even if discovered"
+            ))
+        }
+    }
+}
+
+fn validate_plugin_path(path: &Path) -> Result<String> {
+    let abs_path = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .unwrap_or_else(|_| PathBuf::from("."))
+            .join(path)
+    };
+    let manifest_path = if abs_path.is_dir() {
+        abs_path.join("wonder-of-u-plugin.json")
+    } else {
+        abs_path.clone()
+    };
+    if !manifest_path.exists() {
+        return Ok(format!(
+            "valid=false\npath={}\nerror=wonder-of-u-plugin.json not found",
+            manifest_path.display()
+        ));
+    }
+    let contents = fs::read_to_string(&manifest_path).map_err(|e| {
+        WonderError::validation(format!("cannot read {}: {e}", manifest_path.display()))
+    })?;
+    match serde_json::from_str::<PluginManifest>(&contents) {
+        Ok(manifest) => {
+            let commands = manifest.commands.len();
+            let skills = manifest.skills.len();
+            Ok(format!(
+                "valid=true\npath={}\nname={}\nversion={}\ncommands={commands}\nskills={skills}",
+                manifest_path.display(),
+                manifest.name,
+                manifest.version,
+            ))
+        }
+        Err(e) => Ok(format!(
+            "valid=false\npath={}\nerror={}",
+            manifest_path.display(),
+            e
+        )),
+    }
+}
+
+fn handle_marketplace(args: &PluginMarketplaceArgs) -> Result<String> {
+    match &args.action {
+        None | Some(MarketplaceSubcommand::List) => Ok(concat!(
+            "marketplace_sources=none_configured\n",
+            "note=marketplace browsing requires an external marketplace service\n",
+            "hint=use `plugin install <local-path>` to install plugins from a local directory\n",
+            "hint=use `plugin list` to see currently discovered plugins"
+        )
+        .into()),
+        Some(MarketplaceSubcommand::Add { source }) => Ok(format!(
+            "action=add\nsource={source}\nstatus=unavailable\nnote=adding remote marketplace sources requires an external service; local paths can be used with `plugin install <path>`"
+        )),
+        Some(MarketplaceSubcommand::Remove { source }) => Ok(format!(
+            "action=remove\nsource={source}\nstatus=unavailable\nnote=marketplace source management requires an external service"
+        )),
     }
 }
 

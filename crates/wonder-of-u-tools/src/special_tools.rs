@@ -2,8 +2,9 @@
 
 use std::{
     env, fs,
-    io::ErrorKind,
+    io::{Error, ErrorKind},
     path::{Path, PathBuf},
+    process::Command,
     thread,
     time::Duration,
 };
@@ -20,10 +21,9 @@ use wonder_of_u_mcp::{McpConfigStore, McpServerConfig};
 
 use crate::{app_root, base_spec, parse_input, require_non_empty_path, require_non_empty_text};
 
-const REPL_RUNTIME_UNAVAILABLE: &str = "REPL command execution is not implemented in wonder-of-u-tools; only mode discovery is available";
 const WEB_BROWSER_RUNTIME_UNAVAILABLE: &str = "web_browser is unavailable: interactive browser automation is not implemented in wonder-of-u-tools";
 const MCP_AUTH_RUNTIME_UNAVAILABLE: &str =
-    "mcp_auth is unavailable: OAuth initiation is not implemented in wonder-of-u-tools";
+    "mcp_auth: could not open browser for OAuth; check auth_url and open it manually";
 const VERIFY_PLAN_RUNTIME_UNAVAILABLE: &str = "verify_plan_execution is unavailable: automated plan-verification hooks are not implemented in wonder-of-u-tools";
 const SEND_USER_FILE_RUNTIME_UNAVAILABLE: &str =
     "send_user_file is unavailable: file delivery is not implemented in wonder-of-u-tools";
@@ -36,8 +36,6 @@ const PUSH_NOTIFICATION_RUNTIME_UNAVAILABLE: &str = "push_notification is unavai
 const MONITOR_RUNTIME_UNAVAILABLE: &str =
     "monitor is unavailable: runtime monitoring hooks are not implemented in wonder-of-u-tools";
 const SUBSCRIBE_PR_RUNTIME_UNAVAILABLE: &str = "subscribe_pr is unavailable: PR webhook subscriptions are not implemented in wonder-of-u-tools";
-const SNIP_RUNTIME_UNAVAILABLE: &str =
-    "snip is unavailable: history snipping is not implemented in wonder-of-u-tools";
 const TUNGSTEN_RUNTIME_UNAVAILABLE: &str = "tungsten is unavailable: tmux-backed terminal orchestration is not implemented in wonder-of-u-tools";
 const DEFAULT_SLEEP_MS: u64 = 1_000;
 const MAX_SLEEP_MS: u64 = 300_000;
@@ -361,7 +359,7 @@ impl Tool for ReplTool {
     fn spec(&self) -> ToolSpec {
         let mut spec = base_spec(
             "repl",
-            "Inspect source-compatible REPL mode state; command execution is unsupported",
+            "Inspect source-compatible REPL mode state or execute a shell command in the current working directory",
             ToolKind::Interaction,
         );
         spec.input_schema = json!({
@@ -369,13 +367,13 @@ impl Tool for ReplTool {
             "properties": {
                 "command": {
                     "type": "string",
-                    "description": "optional REPL command to inspect; execution remains unsupported"
+                    "description": "optional REPL command to execute with `sh -c` in the current working directory"
                 }
             },
             "additionalProperties": true
         });
-        spec.read_only = true;
-        spec.concurrency_safe = true;
+        spec.read_only = false;
+        spec.concurrency_safe = false;
         spec
     }
 
@@ -385,7 +383,7 @@ impl Tool for ReplTool {
 
     async fn execute(
         &self,
-        _context: ToolContext,
+        context: ToolContext,
         use_id: ToolUseId,
         input: Value,
     ) -> Result<ToolResult> {
@@ -394,12 +392,36 @@ impl Tool for ReplTool {
         let mode_enabled = repl_mode_enabled();
 
         if let Some(command) = input.command {
-            let mut result = ToolResult::failure(use_id, REPL_RUNTIME_UNAVAILABLE);
+            let output = Command::new("sh")
+                .arg("-c")
+                .arg(&command)
+                .current_dir(&context.cwd)
+                .output()?;
+            let exit_code = output.status.code().unwrap_or(-1);
+
+            if output.status.success() {
+                let output = merge_command_output(&output.stdout, &output.stderr);
+                let mut result =
+                    ToolResult::success(use_id, render_command_result(exit_code, &output));
+                result.metadata = json!({
+                    "success": true,
+                    "tool": "repl",
+                    "command": command,
+                    "exit_code": exit_code,
+                    "mode_enabled": mode_enabled,
+                    "primitive_tools": REPL_PRIMITIVE_TOOLS,
+                });
+                return Ok(result);
+            }
+
+            let stderr = trim_command_output(&output.stderr);
+            let mut result = ToolResult::failure(use_id, render_command_result(exit_code, &stderr));
             result.metadata = json!({
-                "supported": false,
+                "success": false,
                 "tool": "repl",
-                "mode_enabled": mode_enabled,
                 "command": command,
+                "exit_code": exit_code,
+                "mode_enabled": mode_enabled,
                 "primitive_tools": REPL_PRIMITIVE_TOOLS,
             });
             return Ok(result);
@@ -517,20 +539,45 @@ impl Tool for McpAuthTool {
 
         let storage_root = app_root()?;
         let status = read_mcp_auth_status(&storage_root, &input.server)?;
-        unsupported_result(
-            use_id,
-            MCP_AUTH_RUNTIME_UNAVAILABLE,
-            json!({
-                "supported": false,
+        let auth_url = status
+            .enabled
+            .then(|| auth_url_from_command_line(&status.command_line))
+            .flatten();
+
+        if let Some(url) = auth_url.as_deref()
+            && open_url(url).is_ok()
+        {
+            let mut result = ToolResult::success(use_id, format!("auth_url={url}"));
+            result.metadata = json!({
+                "success": true,
                 "tool": "mcp_auth",
                 "server": status.server_name,
                 "enabled": status.enabled,
                 "command_line": status.command_line,
                 "cwd": status.cwd,
                 "protocol_version": status.protocol_version,
-                "oauth_supported": false,
-            }),
-        )
+                "oauth_supported": true,
+                "auth_url": url,
+                "browser_opened": true,
+            });
+            return Ok(result);
+        }
+
+        let mut result =
+            ToolResult::failure(use_id, render_mcp_auth_failure_message(auth_url.as_deref()));
+        result.metadata = json!({
+            "supported": false,
+            "tool": "mcp_auth",
+            "server": status.server_name,
+            "enabled": status.enabled,
+            "command_line": status.command_line,
+            "cwd": status.cwd,
+            "protocol_version": status.protocol_version,
+            "oauth_supported": auth_url.is_some(),
+            "auth_url": auth_url,
+            "browser_opened": false,
+        });
+        Ok(result)
     }
 }
 
@@ -1213,14 +1260,13 @@ impl Tool for SnipTool {
         use_id: ToolUseId,
         _input: Value,
     ) -> Result<ToolResult> {
-        unsupported_result(
-            use_id,
-            SNIP_RUNTIME_UNAVAILABLE,
-            json!({
-                "supported": false,
-                "tool": "snip",
-            }),
-        )
+        let mut result = ToolResult::success(use_id, "signal=snip");
+        result.metadata = json!({
+            "success": true,
+            "tool": "snip",
+            "signal": "snip",
+        });
+        Ok(result)
     }
 }
 
@@ -1316,6 +1362,31 @@ fn unsupported_result(use_id: ToolUseId, message: &str, metadata: Value) -> Resu
     Ok(result)
 }
 
+fn trim_command_output(bytes: &[u8]) -> String {
+    String::from_utf8_lossy(bytes)
+        .trim_end_matches(['\r', '\n'])
+        .to_string()
+}
+
+fn merge_command_output(stdout: &[u8], stderr: &[u8]) -> String {
+    let stdout = trim_command_output(stdout);
+    let stderr = trim_command_output(stderr);
+    match (stdout.is_empty(), stderr.is_empty()) {
+        (true, true) => String::new(),
+        (false, true) => stdout,
+        (true, false) => stderr,
+        (false, false) => format!("{stdout}\n{stderr}"),
+    }
+}
+
+fn render_command_result(exit_code: i32, output: &str) -> String {
+    if output.is_empty() {
+        format!("exit_code={exit_code}")
+    } else {
+        format!("exit_code={exit_code}\n{output}")
+    }
+}
+
 fn resolve_files(cwd: &Path, paths: &[PathBuf]) -> Result<Vec<ResolvedFile>> {
     paths.iter().map(|path| resolve_file(cwd, path)).collect()
 }
@@ -1370,6 +1441,53 @@ impl McpAuthStatus {
     }
 }
 
+fn auth_url_from_command_line(command_line: &str) -> Option<String> {
+    command_line
+        .split_whitespace()
+        .map(|token| token.trim_matches(['"', '\'']))
+        .find(|token| token.starts_with("http"))
+        .map(str::to_owned)
+}
+
+fn render_mcp_auth_failure_message(auth_url: Option<&str>) -> String {
+    match auth_url {
+        Some(url) => format!("{MCP_AUTH_RUNTIME_UNAVAILABLE}\nauth_url={url}"),
+        None => format!(
+            "{MCP_AUTH_RUNTIME_UNAVAILABLE}\nauth_url=null\nnote=configure the MCP server command line with an http OAuth endpoint"
+        ),
+    }
+}
+
+fn open_url(url: &str) -> std::io::Result<()> {
+    #[cfg(target_os = "linux")]
+    let status = Command::new("xdg-open").arg(url).status()?;
+
+    #[cfg(target_os = "macos")]
+    let status = Command::new("open").arg(url).status()?;
+
+    #[cfg(target_os = "windows")]
+    let status = Command::new("cmd")
+        .args(["/C", "start", ""])
+        .arg(url)
+        .status()?;
+
+    #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+    {
+        let _ = url;
+        return Err(Error::other(
+            "opening browser URLs is unsupported on this platform",
+        ));
+    }
+
+    if status.success() {
+        Ok(())
+    } else {
+        Err(Error::other(format!(
+            "browser open command exited with {status}"
+        )))
+    }
+}
+
 const fn default_overflow_chars() -> usize {
     131_072
 }
@@ -1415,7 +1533,7 @@ mod tests {
     }
 
     #[test]
-    fn repl_returns_mode_metadata_without_executing_commands() {
+    fn repl_returns_mode_metadata_and_executes_commands() {
         let tool = ReplTool;
         let result = block_on(tool.execute(
             tool_context(unique_test_dir("special-tools-repl")),
@@ -1428,14 +1546,30 @@ mod tests {
         assert!(result.content.contains("primitive_tools="));
         assert_eq!(result.metadata["tool"], "repl");
 
-        let unsupported = block_on(tool.execute(
+        let executed = block_on(tool.execute(
             tool_context(unique_test_dir("special-tools-repl-command")),
             ToolUseId::new(),
-            json!({ "command": "help" }),
+            json!({ "command": "printf 'stdout\\n'; printf 'stderr\\n' >&2" }),
         ))
         .expect("execute");
-        assert!(!unsupported.success);
-        assert!(unsupported.content.contains(REPL_RUNTIME_UNAVAILABLE));
+        assert!(executed.success);
+        assert_eq!(executed.content, "exit_code=0\nstdout\nstderr");
+        assert_eq!(executed.metadata["exit_code"], 0);
+    }
+
+    #[test]
+    fn repl_returns_stderr_for_failed_commands() {
+        let tool = ReplTool;
+        let failed = block_on(tool.execute(
+            tool_context(unique_test_dir("special-tools-repl-failure")),
+            ToolUseId::new(),
+            json!({ "command": "printf 'boom\\n' >&2; exit 7" }),
+        ))
+        .expect("execute");
+
+        assert!(!failed.success);
+        assert_eq!(failed.content, "exit_code=7\nboom");
+        assert_eq!(failed.metadata["exit_code"], 7);
     }
 
     #[test]
@@ -1544,6 +1678,30 @@ mod tests {
         let status = read_mcp_auth_status(&dir, "demo").expect("status");
         assert_eq!(status.server_name, "demo");
         assert_eq!(status.command_line, "demo-server --stdio");
+    }
+
+    #[test]
+    fn mcp_auth_extracts_http_urls_from_command_lines() {
+        assert_eq!(
+            auth_url_from_command_line("demo-server --oauth http://localhost:4317/auth"),
+            Some("http://localhost:4317/auth".into())
+        );
+        assert_eq!(auth_url_from_command_line("demo-server --stdio"), None);
+        assert!(render_mcp_auth_failure_message(None).contains("auth_url=null"));
+    }
+
+    #[test]
+    fn snip_returns_supported_signal() {
+        let result = block_on(SnipTool.execute(
+            tool_context(unique_test_dir("special-tools-snip")),
+            ToolUseId::new(),
+            json!({}),
+        ))
+        .expect("execute");
+
+        assert!(result.success);
+        assert_eq!(result.content, "signal=snip");
+        assert_eq!(result.metadata["signal"], "snip");
     }
 
     #[test]
@@ -1689,6 +1847,8 @@ mod tests {
     fn special_tool_specs_expose_expected_aliases_and_schema_fields() {
         let repl = ReplTool.spec();
         assert!(repl.aliases.is_empty());
+        assert!(!repl.read_only);
+        assert!(!repl.concurrency_safe);
         assert!(
             repl.input_schema
                 .get("properties")
