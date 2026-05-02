@@ -503,7 +503,7 @@ pub fn evaluate_permission(
     if let Some(issue) = request
         .shell_command
         .as_deref()
-        .and_then(check_shell_safety)
+        .and_then(|command| check_shell_safety_for_request(request, command))
         .filter(|issue| issue.verdict == ShellSafetyVerdict::Blocked)
     {
         return PermissionDecision::deny(PermissionDecisionReason::ShellSafety { issue });
@@ -539,7 +539,7 @@ pub fn evaluate_permission(
     if let Some(issue) = request
         .shell_command
         .as_deref()
-        .and_then(check_shell_safety)
+        .and_then(|command| check_shell_safety_for_request(request, command))
         .filter(|issue| issue.verdict == ShellSafetyVerdict::Review)
     {
         return review_decision(
@@ -563,64 +563,189 @@ pub fn evaluate_permission(
 
 #[must_use]
 pub fn check_shell_safety(command: &str) -> Option<ShellSafetyIssue> {
-    let normalized = command.to_ascii_lowercase();
-    const BLOCKED_PATTERNS: [(&str, &str); 4] = [
-        (
-            "rm -rf /",
-            "shell command is denied because it attempts to remove the filesystem root",
-        ),
-        (
-            "@p}",
-            "shell command uses disallowed ${var@P}-style expansion",
-        ),
-        (
-            "${!",
-            "shell command uses disallowed indirect parameter expansion",
-        ),
-        ("eval ", "shell command uses eval-style dynamic execution"),
-    ];
-    const REVIEW_PATTERNS: [(&str, &str); 5] = [
-        (
-            "rm -rf",
-            "shell command requires review because it removes files recursively",
-        ),
-        (
-            "| sh",
-            "shell command requires review because it pipes output into a shell",
-        ),
-        (
-            "sudo ",
-            "shell command requires review because it escalates privileges",
-        ),
-        (
-            "mkfs",
-            "shell command requires review because it can reformat a device",
-        ),
-        (
-            "dd if=",
-            "shell command requires review because it can overwrite raw devices",
-        ),
-    ];
+    let normalized = normalize_shell_command(command);
 
-    for (pattern, message) in BLOCKED_PATTERNS {
-        if normalized.contains(pattern) {
-            return Some(ShellSafetyIssue {
-                verdict: ShellSafetyVerdict::Blocked,
-                message: message.into(),
-            });
-        }
+    if normalized.contains("rm -rf /") || normalized.contains("rm -fr /") {
+        return Some(ShellSafetyIssue {
+            verdict: ShellSafetyVerdict::Blocked,
+            message: "shell command is denied because it attempts to remove the filesystem root"
+                .into(),
+        });
+    }
+    if normalized.contains("@p}") {
+        return Some(ShellSafetyIssue {
+            verdict: ShellSafetyVerdict::Blocked,
+            message: "shell command uses disallowed ${var@P}-style expansion".into(),
+        });
+    }
+    if normalized.contains("${!") {
+        return Some(ShellSafetyIssue {
+            verdict: ShellSafetyVerdict::Blocked,
+            message: "shell command uses disallowed indirect parameter expansion".into(),
+        });
+    }
+    if contains_shell_token(&normalized, "eval") {
+        return Some(ShellSafetyIssue {
+            verdict: ShellSafetyVerdict::Blocked,
+            message: "shell command uses eval-style dynamic execution".into(),
+        });
     }
 
-    for (pattern, message) in REVIEW_PATTERNS {
-        if normalized.contains(pattern) {
-            return Some(ShellSafetyIssue {
-                verdict: ShellSafetyVerdict::Review,
-                message: message.into(),
-            });
-        }
+    if normalized.contains("rm -rf") || normalized.contains("rm -fr") {
+        return Some(ShellSafetyIssue {
+            verdict: ShellSafetyVerdict::Review,
+            message: "shell command requires review because it removes files recursively".into(),
+        });
+    }
+    if pipes_into_shell(&normalized) {
+        return Some(ShellSafetyIssue {
+            verdict: ShellSafetyVerdict::Review,
+            message: "shell command requires review because it pipes output into a shell".into(),
+        });
+    }
+    if contains_shell_token(&normalized, "sudo") {
+        return Some(ShellSafetyIssue {
+            verdict: ShellSafetyVerdict::Review,
+            message: "shell command requires review because it escalates privileges".into(),
+        });
+    }
+    if shell_tokens(&normalized)
+        .into_iter()
+        .any(|token| token == "mkfs" || token.starts_with("mkfs."))
+    {
+        return Some(ShellSafetyIssue {
+            verdict: ShellSafetyVerdict::Review,
+            message: "shell command requires review because it can reformat a device".into(),
+        });
+    }
+    if normalized.contains("dd if=") {
+        return Some(ShellSafetyIssue {
+            verdict: ShellSafetyVerdict::Review,
+            message: "shell command requires review because it can overwrite raw devices".into(),
+        });
     }
 
     None
+}
+
+fn check_shell_safety_for_request(
+    request: &PermissionRequest,
+    command: &str,
+) -> Option<ShellSafetyIssue> {
+    if request.matches_tool_name("powershell")
+        && let Some(issue) = check_powershell_safety(command)
+    {
+        return Some(issue);
+    }
+
+    check_shell_safety(command)
+}
+
+fn check_powershell_safety(command: &str) -> Option<ShellSafetyIssue> {
+    let normalized = normalize_shell_command(command);
+    let tokens = shell_tokens(&normalized);
+
+    if tokens.iter().any(|token| {
+        matches!(*token, "-enc" | "-encodedcommand")
+            || token.starts_with("-enc:")
+            || token.starts_with("-encodedcommand:")
+    }) {
+        return Some(ShellSafetyIssue {
+            verdict: ShellSafetyVerdict::Review,
+            message: "PowerShell command requires review because it uses encoded parameters".into(),
+        });
+    }
+
+    let start_process = tokens.contains(&"start-process");
+    let run_as = tokens
+        .windows(2)
+        .any(|pair| pair[0] == "-verb" && pair[1] == "runas")
+        || tokens.iter().any(|token| token.starts_with("-verb:runas"));
+    if start_process && run_as {
+        return Some(ShellSafetyIssue {
+            verdict: ShellSafetyVerdict::Review,
+            message: "PowerShell command requires review because it requests elevated execution"
+                .into(),
+        });
+    }
+
+    if tokens
+        .iter()
+        .any(|token| matches!(*token, "invoke-expression" | "iex"))
+    {
+        return Some(ShellSafetyIssue {
+            verdict: ShellSafetyVerdict::Review,
+            message:
+                "PowerShell command requires review because it executes dynamic PowerShell code"
+                    .into(),
+        });
+    }
+
+    if tokens.first().is_some_and(|token| {
+        matches!(
+            *token,
+            "powershell" | "powershell.exe" | "pwsh" | "pwsh.exe"
+        )
+    }) {
+        return Some(ShellSafetyIssue {
+            verdict: ShellSafetyVerdict::Review,
+            message:
+                "PowerShell command requires review because it spawns a nested PowerShell process"
+                    .into(),
+        });
+    }
+
+    None
+}
+
+fn normalize_shell_command(command: &str) -> String {
+    let mut normalized = String::with_capacity(command.len());
+    let mut saw_whitespace = false;
+
+    for ch in command.chars() {
+        let ch = match ch {
+            '\u{2013}' | '\u{2014}' | '\u{2015}' => '-',
+            ';' | '&' | '(' | ')' => ' ',
+            _ => ch.to_ascii_lowercase(),
+        };
+
+        if ch.is_whitespace() {
+            if !saw_whitespace {
+                normalized.push(' ');
+                saw_whitespace = true;
+            }
+            continue;
+        }
+
+        normalized.push(ch);
+        saw_whitespace = false;
+    }
+
+    normalized.trim().to_string()
+}
+
+fn shell_tokens(command: &str) -> Vec<&str> {
+    command
+        .split(|ch: char| ch.is_whitespace() || matches!(ch, '|' | '<' | '>'))
+        .filter(|token| !token.is_empty())
+        .collect()
+}
+
+fn contains_shell_token(command: &str, token: &str) -> bool {
+    shell_tokens(command).into_iter().any(|part| part == token)
+}
+
+fn pipes_into_shell(command: &str) -> bool {
+    let mut segments = command.split('|').map(str::trim);
+    let Some(_) = segments.next() else {
+        return false;
+    };
+
+    segments.any(|segment| {
+        shell_tokens(segment)
+            .first()
+            .is_some_and(|token| matches!(*token, "sh" | "bash" | "dash" | "ksh" | "zsh"))
+    })
 }
 
 #[must_use]
@@ -978,6 +1103,28 @@ mod tests {
             decision,
             PermissionDecision::Ask { .. } | PermissionDecision::Deny { .. }
         ));
+    }
+
+    #[test]
+    fn permission_shell_eval_is_denied() {
+        let context = ToolPermissionContext::new("/workspace", PermissionMode::Default);
+        let request = PermissionRequest::new("bash").with_shell_command("echo ok; eval \"$cmd\"");
+
+        let decision = context.evaluate(&request);
+
+        assert!(matches!(decision, PermissionDecision::Deny { .. }));
+    }
+
+    #[test]
+    fn permission_powershell_encoded_command_requires_review() {
+        let context = ToolPermissionContext::new("/workspace", PermissionMode::Default);
+        let request = PermissionRequest::new("powershell")
+            .with_shell_command("pwsh –EncodedCommand ZQBjAGgAbwA=");
+
+        let decision = context.evaluate(&request);
+
+        assert!(matches!(decision, PermissionDecision::Ask { .. }));
+        assert!(decision.reason().to_string().contains("encoded"));
     }
 
     #[test]

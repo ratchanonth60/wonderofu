@@ -15,6 +15,7 @@ use wonder_of_u_core::{
 };
 use wonder_of_u_mcp::{McpConfigStore, McpStatusReport};
 use wonder_of_u_storage::{STORAGE_SCHEMA_VERSION, SessionMetadata, TranscriptStore};
+use wonder_of_u_storage::{SessionMemoryIndexStore, SyncStatusReport};
 
 use super::git_command_output;
 use super::plugin::load_catalogs;
@@ -339,6 +340,44 @@ impl Command for StatusCommand {
                 lines.push(format!(
                     "pastes={}",
                     count_files(store.paths().pastes_dir(), None)?
+                ));
+                let memory_indexes = SessionMemoryIndexStore::new(storage_dir.clone()).list()?;
+                lines.push(format!("session_memory_indexes={}", memory_indexes.len()));
+                lines.push(format!(
+                    "session_memory_entries={}",
+                    memory_indexes
+                        .iter()
+                        .map(|index| index.entries.len())
+                        .sum::<usize>()
+                ));
+                let sync_status = SyncStatusReport::inspect(store.paths());
+                lines.push(format!(
+                    "settings_sync={}",
+                    sync_status.settings_sync.status.label()
+                ));
+                lines.push(format!(
+                    "settings_sync_cloud={}",
+                    sync_status.settings_sync.cloud_status.label()
+                ));
+                lines.push(format!(
+                    "settings_sync_cloud_attempted={}",
+                    sync_status.settings_sync.cloud_attempted
+                ));
+                lines.push(format!(
+                    "remote_managed_settings={}",
+                    sync_status.remote_managed_settings.status.label()
+                ));
+                lines.push(format!(
+                    "remote_managed_settings_cloud_attempted={}",
+                    sync_status.remote_managed_settings.cloud_attempted
+                ));
+                lines.push(format!(
+                    "team_memory_sync={}",
+                    sync_status.team_memory_sync.status.label()
+                ));
+                lines.push(format!(
+                    "team_memory_sync_cloud_attempted={}",
+                    sync_status.team_memory_sync.cloud_attempted
                 ));
                 let mcp_store = McpConfigStore::new(storage_dir.clone());
                 let mcp_config = mcp_store.read()?;

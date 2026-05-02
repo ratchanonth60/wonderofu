@@ -1,7 +1,26 @@
 use wonder_of_u_core::{
-    AppState, MessageEnvelope, MessagePayload, QueuedCommand, TaskKind, TaskState, TaskStatus,
+    AppState, MessageEnvelope, MessagePayload, TaskKind, TaskState, TaskStatus,
     session_footer_text, session_status_text,
 };
+
+mod rich;
+mod tool_activity;
+
+use crate::prompt::PromptQueueView;
+
+pub use rich::{
+    AttachmentKind, AttachmentSummaryView, FileEditReferenceView, GroupedToolCallView,
+    MarkdownBlockView, MarkdownCodeBlockView, MarkdownSummaryView, RejectedToolMessageKind,
+    RejectedToolMessageView, RichMessageView, SystemErrorKind, SystemErrorView, ThinkingBlockView,
+    ToolCallView, ToolResultStatus, TranscriptBoundaryView, rich_message_views,
+};
+pub use tool_activity::{
+    McpCatalogItemView, McpCatalogKind, McpCatalogSummaryView, NotebookEditMode,
+    NotebookRejectionSummaryView, RejectedPermissionSummaryView, TaskActivityKind,
+    TaskActivitySummaryView, ToolResultCounts, UnknownToolOutputView,
+};
+
+const DEFAULT_MESSAGE_SUMMARY_WIDTH: usize = 80;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum MessageRole {
@@ -54,13 +73,10 @@ pub struct PickerView {
 }
 
 pub fn message_lines(messages: &[MessageEnvelope]) -> Vec<MessageLineView> {
-    let mut lines = Vec::new();
-
-    for message in messages {
-        render_message(message, &mut lines);
-    }
-
-    lines
+    rich_message_views(messages)
+        .into_iter()
+        .flat_map(|view| view.display_lines(DEFAULT_MESSAGE_SUMMARY_WIDTH))
+        .collect()
 }
 
 #[must_use]
@@ -115,6 +131,7 @@ pub fn task_panel_view(app: &AppState) -> Option<TaskPanelView> {
                         text.push_str(&format!(" • {}", agent_runtime_label(agent.runtime)));
                     }
                 }
+                TaskKind::RemoteAgent => {}
             }
 
             MessageLineView::new(text, role)
@@ -129,33 +146,21 @@ pub fn task_panel_view(app: &AppState) -> Option<TaskPanelView> {
 
 #[must_use]
 pub fn queued_panel_view(app: &AppState) -> Option<TaskPanelView> {
-    const MAX_VISIBLE_COMMANDS: usize = 3;
-
-    if app.queued_commands.is_empty() {
-        return None;
-    }
-
-    let hidden_commands = app
-        .queued_commands
-        .len()
-        .saturating_sub(MAX_VISIBLE_COMMANDS);
-    let mut lines = app
-        .queued_commands
-        .iter()
-        .take(MAX_VISIBLE_COMMANDS)
-        .enumerate()
-        .map(|(index, queued)| {
+    let queued_commands = app.queued_commands.iter().cloned().collect::<Vec<_>>();
+    let queue = PromptQueueView::from_commands(&queued_commands)?;
+    let overflow = queue.overflow_label();
+    let mut lines = queue
+        .commands
+        .into_iter()
+        .map(|queued| {
             MessageLineView::new(
-                format!("{}. {}", index + 1, queued_command_preview(queued)),
+                format!("{}. {}", queued.index, queued.preview),
                 MessageRole::Progress,
             )
         })
         .collect::<Vec<_>>();
-    if hidden_commands > 0 {
-        lines.push(MessageLineView::new(
-            format!("+{hidden_commands} more queued"),
-            MessageRole::System,
-        ));
+    if let Some(overflow) = overflow {
+        lines.push(MessageLineView::new(overflow, MessageRole::System));
     }
 
     Some(TaskPanelView {
@@ -302,21 +307,6 @@ fn render_message(message: &MessageEnvelope, output: &mut Vec<MessageLineView>) 
     }
 }
 
-fn queued_command_preview(queued: &QueuedCommand) -> String {
-    const MAX_PREVIEW_CHARS: usize = 32;
-
-    let normalized = queued
-        .command
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ");
-    if normalized.is_empty() {
-        return "(empty command)".into();
-    }
-
-    truncate_with_ellipsis(&normalized, MAX_PREVIEW_CHARS)
-}
-
 fn push_prefixed_lines(
     output: &mut Vec<MessageLineView>,
     prefix: &str,
@@ -335,25 +325,11 @@ fn push_prefixed_lines(
     }
 }
 
-fn truncate_with_ellipsis(text: &str, max_chars: usize) -> String {
-    let char_count = text.chars().count();
-    if char_count <= max_chars {
-        return text.to_string();
-    }
-
-    if max_chars <= 1 {
-        return "…".into();
-    }
-
-    let mut truncated = text.chars().take(max_chars - 1).collect::<String>();
-    truncated.push('…');
-    truncated
-}
-
 fn task_kind_label(kind: TaskKind) -> &'static str {
     match kind {
         TaskKind::LocalShell => "shell",
         TaskKind::LocalAgent => "agent",
+        TaskKind::RemoteAgent => "remote agent",
     }
 }
 
@@ -392,7 +368,7 @@ mod tests {
     use std::path::PathBuf;
 
     use wonder_of_u_core::{
-        AppState, MessagePayload, QueuePlacement, SessionId, TaskState, TokenUsage,
+        AppState, MessagePayload, QueuePlacement, SessionId, TaskState, TokenUsage, ToolUseId,
     };
 
     use super::*;
@@ -400,6 +376,8 @@ mod tests {
     #[test]
     fn message_lines_expand_multiline_payloads() {
         let session_id = SessionId::new();
+        let use_id =
+            ToolUseId::parse("00000000-0000-0000-0000-000000000001").expect("valid tool use id");
         let messages = vec![
             MessageEnvelope::new(
                 session_id,
@@ -411,7 +389,7 @@ mod tests {
                 session_id,
                 MessagePayload::ToolResult {
                     tool: "bash".into(),
-                    use_id: Default::default(),
+                    use_id,
                     success: false,
                     content: "permission denied".into(),
                 },
@@ -421,9 +399,12 @@ mod tests {
         assert_eq!(
             message_lines(&messages),
             vec![
-                MessageLineView::new("assistant> line one", MessageRole::Assistant),
-                MessageLineView::new("           line two", MessageRole::Assistant),
-                MessageLineView::new("tool[bash] error> permission denied", MessageRole::Error),
+                MessageLineView::new("assistant> line one line two", MessageRole::Assistant),
+                MessageLineView::new("tools[bash]> 1 call", MessageRole::Tool),
+                MessageLineView::new(
+                    "  • #00000000 error · no input recorded → permission denied",
+                    MessageRole::Error,
+                ),
             ]
         );
     }
@@ -476,6 +457,83 @@ mod tests {
                 MessageLineView::new("2. draft the migration plan", MessageRole::Progress),
                 MessageLineView::new("3. /theme midnight", MessageRole::Progress),
                 MessageLineView::new("+1 more queued", MessageRole::System),
+            ]
+        );
+    }
+
+    #[test]
+    fn message_lines_preserve_legacy_attachment_thinking_and_boundary_output() {
+        let session_id = SessionId::new();
+        let messages = vec![
+            MessageEnvelope::new(
+                session_id,
+                MessagePayload::UserAttachment {
+                    label: "diagram.png".into(),
+                    uri: "file:///workspace/assets/diagram.png".into(),
+                },
+            ),
+            MessageEnvelope::new(
+                session_id,
+                MessagePayload::AssistantThinking {
+                    content: "step one\nstep two".into(),
+                    collapsed: true,
+                },
+            ),
+            MessageEnvelope::new(
+                session_id,
+                MessagePayload::CompactBoundary {
+                    summary: "Conversation compacted".into(),
+                },
+            ),
+        ];
+
+        assert_eq!(
+            message_lines(&messages),
+            vec![
+                MessageLineView::new("attachment> image diagram.png", MessageRole::User,),
+                MessageLineView::new("  file:///workspace/assets/diagram.png", MessageRole::User),
+                MessageLineView::new(
+                    "thinking> ∴ Thinking · collapsed · 2 lines hidden",
+                    MessageRole::Progress,
+                ),
+                MessageLineView::new("summary> ✻ Conversation compacted", MessageRole::System),
+            ]
+        );
+    }
+
+    #[test]
+    fn message_lines_group_tool_calls_into_compact_summaries() {
+        let session_id = SessionId::new();
+        let use_id = wonder_of_u_core::ToolUseId::parse("00000000-0000-0000-0000-000000000001")
+            .expect("valid tool use id");
+        let messages = vec![
+            MessageEnvelope::new(
+                session_id,
+                MessagePayload::AssistantToolUse {
+                    tool: "bash".into(),
+                    use_id,
+                    input: serde_json::json!({ "command": "echo hi" }),
+                },
+            ),
+            MessageEnvelope::new(
+                session_id,
+                MessagePayload::ToolResult {
+                    tool: "bash".into(),
+                    use_id,
+                    success: true,
+                    content: "done".into(),
+                },
+            ),
+        ];
+
+        assert_eq!(
+            message_lines(&messages),
+            vec![
+                MessageLineView::new("tools[bash]> 1 call", MessageRole::Tool),
+                MessageLineView::new(
+                    "  • #00000000 ok · command=\"echo hi\" → done",
+                    MessageRole::Tool,
+                ),
             ]
         );
     }

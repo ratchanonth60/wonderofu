@@ -12,13 +12,17 @@ use wonder_of_u_core::{
     resolve_path,
 };
 
-use crate::{base_spec, display_path, parse_input, require_non_empty_path, require_non_empty_text};
+use crate::{
+    base_spec, display_path, parse_input, require_non_empty_path, require_non_empty_text,
+    schema_with_aliases,
+};
 
 const DEFAULT_FILE_READ_MAX_BYTES: usize = 256 * 1024;
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct FileReadInput {
+    #[serde(alias = "file_path")]
     pub path: PathBuf,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub start_line: Option<usize>,
@@ -26,6 +30,12 @@ pub struct FileReadInput {
     pub end_line: Option<usize>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_bytes: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub offset: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limit: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pages: Option<String>,
 }
 
 impl FileReadInput {
@@ -46,6 +56,23 @@ impl FileReadInput {
                 "file_read max_bytes must be greater than zero",
             ));
         }
+        if self.limit == Some(0) {
+            return Err(WonderError::validation(
+                "file_read limit must be greater than zero",
+            ));
+        }
+        if let (Some(start_line), Some(offset)) = (self.start_line, self.offset)
+            && start_line != normalize_offset(offset)
+        {
+            return Err(WonderError::validation(
+                "file_read accepts either `start_line` or source-compatible `offset`, not conflicting values for both",
+            ));
+        }
+        if self.pages.is_some() {
+            return Err(WonderError::validation(
+                "file_read pages is not supported in wonder-of-u-tools",
+            ));
+        }
         if let (Some(start), Some(end)) = (self.start_line, self.end_line)
             && end < start
         {
@@ -58,6 +85,24 @@ impl FileReadInput {
 
     fn max_bytes(&self) -> usize {
         self.max_bytes.unwrap_or(DEFAULT_FILE_READ_MAX_BYTES)
+    }
+
+    fn resolved_start_line(&self) -> usize {
+        self.start_line
+            .or_else(|| self.offset.map(normalize_offset))
+            .unwrap_or(1)
+    }
+
+    fn resolved_end_line(&self, total_lines: usize) -> Option<usize> {
+        if let Some(end_line) = self.end_line {
+            return Some(end_line);
+        }
+
+        self.limit.map(|limit| {
+            self.resolved_start_line()
+                .saturating_add(limit.saturating_sub(1))
+                .min(total_lines)
+        })
     }
 }
 
@@ -83,6 +128,7 @@ impl FileWriteMode {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct FileWriteInput {
+    #[serde(alias = "file_path")]
     pub path: PathBuf,
     pub content: String,
     #[serde(default)]
@@ -98,8 +144,11 @@ impl FileWriteInput {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct FileEditInput {
+    #[serde(alias = "file_path")]
     pub path: PathBuf,
+    #[serde(alias = "old_string")]
     pub old_text: String,
+    #[serde(alias = "new_string")]
     pub new_text: String,
     #[serde(default)]
     pub replace_all: bool,
@@ -127,7 +176,13 @@ impl Tool for FileReadTool {
         let mut spec = base_spec("file_read", "Read a UTF-8 file", ToolKind::FileRead)
             .with_input_schema(
                 ToolSchema::object()
-                    .property("path", ToolSchema::string("path to the file to read"))
+                    .property(
+                        "path",
+                        schema_with_aliases(
+                            ToolSchema::string("path to the file to read"),
+                            &["file_path"],
+                        ),
+                    )
                     .property(
                         "start_line",
                         ToolSchema::integer("optional 1-indexed starting line to include"),
@@ -140,8 +195,27 @@ impl Tool for FileReadTool {
                         "max_bytes",
                         ToolSchema::integer("optional maximum number of bytes allowed to be read"),
                     )
+                    .property(
+                        "offset",
+                        ToolSchema::integer(
+                            "source-compatible 1-indexed starting line; 0 is treated like 1",
+                        ),
+                    )
+                    .property(
+                        "limit",
+                        ToolSchema::integer(
+                            "source-compatible maximum number of lines to return from the starting line",
+                        ),
+                    )
+                    .property(
+                        "pages",
+                        ToolSchema::string(
+                            "source-compatible PDF page range; currently unsupported in the Rust runtime",
+                        ),
+                    )
                     .required("path"),
             );
+        spec.aliases.push("Read".into());
         spec.read_only = true;
         spec.concurrency_safe = true;
         spec
@@ -179,7 +253,7 @@ impl Tool for FileReadTool {
         let selected = if total_lines == 0 {
             Vec::new()
         } else {
-            let start = input.start_line.unwrap_or(1);
+            let start = input.resolved_start_line();
             if start > total_lines {
                 return Err(WonderError::validation(format!(
                     "file_read start_line {start} is past the end of {} ({} lines)",
@@ -187,7 +261,7 @@ impl Tool for FileReadTool {
                     total_lines
                 )));
             }
-            let end = input.end_line.unwrap_or(total_lines);
+            let end = input.resolved_end_line(total_lines).unwrap_or(total_lines);
             if end > total_lines {
                 return Err(WonderError::validation(format!(
                     "file_read end_line {end} is past the end of {} ({} lines)",
@@ -207,8 +281,8 @@ impl Tool for FileReadTool {
             "path": path.display().to_string(),
             "display_path": display_path(&path, &context.cwd),
             "total_lines": total_lines,
-            "start_line": input.start_line.unwrap_or(1),
-            "end_line": input.end_line.unwrap_or(total_lines),
+            "start_line": input.resolved_start_line(),
+            "end_line": input.resolved_end_line(total_lines).unwrap_or(total_lines),
         });
         Ok(result)
     }
@@ -217,20 +291,29 @@ impl Tool for FileReadTool {
 #[async_trait]
 impl Tool for FileWriteTool {
     fn spec(&self) -> ToolSpec {
-        base_spec("file_write", "Write text to a file", ToolKind::FileWrite).with_input_schema(
-            ToolSchema::object()
-                .property("path", ToolSchema::string("path to the file to write"))
-                .property("content", ToolSchema::string("text content to write"))
-                .property(
-                    "mode",
-                    ToolSchema::enumeration(
-                        "write strategy to use",
-                        ["create", "overwrite", "append"],
-                    ),
-                )
-                .required("path")
-                .required("content"),
-        )
+        let mut spec = base_spec("file_write", "Write text to a file", ToolKind::FileWrite)
+            .with_input_schema(
+                ToolSchema::object()
+                    .property(
+                        "path",
+                        schema_with_aliases(
+                            ToolSchema::string("path to the file to write"),
+                            &["file_path"],
+                        ),
+                    )
+                    .property("content", ToolSchema::string("text content to write"))
+                    .property(
+                        "mode",
+                        ToolSchema::enumeration(
+                            "write strategy to use",
+                            ["create", "overwrite", "append"],
+                        ),
+                    )
+                    .required("path")
+                    .required("content"),
+            );
+        spec.aliases.push("Write".into());
+        spec
     }
 
     fn validate_input(&self, input: &Value) -> Result<()> {
@@ -280,16 +363,28 @@ impl Tool for FileWriteTool {
 #[async_trait]
 impl Tool for FileEditTool {
     fn spec(&self) -> ToolSpec {
-        base_spec(
+        let mut spec = base_spec(
             "file_edit",
             "Replace text inside a file",
             ToolKind::FileWrite,
         )
         .with_input_schema(
             ToolSchema::object()
-                .property("path", ToolSchema::string("path to the file to edit"))
-                .property("old_text", ToolSchema::string("text to replace"))
-                .property("new_text", ToolSchema::string("replacement text"))
+                .property(
+                    "path",
+                    schema_with_aliases(
+                        ToolSchema::string("path to the file to edit"),
+                        &["file_path"],
+                    ),
+                )
+                .property(
+                    "old_text",
+                    schema_with_aliases(ToolSchema::string("text to replace"), &["old_string"]),
+                )
+                .property(
+                    "new_text",
+                    schema_with_aliases(ToolSchema::string("replacement text"), &["new_string"]),
+                )
                 .property(
                     "replace_all",
                     ToolSchema::boolean(
@@ -299,7 +394,9 @@ impl Tool for FileEditTool {
                 .required("path")
                 .required("old_text")
                 .required("new_text"),
-        )
+        );
+        spec.aliases.push("Edit".into());
+        spec
     }
 
     fn validate_input(&self, input: &Value) -> Result<()> {
@@ -404,6 +501,10 @@ fn open_for_write(path: &Path, mode: FileWriteMode) -> Result<File> {
     Ok(options.open(path)?)
 }
 
+fn normalize_offset(offset: usize) -> usize {
+    offset.max(1)
+}
+
 fn overwrite_text_file(path: &Path, content: &str) -> Result<()> {
     ensure_parent_dir("file_edit", path)?;
     let mut file = File::create(path)?;
@@ -447,6 +548,31 @@ mod tests {
     }
 
     #[test]
+    fn file_read_accepts_source_compatible_field_names() {
+        let tool = FileReadTool;
+
+        tool.validate_input(&json!({
+            "file_path": "notes.txt",
+            "offset": 2,
+            "limit": 3,
+        }))
+        .expect("source-compatible read input");
+    }
+
+    #[test]
+    fn file_read_rejects_unsupported_pages_field() {
+        let tool = FileReadTool;
+        let error = tool
+            .validate_input(&json!({
+                "file_path": "notes.txt",
+                "pages": "1-2",
+            }))
+            .expect_err("unsupported pages");
+
+        assert!(error.to_string().contains("pages"));
+    }
+
+    #[test]
     fn file_read_permission_requires_review_for_absolute_path_outside_scope() {
         let tool = FileReadTool;
         let context = tool_context(PathBuf::from("/workspace"));
@@ -465,6 +591,23 @@ mod tests {
             tool_context(dir),
             ToolUseId::new(),
             json!({ "path": "notes.txt", "start_line": 2, "end_line": 3 }),
+        ))
+        .expect("read file");
+
+        assert!(result.success);
+        assert_eq!(result.content, "2. two\n3. three");
+    }
+
+    #[test]
+    fn file_read_uses_source_offset_and_limit() {
+        let dir = unique_test_dir("tools-file-read-source-range");
+        let path = dir.join("notes.txt");
+        fs::write(&path, "one\ntwo\nthree\nfour\n").expect("seed file");
+        let tool = FileReadTool;
+        let result = block_on(tool.execute(
+            tool_context(dir),
+            ToolUseId::new(),
+            json!({ "file_path": "notes.txt", "offset": 2, "limit": 2 }),
         ))
         .expect("read file");
 
@@ -530,5 +673,17 @@ mod tests {
             fs::read_to_string(dir.join("notes.txt")).expect("load"),
             "hello\nrust\n"
         );
+    }
+
+    #[test]
+    fn file_edit_accepts_source_compatible_field_names() {
+        let tool = FileEditTool;
+
+        tool.validate_input(&json!({
+            "file_path": "notes.txt",
+            "old_string": "hello",
+            "new_string": "hi",
+        }))
+        .expect("source-compatible edit input");
     }
 }

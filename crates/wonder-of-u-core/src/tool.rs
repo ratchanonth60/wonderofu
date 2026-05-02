@@ -446,7 +446,7 @@ fn permission_request_for_spec(spec: &ToolSpec, input: &Value) -> PermissionRequ
         request = request.with_shell_command(command);
     }
 
-    let inferred_paths = infer_paths(input);
+    let inferred_paths = infer_paths(spec, input);
     if !inferred_paths.is_empty() {
         request = request.with_paths(inferred_paths);
     }
@@ -466,23 +466,30 @@ fn infer_shell_command(spec: &ToolSpec, input: &Value) -> Option<String> {
         .map(str::to_string)
 }
 
-fn infer_paths(input: &Value) -> Vec<PathBuf> {
+fn infer_paths(spec: &ToolSpec, input: &Value) -> Vec<PathBuf> {
     let Some(object) = input.as_object() else {
         return Vec::new();
     };
 
-    const PATH_FIELDS: [&str; 8] = [
+    let mut path_fields = vec![
         "path",
         "paths",
         "file_path",
         "file_paths",
+        "notebook_path",
+        "notebook_paths",
         "directory",
         "directories",
-        "cwd",
         "target",
+        "plan_file_path",
+        "planFilePath",
     ];
 
-    PATH_FIELDS
+    if spec.kind == ToolKind::Shell {
+        path_fields.push("cwd");
+    }
+
+    path_fields
         .into_iter()
         .filter_map(|field| object.get(field))
         .flat_map(value_to_paths)
@@ -617,6 +624,7 @@ mod tests {
 
         assert!(alias_registry.resolve("file_read").is_some());
         assert!(alias_registry.resolve("read").is_some());
+        assert!(alias_registry.resolve("READ").is_some());
     }
 
     #[test]
@@ -667,6 +675,32 @@ mod tests {
         let decision = tool.permission_decision(&context, &json!({ "command": "echo ${cmd@P}" }));
 
         assert!(matches!(decision, PermissionDecision::Deny { .. }));
+    }
+
+    #[test]
+    fn infer_paths_captures_source_compatible_notebook_and_plan_fields() {
+        let notebook = ToolSpec::new("notebook_edit", "edit notebook", ToolKind::FileWrite);
+        let plan = ToolSpec::new("exit_plan_mode", "exit plan mode", ToolKind::Planning);
+
+        assert_eq!(
+            infer_paths(&notebook, &json!({ "notebook_path": "notes.ipynb" })),
+            vec![PathBuf::from("notes.ipynb")]
+        );
+        assert_eq!(
+            infer_paths(&plan, &json!({ "planFilePath": "docs/plan.md" })),
+            vec![PathBuf::from("docs/plan.md")]
+        );
+    }
+
+    #[test]
+    fn permission_request_carries_tool_aliases_for_rule_matching() {
+        let mut spec = ToolSpec::new("mcp_resource_read", "read mcp resource", ToolKind::Mcp);
+        spec.aliases.push("ReadMcpResourceTool".into());
+
+        let request = permission_request_for_spec(&spec, &json!({ "resource_name": "demo" }));
+
+        assert!(request.matches_tool_name("mcp_resource_read"));
+        assert!(request.matches_tool_name("ReadMcpResourceTool"));
     }
 
     #[test]

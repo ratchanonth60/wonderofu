@@ -1379,7 +1379,12 @@ mod tests {
         assert!(text.contains("transcripts=1"));
         assert!(text.contains("metadata=1"));
         assert!(text.contains("snapshots=1"));
+        assert!(text.contains("session_memory_indexes=1"));
         assert!(text.contains("provider_readiness=unconfigured"));
+        assert!(text.contains("settings_sync=local_only"));
+        assert!(text.contains("settings_sync_cloud=unsupported"));
+        assert!(text.contains("remote_managed_settings=deferred"));
+        assert!(text.contains("team_memory_sync=unsupported"));
         assert!(text.contains("skills=1"));
         assert!(text.contains("mcp_servers=0"));
         assert!(text.contains("active_tasks=0"));
@@ -1551,6 +1556,87 @@ mod tests {
             .expect("read prompt costs");
         assert_eq!(costs.costs.usage.input_tokens, 9);
         assert_eq!(costs.costs.usage.output_tokens, 4);
+    }
+
+    #[test]
+    fn prompt_command_generates_local_suggestions_without_extra_network_requests() {
+        let dir = unique_test_dir("cli-prompt-suggestion");
+        let storage_dir = dir.to_string_lossy().into_owned();
+        let (api_base, server) = spawn_json_server(
+            |headers, body| {
+                let headers = headers.to_ascii_lowercase();
+                assert!(headers.contains("post /v1/chat/completions http/1.1"));
+                assert!(headers.contains("authorization: bearer suggest-key"));
+                assert_eq!(
+                    body.pointer("/messages/0/content").and_then(Value::as_str),
+                    Some("Fix the bug in the failing tests")
+                );
+            },
+            json!({
+                "choices": [{
+                    "finish_reason": "stop",
+                    "message": {
+                        "content": "I fixed the bug and updated the tests, but I haven't run them yet."
+                    }
+                }],
+                "usage": {
+                    "prompt_tokens": 11,
+                    "completion_tokens": 8
+                }
+            }),
+        );
+
+        run_from(
+            vec![
+                "wonder-of-u".to_string(),
+                "--storage-dir".to_string(),
+                storage_dir.clone(),
+                "config".to_string(),
+                "set-api-base".to_string(),
+                "--provider".to_string(),
+                "openai".to_string(),
+                "--api-base".to_string(),
+                api_base,
+            ],
+            &mut Vec::new(),
+        )
+        .expect("set prompt suggestion api base");
+        run_from(
+            vec![
+                "wonder-of-u".to_string(),
+                "--storage-dir".to_string(),
+                storage_dir,
+                "login".to_string(),
+                "--provider".to_string(),
+                "openai".to_string(),
+                "--api-key".to_string(),
+                "suggest-key".to_string(),
+            ],
+            &mut Vec::new(),
+        )
+        .expect("login for prompt suggestion");
+
+        let mut output = Vec::new();
+        run_from(
+            vec![
+                "wonder-of-u".to_string(),
+                "--storage-dir".to_string(),
+                dir.to_string_lossy().into_owned(),
+                "prompt".to_string(),
+                "Fix the bug in the failing tests".to_string(),
+            ],
+            &mut output,
+        )
+        .expect("run prompt with local suggestion");
+        server.join().expect("prompt suggestion server finished");
+
+        let text = String::from_utf8(output).expect("utf8");
+        assert!(text.contains("prompt_suggestion=run the tests"));
+        assert!(text.contains("prompt_suggestion_kind=verify"));
+        assert!(text.contains("query_phase=completed"));
+        assert!(text.contains("coordinator_mode=direct"));
+        assert!(text.contains("coordinator_cloud_queries=unsupported"));
+        assert!(text.contains("coordinator_external_backend=deferred"));
     }
 
     #[test]
@@ -2231,6 +2317,40 @@ mod tests {
     }
 
     #[test]
+    fn registry_includes_commit_and_commit_push_pr_commands() {
+        let mut registry = wonder_of_u_core::CommandRegistry::new();
+        registry
+            .register(std::sync::Arc::new(commands::workflow::CommitCommand::new()))
+            .expect("register commit");
+        registry
+            .register(std::sync::Arc::new(
+                commands::workflow::CommitPushPrCommand::new(),
+            ))
+            .expect("register commit-push-pr");
+
+        let commit = registry.resolve_spec("commit").expect("commit spec");
+        assert_eq!(commit.name, "commit");
+        let commit_push_pr = registry
+            .resolve_spec("commit-push-pr")
+            .expect("commit-push-pr spec");
+        assert_eq!(commit_push_pr.name, "commit-push-pr");
+    }
+
+    #[test]
+    fn slash_transport_preserves_commit_prompt_arguments() {
+        let invocation = invocation_from_slash_tokens(vec![
+            "/commit".into(),
+            "use".into(),
+            "the README change".into(),
+        ])
+        .expect("slash invocation");
+
+        assert_eq!(invocation.name, "commit");
+        assert_eq!(invocation.args, "use 'the README change'");
+        assert_eq!(invocation.raw, "/commit use 'the README change'");
+    }
+
+    #[test]
     fn slash_transport_executes_dynamic_plugin_commands() {
         let dir = unique_test_dir("cli-slash-plugin-command");
         let storage_dir = dir.to_string_lossy().into_owned();
@@ -2553,6 +2673,12 @@ mod tests {
     fn config_and_permissions_commands_surface_foundations() {
         let dir = unique_test_dir("cli-config-permissions");
         let storage_dir = dir.to_string_lossy().into_owned();
+        fs::create_dir_all(dir.join("config")).expect("create config dir");
+        fs::write(
+            dir.join("config").join("CLAUDE.md"),
+            "# local user memory\n",
+        )
+        .expect("write user memory");
 
         run_from(
             vec![
@@ -2586,6 +2712,12 @@ mod tests {
         assert!(
             config_text.contains("provider_override[openai].api_base=https://example.invalid/v1")
         );
+        assert!(config_text.contains("settings_sync=local_only"));
+        assert!(config_text.contains("settings_sync_cloud=unsupported"));
+        assert!(config_text.contains("settings_sync_settings_exists=true"));
+        assert!(config_text.contains("settings_sync_user_memory_exists=true"));
+        assert!(config_text.contains("remote_managed_settings=deferred"));
+        assert!(config_text.contains("team_memory_sync=unsupported"));
 
         let mut permissions_output = Vec::new();
         run_from(

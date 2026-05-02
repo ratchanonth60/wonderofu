@@ -12,7 +12,8 @@ use super::{
     parse_command_args,
     plugin::load_catalogs,
     prompt::{
-        PromptExecutionInput, append_execution_metadata_lines, execute_prompt_run, truncate_chars,
+        PromptExecutionInput, append_execution_metadata_lines, append_orchestration_metadata_lines,
+        execute_prompt_run, truncate_chars,
     },
 };
 
@@ -278,6 +279,12 @@ fn render_skill_run_output(
         &result.state,
         &result.response,
         result.persisted,
+    );
+    append_orchestration_metadata_lines(
+        &mut lines,
+        &result.query,
+        &result.coordinator,
+        result.prompt_suggestion.as_ref(),
     );
     if result.tool_use_requested {
         lines.push(format!("tool_use_requested={}", result.tool_use_requested));

@@ -1,4 +1,7 @@
-use std::io::{self, Write};
+use std::{
+    collections::BTreeMap,
+    io::{self, IsTerminal, Write},
+};
 
 use crossterm::{
     cursor::{Hide, Show},
@@ -223,6 +226,266 @@ fn record_first_error(slot: &mut Option<io::Error>, result: io::Result<()>) {
     }
 }
 
+const ADDITIONAL_HYPERLINK_TERMINALS: &[&str] = &[
+    "ghostty",
+    "Hyper",
+    "kitty",
+    "alacritty",
+    "iTerm.app",
+    "iTerm2",
+];
+
+/// The host platform used for terminal capability modeling.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TerminalPlatform {
+    Unix,
+    Windows,
+}
+
+/// Serializable terminal environment input for capability detection.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TerminalEnv {
+    pub platform: TerminalPlatform,
+    pub is_tty: bool,
+    vars: BTreeMap<String, String>,
+}
+
+impl TerminalEnv {
+    #[must_use]
+    pub fn new(platform: TerminalPlatform, is_tty: bool) -> Self {
+        Self {
+            platform,
+            is_tty,
+            vars: BTreeMap::new(),
+        }
+    }
+
+    #[must_use]
+    pub fn capture_stdout() -> Self {
+        let platform = if cfg!(windows) {
+            TerminalPlatform::Windows
+        } else {
+            TerminalPlatform::Unix
+        };
+
+        Self {
+            platform,
+            is_tty: io::stdout().is_terminal(),
+            vars: std::env::vars().collect(),
+        }
+    }
+
+    #[must_use]
+    pub fn from_iter<K, V, I>(platform: TerminalPlatform, is_tty: bool, vars: I) -> Self
+    where
+        K: Into<String>,
+        V: Into<String>,
+        I: IntoIterator<Item = (K, V)>,
+    {
+        let mut env = Self::new(platform, is_tty);
+        for (key, value) in vars {
+            env.vars.insert(key.into(), value.into());
+        }
+        env
+    }
+
+    #[must_use]
+    pub fn with_var(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
+        self.vars.insert(key.into(), value.into());
+        self
+    }
+
+    #[must_use]
+    pub fn var(&self, key: &str) -> Option<&str> {
+        self.vars.get(key).map(String::as_str)
+    }
+
+    #[must_use]
+    pub fn has_var(&self, key: &str) -> bool {
+        self.vars.contains_key(key)
+    }
+}
+
+/// Home-position control used after a clear-screen request.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CursorHomeCommand {
+    /// CSI H
+    CursorHome,
+    /// CSI 0 f
+    HorizontalVerticalPosition,
+}
+
+impl CursorHomeCommand {
+    #[must_use]
+    pub const fn ansi(self) -> &'static str {
+        match self {
+            Self::CursorHome => "\u{1b}[H",
+            Self::HorizontalVerticalPosition => "\u{1b}[0f",
+        }
+    }
+}
+
+/// Renderer-independent clear-screen intent and emission details.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ClearTerminalCommand {
+    pub include_scrollback: bool,
+    pub cursor_home: CursorHomeCommand,
+}
+
+impl ClearTerminalCommand {
+    #[must_use]
+    pub fn detect(env: &TerminalEnv) -> Self {
+        if env.platform != TerminalPlatform::Windows {
+            return Self {
+                include_scrollback: true,
+                cursor_home: CursorHomeCommand::CursorHome,
+            };
+        }
+
+        if is_modern_windows_terminal(env) {
+            Self {
+                include_scrollback: true,
+                cursor_home: CursorHomeCommand::CursorHome,
+            }
+        } else {
+            Self {
+                include_scrollback: false,
+                cursor_home: CursorHomeCommand::HorizontalVerticalPosition,
+            }
+        }
+    }
+
+    #[must_use]
+    pub fn ansi_sequence(self) -> String {
+        let mut sequence = String::from("\u{1b}[2J");
+        if self.include_scrollback {
+            sequence.push_str("\u{1b}[3J");
+        }
+        sequence.push_str(self.cursor_home.ansi());
+        sequence
+    }
+}
+
+/// Bundled terminal capability decisions for the current renderer/runtime.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TerminalCapabilities {
+    pub hyperlinks: bool,
+    pub synchronized_output: bool,
+    pub clear_terminal: ClearTerminalCommand,
+    pub cursor_up_viewport_yank_bug: bool,
+}
+
+impl TerminalCapabilities {
+    #[must_use]
+    pub fn detect(env: &TerminalEnv, hyperlink_baseline: bool) -> Self {
+        Self {
+            hyperlinks: supports_hyperlinks(env, hyperlink_baseline),
+            synchronized_output: supports_synchronized_output(env),
+            clear_terminal: ClearTerminalCommand::detect(env),
+            cursor_up_viewport_yank_bug: has_cursor_up_viewport_yank_bug(env),
+        }
+    }
+}
+
+/// Extends a baseline hyperlink detector with additional Ink-compatible terminals.
+#[must_use]
+pub fn supports_hyperlinks(env: &TerminalEnv, baseline_supported: bool) -> bool {
+    if baseline_supported {
+        return true;
+    }
+
+    if !env.is_tty {
+        return false;
+    }
+
+    if env
+        .var("TERM_PROGRAM")
+        .is_some_and(|value| ADDITIONAL_HYPERLINK_TERMINALS.contains(&value))
+    {
+        return true;
+    }
+
+    if env
+        .var("LC_TERMINAL")
+        .is_some_and(|value| ADDITIONAL_HYPERLINK_TERMINALS.contains(&value))
+    {
+        return true;
+    }
+
+    env.var("TERM").is_some_and(|value| value.contains("kitty"))
+}
+
+/// Models DEC 2026 synchronized output support from environment hints alone.
+#[must_use]
+pub fn supports_synchronized_output(env: &TerminalEnv) -> bool {
+    if env.has_var("TMUX") {
+        return false;
+    }
+
+    if env.var("TERM_PROGRAM").is_some_and(|term_program| {
+        matches!(
+            term_program,
+            "iTerm.app"
+                | "WezTerm"
+                | "WarpTerminal"
+                | "ghostty"
+                | "contour"
+                | "vscode"
+                | "alacritty"
+        )
+    }) {
+        return true;
+    }
+
+    if env
+        .var("TERM")
+        .is_some_and(|term| term.contains("kitty") || term.contains("alacritty"))
+    {
+        return true;
+    }
+
+    if env.var("TERM") == Some("xterm-ghostty") {
+        return true;
+    }
+
+    if env.var("TERM").is_some_and(|term| term.starts_with("foot")) {
+        return true;
+    }
+
+    if env.has_var("KITTY_WINDOW_ID") || env.has_var("ZED_TERM") || env.has_var("WT_SESSION") {
+        return true;
+    }
+
+    env.var("VTE_VERSION")
+        .and_then(|value| value.parse::<u16>().ok())
+        .is_some_and(|version| version >= 6800)
+}
+
+/// Windows terminals and Windows Terminal-backed WSL sessions can yank scrollback on cursor-up.
+#[must_use]
+pub fn has_cursor_up_viewport_yank_bug(env: &TerminalEnv) -> bool {
+    env.platform == TerminalPlatform::Windows || env.has_var("WT_SESSION")
+}
+
+fn is_modern_windows_terminal(env: &TerminalEnv) -> bool {
+    if env.has_var("WT_SESSION") {
+        return true;
+    }
+
+    if matches!(
+        env.var("TERM_PROGRAM"),
+        Some("vscode") if env.var("TERM_PROGRAM_VERSION").is_some()
+    ) {
+        return true;
+    }
+
+    if env.var("TERM_PROGRAM") == Some("mintty") {
+        return true;
+    }
+
+    env.platform == TerminalPlatform::Windows && env.has_var("MSYSTEM")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -340,5 +603,100 @@ mod tests {
             ]
         );
         assert_eq!(lifecycle.state(), TerminalState::default());
+    }
+
+    #[test]
+    fn hyperlink_support_extends_baseline_detector() {
+        let env = TerminalEnv::from_iter(
+            TerminalPlatform::Unix,
+            true,
+            [("TERM_PROGRAM", "ghostty"), ("TERM", "xterm-256color")],
+        );
+
+        assert!(supports_hyperlinks(&env, false));
+        assert!(supports_hyperlinks(
+            &TerminalEnv::new(TerminalPlatform::Unix, false),
+            true
+        ));
+        assert!(!supports_hyperlinks(
+            &TerminalEnv::from_iter(TerminalPlatform::Unix, false, [("TERM_PROGRAM", "ghostty")]),
+            false
+        ));
+    }
+
+    #[test]
+    fn synchronized_output_support_matches_known_terminals() {
+        let wezterm =
+            TerminalEnv::from_iter(TerminalPlatform::Unix, true, [("TERM_PROGRAM", "WezTerm")]);
+        let tmux = TerminalEnv::from_iter(
+            TerminalPlatform::Unix,
+            true,
+            [("TERM_PROGRAM", "WezTerm"), ("TMUX", "1")],
+        );
+        let vte = TerminalEnv::from_iter(TerminalPlatform::Unix, true, [("VTE_VERSION", "6800")]);
+
+        assert!(supports_synchronized_output(&wezterm));
+        assert!(supports_synchronized_output(&vte));
+        assert!(!supports_synchronized_output(&tmux));
+    }
+
+    #[test]
+    fn clear_terminal_command_keeps_legacy_windows_compatible() {
+        let legacy = TerminalEnv::new(TerminalPlatform::Windows, true);
+        let modern = TerminalEnv::from_iter(
+            TerminalPlatform::Windows,
+            true,
+            [("WT_SESSION", "1"), ("TERM_PROGRAM", "vscode")],
+        );
+
+        assert_eq!(
+            ClearTerminalCommand::detect(&legacy),
+            ClearTerminalCommand {
+                include_scrollback: false,
+                cursor_home: CursorHomeCommand::HorizontalVerticalPosition,
+            }
+        );
+        assert_eq!(
+            ClearTerminalCommand::detect(&legacy).ansi_sequence(),
+            "\u{1b}[2J\u{1b}[0f"
+        );
+        assert_eq!(
+            ClearTerminalCommand::detect(&modern).ansi_sequence(),
+            "\u{1b}[2J\u{1b}[3J\u{1b}[H"
+        );
+    }
+
+    #[test]
+    fn cursor_up_viewport_yank_bug_tracks_windows_hosts_and_wt_sessions() {
+        let linux = TerminalEnv::new(TerminalPlatform::Unix, true);
+        let windows = TerminalEnv::new(TerminalPlatform::Windows, true);
+        let wsl_in_windows_terminal =
+            TerminalEnv::from_iter(TerminalPlatform::Unix, true, [("WT_SESSION", "1")]);
+
+        assert!(!has_cursor_up_viewport_yank_bug(&linux));
+        assert!(has_cursor_up_viewport_yank_bug(&windows));
+        assert!(has_cursor_up_viewport_yank_bug(&wsl_in_windows_terminal));
+    }
+
+    #[test]
+    fn terminal_capabilities_bundle_consistent_detection() {
+        let env = TerminalEnv::from_iter(
+            TerminalPlatform::Unix,
+            true,
+            [("TERM", "xterm-kitty"), ("KITTY_WINDOW_ID", "99")],
+        );
+
+        let capabilities = TerminalCapabilities::detect(&env, false);
+
+        assert!(capabilities.hyperlinks);
+        assert!(capabilities.synchronized_output);
+        assert_eq!(
+            capabilities.clear_terminal,
+            ClearTerminalCommand {
+                include_scrollback: true,
+                cursor_home: CursorHomeCommand::CursorHome,
+            }
+        );
+        assert!(!capabilities.cursor_up_viewport_yank_bug);
     }
 }

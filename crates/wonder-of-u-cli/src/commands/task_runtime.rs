@@ -13,8 +13,8 @@ use std::{
 use time::OffsetDateTime;
 use wonder_of_u_core::{
     AgentRuntime, AgentTaskState, CommandContext, PermissionDecision, PermissionMode,
-    PermissionRequest, Result, TaskId, TaskKind, TaskState, TaskStatus, ToolPermissionContext,
-    WonderError, resolve_path,
+    PermissionRequest, RemoteTaskMetadata, RemoteTaskState, RemoteTaskType, Result, TaskId,
+    TaskKind, TaskState, TaskStatus, ToolPermissionContext, WonderError, resolve_path,
 };
 use wonder_of_u_storage::TaskStore;
 
@@ -47,6 +47,14 @@ pub(crate) struct AgentTaskLaunch {
     pub cwd: PathBuf,
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
+#[derive(Clone, Debug)]
+pub(crate) struct RemoteTaskLaunch {
+    pub description: String,
+    pub task_type: RemoteTaskType,
+    pub metadata: Option<RemoteTaskMetadata>,
+}
+
 #[derive(Clone, Debug, Default)]
 pub(crate) struct TaskSummary {
     pub total: usize,
@@ -60,6 +68,7 @@ pub(crate) struct TaskSummary {
     pub cancelled: usize,
     pub shell: usize,
     pub agents: usize,
+    pub remote: usize,
 }
 
 #[derive(Clone, Debug)]
@@ -122,6 +131,7 @@ impl TaskSummary {
             match task.kind {
                 TaskKind::LocalShell => summary.shell += 1,
                 TaskKind::LocalAgent => summary.agents += 1,
+                TaskKind::RemoteAgent => summary.remote += 1,
             }
         }
         summary
@@ -276,6 +286,16 @@ impl TaskManager {
         Ok(task)
     }
 
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub fn start_remote_task(&self, launch: RemoteTaskLaunch) -> Result<TaskState> {
+        let remote = RemoteTaskState::deferred(launch.task_type, launch.metadata);
+        Err(WonderError::validation(format!(
+            "{} [{}]",
+            remote.start_error_message(),
+            launch.description
+        )))
+    }
+
     pub fn stop_task(&self, task_id: TaskId, force: bool) -> Result<TaskState> {
         let task = self.get_task(task_id)?;
         if task.status.is_terminal() {
@@ -284,6 +304,15 @@ impl TaskManager {
 
         match task.kind {
             TaskKind::LocalShell | TaskKind::LocalAgent => self.stop_process_task(task, force),
+            TaskKind::RemoteAgent => Err(WonderError::validation(
+                task.remote
+                    .as_ref()
+                    .map(RemoteTaskState::stop_error_message)
+                    .unwrap_or_else(|| {
+                        "cannot stop remote task: remote task transport is unavailable in this Rust runtime"
+                            .into()
+                    }),
+            )),
         }
     }
 
@@ -626,6 +655,7 @@ fn task_runtime_subject(kind: TaskKind) -> &'static str {
     match kind {
         TaskKind::LocalShell => "task",
         TaskKind::LocalAgent => "local agent",
+        TaskKind::RemoteAgent => "remote task",
     }
 }
 
@@ -633,6 +663,7 @@ fn task_kind_label(kind: TaskKind) -> &'static str {
     match kind {
         TaskKind::LocalShell => "local_shell",
         TaskKind::LocalAgent => "local_agent",
+        TaskKind::RemoteAgent => "remote_agent",
     }
 }
 
@@ -654,6 +685,9 @@ fn running_status_message(kind: TaskKind, heartbeat_state: TaskHeartbeatState) -
         (TaskKind::LocalAgent, TaskHeartbeatState::Stale) => {
             "background local agent prompt subprocess is running but heartbeat is stale"
         }
+        (TaskKind::RemoteAgent, _) => {
+            "remote task status is metadata-only; no local heartbeat is available"
+        }
     }
 }
 
@@ -673,6 +707,7 @@ fn missing_pid_status_message(kind: TaskKind, heartbeat_state: TaskHeartbeatStat
         | (TaskKind::LocalAgent, TaskHeartbeatState::Stale) => {
             "background local agent prompt metadata is missing a process id"
         }
+        (TaskKind::RemoteAgent, _) => "remote task metadata is managed without a local process id",
     }
 }
 
@@ -832,7 +867,8 @@ fn shell_wrapper(command: &str, exit_path: &Path, heartbeat_path: &Path) -> Stri
         concat!(
             "status_file={status_file}; ",
             "heartbeat_file={heartbeat_file}; ",
-            "heartbeat() {{ date -u +\"%Y-%m-%dT%H:%M:%SZ\" > \"$heartbeat_file\"; }}; ",
+            "heartbeat() {{ heartbeat_tmp=\"$heartbeat_file.next.$$\"; ",
+            "date -u +\"%Y-%m-%dT%H:%M:%SZ\" > \"$heartbeat_tmp\" && mv \"$heartbeat_tmp\" \"$heartbeat_file\"; }}; ",
             "heartbeat; ",
             "while :; do heartbeat; sleep {heartbeat_interval}; done & heartbeat_pid=$!; ",
             "trap 'status=$?; kill \"$heartbeat_pid\" 2>/dev/null || true; ",
@@ -951,7 +987,9 @@ mod tests {
     #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
 
-    use wonder_of_u_core::{CommandContext, FeatureSet, PermissionMode, SessionId};
+    use wonder_of_u_core::{
+        CommandContext, FeatureSet, PermissionMode, RemoteTaskState, RemoteTaskType, SessionId,
+    };
     use wonder_of_u_test_support::{EnvVarGuard, unique_test_dir};
 
     use super::*;
@@ -1203,6 +1241,69 @@ mod tests {
             reconciled.status_message.as_deref(),
             Some("task launch never recorded a process id")
         );
+    }
+
+    #[test]
+    fn manager_rejects_remote_task_launch_without_side_effects() {
+        let dir = unique_test_dir("task-manager-remote-launch");
+        let manager = TaskManager::new(&dir);
+
+        let error = manager
+            .start_remote_task(RemoteTaskLaunch {
+                description: "cloud review".into(),
+                task_type: RemoteTaskType::Ultrareview,
+                metadata: None,
+            })
+            .expect_err("remote launch unsupported");
+
+        assert!(error.to_string().contains("cannot start ultrareview task"));
+        assert!(!manager.storage_dir().join("tasks").exists());
+    }
+
+    #[test]
+    fn manager_reconcile_leaves_remote_tasks_metadata_only() {
+        let dir = unique_test_dir("task-manager-remote-reconcile");
+        let manager = TaskManager::new(&dir);
+        let task = TaskState::recorded_remote(
+            "cloud review",
+            RemoteTaskState::deferred(RemoteTaskType::AutofixPr, None),
+        );
+        manager.store.write_task(&task).expect("write task");
+
+        let report = manager.reconcile_tasks(None).expect("reconcile tasks");
+        let reconciled = report.tasks.into_iter().next().expect("task");
+
+        assert_eq!(report.changed, 0);
+        assert_eq!(report.finished, 0);
+        assert_eq!(report.fresh_heartbeats, 0);
+        assert_eq!(report.stale_heartbeats, 0);
+        assert_eq!(report.missing_heartbeats, 0);
+        assert_eq!(reconciled.kind, TaskKind::RemoteAgent);
+        assert_eq!(reconciled.status, TaskStatus::Pending);
+        assert_eq!(reconciled.status_message, task.status_message);
+        assert!(!manager.logs_dir().join(format!("{}.log", task.id)).exists());
+    }
+
+    #[test]
+    fn task_summary_counts_remote_tasks() {
+        let tasks = vec![
+            TaskState::pending_shell("shell", "true", "/workspace"),
+            TaskState::pending_agent(
+                "agent",
+                AgentTaskState::metadata_only("agent", "prompt", None, None),
+            ),
+            TaskState::recorded_remote(
+                "remote",
+                RemoteTaskState::deferred(RemoteTaskType::BackgroundPr, None),
+            ),
+        ];
+
+        let summary = TaskSummary::from_tasks(&tasks);
+
+        assert_eq!(summary.total, 3);
+        assert_eq!(summary.shell, 1);
+        assert_eq!(summary.agents, 1);
+        assert_eq!(summary.remote, 1);
     }
 
     fn write_agent_script(dir: &Path, name: &str, body: &str) -> PathBuf {
