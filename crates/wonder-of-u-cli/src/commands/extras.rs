@@ -68,6 +68,7 @@ impl CtxVizCommand {
             "Show context window usage diagnostics",
             CommandKind::NonInteractive,
         );
+        spec.aliases.push("ctx_viz".into());
         spec.hidden = true;
         spec
     }
