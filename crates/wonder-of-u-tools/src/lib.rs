@@ -793,8 +793,8 @@ mod tests {
         assert!(structured_output.concurrency_safe);
 
         let repl = specs.get("repl").expect("repl");
-        assert!(repl.read_only);
-        assert!(repl.concurrency_safe);
+        assert!(!repl.read_only);
+        assert!(!repl.concurrency_safe);
 
         let team_delete = specs.get("team_delete").expect("team_delete");
         assert!(team_delete.destructive);
