@@ -93,12 +93,12 @@ pub use message::{
     AttachmentKind, AttachmentSummaryView, FileEditReferenceView, GroupedToolCallView,
     HistorySearchView, MarkdownBlockView, MarkdownCodeBlockView, MarkdownSummaryView,
     McpCatalogItemView, McpCatalogKind, McpCatalogSummaryView, MessageLineView, MessageRole,
-    NotebookEditMode, NotebookRejectionSummaryView, PickerView, RejectedPermissionSummaryView,
-    RejectedToolMessageKind, RejectedToolMessageView, RichMessageView, SystemErrorKind,
-    SystemErrorView, TaskActivityKind, TaskActivitySummaryView, TaskPanelView, ThinkingBlockView,
-    ToolCallView, ToolResultCounts, ToolResultStatus, TranscriptBoundaryView,
-    UnknownToolOutputView, footer_text, message_lines, queued_panel_view, rich_message_views,
-    status_text, task_panel_view,
+    NotebookEditMode, NotebookRejectionSummaryView, PickerListEntry, PickerListView, PickerView,
+    RejectedPermissionSummaryView, RejectedToolMessageKind, RejectedToolMessageView,
+    RichMessageView, SystemErrorKind, SystemErrorView, TaskActivityKind, TaskActivitySummaryView,
+    TaskPanelView, ThinkingBlockView, ToolCallView, ToolResultCounts, ToolResultStatus,
+    TranscriptBoundaryView, UnknownToolOutputView, footer_text, message_lines, queued_panel_view,
+    rich_message_views, status_text, task_panel_view,
 };
 pub use notification::{
     BUILT_IN_TIPS, NotificationInput, NotificationLifetime, NotificationQueue,

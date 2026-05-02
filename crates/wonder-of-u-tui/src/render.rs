@@ -6,8 +6,8 @@ use crate::{
     layout::ShellLayout,
     measure::widest_line,
     message::{
-        HistorySearchView, MessageLineView, MessageRole, PickerView, TaskPanelView, footer_text,
-        message_lines, queued_panel_view, status_text, task_panel_view,
+        HistorySearchView, MessageLineView, MessageRole, PickerListView, PickerView, TaskPanelView,
+        footer_text, message_lines, queued_panel_view, status_text, task_panel_view,
     },
     notification::{NotificationSeverity, NotificationView},
     style::{Color, TextStyle, Theme},
@@ -37,11 +37,14 @@ pub struct ShellView {
     pub prompt: String,
     pub history_search: Option<HistorySearchView>,
     pub status: String,
+    pub loading: bool,
+    pub loading_verb: Option<String>,
     pub footer: String,
     pub queued_panel: Option<TaskPanelView>,
     pub task_panel: Option<TaskPanelView>,
     pub dialog: Option<DialogView>,
     pub picker_view: Option<PickerView>,
+    pub picker_list: Option<PickerListView>,
     pub notifications: Vec<NotificationView>,
     /// When `Some`, display the slash-command autocomplete overlay.
     pub slash_suggestions: Option<SlashSuggestionsOverlay>,
@@ -67,11 +70,14 @@ impl ShellView {
             prompt: prompt.into(),
             history_search: None,
             status: status_text(app),
+            loading: false,
+            loading_verb: None,
             footer: footer_text(app),
             queued_panel: queued_panel_view(app),
             task_panel: task_panel_view(app),
             dialog: None,
             picker_view: None,
+            picker_list: None,
             notifications: Vec::new(),
             slash_suggestions: None,
         }
@@ -90,12 +96,16 @@ pub fn render_shell(frame: &mut FrameBuffer, view: &ShellView, theme: &Theme) {
 
     draw_message_view(frame, layout.messages, view, theme);
     draw_prompt_view(frame, layout.prompt, view, theme);
-    draw_status_line(frame, layout.status, &view.status, theme.status);
+    draw_status_line(frame, layout.status, &status_line_text(view), theme.status);
     draw_status_line(frame, layout.footer, &view.footer, theme.footer);
     draw_notification_stack(frame, layout.messages, &view.notifications, theme);
 
     if let Some(dialog) = &view.dialog {
         draw_dialog(frame, layout.messages, dialog, theme);
+    }
+
+    if let Some(picker_list) = &view.picker_list {
+        draw_picker_list(frame, layout.messages, picker_list, theme);
     }
 
     if let Some(pv) = &view.picker_view {
@@ -514,6 +524,122 @@ fn draw_slash_suggestions(
     draw_panel(frame, rect, Some("commands"), &lines, &border_theme);
 }
 
+fn draw_picker_list(
+    frame: &mut FrameBuffer,
+    viewport: Rect,
+    picker: &PickerListView,
+    theme: &Theme,
+) {
+    const MIN_WIDTH: u16 = 30;
+    const MIN_HEIGHT: u16 = 6;
+
+    if viewport.width < MIN_WIDTH || viewport.height < MIN_HEIGHT {
+        return;
+    }
+
+    let width = viewport.width.saturating_mul(4) / 5;
+    let width = width.clamp(MIN_WIDTH, viewport.width);
+    let max_height = viewport.height.saturating_mul(3) / 5;
+    let desired_height =
+        u16::try_from(picker.entries.len().saturating_add(4)).unwrap_or(viewport.height);
+    let height = desired_height.clamp(MIN_HEIGHT, max_height.max(MIN_HEIGHT));
+    let rect = Rect::new(
+        viewport.x + viewport.width.saturating_sub(width) / 2,
+        viewport.y + viewport.height.saturating_sub(height) / 2,
+        width,
+        height,
+    );
+
+    let panel_theme = Theme {
+        border: theme.prompt,
+        title: theme.prompt.bold(),
+        ..*theme
+    };
+    draw_panel(frame, rect, Some(&picker.title), &[], &panel_theme);
+
+    let inner = rect.inset(1);
+    if inner.is_empty() {
+        return;
+    }
+
+    frame.write_str(
+        inner.x,
+        inner.y,
+        &format!("Search: {}", picker.query),
+        theme.status,
+        inner.width,
+    );
+
+    if inner.height <= 2 {
+        return;
+    }
+
+    let hint_y = inner.bottom().saturating_sub(1);
+    frame.write_str(inner.x, hint_y, &picker.hint, theme.footer, inner.width);
+
+    let list_area = Rect::new(
+        inner.x,
+        inner.y.saturating_add(1),
+        inner.width,
+        inner.height.saturating_sub(2),
+    );
+    if list_area.is_empty() {
+        return;
+    }
+
+    if picker.entries.is_empty() {
+        frame.write_str(
+            list_area.x,
+            list_area.y,
+            "No matches.",
+            theme.messages,
+            list_area.width,
+        );
+        return;
+    }
+
+    let selected = picker
+        .entries
+        .iter()
+        .position(|entry| entry.selected)
+        .unwrap_or_default();
+    let visible = usize::from(list_area.height);
+    let scroll_padding = visible / 2;
+    let start = selected
+        .saturating_sub(scroll_padding)
+        .min(picker.entries.len().saturating_sub(visible.max(1)));
+
+    for (offset, entry) in picker.entries.iter().skip(start).take(visible).enumerate() {
+        let y = list_area
+            .y
+            .saturating_add(u16::try_from(offset).unwrap_or(u16::MAX));
+        let tag = entry
+            .tag
+            .as_deref()
+            .filter(|tag| !tag.is_empty())
+            .map(|tag| format!(" [{tag}]"))
+            .unwrap_or_default();
+        let description = if entry.description.is_empty() {
+            String::new()
+        } else {
+            format!(" — {}", entry.description)
+        };
+        let text = format!(
+            "{} {}{}{}",
+            if entry.selected { "›" } else { " " },
+            entry.label,
+            tag,
+            description
+        );
+        let style = if entry.selected {
+            theme.prompt.bold()
+        } else {
+            theme.messages
+        };
+        frame.write_str(list_area.x, y, &text, style, list_area.width);
+    }
+}
+
 fn draw_status_line(frame: &mut FrameBuffer, area: Rect, text: &str, style: TextStyle) {
     if area.is_empty() {
         return;
@@ -521,6 +647,21 @@ fn draw_status_line(frame: &mut FrameBuffer, area: Rect, text: &str, style: Text
 
     frame.fill_rect(area, ' ', style);
     frame.write_str(area.x, area.y, text, style, area.width);
+}
+
+fn status_line_text(view: &ShellView) -> String {
+    match (
+        view.loading,
+        view.loading_verb.as_deref(),
+        view.status.is_empty(),
+    ) {
+        (true, Some(verb), false) => format!("⠿ {verb}… | {}", view.status),
+        (true, Some(verb), true) => format!("⠿ {verb}…"),
+        (true, None, false) => format!("⠿ {}", view.status),
+        (true, None, true) => "⠿".into(),
+        (false, _, false) => format!("◆ {}", view.status),
+        (false, _, true) => "◆".into(),
+    }
 }
 
 fn message_panel_lines(view: &ShellView, theme: &Theme) -> Vec<StyledLine> {
@@ -646,11 +787,14 @@ mod tests {
             prompt: String::new(),
             history_search: None,
             status: "prompt | 0 messages".into(),
+            loading: false,
+            loading_verb: None,
             footer: "ctrl-c interrupt".into(),
             queued_panel: None,
             task_panel: None,
             dialog: None,
             picker_view: None,
+            picker_list: None,
             notifications: Vec::new(),
             slash_suggestions: None,
         };
@@ -667,7 +811,7 @@ mod tests {
                 "",
                 "──────────────────────────────",
                 "",
-                "prompt | 0 messages",
+                "◆ prompt | 0 messages",
                 "ctrl-c interrupt",
             ]
             .join("\n")
@@ -685,6 +829,8 @@ mod tests {
             prompt: "/status".into(),
             history_search: None,
             status: "prompt | 2 messages".into(),
+            loading: false,
+            loading_verb: None,
             footer: "cwd=/workspace | ctrl-c interrupt".into(),
             queued_panel: None,
             task_panel: Some(TaskPanelView {
@@ -696,6 +842,7 @@ mod tests {
             }),
             dialog: None,
             picker_view: None,
+            picker_list: None,
             notifications: Vec::new(),
             slash_suggestions: None,
         };
@@ -713,7 +860,7 @@ mod tests {
                 "[running] shell: index workspace",
                 "────────────────────────────────────────────────",
                 "/status",
-                "prompt | 2 messages",
+                "◆ prompt | 2 messages",
                 "cwd=/workspace | ctrl-c interrupt",
             ]
             .join("\n")
@@ -776,6 +923,8 @@ mod tests {
             prompt: "/plan".into(),
             history_search: None,
             status: "prompt | 1 messages".into(),
+            loading: false,
+            loading_verb: None,
             footer: "cwd=/workspace | ctrl-c interrupt".into(),
             queued_panel: Some(TaskPanelView {
                 title: "Queued".into(),
@@ -788,6 +937,7 @@ mod tests {
             task_panel: None,
             dialog: None,
             picker_view: None,
+            picker_list: None,
             notifications: Vec::new(),
             slash_suggestions: None,
         };
@@ -807,7 +957,7 @@ mod tests {
                 "+2 more queued",
                 "──────────────────────────────────────────",
                 "/plan",
-                "prompt | 1 messages",
+                "◆ prompt | 1 messages",
                 "cwd=/workspace | ctrl-c interrupt",
             ]
             .join("\n")
@@ -822,6 +972,8 @@ mod tests {
             prompt: "continue?".into(),
             history_search: None,
             status: "permission | 1 messages".into(),
+            loading: false,
+            loading_verb: None,
             footer: "cwd=/workspace | ctrl-c interrupt".into(),
             queued_panel: None,
             task_panel: None,
@@ -830,6 +982,7 @@ mod tests {
                 ["Approve command execution", "This cannot be undone"],
             )),
             picker_view: None,
+            picker_list: None,
             notifications: Vec::new(),
             slash_suggestions: None,
         };
@@ -849,7 +1002,7 @@ mod tests {
                 "",
                 "──────────────────────────────────────────",
                 "continue?",
-                "permission | 1 messages",
+                "◆ permission | 1 messages",
                 "cwd=/workspace | ctrl-c interrupt",
             ]
             .join("\n")
@@ -872,11 +1025,14 @@ mod tests {
                 match_total: 3,
             }),
             status: "prompt | 1 messages".into(),
+            loading: false,
+            loading_verb: None,
             footer: "cwd=/workspace | ctrl-c interrupt".into(),
             queued_panel: None,
             task_panel: None,
             dialog: None,
             picker_view: None,
+            picker_list: None,
             notifications: Vec::new(),
             slash_suggestions: None,
         };
@@ -898,7 +1054,7 @@ mod tests {
                 "search: pla",
                 "match 2/3",
                 "draft plan",
-                "prompt | 1 messages",
+                "◆ prompt | 1 messages",
                 "cwd=/workspace | ctrl-c interrupt",
             ]
             .join("\n")
@@ -917,11 +1073,14 @@ mod tests {
             prompt: "tail".into(),
             history_search: None,
             status: "prompt | 6 messages".into(),
+            loading: false,
+            loading_verb: None,
             footer: "cwd=/workspace | ctrl-c interrupt".into(),
             queued_panel: None,
             task_panel: None,
             dialog: None,
             picker_view: None,
+            picker_list: None,
             notifications: Vec::new(),
             slash_suggestions: None,
         };
@@ -946,11 +1105,14 @@ mod tests {
             prompt: String::new(),
             history_search: None,
             status: "prompt | 2 messages".into(),
+            loading: false,
+            loading_verb: None,
             footer: "cwd=/workspace | ctrl-c interrupt".into(),
             queued_panel: None,
             task_panel: None,
             dialog: None,
             picker_view: None,
+            picker_list: None,
             notifications: Vec::new(),
             slash_suggestions: None,
         };
@@ -966,7 +1128,7 @@ mod tests {
                 "",
                 "────────────────────────────────────────────────",
                 "",
-                "prompt | 2 messages",
+                "◆ prompt | 2 messages",
                 "cwd=/workspace | ctrl-c interrupt",
             ]
             .join("\n")
@@ -984,11 +1146,14 @@ mod tests {
             prompt: String::new(),
             history_search: None,
             status: "prompt | 1 messages".into(),
+            loading: false,
+            loading_verb: None,
             footer: "cwd=/workspace | ctrl-c interrupt".into(),
             queued_panel: None,
             task_panel: None,
             dialog: None,
             picker_view: None,
+            picker_list: None,
             notifications: vec![
                 NotificationView {
                     key: "source-status".into(),
@@ -1023,10 +1188,85 @@ mod tests {
                 "",
                 "────────────────────────────────────────────────",
                 "",
-                "prompt | 1 messages",
+                "◆ prompt | 1 messages",
                 "cwd=/workspace | ctrl-c interrupt",
             ]
             .join("\n")
         );
+    }
+
+    #[test]
+    fn shell_snapshot_renders_picker_list_overlay() {
+        let view = ShellView {
+            title: "Session: Picker".into(),
+            messages: vec![MessageLineView::new(
+                "assistant> ready",
+                MessageRole::Assistant,
+            )],
+            prompt: String::new(),
+            history_search: None,
+            status: "prompt | 1 messages".into(),
+            loading: false,
+            loading_verb: None,
+            footer: "cwd=/workspace | ctrl-c interrupt".into(),
+            queued_panel: None,
+            task_panel: None,
+            dialog: None,
+            picker_view: None,
+            picker_list: Some(PickerListView {
+                title: "Select Theme".into(),
+                query: "mid".into(),
+                entries: vec![
+                    crate::message::PickerListEntry {
+                        label: "Midnight".into(),
+                        description: "Dark theme".into(),
+                        tag: Some("current".into()),
+                        selected: true,
+                    },
+                    crate::message::PickerListEntry {
+                        label: "Light".into(),
+                        description: "Bright theme".into(),
+                        tag: None,
+                        selected: false,
+                    },
+                ],
+                hint: "↑↓ navigate  Tab/Enter select  Esc cancel".into(),
+            }),
+            notifications: Vec::new(),
+            slash_suggestions: None,
+        };
+
+        let frame = render_snapshot(60, 16, &view, &Theme::default());
+        let text = frame.to_plain_text();
+
+        assert!(text.contains("Select Theme"));
+        assert!(text.contains("Search: mid"));
+        assert!(text.contains("Midnight [current] — Dark theme"));
+        assert!(text.contains("↑↓ navigate  Tab/Enter select  Esc cancel"));
+    }
+
+    #[test]
+    fn shell_snapshot_prefixes_loading_status() {
+        let view = ShellView {
+            title: "Session: Loading".into(),
+            messages: Vec::new(),
+            prompt: String::new(),
+            history_search: None,
+            status: "turn=active".into(),
+            loading: true,
+            loading_verb: Some("thinking".into()),
+            footer: String::new(),
+            queued_panel: None,
+            task_panel: None,
+            dialog: None,
+            picker_view: None,
+            picker_list: None,
+            notifications: Vec::new(),
+            slash_suggestions: None,
+        };
+
+        let frame = render_snapshot(32, 8, &view, &Theme::default());
+
+        assert!(frame.to_plain_text().contains("⠿ thinking… | turn=active"));
     }
 }
