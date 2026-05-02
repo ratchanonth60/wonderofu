@@ -1,5 +1,7 @@
 use std::{
-    env, fs,
+    env,
+    fs::{self, OpenOptions},
+    io::Write,
     path::{Path, PathBuf},
     process::Command as ProcessCommand,
     sync::Arc,
@@ -7,13 +9,15 @@ use std::{
 };
 
 use async_trait::async_trait;
-use serde_json::Value;
-use wonder_of_u_agent::SettingsStore;
+use serde::{Deserialize, Serialize};
+use serde_json::{Value, json};
+use time::OffsetDateTime;
+use wonder_of_u_agent::{AuthMaterial, CredentialStore, SettingsStore};
 use wonder_of_u_core::{
-    Command, CommandContext, CommandInvocation, CommandKind, CommandOutput, CommandSpec, Result,
-    ToolSpec,
+    Command, CommandContext, CommandInvocation, CommandKind, CommandOutput, CommandSpec,
+    MessageEnvelope, MessagePayload, Result, SessionId, ToolSpec,
 };
-use wonder_of_u_storage::{StoragePaths, TranscriptStore};
+use wonder_of_u_storage::{STORAGE_SCHEMA_VERSION, SessionMetadata, StoragePaths, TranscriptStore};
 
 pub struct HeapdumpCommand;
 
@@ -708,6 +712,33 @@ impl CreateMovedToPluginCommand {
     }
 }
 
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+struct ExtrasConfig {
+    #[serde(default)]
+    ant_trace_enabled: bool,
+    #[serde(default)]
+    mock_limits_enabled: bool,
+    #[serde(default)]
+    mock_limit_hits: u64,
+    #[serde(default)]
+    bughunter_enabled: bool,
+    #[serde(default)]
+    sandbox_enabled: bool,
+    #[serde(default)]
+    ultraplan_enabled: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    extra_usage_quota_remaining: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    remote: Option<RemoteEnvConfig>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+struct RemoteEnvConfig {
+    host: String,
+    port: u16,
+    auth: String,
+}
+
 #[async_trait]
 impl Command for HeapdumpCommand {
     fn spec(&self) -> CommandSpec {
@@ -719,11 +750,7 @@ impl Command for HeapdumpCommand {
         context: CommandContext,
         _invocation: CommandInvocation,
     ) -> Result<CommandOutput> {
-        let path = write_heapdump(&context)?;
-        Ok(CommandOutput::Text(format!(
-            "Heap dump written to {}",
-            path.display()
-        )))
+        Ok(CommandOutput::Text(render_heapdump(&context)))
     }
 }
 
@@ -736,9 +763,13 @@ impl Command for AntTraceCommand {
     async fn execute(
         &self,
         context: CommandContext,
-        _invocation: CommandInvocation,
+        invocation: CommandInvocation,
     ) -> Result<CommandOutput> {
-        Ok(CommandOutput::Text(render_ant_trace(&context)))
+        Ok(CommandOutput::Text(toggle_ant_trace(
+            storage_root(None).as_deref(),
+            &context,
+            invocation.args.trim(),
+        )?))
     }
 }
 
@@ -750,10 +781,13 @@ impl Command for CtxVizCommand {
 
     async fn execute(
         &self,
-        _context: CommandContext,
+        context: CommandContext,
         _invocation: CommandInvocation,
     ) -> Result<CommandOutput> {
-        Ok(CommandOutput::Text(render_ctx_viz()))
+        Ok(CommandOutput::Text(render_ctx_viz(
+            storage_root(None).as_deref(),
+            context.session_id,
+        )?))
     }
 }
 
@@ -765,10 +799,15 @@ impl Command for DebugToolCallCommand {
 
     async fn execute(
         &self,
-        _context: CommandContext,
-        _invocation: CommandInvocation,
+        context: CommandContext,
+        invocation: CommandInvocation,
     ) -> Result<CommandOutput> {
-        Ok(CommandOutput::Text(render_debug_tool_call()))
+        let limit = invocation.args.trim().parse::<usize>().unwrap_or(5);
+        Ok(CommandOutput::Text(render_debug_tool_call(
+            storage_root(None).as_deref(),
+            context.session_id,
+            limit,
+        )?))
     }
 }
 
@@ -780,12 +819,13 @@ impl Command for GoodClaudeCommand {
 
     async fn execute(
         &self,
-        _context: CommandContext,
+        context: CommandContext,
         _invocation: CommandInvocation,
     ) -> Result<CommandOutput> {
-        Ok(CommandOutput::Text(
-            "✓ Good Claude! Session marked as positive example.".into(),
-        ))
+        Ok(CommandOutput::Text(record_good_claude(
+            storage_root(None).as_deref(),
+            &context,
+        )?))
     }
 }
 
@@ -800,7 +840,9 @@ impl Command for BreakCacheCommand {
         _context: CommandContext,
         _invocation: CommandInvocation,
     ) -> Result<CommandOutput> {
-        Ok(CommandOutput::Text("Cache cleared.".into()))
+        Ok(CommandOutput::Text(break_cache(
+            storage_root(None).as_deref(),
+        )?))
     }
 }
 
@@ -815,9 +857,9 @@ impl Command for BackfillSessionsCommand {
         _context: CommandContext,
         _invocation: CommandInvocation,
     ) -> Result<CommandOutput> {
-        let count = session_count(self.storage_dir.as_deref())?;
+        let (count, written) = backfill_sessions(self.storage_dir.as_deref())?;
         Ok(CommandOutput::Text(format!(
-            "Backfill complete: {count} sessions indexed."
+            "Backfill complete: {count} sessions scanned, {written} metadata records written."
         )))
     }
 }
@@ -830,10 +872,13 @@ impl Command for PerfIssueCommand {
 
     async fn execute(
         &self,
-        _context: CommandContext,
+        context: CommandContext,
         _invocation: CommandInvocation,
     ) -> Result<CommandOutput> {
-        Ok(CommandOutput::Text(render_perf_issue()))
+        Ok(CommandOutput::Text(render_perf_issue(
+            storage_root(None).as_deref(),
+            &context,
+        )?))
     }
 }
 
@@ -846,12 +891,12 @@ impl Command for BughunterCommand {
     async fn execute(
         &self,
         _context: CommandContext,
-        _invocation: CommandInvocation,
+        invocation: CommandInvocation,
     ) -> Result<CommandOutput> {
-        Ok(CommandOutput::Text(
-            "Bug hunter mode: active. Report issues at https://github.com/anthropics/claude-code/issues"
-                .into(),
-        ))
+        Ok(CommandOutput::Text(toggle_bughunter(
+            storage_root(None).as_deref(),
+            invocation.args.trim(),
+        )?))
     }
 }
 
@@ -868,11 +913,9 @@ impl Command for BtwCommand {
     ) -> Result<CommandOutput> {
         let args = invocation.args.trim();
         if args.is_empty() {
-            return Ok(CommandOutput::Text("Usage: /btw <question>".into()));
+            return Ok(CommandOutput::Text(random_btw_tip().into()));
         }
-        Ok(CommandOutput::Text(format!(
-            "Side question noted: {args}\n(Use /btw <question> to inject a side note into the conversation)"
-        )))
+        Ok(CommandOutput::Text(format!("By the way: {args}")))
     }
 }
 
@@ -894,11 +937,11 @@ impl Command for AdvisorCommand {
             )));
         }
         if matches!(args, "unset" | "off") {
-            return Ok(CommandOutput::Text("Advisor disabled".into()));
+            return Ok(CommandOutput::Text(
+                "Advisor recommendation disabled for this session.".into(),
+            ));
         }
-        Ok(CommandOutput::Text(format!(
-            "Advisor set to: {args}. (Restart to apply)"
-        )))
+        Ok(CommandOutput::Text(recommend_advisor(args)))
     }
 }
 
@@ -913,9 +956,7 @@ impl Command for StickersCommand {
         _context: CommandContext,
         _invocation: CommandInvocation,
     ) -> Result<CommandOutput> {
-        Ok(CommandOutput::Text(
-            "Visit https://anthropic.com/stickers to order Claude Code stickers! 🎉".into(),
-        ))
+        Ok(CommandOutput::Text(render_stickers().into()))
     }
 }
 
@@ -948,17 +989,9 @@ impl Command for InitVerifiersCommand {
         _context: CommandContext,
         _invocation: CommandInvocation,
     ) -> Result<CommandOutput> {
-        let verifiers = verifier_tool_names(self.tool_specs.as_ref());
-        let mut lines = vec!["Verifiers initialized.".into()];
-        if verifiers.is_empty() {
-            lines.push("Available verification tools: none detected.".into());
-        } else {
-            lines.push(format!(
-                "Available verification tools: {}",
-                verifiers.join(", ")
-            ));
-        }
-        Ok(CommandOutput::Text(lines.join("\n")))
+        Ok(CommandOutput::Text(render_init_verifiers(
+            self.tool_specs.as_ref(),
+        )))
     }
 }
 
@@ -973,12 +1006,9 @@ impl Command for ExtraUsageCommand {
         _context: CommandContext,
         _invocation: CommandInvocation,
     ) -> Result<CommandOutput> {
-        let message = if env::var_os("DISABLE_EXTRA_USAGE_COMMAND").is_some() {
-            "Extra usage: disabled by policy."
-        } else {
-            "Extra usage: contact your plan administrator to configure overage provisioning. See https://console.anthropic.com/settings for account limits."
-        };
-        Ok(CommandOutput::Text(message.into()))
+        Ok(CommandOutput::Text(render_extra_usage(
+            storage_root(None).as_deref(),
+        )?))
     }
 }
 
@@ -990,13 +1020,13 @@ impl Command for PassesCommand {
 
     async fn execute(
         &self,
-        _context: CommandContext,
+        context: CommandContext,
         _invocation: CommandInvocation,
     ) -> Result<CommandOutput> {
-        Ok(CommandOutput::Text(
-            "Claude Code Passes: Visit https://console.anthropic.com/referral to share access with friends and earn extra usage."
-                .into(),
-        ))
+        Ok(CommandOutput::Text(render_passes(
+            storage_root(None).as_deref(),
+            &context,
+        )?))
     }
 }
 
@@ -1011,10 +1041,9 @@ impl Command for RateLimitOptionsCommand {
         _context: CommandContext,
         _invocation: CommandInvocation,
     ) -> Result<CommandOutput> {
-        Ok(CommandOutput::Text(
-            "Rate Limit Options:\n• Wait for reset (usually 1 hour)\n• Upgrade your plan at https://console.anthropic.com\n• Use /extra-usage to configure overage\n• Try a different model with /model"
-                .into(),
-        ))
+        Ok(CommandOutput::Text(render_rate_limit_options(
+            storage_root(None).as_deref(),
+        )?))
     }
 }
 
@@ -1027,14 +1056,12 @@ impl Command for MockLimitsCommand {
     async fn execute(
         &self,
         _context: CommandContext,
-        _invocation: CommandInvocation,
+        invocation: CommandInvocation,
     ) -> Result<CommandOutput> {
-        let message = if cfg!(test) || env::var_os("ANTHROPIC_API_KEY").is_some() {
-            "Mock limits: enabled for testing."
-        } else {
-            "Mock limits: not available in this build."
-        };
-        Ok(CommandOutput::Text(message.into()))
+        Ok(CommandOutput::Text(toggle_mock_limits(
+            storage_root(None).as_deref(),
+            invocation.args.trim(),
+        )?))
     }
 }
 
@@ -1049,10 +1076,9 @@ impl Command for ResetLimitsCommand {
         _context: CommandContext,
         _invocation: CommandInvocation,
     ) -> Result<CommandOutput> {
-        Ok(CommandOutput::Text(
-            "Rate limit counters are managed server-side and cannot be reset from the client. Use /rate-limit-options for available options."
-                .into(),
-        ))
+        Ok(CommandOutput::Text(reset_limits(
+            storage_root(None).as_deref(),
+        )?))
     }
 }
 
@@ -1067,10 +1093,7 @@ impl Command for OnboardingCommand {
         _context: CommandContext,
         _invocation: CommandInvocation,
     ) -> Result<CommandOutput> {
-        Ok(CommandOutput::Text(
-            "Welcome to Wonder of U (Claude Code)!\n\nQuick start:\n• /help - show all commands\n• /model - choose AI model\n• /mcp - configure tools\n• /init - initialize project\n• /config - manage settings\n\nStart chatting to begin!"
-                .into(),
-        ))
+        Ok(CommandOutput::Text(render_onboarding().into()))
     }
 }
 
@@ -1082,13 +1105,13 @@ impl Command for TeleportCommand {
 
     async fn execute(
         &self,
-        _context: CommandContext,
+        context: CommandContext,
         _invocation: CommandInvocation,
     ) -> Result<CommandOutput> {
-        Ok(CommandOutput::Text(
-            "Teleport requires Claude.ai subscription with remote sessions enabled. See https://claude.ai/code for details.\n\nCurrently: remote sessions not configured."
-                .into(),
-        ))
+        Ok(CommandOutput::Text(render_teleport(
+            storage_root(None).as_deref(),
+            context.session_id,
+        )?))
     }
 }
 
@@ -1103,10 +1126,9 @@ impl Command for RemoteEnvCommand {
         _context: CommandContext,
         _invocation: CommandInvocation,
     ) -> Result<CommandOutput> {
-        Ok(CommandOutput::Text(
-            "Remote environment configuration requires a Claude.ai subscription. Use /config to manage local settings."
-                .into(),
-        ))
+        Ok(CommandOutput::Text(render_remote_env(
+            storage_root(None).as_deref(),
+        )?))
     }
 }
 
@@ -1119,12 +1141,12 @@ impl Command for RemoteSetupCommand {
     async fn execute(
         &self,
         _context: CommandContext,
-        _invocation: CommandInvocation,
+        invocation: CommandInvocation,
     ) -> Result<CommandOutput> {
-        Ok(CommandOutput::Text(
-            "Web setup:\n1. Sign in at https://claude.ai\n2. Navigate to Claude Code settings\n3. Connect your GitHub account\n4. Return here and run /teleport"
-                .into(),
-        ))
+        Ok(CommandOutput::Text(remote_setup(
+            storage_root(None).as_deref(),
+            invocation.args.trim(),
+        )?))
     }
 }
 
@@ -1139,9 +1161,9 @@ impl Command for BridgeKickCommand {
         _context: CommandContext,
         _invocation: CommandInvocation,
     ) -> Result<CommandOutput> {
-        Ok(CommandOutput::Text(
-            "Bridge kick: no active bridge connection. Start a bridge with /bridge first.".into(),
-        ))
+        Ok(CommandOutput::Text(render_bridge_kick(
+            storage_root(None).as_deref(),
+        )?))
     }
 }
 
@@ -1154,9 +1176,12 @@ impl Command for SandboxToggleCommand {
     async fn execute(
         &self,
         _context: CommandContext,
-        _invocation: CommandInvocation,
+        invocation: CommandInvocation,
     ) -> Result<CommandOutput> {
-        Ok(CommandOutput::Text(render_sandbox_status()))
+        Ok(CommandOutput::Text(toggle_sandbox(
+            storage_root(None).as_deref(),
+            invocation.args.trim(),
+        )?))
     }
 }
 
@@ -1171,10 +1196,9 @@ impl Command for UltraplanCommand {
         _context: CommandContext,
         _invocation: CommandInvocation,
     ) -> Result<CommandOutput> {
-        Ok(CommandOutput::Text(
-            "Ultraplan requires a Claude.ai subscription with remote agents enabled.\n\nFor local multi-agent: use /agents to configure agent coordination."
-                .into(),
-        ))
+        Ok(CommandOutput::Text(enable_ultraplan(
+            storage_root(None).as_deref(),
+        )?))
     }
 }
 
@@ -1186,13 +1210,13 @@ impl Command for ThinkbackCommand {
 
     async fn execute(
         &self,
-        _context: CommandContext,
+        context: CommandContext,
         _invocation: CommandInvocation,
     ) -> Result<CommandOutput> {
-        Ok(CommandOutput::Text(
-            "Think Back: this feature requires the thinkback feature gate. Use /usage to see your statistics."
-                .into(),
-        ))
+        Ok(CommandOutput::Text(render_thinkback(
+            storage_root(None).as_deref(),
+            context.session_id,
+        )?))
     }
 }
 
@@ -1204,12 +1228,13 @@ impl Command for ThinkbackPlayCommand {
 
     async fn execute(
         &self,
-        _context: CommandContext,
+        context: CommandContext,
         _invocation: CommandInvocation,
     ) -> Result<CommandOutput> {
-        Ok(CommandOutput::Text(
-            "Thinkback playback: no animation data available.".into(),
-        ))
+        Ok(CommandOutput::Text(render_thinkback_play(
+            storage_root(None).as_deref(),
+            context.session_id,
+        )?))
     }
 }
 
@@ -1222,14 +1247,9 @@ impl Command for AutofixPrCommand {
     async fn execute(
         &self,
         _context: CommandContext,
-        _invocation: CommandInvocation,
+        invocation: CommandInvocation,
     ) -> Result<CommandOutput> {
-        let message = if executable_on_path("gh") {
-            "autofix-pr: use /review with --pr flag for PR review and auto-fix capabilities"
-        } else {
-            "autofix-pr: requires gh CLI (https://cli.github.com)."
-        };
-        Ok(CommandOutput::Text(message.into()))
+        Ok(CommandOutput::Text(autofix_pr(invocation.args.trim())))
     }
 }
 
@@ -1262,13 +1282,13 @@ impl Command for SummaryCommand {
 
     async fn execute(
         &self,
-        _context: CommandContext,
+        context: CommandContext,
         _invocation: CommandInvocation,
     ) -> Result<CommandOutput> {
-        Ok(CommandOutput::Text(
-            "Session summary: use /compact to generate a conversation summary and compress context."
-                .into(),
-        ))
+        Ok(CommandOutput::Text(render_summary(
+            storage_root(None).as_deref(),
+            &context,
+        )?))
     }
 }
 
@@ -1280,10 +1300,10 @@ impl Command for EnvCommand {
 
     async fn execute(
         &self,
-        _context: CommandContext,
+        context: CommandContext,
         _invocation: CommandInvocation,
     ) -> Result<CommandOutput> {
-        Ok(CommandOutput::Text(render_env_summary()))
+        Ok(CommandOutput::Text(render_env_summary(&context)))
     }
 }
 
@@ -1298,14 +1318,9 @@ impl Command for OauthRefreshCommand {
         _context: CommandContext,
         _invocation: CommandInvocation,
     ) -> Result<CommandOutput> {
-        let mut lines = Vec::new();
-        if let Some(storage_dir) = self.storage_dir.as_deref() {
-            let credentials = StoragePaths::new(storage_dir).credentials_path();
-            lines.push(format!("credentials_path={}", credentials.display()));
-            lines.push(format!("credentials_present={}", credentials.exists()));
-        }
-        lines.push("OAuth token refresh: use /login to refresh authentication credentials.".into());
-        Ok(CommandOutput::Text(lines.join("\n")))
+        let derived_storage = storage_root(None);
+        let storage_dir = self.storage_dir.as_deref().or(derived_storage.as_deref());
+        Ok(CommandOutput::Text(render_oauth_refresh(storage_dir)?))
     }
 }
 
@@ -1320,10 +1335,7 @@ impl Command for IssueCommand {
         _context: CommandContext,
         _invocation: CommandInvocation,
     ) -> Result<CommandOutput> {
-        Ok(CommandOutput::Text(
-            "Issues: this feature has been moved. Report bugs at https://github.com/anthropics/claude-code/issues"
-                .into(),
-        ))
+        Ok(CommandOutput::Text(open_issue_url()))
     }
 }
 
@@ -1335,12 +1347,13 @@ impl Command for ShareCommand {
 
     async fn execute(
         &self,
-        _context: CommandContext,
+        context: CommandContext,
         _invocation: CommandInvocation,
     ) -> Result<CommandOutput> {
-        Ok(CommandOutput::Text(
-            "Share: this feature is not available in this build.".into(),
-        ))
+        Ok(CommandOutput::Text(share_session(
+            storage_root(None).as_deref(),
+            context.session_id,
+        )?))
     }
 }
 
@@ -1352,10 +1365,10 @@ impl Command for InstallCommand {
 
     async fn execute(
         &self,
-        _context: CommandContext,
+        context: CommandContext,
         _invocation: CommandInvocation,
     ) -> Result<CommandOutput> {
-        Ok(CommandOutput::Text(render_install_help()))
+        Ok(CommandOutput::Text(render_install_help(&context)))
     }
 }
 
@@ -1370,10 +1383,7 @@ impl Command for InstallGithubAppCommand {
         _context: CommandContext,
         _invocation: CommandInvocation,
     ) -> Result<CommandOutput> {
-        let auth_status = github_auth_status();
-        Ok(CommandOutput::Text(format!(
-            "GitHub App installation: visit https://github.com/apps/claude to install the Claude GitHub App.\n\nRun `gh auth status` to check GitHub authentication.\nstatus={auth_status}"
-        )))
+        Ok(CommandOutput::Text(render_install_github_app()))
     }
 }
 
@@ -1388,10 +1398,7 @@ impl Command for InstallSlackAppCommand {
         _context: CommandContext,
         _invocation: CommandInvocation,
     ) -> Result<CommandOutput> {
-        Ok(CommandOutput::Text(
-            "Slack App installation: visit https://slack.com/apps/claude to install Claude for Slack."
-                .into(),
-        ))
+        Ok(CommandOutput::Text(render_install_slack_app()))
     }
 }
 
@@ -1412,24 +1419,51 @@ impl Command for CreateMovedToPluginCommand {
     }
 }
 
-fn write_heapdump(context: &CommandContext) -> Result<PathBuf> {
-    let pid = std::process::id();
-    let timestamp = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_millis())
-        .unwrap_or_default();
-    let output_path = env::temp_dir().join(format!("wonder-of-u-heapdump-{pid}-{timestamp}.txt"));
-    let status = read_proc_file("/proc/self/status");
-    let maps = read_proc_file("/proc/self/maps");
-    let dump = format!(
-        "pid={pid}\nsession_id={}\ncwd={}\n\n[status]\n{}\n\n[maps]\n{}\n",
-        context.session_id,
-        context.cwd.display(),
-        status,
-        maps,
-    );
-    fs::write(&output_path, dump)?;
-    Ok(output_path)
+fn render_heapdump(context: &CommandContext) -> String {
+    let status = parse_proc_status();
+    [
+        "## Heapdump".into(),
+        "Rust does not expose a JS-style heap dump in this runtime.".into(),
+        format!("pid={}", std::process::id()),
+        format!("session_id={}", context.session_id),
+        format!("cwd={}", context.cwd.display()),
+        format!(
+            "memory_rss={}",
+            status_value(&status, "VmRSS").unwrap_or("unavailable")
+        ),
+        format!(
+            "memory_size={}",
+            status_value(&status, "VmSize").unwrap_or("unavailable")
+        ),
+        format!(
+            "threads={}",
+            status_value(&status, "Threads").unwrap_or("unavailable")
+        ),
+    ]
+    .join("\n")
+}
+
+fn toggle_ant_trace(
+    storage_dir: Option<&Path>,
+    context: &CommandContext,
+    args: &str,
+) -> Result<String> {
+    let mut config = read_extras_config(storage_dir)?;
+    let requested = parse_toggle_request(args);
+    if let Some(enabled) = requested {
+        config.ant_trace_enabled = enabled;
+        write_extras_config(storage_dir, &config)?;
+    }
+    let mut lines = vec![format!(
+        "Ant trace {}.",
+        if config.ant_trace_enabled {
+            "enabled"
+        } else {
+            "disabled"
+        }
+    )];
+    lines.push(render_ant_trace(context));
+    Ok(lines.join("\n"))
 }
 
 fn render_ant_trace(context: &CommandContext) -> String {
@@ -1459,36 +1493,84 @@ fn render_ant_trace(context: &CommandContext) -> String {
     .join("\n")
 }
 
-fn render_ctx_viz() -> String {
-    let used = env::var("WONDER_OF_U_CONTEXT_TOKENS_USED").ok();
-    let max = env::var("WONDER_OF_U_CONTEXT_TOKENS_MAX").ok();
-    match (used, max) {
-        (Some(used), Some(max)) => {
-            format!("Context visualization:\nused_tokens={used}\nmax_tokens={max}")
-        }
-        _ => "Context visualization: unavailable in this build".into(),
+fn render_ctx_viz(storage_dir: Option<&Path>, session_id: SessionId) -> Result<String> {
+    let used = load_session_snapshot(storage_dir, session_id)
+        .map(|snapshot| snapshot.state.costs.usage.total_tokens())
+        .or_else(|| {
+            env::var("WONDER_OF_U_CONTEXT_TOKENS_USED")
+                .ok()
+                .and_then(|value| value.parse::<u64>().ok())
+        })
+        .unwrap_or_default();
+    let max = env::var("WONDER_OF_U_CONTEXT_TOKENS_MAX")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(200_000);
+    let filled = ((used.saturating_mul(24)) / max.max(1)).min(24) as usize;
+    let bar = format!(
+        "[{}{}]",
+        "#".repeat(filled),
+        "-".repeat(24usize.saturating_sub(filled))
+    );
+    Ok(format!(
+        "Context visualization\nused_tokens={used}\nmax_tokens={max}\nusage_bar={bar}"
+    ))
+}
+
+fn render_debug_tool_call(
+    storage_dir: Option<&Path>,
+    session_id: SessionId,
+    limit: usize,
+) -> Result<String> {
+    let messages = load_session_messages(storage_dir, session_id)?;
+    let mut calls = recent_tool_calls(&messages, limit.max(1));
+    if calls.is_empty() {
+        return Ok("Tool call debug: no tool calls recorded for this session.".into());
     }
+    calls.insert(0, format!("Recent tool calls (last {}):", calls.len()));
+    Ok(calls.join("\n"))
 }
 
-fn render_debug_tool_call() -> String {
-    env::var("WONDER_OF_U_LAST_TOOL_CALL")
-        .map(|value| format!("Tool call debug:\n{value}"))
-        .unwrap_or_else(|_| "Tool call debug: no active tool call".into())
-}
-
-fn session_count(storage_dir: Option<&Path>) -> Result<usize> {
+fn backfill_sessions(storage_dir: Option<&Path>) -> Result<(usize, usize)> {
     let Some(storage_dir) = storage_dir else {
-        return Ok(0);
+        return Ok((0, 0));
     };
-    Ok(TranscriptStore::new(storage_dir).list_metadata()?.len())
+    let store = TranscriptStore::new(storage_dir);
+    store.ensure_layout()?;
+    let mut scanned = 0;
+    let mut written = 0;
+    for entry in fs::read_dir(store.paths().sessions_dir())? {
+        let path = entry?.path();
+        if path.extension().and_then(|ext| ext.to_str()) != Some("jsonl") {
+            continue;
+        }
+        scanned += 1;
+        let Some(stem) = path.file_stem().and_then(|value| value.to_str()) else {
+            continue;
+        };
+        let Ok(session_id) = SessionId::parse(stem) else {
+            continue;
+        };
+        if store.paths().metadata_path(session_id).exists() {
+            continue;
+        }
+        let transcript = store.load_session(session_id)?;
+        let snapshot = store.read_snapshot_if_exists(session_id)?;
+        let metadata = synthesize_metadata(session_id, &transcript.messages, snapshot.as_ref());
+        store.write_metadata(&metadata)?;
+        written += 1;
+    }
+    Ok((scanned, written))
 }
 
-fn render_perf_issue() -> String {
+fn render_perf_issue(storage_dir: Option<&Path>, context: &CommandContext) -> Result<String> {
     let status = parse_proc_status();
     let uptime = estimated_process_uptime_seconds()
         .map(|seconds| format!("{seconds:.2}"))
         .unwrap_or_else(|| "unavailable".into());
-    [
+    let session_stats = session_storage_stats(storage_dir, context.session_id)?;
+    Ok([
         "## Perf Issue".into(),
         format!("pid={}", std::process::id()),
         format!("process_uptime_seconds_estimate={uptime}"),
@@ -1506,8 +1588,11 @@ fn render_perf_issue() -> String {
                 .map(|count| count.to_string())
                 .unwrap_or_else(|| "unavailable".into())
         ),
+        format!("session_bytes={}", session_stats.0),
+        format!("metadata_present={}", session_stats.1),
+        format!("snapshot_present={}", session_stats.2),
     ]
-    .join("\n")
+    .join("\n"))
 }
 
 fn current_advisor_setting(storage_dir: Option<&Path>) -> String {
@@ -1523,6 +1608,32 @@ fn current_advisor_setting(storage_dir: Option<&Path>) -> String {
         }
     }
     "Advisor: unset".into()
+}
+
+fn recommend_advisor(task: &str) -> String {
+    let lower = task.to_ascii_lowercase();
+    let recommendation = if lower.contains("debug")
+        || lower.contains("fix")
+        || lower.contains("bug")
+        || lower.contains("investigate")
+    {
+        "claude-3.7-sonnet"
+    } else if lower.contains("plan")
+        || lower.contains("architecture")
+        || lower.contains("refactor")
+        || lower.contains("design")
+    {
+        "claude-3.7-opus"
+    } else if lower.contains("test")
+        || lower.contains("lint")
+        || lower.contains("review")
+        || lower.contains("comment")
+    {
+        "claude-3.5-haiku"
+    } else {
+        "claude-3.7-sonnet"
+    };
+    format!("Advisor recommendation: {recommendation}\nreason={task}")
 }
 
 fn render_rewind(storage_dir: Option<&Path>, context: &CommandContext) -> Result<String> {
@@ -1581,14 +1692,547 @@ fn verifier_tool_names(tool_specs: &[ToolSpec]) -> Vec<String> {
         .collect()
 }
 
-fn render_sandbox_status() -> String {
-    let os = env::consts::OS;
-    if os == "linux" {
-        "Sandbox: Linux namespace/seccomp isolation may be available depending on launch configuration.\nCurrent build does not expose a runtime toggle.\nUse permission settings or launch-time sandbox configuration to change isolation."
-            .into()
-    } else {
-        format!("Sandbox: not supported on this platform ({os}). Use permission settings instead.")
+fn render_init_verifiers(tool_specs: &[ToolSpec]) -> String {
+    let mut lines = vec!["Verifier initialization".into()];
+    for (tool, version_args) in [
+        ("git", vec!["--version"]),
+        ("node", vec!["--version"]),
+        ("python3", vec!["--version"]),
+    ] {
+        lines.push(tool_version(tool, &version_args));
     }
+    let verifiers = verifier_tool_names(tool_specs);
+    lines.push(format!(
+        "registered_read_only_tools={}",
+        if verifiers.is_empty() {
+            "none".into()
+        } else {
+            verifiers.join(", ")
+        }
+    ));
+    lines.join("\n")
+}
+
+fn render_extra_usage(storage_dir: Option<&Path>) -> Result<String> {
+    let config = read_extras_config(storage_dir)?;
+    let disabled = env::var_os("DISABLE_EXTRA_USAGE_COMMAND").is_some();
+    Ok(format!(
+        "Extra usage\npolicy_disabled={disabled}\nquota_remaining={}\nstatus={}",
+        config
+            .extra_usage_quota_remaining
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "unconfigured".into()),
+        if disabled { "disabled" } else { "available" }
+    ))
+}
+
+fn render_passes(storage_dir: Option<&Path>, context: &CommandContext) -> Result<String> {
+    let settings = storage_dir
+        .map(SettingsStore::new)
+        .map(|store| store.read())
+        .transpose()?
+        .unwrap_or_default();
+    let mut entitlements = context
+        .features
+        .iter()
+        .map(|feature| format!("{feature:?}"))
+        .collect::<Vec<_>>();
+    if settings.fast_mode {
+        entitlements.push("fast_mode".into());
+    }
+    if settings.effort_level.is_some() {
+        entitlements.push("effort_controls".into());
+    }
+    entitlements.sort();
+    entitlements.dedup();
+    Ok(format!(
+        "Available passes / entitlements\ncount={}\n{}",
+        entitlements.len(),
+        entitlements
+            .into_iter()
+            .map(|entry| format!("• {entry}"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    ))
+}
+
+fn render_rate_limit_options(storage_dir: Option<&Path>) -> Result<String> {
+    let config = read_extras_config(storage_dir)?;
+    Ok(format!(
+        "Rate limit options\n• wait_for_reset=true\n• extra_usage_quota_remaining={}\n• mock_limits_enabled={}\n• mock_limit_hits={}\n• switch_model=/model\n• advisor_hint=/advisor <task>",
+        config
+            .extra_usage_quota_remaining
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "unconfigured".into()),
+        config.mock_limits_enabled,
+        config.mock_limit_hits,
+    ))
+}
+
+fn toggle_mock_limits(storage_dir: Option<&Path>, args: &str) -> Result<String> {
+    if !cfg!(debug_assertions) {
+        return Ok("Mock limits are only available in development builds.".into());
+    }
+    let mut config = read_extras_config(storage_dir)?;
+    if let Some(enabled) = parse_toggle_request(args) {
+        config.mock_limits_enabled = enabled;
+        if enabled {
+            config.mock_limit_hits = config.mock_limit_hits.saturating_add(1);
+        }
+        write_extras_config(storage_dir, &config)?;
+    }
+    Ok(format!(
+        "Mock limits {}\nmock_limit_hits={}",
+        if config.mock_limits_enabled {
+            "enabled"
+        } else {
+            "disabled"
+        },
+        config.mock_limit_hits
+    ))
+}
+
+fn reset_limits(storage_dir: Option<&Path>) -> Result<String> {
+    let mut config = read_extras_config(storage_dir)?;
+    config.mock_limit_hits = 0;
+    write_extras_config(storage_dir, &config)?;
+    Ok(format!(
+        "Mock rate-limit state reset.\nmock_limits_enabled={}",
+        config.mock_limits_enabled
+    ))
+}
+
+fn render_onboarding() -> &'static str {
+    "Onboarding checklist\n1. /help — inspect available commands\n2. /model — choose a model\n3. /config — review local defaults\n4. /init — bootstrap the repository\n5. /compact — checkpoint long sessions"
+}
+
+fn toggle_bughunter(storage_dir: Option<&Path>, args: &str) -> Result<String> {
+    let mut config = read_extras_config(storage_dir)?;
+    if let Some(enabled) = parse_toggle_request(args) {
+        config.bughunter_enabled = enabled;
+        write_extras_config(storage_dir, &config)?;
+    } else if args.is_empty() {
+        config.bughunter_enabled = true;
+        write_extras_config(storage_dir, &config)?;
+    }
+    Ok(format!(
+        "Bug hunter mode {}\nnext_steps=collect repro steps, run /perf-issue, then open /issue",
+        if config.bughunter_enabled {
+            "enabled"
+        } else {
+            "disabled"
+        }
+    ))
+}
+
+fn random_btw_tip() -> &'static str {
+    const TIPS: &[&str] = &[
+        "BTW: use /compact before long refactors to keep context tight.",
+        "BTW: `/pr-comments <number>` is handy before addressing review feedback.",
+        "BTW: `/summary` gives a quick health check of the current session.",
+        "BTW: capture checkpoints early if you expect to use /rewind later.",
+    ];
+    let index = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.subsec_nanos() as usize % TIPS.len())
+        .unwrap_or(0);
+    TIPS[index]
+}
+
+fn render_stickers() -> &'static str {
+    "Claude stickers\n /\\_/\\\\\n( ^.^ )\n > ^ <\n\n(=^･ω･^=)\n  /|_|\\\\"
+}
+
+fn render_teleport(storage_dir: Option<&Path>, session_id: SessionId) -> Result<String> {
+    let Some(storage_dir) = storage_dir else {
+        return Ok("Teleport: storage directory unavailable.".into());
+    };
+    let store = TranscriptStore::new(storage_dir);
+    let metadata = store.list_metadata()?;
+    if metadata.is_empty() {
+        return Ok("Teleport: no stored sessions found.".into());
+    }
+    let mut lines = vec!["Teleport sessions".into()];
+    for entry in metadata.into_iter().take(10) {
+        let snapshot = store.read_snapshot_if_exists(entry.session_id)?.is_some();
+        let status = if entry.session_id == session_id {
+            "current"
+        } else if snapshot {
+            "checkpoint"
+        } else {
+            "transcript"
+        };
+        lines.push(format!(
+            "• {} [{}] {}",
+            entry.session_id, status, entry.title
+        ));
+    }
+    Ok(lines.join("\n"))
+}
+
+fn render_remote_env(storage_dir: Option<&Path>) -> Result<String> {
+    let config = read_extras_config(storage_dir)?;
+    Ok(match config.remote {
+        Some(remote) => format!(
+            "Remote environment\nhost={}\nport={}\nauth={}",
+            remote.host, remote.port, remote.auth
+        ),
+        None => "Remote environment not configured.\nUse /remote-setup <host[:port]> [auth]".into(),
+    })
+}
+
+fn remote_setup(storage_dir: Option<&Path>, args: &str) -> Result<String> {
+    if args.is_empty() {
+        return render_remote_env(storage_dir)
+            .map(|current| format!("{current}\nusage=/remote-setup example.com:22 ssh"));
+    }
+    let mut config = read_extras_config(storage_dir)?;
+    if args.eq_ignore_ascii_case("clear") {
+        config.remote = None;
+        write_extras_config(storage_dir, &config)?;
+        return Ok("Remote environment cleared.".into());
+    }
+    let mut parts = args.split_whitespace();
+    let host_port = parts.next().unwrap_or_default();
+    let auth = parts.next().unwrap_or("ssh").to_string();
+    let (host, port) = match host_port.split_once(':') {
+        Some((host, port)) => (host.to_string(), port.parse::<u16>().unwrap_or(22)),
+        None => (host_port.to_string(), 22),
+    };
+    config.remote = Some(RemoteEnvConfig { host, port, auth });
+    write_extras_config(storage_dir, &config)?;
+    render_remote_env(storage_dir)
+}
+
+fn render_bridge_kick(storage_dir: Option<&Path>) -> Result<String> {
+    let config = read_extras_config(storage_dir)?;
+    Ok(match config.remote {
+        Some(remote) => format!(
+            "Bridge status\nremote_target={}:{}\nstatus=restart required\ninstructions=restart the bridge process, then retry /teleport",
+            remote.host, remote.port
+        ),
+        None => "Bridge status\nstatus=not configured\ninstructions=run /remote-setup first".into(),
+    })
+}
+
+fn toggle_sandbox(storage_dir: Option<&Path>, args: &str) -> Result<String> {
+    let mut config = read_extras_config(storage_dir)?;
+    if let Some(enabled) = parse_toggle_request(args) {
+        config.sandbox_enabled = enabled;
+        write_extras_config(storage_dir, &config)?;
+    } else if args.is_empty() {
+        config.sandbox_enabled = !config.sandbox_enabled;
+        write_extras_config(storage_dir, &config)?;
+    }
+    Ok(format!(
+        "Sandbox {}\nplatform={}",
+        if config.sandbox_enabled {
+            "enabled"
+        } else {
+            "disabled"
+        },
+        env::consts::OS
+    ))
+}
+
+fn enable_ultraplan(storage_dir: Option<&Path>) -> Result<String> {
+    let mut config = read_extras_config(storage_dir)?;
+    config.ultraplan_enabled = true;
+    write_extras_config(storage_dir, &config)?;
+    Ok("Ultraplan enabled.\nGuidance=spend extra time decomposing the task, enumerate risks, and checkpoint before implementation.".into())
+}
+
+fn render_thinkback(storage_dir: Option<&Path>, session_id: SessionId) -> Result<String> {
+    let Some(block) = thinking_blocks(&load_session_messages(storage_dir, session_id)?)
+        .into_iter()
+        .last()
+    else {
+        return Ok("Thinkback: no extended thinking blocks recorded.".into());
+    };
+    Ok(format!("Most recent extended thinking\n{block}"))
+}
+
+fn render_thinkback_play(storage_dir: Option<&Path>, session_id: SessionId) -> Result<String> {
+    let blocks = thinking_blocks(&load_session_messages(storage_dir, session_id)?);
+    if blocks.is_empty() {
+        return Ok("Thinkback playback: no extended thinking blocks recorded.".into());
+    }
+    Ok(blocks
+        .into_iter()
+        .enumerate()
+        .map(|(index, block)| format!("## Block {}\n{}", index + 1, block))
+        .collect::<Vec<_>>()
+        .join("\n\n"))
+}
+
+fn storage_root(explicit: Option<&Path>) -> Option<PathBuf> {
+    explicit
+        .map(Path::to_path_buf)
+        .or_else(|| env::var_os("WONDER_OF_U_STORAGE_DIR").map(PathBuf::from))
+        .or_else(|| {
+            env::var_os("XDG_CONFIG_HOME").map(|path| PathBuf::from(path).join("wonder-of-u"))
+        })
+        .or_else(|| env::var_os("HOME").map(|path| PathBuf::from(path).join(".config/wonder-of-u")))
+}
+
+fn extras_config_path(storage_dir: &Path) -> PathBuf {
+    StoragePaths::new(storage_dir)
+        .config_dir()
+        .join("extras-config.json")
+}
+
+fn read_extras_config(storage_dir: Option<&Path>) -> Result<ExtrasConfig> {
+    let Some(storage_dir) = storage_dir else {
+        return Ok(ExtrasConfig::default());
+    };
+    let path = extras_config_path(storage_dir);
+    if !path.exists() {
+        return Ok(ExtrasConfig::default());
+    }
+    Ok(serde_json::from_str(&fs::read_to_string(path)?)?)
+}
+
+fn write_extras_config(storage_dir: Option<&Path>, config: &ExtrasConfig) -> Result<()> {
+    let Some(storage_dir) = storage_dir else {
+        return Ok(());
+    };
+    let path = extras_config_path(storage_dir);
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::write(path, serde_json::to_vec_pretty(config)?)?;
+    Ok(())
+}
+
+fn parse_toggle_request(args: &str) -> Option<bool> {
+    match args.trim().to_ascii_lowercase().as_str() {
+        "1" | "on" | "enable" | "enabled" | "true" => Some(true),
+        "0" | "off" | "disable" | "disabled" | "false" => Some(false),
+        _ => None,
+    }
+}
+
+fn load_session_snapshot(
+    storage_dir: Option<&Path>,
+    session_id: SessionId,
+) -> Option<wonder_of_u_storage::SessionSnapshot> {
+    let storage_dir = storage_dir?;
+    TranscriptStore::new(storage_dir)
+        .read_snapshot_if_exists(session_id)
+        .ok()
+        .flatten()
+}
+
+fn load_session_messages(
+    storage_dir: Option<&Path>,
+    session_id: SessionId,
+) -> Result<Vec<MessageEnvelope>> {
+    let Some(storage_dir) = storage_dir else {
+        return Ok(Vec::new());
+    };
+    let store = TranscriptStore::new(storage_dir);
+    if let Some(snapshot) = store.read_snapshot_if_exists(session_id)? {
+        return Ok(snapshot.state.messages);
+    }
+    Ok(store
+        .load_session(session_id)
+        .map(|transcript| transcript.messages)
+        .unwrap_or_default())
+}
+
+fn count_tool_calls(messages: &[MessageEnvelope]) -> usize {
+    messages
+        .iter()
+        .filter(|message| matches!(message.payload, MessagePayload::AssistantToolUse { .. }))
+        .count()
+}
+
+fn recent_tool_calls(messages: &[MessageEnvelope], limit: usize) -> Vec<String> {
+    messages
+        .iter()
+        .filter_map(|message| match &message.payload {
+            MessagePayload::AssistantToolUse { tool, input, .. } => Some(format!(
+                "• {} @ {} input={}",
+                tool,
+                message.timestamp,
+                preview_json(input)
+            )),
+            _ => None,
+        })
+        .rev()
+        .take(limit)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect()
+}
+
+fn thinking_blocks(messages: &[MessageEnvelope]) -> Vec<String> {
+    messages
+        .iter()
+        .filter_map(|message| match &message.payload {
+            MessagePayload::AssistantThinking { content, .. } => Some(content.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+fn synthesize_metadata(
+    session_id: SessionId,
+    messages: &[MessageEnvelope],
+    snapshot: Option<&wonder_of_u_storage::SessionSnapshot>,
+) -> SessionMetadata {
+    let created_at = messages
+        .first()
+        .map(|message| message.timestamp)
+        .unwrap_or_else(OffsetDateTime::now_utc);
+    let updated_at = messages
+        .last()
+        .map(|message| message.timestamp)
+        .unwrap_or(created_at);
+    let cwd = snapshot
+        .map(|snapshot| snapshot.state.session.cwd.clone())
+        .or_else(|| messages.iter().find_map(|message| message.cwd.clone()))
+        .unwrap_or_else(|| PathBuf::from("."));
+    let title = snapshot
+        .map(|snapshot| snapshot.state.session.title.clone())
+        .unwrap_or_else(|| format!("Session {}", &session_id.to_string()[..8]));
+    SessionMetadata {
+        schema_version: STORAGE_SCHEMA_VERSION,
+        session_id,
+        title,
+        cwd,
+        git_branch: snapshot
+            .and_then(|snapshot| snapshot.state.session.git_branch.clone())
+            .or_else(|| {
+                messages
+                    .iter()
+                    .find_map(|message| message.git_branch.clone())
+            }),
+        entrypoint: snapshot
+            .and_then(|snapshot| snapshot.state.session.entrypoint.clone())
+            .or_else(|| {
+                messages
+                    .iter()
+                    .find_map(|message| message.entrypoint.clone())
+            }),
+        app_version: snapshot
+            .and_then(|snapshot| snapshot.state.session.app_version.clone())
+            .or_else(|| {
+                messages
+                    .iter()
+                    .find_map(|message| message.app_version.clone())
+            }),
+        created_at,
+        updated_at,
+        message_count: messages.len(),
+        tags: snapshot
+            .map(|snapshot| snapshot.state.session.tags.clone())
+            .unwrap_or_default(),
+        provider: snapshot.and_then(|snapshot| snapshot.state.provider.clone()),
+        model: snapshot.and_then(|snapshot| snapshot.state.model.clone()),
+        auth: snapshot
+            .map(|snapshot| snapshot.state.auth.clone())
+            .unwrap_or_default(),
+        costs: snapshot
+            .map(|snapshot| snapshot.state.costs.clone())
+            .unwrap_or_default(),
+    }
+}
+
+fn session_storage_stats(
+    storage_dir: Option<&Path>,
+    session_id: SessionId,
+) -> Result<(u64, bool, bool)> {
+    let Some(storage_dir) = storage_dir else {
+        return Ok((0, false, false));
+    };
+    let paths = StoragePaths::new(storage_dir);
+    let transcript_bytes = fs::metadata(paths.transcript_path(session_id))
+        .map(|metadata| metadata.len())
+        .unwrap_or_default();
+    Ok((
+        transcript_bytes,
+        paths.metadata_path(session_id).exists(),
+        paths.snapshot_path(session_id).exists(),
+    ))
+}
+
+fn record_good_claude(storage_dir: Option<&Path>, context: &CommandContext) -> Result<String> {
+    let Some(storage_dir) = storage_dir else {
+        return Ok("✓ Good Claude! Positive reinforcement noted.".into());
+    };
+    let path = StoragePaths::new(storage_dir)
+        .config_dir()
+        .join("good-claude.log");
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let mut file = OpenOptions::new().create(true).append(true).open(&path)?;
+    writeln!(
+        file,
+        "{}\tsession={}\tcwd={}",
+        OffsetDateTime::now_utc(),
+        context.session_id,
+        context.cwd.display()
+    )?;
+    Ok(format!(
+        "✓ Good Claude! Logged positive reinforcement to {}",
+        path.display()
+    ))
+}
+
+fn break_cache(storage_dir: Option<&Path>) -> Result<String> {
+    let Some(storage_dir) = storage_dir else {
+        return Ok("Cache clear skipped: storage directory unavailable.".into());
+    };
+    let path = storage_dir.join("cache-break.sentinel");
+    fs::create_dir_all(storage_dir)?;
+    fs::write(&path, format!("{}", OffsetDateTime::now_utc()))?;
+    Ok(format!("Cache sentinel updated: {}", path.display()))
+}
+
+fn tool_version(tool: &str, version_args: &[&str]) -> String {
+    match ProcessCommand::new(tool).args(version_args).output() {
+        Ok(output) if output.status.success() => {
+            let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+            let line = if !stdout.is_empty() { stdout } else { stderr };
+            format!("{tool}={line}")
+        }
+        Ok(output) => format!("{tool}=unavailable(status={})", output.status),
+        Err(_) => format!("{tool}=missing"),
+    }
+}
+
+fn render_summary(storage_dir: Option<&Path>, context: &CommandContext) -> Result<String> {
+    let messages = load_session_messages(storage_dir, context.session_id)?;
+    let snapshot = load_session_snapshot(storage_dir, context.session_id);
+    let metadata = storage_dir.and_then(|dir| {
+        TranscriptStore::new(dir)
+            .read_metadata(context.session_id)
+            .ok()
+    });
+    let token_usage = snapshot
+        .as_ref()
+        .map(|snapshot| snapshot.state.costs.usage.total_tokens())
+        .or_else(|| {
+            metadata
+                .as_ref()
+                .map(|metadata| metadata.costs.usage.total_tokens())
+        })
+        .unwrap_or_default();
+    Ok(format!(
+        "Session summary\nmessage_count={}\ntool_calls={}\ntoken_usage={token_usage}\nsession_id={}",
+        messages.len(),
+        count_tool_calls(&messages),
+        context.session_id
+    ))
+}
+
+fn preview_json(value: &Value) -> String {
+    let rendered = serde_json::to_string(value).unwrap_or_else(|_| "<invalid-json>".into());
+    truncate_middle(&rendered, 80)
 }
 
 fn pr_comments_usage(include_gh_note: bool) -> String {
@@ -1745,46 +2389,45 @@ fn preview_comment_body(body: &str) -> String {
     }
 }
 
-fn render_env_summary() -> String {
-    let anthropic_api_key = env::var("ANTHROPIC_API_KEY").ok();
+fn render_env_summary(context: &CommandContext) -> String {
+    let shell = env::var("SHELL").unwrap_or_else(|_| "unset".into());
+    let path_entries = env::var_os("PATH")
+        .map(|paths| env::split_paths(&paths).count())
+        .unwrap_or_default();
     [
         "## Environment".into(),
+        format!("cwd={}", context.cwd.display()),
+        format!("shell={shell}"),
+        format!("os={}", env::consts::OS),
         format!(
-            "ANTHROPIC_API_KEY={}",
-            anthropic_api_key
-                .as_deref()
-                .map(mask_secret)
-                .unwrap_or_else(|| "unset".into())
+            "rust_env={}",
+            env::var("RUST_ENV").unwrap_or_else(|_| "unset".into())
         ),
+        format!("path_entries={path_entries}"),
         format!(
-            "PATH={}",
+            "path_summary={}",
             truncate_middle(&env::var("PATH").unwrap_or_else(|_| "unset".into()), 120)
-        ),
-        format!(
-            "HOME={}",
-            env::var("HOME").unwrap_or_else(|_| "unset".into())
-        ),
-        format!(
-            "WONDER_OF_U_ADVISOR_MODEL={}",
-            env::var("WONDER_OF_U_ADVISOR_MODEL").unwrap_or_else(|_| "unset".into())
-        ),
-        format!(
-            "DISABLE_EXTRA_USAGE_COMMAND={}",
-            env::var("DISABLE_EXTRA_USAGE_COMMAND").unwrap_or_else(|_| "unset".into())
         ),
     ]
     .join("\n")
 }
 
-fn render_install_help() -> String {
-    let os = env::consts::OS;
-    let command = match os {
-        "macos" => "brew install wonder-of-u",
-        "windows" => "npm install -g @anthropic-ai/claude-code",
-        _ => "npm install -g @anthropic-ai/claude-code",
-    };
+fn render_install_help(context: &CommandContext) -> String {
+    let shell = env::var("SHELL").unwrap_or_else(|_| "unknown".into());
+    let rc_file = shell_rc_path();
+    let exe_dir = env::current_exe()
+        .ok()
+        .and_then(|path| path.parent().map(Path::to_path_buf));
+    let on_path = exe_dir.as_deref().map(path_contains).unwrap_or(false);
     format!(
-        "Install guidance for {os}:\n{command}\nMore info: https://docs.anthropic.com/en/docs/claude-code/setup"
+        "Install diagnostics\ncwd={}\nos={}\nshell={shell}\npath_configured={on_path}\nrc_file={}\ncompletion_hint={}",
+        context.cwd.display(),
+        env::consts::OS,
+        rc_file
+            .as_deref()
+            .map(|path| path.display().to_string())
+            .unwrap_or_else(|| "unavailable".into()),
+        completion_hint(&shell),
     )
 }
 
@@ -1799,8 +2442,160 @@ fn github_auth_status() -> &'static str {
     }
 }
 
-fn read_proc_file(path: &str) -> String {
-    fs::read_to_string(path).unwrap_or_else(|_| "unavailable".into())
+fn render_oauth_refresh(storage_dir: Option<&Path>) -> Result<String> {
+    let mut lines = vec!["OAuth refresh diagnostics".into()];
+    if let Some(home) = env::var_os("HOME") {
+        let auth_path = PathBuf::from(home).join(".claude").join("auth.json");
+        lines.push(format!("claude_auth_path={}", auth_path.display()));
+        lines.push(format!("claude_auth_present={}", auth_path.exists()));
+        if auth_path.exists() {
+            let value: Value = serde_json::from_str(&fs::read_to_string(&auth_path)?)?;
+            lines.push(format!(
+                "claude_refresh_token_present={}",
+                value.get("refresh_token").is_some() || value.get("refreshToken").is_some()
+            ));
+        }
+    }
+    if let Some(storage_dir) = storage_dir {
+        let credentials = CredentialStore::new(storage_dir).read()?;
+        let oauth_providers = credentials
+            .providers
+            .iter()
+            .filter(|(_, auth)| matches!(auth, AuthMaterial::OAuth { .. }))
+            .count();
+        lines.push(format!("stored_oauth_providers={oauth_providers}"));
+    }
+    lines.push("refresh_status=validation_only".into());
+    Ok(lines.join("\n"))
+}
+
+fn open_issue_url() -> String {
+    let url = "https://github.com/anthropics/claude-code/issues";
+    if open_url(url).is_ok() {
+        format!("Opened issue tracker: {url}")
+    } else {
+        format!("Issue tracker: {url}")
+    }
+}
+
+fn share_session(storage_dir: Option<&Path>, session_id: SessionId) -> Result<String> {
+    let Some(storage_dir) = storage_dir else {
+        return Ok("Share export unavailable: storage directory not configured.".into());
+    };
+    let store = TranscriptStore::new(storage_dir);
+    let export_dir = storage_dir.join("exports");
+    fs::create_dir_all(&export_dir)?;
+    let export_path = export_dir.join(format!("session-{session_id}.json"));
+    let snapshot = store.read_snapshot_if_exists(session_id)?;
+    let transcript = store.load_session(session_id).ok();
+    let payload = json!({
+        "session_id": session_id,
+        "snapshot": snapshot,
+        "transcript": transcript,
+    });
+    fs::write(&export_path, serde_json::to_vec_pretty(&payload)?)?;
+    Ok(format!(
+        "Session export written to {}",
+        export_path.display()
+    ))
+}
+
+fn render_install_github_app() -> String {
+    format!(
+        "Install GitHub App\nurl=https://github.com/apps/claude\n1. Open the app page\n2. Pick the target repository or org\n3. Confirm permissions\n4. Re-run `gh auth status`\ngh_auth_status={}",
+        github_auth_status()
+    )
+}
+
+fn render_install_slack_app() -> String {
+    "Install Slack App\nurl=https://slack.com/apps/claude\n1. Open the app listing\n2. Choose a workspace\n3. Approve the requested scopes\n4. Reconnect Claude Code if prompted".into()
+}
+
+fn autofix_pr(args: &str) -> String {
+    if !executable_on_path("gh") {
+        return "autofix-pr: requires gh CLI (https://cli.github.com).".into();
+    }
+    let mut command = ProcessCommand::new("gh");
+    command.arg("pr").arg("diff");
+    if !args.is_empty() {
+        command.arg(args);
+    }
+    match command.output() {
+        Ok(output) if output.status.success() => {
+            let diff = String::from_utf8_lossy(&output.stdout);
+            let files = diff
+                .lines()
+                .filter(|line| line.starts_with("diff --git"))
+                .count();
+            let excerpt_source = diff.lines().take(20).collect::<Vec<_>>().join("\n");
+            let excerpt = truncate_middle(&excerpt_source, 400);
+            format!(
+                "Autofix PR suggestion\nchanged_files={files}\nSuggested prompt: \"Review this PR diff, identify the highest-impact fix, and produce a minimal patch.\"\nexcerpt=\n{excerpt}"
+            )
+        }
+        Ok(output) => format!(
+            "autofix-pr: gh pr diff failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        ),
+        Err(error) => format!("autofix-pr: failed to invoke gh: {error}"),
+    }
+}
+
+fn shell_rc_path() -> Option<PathBuf> {
+    let home = PathBuf::from(env::var_os("HOME")?);
+    let shell = env::var("SHELL").ok()?;
+    let file = if shell.contains("zsh") {
+        ".zshrc"
+    } else if shell.contains("fish") {
+        ".config/fish/config.fish"
+    } else {
+        ".bashrc"
+    };
+    Some(home.join(file))
+}
+
+fn path_contains(dir: &Path) -> bool {
+    env::var_os("PATH")
+        .map(|paths| env::split_paths(&paths).any(|entry| entry == dir))
+        .unwrap_or(false)
+}
+
+fn completion_hint(shell: &str) -> &'static str {
+    if shell.contains("zsh") {
+        "install completion script into a zsh fpath directory"
+    } else if shell.contains("fish") {
+        "install completion script into ~/.config/fish/completions"
+    } else {
+        "install completion script into bash-completion"
+    }
+}
+
+fn open_url(url: &str) -> std::io::Result<()> {
+    #[cfg(target_os = "linux")]
+    let status = ProcessCommand::new("xdg-open").arg(url).status()?;
+
+    #[cfg(target_os = "macos")]
+    let status = ProcessCommand::new("open").arg(url).status()?;
+
+    #[cfg(target_os = "windows")]
+    let status = ProcessCommand::new("cmd")
+        .args(["/C", "start", ""])
+        .arg(url)
+        .status()?;
+
+    #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+    {
+        let _ = url;
+        return Err(std::io::Error::other("unsupported platform"));
+    }
+
+    if status.success() {
+        Ok(())
+    } else {
+        Err(std::io::Error::other(format!(
+            "open command exited with {status}"
+        )))
+    }
 }
 
 fn parse_proc_status() -> Vec<(String, String)> {
@@ -1849,13 +2644,6 @@ fn executable_on_path(name: &str) -> bool {
     env::split_paths(&paths).any(|path| path.join(name).is_file())
 }
 
-fn mask_secret(secret: &str) -> String {
-    if secret.len() <= 8 {
-        return "********".into();
-    }
-    format!("{}***{}", &secret[..4], &secret[secret.len() - 4..])
-}
-
 fn truncate_middle(value: &str, max_len: usize) -> String {
     if value.len() <= max_len {
         return value.into();
@@ -1866,14 +2654,13 @@ fn truncate_middle(value: &str, max_len: usize) -> String {
 
 #[cfg(test)]
 mod tests {
-    use std::{fs, path::PathBuf};
+    use std::path::PathBuf;
 
     use futures::executor::block_on;
     use serde_json::json;
     use tempfile::tempdir;
-    use time::OffsetDateTime;
-    use wonder_of_u_core::{CostState, FeatureSet, PermissionMode, SessionId};
-    use wonder_of_u_storage::{SessionMetadata, TranscriptStore};
+    use wonder_of_u_core::{FeatureSet, PermissionMode, SessionId};
+    use wonder_of_u_storage::TranscriptStore;
 
     use super::*;
 
@@ -1893,11 +2680,6 @@ mod tests {
             session_tags: Vec::new(),
             additional_working_directories: Vec::new(),
         }
-    }
-
-    #[test]
-    fn mask_secret_redacts_middle_bytes() {
-        assert_eq!(mask_secret("sk-ant-api-key-12345678"), "sk-a***5678");
     }
 
     #[test]
@@ -1935,28 +2717,16 @@ mod tests {
     }
 
     #[test]
-    fn backfill_sessions_counts_stored_metadata() {
+    fn backfill_sessions_writes_missing_metadata() {
         let dir = tempdir().expect("tempdir");
         let store = TranscriptStore::new(dir.path());
-        let now = OffsetDateTime::now_utc();
-        let metadata = SessionMetadata {
-            schema_version: wonder_of_u_storage::STORAGE_SCHEMA_VERSION,
-            session_id: SessionId::new(),
-            title: "Session".into(),
-            cwd: PathBuf::from("/workspace"),
-            git_branch: None,
-            entrypoint: None,
-            app_version: None,
-            created_at: now,
-            updated_at: now,
-            message_count: 3,
-            tags: Vec::new(),
-            provider: None,
-            model: None,
-            auth: Default::default(),
-            costs: CostState::default(),
-        };
-        store.write_metadata(&metadata).expect("write metadata");
+        let session_id = SessionId::new();
+        store
+            .append_message(
+                &MessageEnvelope::user_text(session_id, "hello")
+                    .with_context(Some(PathBuf::from("/workspace")), Some("main".into())),
+            )
+            .expect("write transcript");
 
         let output = block_on(
             BackfillSessionsCommand::new(Some(dir.path().to_path_buf())).execute(
@@ -1972,21 +2742,70 @@ mod tests {
 
         match output {
             CommandOutput::Text(text) => {
-                assert_eq!(text, "Backfill complete: 1 sessions indexed.");
+                assert_eq!(
+                    text,
+                    "Backfill complete: 1 sessions scanned, 1 metadata records written."
+                );
             }
             other => panic!("unexpected output: {other:?}"),
         }
+
+        let metadata = store
+            .read_metadata(session_id)
+            .expect("metadata backfilled");
+        assert_eq!(metadata.message_count, 1);
     }
 
     #[test]
-    fn heapdump_writes_diagnostic_file() {
+    fn heapdump_renders_memory_summary() {
         let context = test_context();
-        let path = write_heapdump(&context).expect("heapdump");
+        let rendered = render_heapdump(&context);
+        assert!(rendered.contains("pid="));
+        assert!(rendered.contains("memory_rss="));
+    }
 
-        let contents = fs::read_to_string(&path).expect("heapdump contents");
-        assert!(contents.contains("pid="));
-        assert!(contents.contains("[status]"));
+    #[test]
+    fn debug_tool_call_renders_recent_calls() {
+        let dir = tempdir().expect("tempdir");
+        let store = TranscriptStore::new(dir.path());
+        let session_id = SessionId::new();
+        store
+            .append_message(&MessageEnvelope::new(
+                session_id,
+                MessagePayload::AssistantToolUse {
+                    tool: "grep".into(),
+                    use_id: wonder_of_u_core::ToolUseId::new(),
+                    input: json!({ "pattern": "todo" }),
+                },
+            ))
+            .expect("tool message");
 
-        fs::remove_file(path).expect("cleanup heapdump");
+        let rendered =
+            render_debug_tool_call(Some(dir.path()), session_id, 5).expect("debug tool calls");
+        assert!(rendered.contains("grep"));
+        assert!(rendered.contains("\"pattern\":\"todo\""));
+    }
+
+    #[test]
+    fn thinkback_returns_latest_thinking_block() {
+        let messages = vec![
+            MessageEnvelope::new(
+                SessionId::new(),
+                MessagePayload::AssistantThinking {
+                    content: "first".into(),
+                    collapsed: false,
+                },
+            ),
+            MessageEnvelope::new(
+                SessionId::new(),
+                MessagePayload::AssistantThinking {
+                    content: "second".into(),
+                    collapsed: true,
+                },
+            ),
+        ];
+
+        let blocks = thinking_blocks(&messages);
+        assert_eq!(blocks.last().map(String::as_str), Some("second"));
     }
 }

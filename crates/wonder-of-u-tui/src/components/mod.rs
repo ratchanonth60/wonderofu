@@ -9,11 +9,13 @@ mod error;
 mod layout_box;
 mod link;
 mod loading_state;
+mod logo;
 mod newline;
 mod no_select;
 mod progress_bar;
 mod scroll_box;
 mod spacer;
+mod spinner;
 mod status_icon;
 mod tabs;
 mod terminal;
@@ -31,11 +33,16 @@ pub use layout_box::{
 };
 pub use link::LinkView;
 pub use loading_state::{LoadingStateView, LoadingStep};
+pub use logo::{ClawdPose, LogoFeedItem, LogoView, WelcomeView};
 pub use newline::NewlineView;
 pub use no_select::{NoSelectMode, NoSelectView};
 pub use progress_bar::{ProgressBarView, ProgressDirection};
 pub use scroll_box::ScrollBoxState;
 pub use spacer::SpacerView;
+pub use spinner::{
+    SPINNER_FRAMES as ANIMATED_SPINNER_FRAMES, SPINNER_GLYPHS, SpinnerCharStyle, SpinnerCharView,
+    SpinnerFrameView, SpinnerMode, SpinnerView,
+};
 pub use status_icon::{SPINNER_FRAMES, StatusIconKind, StatusIconView};
 pub use tabs::{TabEntry, TabsView};
 pub use terminal::{TerminalFocusState, TerminalFocusView, TerminalSize};

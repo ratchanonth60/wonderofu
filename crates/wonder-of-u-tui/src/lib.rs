@@ -5,8 +5,10 @@
 //! and a snapshot-friendly shell renderer.
 
 pub mod ansi;
+pub mod app_shell;
 pub mod catalog;
 pub mod components;
+pub mod design_system;
 pub mod dialog;
 pub mod diff;
 pub mod event;
@@ -24,11 +26,16 @@ pub mod prompt;
 pub mod render;
 pub mod security;
 pub mod style;
+pub mod task_view;
 pub mod terminal;
 pub mod vim;
 
 pub use ansi::{
     AnsiColor, AnsiNamedColor, AnsiStyle, RawAnsiPolicy, UnderlineStyle, apply_sgr_to_text_style,
+};
+pub use app_shell::{
+    AppShellView, ConsoleOAuthFlowView, DevBarView, ExitFlowView, OnboardingStepView,
+    OnboardingView, TagTabView, TagTabsView,
 };
 pub use catalog::{
     CatalogAction, CatalogEntry, CatalogEntryView, CatalogHeader, CatalogModel, CatalogSection,
@@ -37,10 +44,15 @@ pub use catalog::{
 };
 pub use components::{
     ActionRowView, AlignItems, AlternateScreenView, AppViewState, BoxView, ButtonInteractionState,
-    ButtonView, ErrorExcerptLineView, ErrorLocationView, ErrorOverviewView, ErrorStackFrameView,
-    Insets, JustifyContent, LayoutDirection, LayoutOverflow, LayoutSpacing, LayoutWrap, LinkView,
-    NewlineView, NoSelectMode, NoSelectView, ScrollBoxState, SpacerView, TerminalFocusState,
-    TerminalFocusView, TerminalSize, TextAttributes, TextView, TextWeight, TextWrap,
+    ButtonView, ClawdPose, ErrorExcerptLineView, ErrorLocationView, ErrorOverviewView,
+    ErrorStackFrameView, Insets, JustifyContent, LayoutDirection, LayoutOverflow, LayoutSpacing,
+    LayoutWrap, LinkView, LogoFeedItem, LogoView, NewlineView, NoSelectMode, NoSelectView,
+    ScrollBoxState, SpacerView, SpinnerCharStyle, SpinnerCharView, SpinnerFrameView, SpinnerMode,
+    SpinnerView, TerminalFocusState, TerminalFocusView, TerminalSize, TextAttributes, TextView,
+    TextWeight, TextWrap, WelcomeView,
+};
+pub use design_system::{
+    BylineView, ListItemView, PaneView, RatchetLock, RatchetView, ThemedBoxView, ThemedTextView,
 };
 pub use dialog::{DialogActionView, DialogKind, DialogView};
 pub use diff::{
@@ -106,6 +118,11 @@ pub use security::{
     WorkspaceTrustState, dangerous_managed_settings, security_action_hint,
 };
 pub use style::{Color, TextStyle, Theme};
+pub use task_view::{
+    AgentTypeOptionView, AgentTypeStepView, FastIconView, HookModeView, McpToolEntryView,
+    McpToolListView, OffscreenFreezeView, PassesView, TaskEntryView, TaskListView, TaskStatusView,
+    TeleportStashEntryView, TeleportStashView, ToolUseLoaderView,
+};
 pub use terminal::{
     ClearTerminalCommand, CrosstermControl, CursorHomeCommand, TerminalCapabilities,
     TerminalCommand, TerminalConfig, TerminalControl, TerminalEnv, TerminalLifecycle,

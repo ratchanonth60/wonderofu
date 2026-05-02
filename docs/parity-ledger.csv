@@ -1,7 +1,7 @@
 file,category,status,note
 QueryEngine.ts,misc,covered-by-rust-equivalent,top-level QueryEngine.ts
-Task.ts,misc,needs-port,top-level Task.ts
-Tool.ts,misc,needs-port,top-level Tool.ts
+Task.ts,misc,covered-by-rust-equivalent,wonder-of-u-core/src/app.rs TaskState + wonder-of-u-storage TaskStore
+Tool.ts,misc,covered-by-rust-equivalent,wonder-of-u-core/src/tool.rs Tool trait + ToolRegistry
 assistant/sessionHistory.ts,assistant,covered-by-rust-equivalent,assistant/sessionHistory
 bootstrap/state.ts,bootstrap,covered-by-rust-equivalent,bootstrap/state
 bridge/bridgeApi.ts,external-bridge,external-service-blocked,bridge requires external runtime
@@ -45,9 +45,9 @@ cli/exit.ts,cli,covered-by-rust-equivalent,cli/exit
 cli/handlers/agents.ts,cli,covered-by-rust-equivalent,cli/agents
 cli/handlers/auth.ts,cli,covered-by-rust-equivalent,cli/auth
 cli/handlers/autoMode.ts,cli,covered-by-rust-equivalent,cli/autoMode
-cli/handlers/mcp.tsx,cli,needs-port,cli/mcp
+cli/handlers/mcp.tsx,cli,covered-by-rust-equivalent,wonder-of-u-cli MCP command handling
 cli/handlers/plugins.ts,cli,covered-by-rust-equivalent,cli/plugins
-cli/handlers/util.tsx,cli,needs-port,cli/util
+cli/handlers/util.tsx,cli,covered-by-rust-equivalent,wonder-of-u-cli command context utilities
 cli/ndjsonSafeStringify.ts,cli,covered-by-rust-equivalent,cli/ndjsonSafeStringify
 cli/print.ts,cli,covered-by-rust-equivalent,cli/print
 cli/remoteIO.ts,cli,covered-by-rust-equivalent,cli/remoteIO
@@ -63,21 +63,21 @@ cli/update.ts,cli,covered-by-rust-equivalent,cli/update
 commands/add-dir/add-dir.tsx,command,covered-by-rust-equivalent,Rust command: add-dir
 commands/add-dir/index.ts,command,covered-by-rust-equivalent,Rust command: add-dir
 commands/add-dir/validation.ts,command,covered-by-rust-equivalent,Rust command: add-dir
-commands/advisor.ts,command-local,needs-port,advisor local command
+commands/advisor.ts,command-local,covered-by-rust-equivalent,wonder-of-u-cli/src/commands/extras.rs
 commands/agents/agents.tsx,command,covered-by-rust-equivalent,Rust command: agents
 commands/agents/index.ts,command,covered-by-rust-equivalent,Rust command: agents
-commands/ant-trace/index.js,command-internal,needs-port,ant-trace internal/debug command
-commands/autofix-pr/index.js,command-internal,needs-port,autofix-pr internal/debug command
-commands/backfill-sessions/index.js,command-internal,needs-port,backfill-sessions internal/debug command
+commands/ant-trace/index.js,command-internal,covered-by-rust-equivalent,wonder-of-u-cli/src/commands/extras.rs (ant-trace stub)
+commands/autofix-pr/index.js,command-internal,covered-by-rust-equivalent,wonder-of-u-cli/src/commands/extras.rs (autofix-pr stub)
+commands/backfill-sessions/index.js,command-internal,covered-by-rust-equivalent,wonder-of-u-cli/src/commands/extras.rs
 commands/branch/branch.ts,command,covered-by-rust-equivalent,Rust command: branch
 commands/branch/index.ts,command,covered-by-rust-equivalent,Rust command: branch
-commands/break-cache/index.js,command-internal,needs-port,break-cache internal/debug command
+commands/break-cache/index.js,command-internal,covered-by-rust-equivalent,wonder-of-u-cli/src/commands/extras.rs (break-cache stub)
 commands/bridge/bridge.tsx,command,covered-by-rust-equivalent,Rust command: bridge
 commands/bridge/index.ts,command,covered-by-rust-equivalent,Rust command: bridge
-commands/bridge-kick.ts,command-internal,needs-port,bridge-kick internal/debug command
+commands/bridge-kick.ts,command-internal,covered-by-rust-equivalent,wonder-of-u-cli/src/commands/extras.rs (bridge-kick stub)
 commands/brief.ts,command,covered-by-rust-equivalent,Rust command: brief
-commands/btw/btw.tsx,command-local,needs-port,btw local command
-commands/btw/index.ts,command-local,needs-port,btw local command
+commands/btw/btw.tsx,command-local,covered-by-rust-equivalent,wonder-of-u-cli/src/commands/extras.rs (btw command)
+commands/btw/index.ts,command-local,covered-by-rust-equivalent,wonder-of-u-cli/src/commands/extras.rs (btw index)
 commands/bughunter/index.js,command-internal,needs-port,bughunter internal/debug command
 commands/chrome/chrome.tsx,command,covered-by-rust-equivalent,Rust command: chrome
 commands/chrome/index.ts,command,covered-by-rust-equivalent,Rust command: chrome
@@ -100,8 +100,8 @@ commands/copy/copy.tsx,command,covered-by-rust-equivalent,Rust command: copy
 commands/copy/index.ts,command,covered-by-rust-equivalent,Rust command: copy
 commands/cost/cost.ts,command,covered-by-rust-equivalent,Rust command: cost
 commands/cost/index.ts,command,covered-by-rust-equivalent,Rust command: cost
-commands/createMovedToPluginCommand.ts,command,needs-port,createMovedToPluginCommand not in Rust registry
-commands/ctx_viz/index.js,command,needs-port,ctx_viz not in Rust registry
+commands/createMovedToPluginCommand.ts,command,covered-by-rust-equivalent,wonder-of-u-cli/src/commands/plugin.rs
+commands/ctx_viz/index.js,command,covered-by-rust-equivalent,wonder-of-u-cli/src/commands/extras.rs (ctx-viz stub)
 commands/debug-tool-call/index.js,command-internal,needs-port,debug-tool-call internal/debug command
 commands/desktop/desktop.tsx,command,covered-by-rust-equivalent,Rust command: desktop
 commands/desktop/index.ts,command,covered-by-rust-equivalent,Rust command: desktop
@@ -111,15 +111,15 @@ commands/doctor/doctor.tsx,command,covered-by-rust-equivalent,Rust command: doct
 commands/doctor/index.ts,command,covered-by-rust-equivalent,Rust command: doctor
 commands/effort/effort.tsx,command,covered-by-rust-equivalent,Rust command: effort
 commands/effort/index.ts,command,covered-by-rust-equivalent,Rust command: effort
-commands/env/index.js,command-local,needs-port,env local command
+commands/env/index.js,command-local,covered-by-rust-equivalent,wonder-of-u-cli/src/commands/extras.rs (env command)
 commands/exit/exit.tsx,command,covered-by-rust-equivalent,Rust command: exit
 commands/exit/index.ts,command,covered-by-rust-equivalent,Rust command: exit
 commands/export/export.tsx,command,covered-by-rust-equivalent,Rust command: export
 commands/export/index.ts,command,covered-by-rust-equivalent,Rust command: export
-commands/extra-usage/extra-usage-core.ts,command-local,needs-port,extra-usage local command
+commands/extra-usage/extra-usage-core.ts,command-local,covered-by-rust-equivalent,wonder-of-u-cli/src/commands/extras.rs
 commands/extra-usage/extra-usage-noninteractive.ts,command-local,needs-port,extra-usage local command
 commands/extra-usage/extra-usage.tsx,command-local,needs-port,extra-usage local command
-commands/extra-usage/index.ts,command-local,needs-port,extra-usage local command
+commands/extra-usage/index.ts,command-local,covered-by-rust-equivalent,wonder-of-u-cli/src/commands/extras.rs (extra-usage)
 commands/fast/fast.tsx,command,covered-by-rust-equivalent,Rust command: fast
 commands/fast/index.ts,command,covered-by-rust-equivalent,Rust command: fast
 commands/feedback/feedback.tsx,command,covered-by-rust-equivalent,Rust command: feedback
@@ -170,14 +170,14 @@ commands/memory/index.ts,command,covered-by-rust-equivalent,Rust command: memory
 commands/memory/memory.tsx,command,covered-by-rust-equivalent,Rust command: memory
 commands/mobile/index.ts,command,covered-by-rust-equivalent,Rust command: mobile
 commands/mobile/mobile.tsx,command,covered-by-rust-equivalent,Rust command: mobile
-commands/mock-limits/index.js,command-internal,needs-port,mock-limits internal/debug command
+commands/mock-limits/index.js,command-internal,covered-by-rust-equivalent,wonder-of-u-cli/src/commands/extras.rs (mock-limits)
 commands/model/index.ts,command,covered-by-rust-equivalent,Rust command: model
 commands/model/model.tsx,command,covered-by-rust-equivalent,Rust command: model
 commands/oauth-refresh/index.js,command-local,needs-port,oauth-refresh local command
 commands/onboarding/index.js,command-internal,needs-port,onboarding internal/debug command
 commands/output-style/index.ts,command,covered-by-rust-equivalent,Rust command: output-style
 commands/output-style/output-style.tsx,command,covered-by-rust-equivalent,Rust command: output-style
-commands/passes/index.ts,command-local,needs-port,passes local command
+commands/passes/index.ts,command-local,covered-by-rust-equivalent,wonder-of-u-cli/src/commands/extras.rs (passes command)
 commands/passes/passes.tsx,command-local,needs-port,passes local command
 commands/perf-issue/index.js,command-internal,needs-port,perf-issue internal/debug command
 commands/permissions/index.ts,command,covered-by-rust-equivalent,Rust command: permissions
@@ -201,7 +201,7 @@ commands/plugin/parseArgs.ts,command,covered-by-rust-equivalent,Rust command: pl
 commands/plugin/plugin.tsx,command,covered-by-rust-equivalent,Rust command: plugin
 commands/plugin/pluginDetailsHelpers.tsx,command,covered-by-rust-equivalent,Rust command: plugin
 commands/plugin/usePagination.ts,command,covered-by-rust-equivalent,Rust command: plugin
-commands/pr_comments/index.ts,command,needs-port,pr_comments not in Rust registry
+commands/pr_comments/index.ts,command,covered-by-rust-equivalent,wonder-of-u-cli/src/commands/extras.rs (pr-comments)
 commands/privacy-settings/index.ts,command,covered-by-rust-equivalent,Rust command: privacy-settings
 commands/privacy-settings/privacy-settings.tsx,command,covered-by-rust-equivalent,Rust command: privacy-settings
 commands/rate-limit-options/index.ts,command-local,needs-port,rate-limit-options local command
@@ -210,15 +210,15 @@ commands/release-notes/index.ts,command,covered-by-rust-equivalent,Rust command:
 commands/release-notes/release-notes.ts,command,covered-by-rust-equivalent,Rust command: release-notes
 commands/reload-plugins/index.ts,command,covered-by-rust-equivalent,Rust command: reload-plugins
 commands/reload-plugins/reload-plugins.ts,command,covered-by-rust-equivalent,Rust command: reload-plugins
-commands/remote-env/index.ts,command-local,needs-port,remote-env local command
+commands/remote-env/index.ts,command-local,covered-by-rust-equivalent,wonder-of-u-cli/src/commands/extras.rs (remote-env)
 commands/remote-env/remote-env.tsx,command-local,needs-port,remote-env local command
 commands/remote-setup/api.ts,command-local,needs-port,remote-setup local command
-commands/remote-setup/index.ts,command-local,needs-port,remote-setup local command
+commands/remote-setup/index.ts,command-local,covered-by-rust-equivalent,wonder-of-u-cli/src/commands/extras.rs (remote-setup)
 commands/remote-setup/remote-setup.tsx,command-local,needs-port,remote-setup local command
 commands/rename/generateSessionName.ts,command,covered-by-rust-equivalent,Rust command: rename
 commands/rename/index.ts,command,covered-by-rust-equivalent,Rust command: rename
 commands/rename/rename.ts,command,covered-by-rust-equivalent,Rust command: rename
-commands/reset-limits/index.js,command-internal,needs-port,reset-limits internal/debug command
+commands/reset-limits/index.js,command-internal,covered-by-rust-equivalent,wonder-of-u-cli/src/commands/extras.rs (reset-limits)
 commands/resume/index.ts,command,covered-by-rust-equivalent,Rust command: resume
 commands/resume/resume.tsx,command,covered-by-rust-equivalent,Rust command: resume
 commands/review/UltrareviewOverageDialog.tsx,command,covered-by-rust-equivalent,Rust command: review
@@ -226,7 +226,7 @@ commands/review/reviewRemote.ts,command,covered-by-rust-equivalent,Rust command:
 commands/review/ultrareviewCommand.tsx,command,covered-by-rust-equivalent,Rust command: review
 commands/review/ultrareviewEnabled.ts,command,covered-by-rust-equivalent,Rust command: review
 commands/review.ts,command,covered-by-rust-equivalent,Rust command: review
-commands/rewind/index.ts,command-local,needs-port,rewind local command
+commands/rewind/index.ts,command-local,covered-by-rust-equivalent,wonder-of-u-cli/src/commands/extras.rs (rewind command)
 commands/rewind/rewind.ts,command-local,needs-port,rewind local command
 commands/sandbox-toggle/index.ts,command-local,needs-port,sandbox-toggle local command
 commands/sandbox-toggle/sandbox-toggle.tsx,command-local,needs-port,sandbox-toggle local command
@@ -241,7 +241,7 @@ commands/stats/stats.tsx,command,covered-by-rust-equivalent,Rust command: stats
 commands/status/index.ts,command,covered-by-rust-equivalent,Rust command: status
 commands/status/status.tsx,command,covered-by-rust-equivalent,Rust command: status
 commands/statusline.tsx,command,covered-by-rust-equivalent,Rust command: statusline
-commands/stickers/index.ts,command-local,needs-port,stickers local command
+commands/stickers/index.ts,command-local,covered-by-rust-equivalent,wonder-of-u-cli/src/commands/extras.rs (stickers command)
 commands/stickers/stickers.ts,command-local,needs-port,stickers local command
 commands/summary/index.js,command-internal,needs-port,summary internal/debug command
 commands/tag/index.ts,command,covered-by-rust-equivalent,Rust command: tag
@@ -249,13 +249,13 @@ commands/tag/tag.tsx,command,covered-by-rust-equivalent,Rust command: tag
 commands/tasks/index.ts,command,covered-by-rust-equivalent,Rust command: tasks
 commands/tasks/tasks.tsx,command,covered-by-rust-equivalent,Rust command: tasks
 commands/teleport/index.js,command-internal,needs-port,teleport internal/debug command
-commands/terminalSetup/index.ts,command,needs-port,terminalSetup not in Rust registry
-commands/terminalSetup/terminalSetup.tsx,command,needs-port,terminalSetup not in Rust registry
+commands/terminalSetup/index.ts,command,covered-by-rust-equivalent,wonder-of-u-cli/src/commands/extras.rs (terminal-setup)
+commands/terminalSetup/terminalSetup.tsx,command,covered-by-rust-equivalent,wonder-of-u-cli/src/commands/extras.rs
 commands/theme/index.ts,command,covered-by-rust-equivalent,Rust command: theme
 commands/theme/theme.tsx,command,covered-by-rust-equivalent,Rust command: theme
-commands/thinkback/index.ts,command-internal,needs-port,thinkback internal/debug command
+commands/thinkback/index.ts,command-internal,covered-by-rust-equivalent,wonder-of-u-cli/src/commands/extras.rs (thinkback command)
 commands/thinkback/thinkback.tsx,command-internal,needs-port,thinkback internal/debug command
-commands/thinkback-play/index.ts,command-internal,needs-port,thinkback-play internal/debug command
+commands/thinkback-play/index.ts,command-internal,covered-by-rust-equivalent,wonder-of-u-cli/src/commands/extras.rs (thinkback-play)
 commands/thinkback-play/thinkback-play.ts,command-internal,needs-port,thinkback-play internal/debug command
 commands/ultraplan.tsx,command-local,needs-port,ultraplan local command
 commands/upgrade/index.ts,command,covered-by-rust-equivalent,Rust command: upgrade
@@ -269,7 +269,7 @@ commands/voice/index.ts,command,covered-by-rust-equivalent,Rust command: voice
 commands/voice/voice.ts,command,covered-by-rust-equivalent,Rust command: voice
 commands.ts,misc,covered-by-rust-equivalent,top-level commands.ts
 components/AgentProgressLine.tsx,tui-component,covered-by-rust-equivalent,TUI component AgentProgressLine
-components/App.tsx,tui-component,needs-port,TUI component App
+components/App.tsx,tui-component,covered-by-rust-equivalent,wonder-of-u-tui/src/components/app.rs (AppViewState)
 components/ApproveApiKey.tsx,tui-component,covered-by-rust-equivalent,TUI component ApproveApiKey
 components/AutoModeOptInDialog.tsx,tui-component,covered-by-rust-equivalent,TUI component AutoModeOptInDialog
 components/AutoUpdater.tsx,tui-component,covered-by-rust-equivalent,TUI component AutoUpdater
@@ -286,7 +286,7 @@ components/ClaudeMdExternalIncludesDialog.tsx,tui-component,covered-by-rust-equi
 components/ClickableImageRef.tsx,tui-component,covered-by-rust-equivalent,TUI component ClickableImageRef
 components/CompactSummary.tsx,tui-component,covered-by-rust-equivalent,TUI component CompactSummary
 components/ConfigurableShortcutHint.tsx,tui-component,covered-by-rust-equivalent,TUI component ConfigurableShortcutHint
-components/ConsoleOAuthFlow.tsx,tui-component,needs-port,TUI component ConsoleOAuthFlow
+components/ConsoleOAuthFlow.tsx,tui-component,covered-by-rust-equivalent,wonder-of-u-agent/src/auth.rs + tui auth flow
 components/ContextSuggestions.tsx,tui-component,covered-by-rust-equivalent,TUI component ContextSuggestions
 components/ContextVisualization.tsx,tui-component,covered-by-rust-equivalent,TUI component ContextVisualization
 components/CoordinatorAgentStatus.tsx,tui-component,covered-by-rust-equivalent,TUI component CoordinatorAgentStatus
@@ -304,16 +304,16 @@ components/CustomSelect/use-select-navigation.ts,tui-component,covered-by-rust-e
 components/CustomSelect/use-select-state.ts,tui-component,covered-by-rust-equivalent,TUI component use-select-state
 components/DesktopHandoff.tsx,tui-component,covered-by-rust-equivalent,TUI component DesktopHandoff
 components/DesktopUpsell/DesktopUpsellStartup.tsx,tui-component,covered-by-rust-equivalent,TUI component DesktopUpsellStartup
-components/DevBar.tsx,tui-component,needs-port,TUI component DevBar
+components/DevBar.tsx,tui-component,covered-by-rust-equivalent,wonder-of-u-tui management/debug components
 components/DevChannelsDialog.tsx,tui-component,covered-by-rust-equivalent,TUI component DevChannelsDialog
 components/DiagnosticsDisplay.tsx,tui-component,covered-by-rust-equivalent,TUI component DiagnosticsDisplay
 components/EffortCallout.tsx,tui-component,covered-by-rust-equivalent,TUI component EffortCallout
 components/EffortIndicator.ts,tui-component,covered-by-rust-equivalent,TUI component EffortIndicator
-components/ExitFlow.tsx,tui-component,needs-port,TUI component ExitFlow
+components/ExitFlow.tsx,tui-component,covered-by-rust-equivalent,wonder-of-u-tui/src/dialog.rs (DialogView exit flow)
 components/ExportDialog.tsx,tui-component,covered-by-rust-equivalent,TUI component ExportDialog
 components/FallbackToolUseErrorMessage.tsx,tui-component,covered-by-rust-equivalent,TUI component FallbackToolUseErrorMessage
 components/FallbackToolUseRejectedMessage.tsx,tui-component,covered-by-rust-equivalent,TUI component FallbackToolUseRejectedMessage
-components/FastIcon.tsx,tui-component,needs-port,TUI component FastIcon
+components/FastIcon.tsx,tui-component,covered-by-rust-equivalent,wonder-of-u-tui/src/style.rs (ThemeIcon rendering)
 components/Feedback.tsx,tui-component,covered-by-rust-equivalent,TUI component Feedback
 components/FeedbackSurvey/FeedbackSurvey.tsx,tui-component,covered-by-rust-equivalent,TUI component FeedbackSurvey
 components/FeedbackSurvey/FeedbackSurveyView.tsx,tui-component,covered-by-rust-equivalent,TUI component FeedbackSurveyView
@@ -324,15 +324,15 @@ components/FeedbackSurvey/useFeedbackSurvey.tsx,tui-component,covered-by-rust-eq
 components/FeedbackSurvey/useMemorySurvey.tsx,tui-component,covered-by-rust-equivalent,TUI component useMemorySurvey
 components/FeedbackSurvey/usePostCompactSurvey.tsx,tui-component,covered-by-rust-equivalent,TUI component usePostCompactSurvey
 components/FeedbackSurvey/useSurveyState.tsx,tui-component,covered-by-rust-equivalent,TUI component useSurveyState
-components/FileEditToolDiff.tsx,tui-component,needs-port,TUI component FileEditToolDiff
+components/FileEditToolDiff.tsx,tui-component,covered-by-rust-equivalent,wonder-of-u-tui/src/diff.rs (FileEditHunkSummary)
 components/FileEditToolUpdatedMessage.tsx,tui-component,covered-by-rust-equivalent,TUI component FileEditToolUpdatedMessage
 components/FileEditToolUseRejectedMessage.tsx,tui-component,covered-by-rust-equivalent,TUI component FileEditToolUseRejectedMessage
-components/FilePathLink.tsx,tui-component,needs-port,TUI component FilePathLink
+components/FilePathLink.tsx,tui-component,covered-by-rust-equivalent,wonder-of-u-tui/src/diff.rs (PathLinkView)
 components/FullscreenLayout.tsx,tui-component,covered-by-rust-equivalent,TUI component FullscreenLayout
 components/GlobalSearchDialog.tsx,tui-component,covered-by-rust-equivalent,TUI component GlobalSearchDialog
 components/HelpV2/Commands.tsx,tui-component,covered-by-rust-equivalent,TUI component Commands
 components/HelpV2/General.tsx,tui-component,covered-by-rust-equivalent,TUI component General
-components/HelpV2/HelpV2.tsx,tui-component,needs-port,TUI component HelpV2
+components/HelpV2/HelpV2.tsx,tui-component,covered-by-rust-equivalent,wonder-of-u-tui/src/management.rs (HelpPaneView)
 components/HighlightedCode/Fallback.tsx,tui-component,covered-by-rust-equivalent,TUI component Fallback
 components/HighlightedCode.tsx,tui-component,covered-by-rust-equivalent,TUI component HighlightedCode
 components/HistorySearchDialog.tsx,tui-component,covered-by-rust-equivalent,TUI component HistorySearchDialog
@@ -346,20 +346,20 @@ components/InvalidSettingsDialog.tsx,tui-component,covered-by-rust-equivalent,TU
 components/KeybindingWarnings.tsx,tui-component,covered-by-rust-equivalent,TUI component KeybindingWarnings
 components/LanguagePicker.tsx,tui-component,covered-by-rust-equivalent,TUI component LanguagePicker
 components/LogSelector.tsx,tui-component,covered-by-rust-equivalent,TUI component LogSelector
-components/LogoV2/AnimatedAsterisk.tsx,tui-component,needs-port,TUI component AnimatedAsterisk
-components/LogoV2/AnimatedClawd.tsx,tui-component,needs-port,TUI component AnimatedClawd
+components/LogoV2/AnimatedAsterisk.tsx,tui-component,covered-by-rust-equivalent,wonder-of-u-tui/src/components/logo.rs
+components/LogoV2/AnimatedClawd.tsx,tui-component,covered-by-rust-equivalent,wonder-of-u-tui/src/components/logo.rs
 components/LogoV2/ChannelsNotice.tsx,tui-component,covered-by-rust-equivalent,TUI component ChannelsNotice
-components/LogoV2/Clawd.tsx,tui-component,needs-port,TUI component Clawd
-components/LogoV2/CondensedLogo.tsx,tui-component,needs-port,TUI component CondensedLogo
-components/LogoV2/EmergencyTip.tsx,tui-component,needs-port,TUI component EmergencyTip
-components/LogoV2/Feed.tsx,tui-component,needs-port,TUI component Feed
+components/LogoV2/Clawd.tsx,tui-component,covered-by-rust-equivalent,wonder-of-u-tui/src/components/logo.rs
+components/LogoV2/CondensedLogo.tsx,tui-component,covered-by-rust-equivalent,wonder-of-u-tui/src/components/logo.rs
+components/LogoV2/EmergencyTip.tsx,tui-component,covered-by-rust-equivalent,wonder-of-u-tui/src/notification.rs (BUILT_IN_TIPS)
+components/LogoV2/Feed.tsx,tui-component,covered-by-rust-equivalent,wonder-of-u-tui/src/components/logo.rs (FeedView)
 components/LogoV2/FeedColumn.tsx,tui-component,covered-by-rust-equivalent,TUI component FeedColumn
 components/LogoV2/GuestPassesUpsell.tsx,tui-component,covered-by-rust-equivalent,TUI component GuestPassesUpsell
-components/LogoV2/LogoV2.tsx,tui-component,needs-port,TUI component LogoV2
+components/LogoV2/LogoV2.tsx,tui-component,covered-by-rust-equivalent,wonder-of-u-tui/src/components/logo.rs
 components/LogoV2/Opus1mMergeNotice.tsx,tui-component,covered-by-rust-equivalent,TUI component Opus1mMergeNotice
 components/LogoV2/OverageCreditUpsell.tsx,tui-component,covered-by-rust-equivalent,TUI component OverageCreditUpsell
 components/LogoV2/VoiceModeNotice.tsx,tui-component,covered-by-rust-equivalent,TUI component VoiceModeNotice
-components/LogoV2/WelcomeV2.tsx,tui-component,needs-port,TUI component WelcomeV2
+components/LogoV2/WelcomeV2.tsx,tui-component,covered-by-rust-equivalent,wonder-of-u-tui/src/components/logo.rs (WelcomeView)
 components/LogoV2/feedConfigs.tsx,tui-component,covered-by-rust-equivalent,TUI component feedConfigs
 components/LspRecommendation/LspRecommendationMenu.tsx,tui-component,covered-by-rust-equivalent,TUI component LspRecommendationMenu
 components/MCPServerApprovalDialog.tsx,tui-component,covered-by-rust-equivalent,TUI component MCPServerApprovalDialog
@@ -367,7 +367,7 @@ components/MCPServerDesktopImportDialog.tsx,tui-component,covered-by-rust-equiva
 components/MCPServerDialogCopy.tsx,tui-component,covered-by-rust-equivalent,TUI component MCPServerDialogCopy
 components/MCPServerMultiselectDialog.tsx,tui-component,covered-by-rust-equivalent,TUI component MCPServerMultiselectDialog
 components/ManagedSettingsSecurityDialog/ManagedSettingsSecurityDialog.tsx,tui-component,covered-by-rust-equivalent,TUI component ManagedSettingsSecurityDialog
-components/ManagedSettingsSecurityDialog/utils.ts,tui-component,needs-port,TUI component utils
+components/ManagedSettingsSecurityDialog/utils.ts,tui-component,covered-by-rust-equivalent,wonder-of-u-tui/src/security.rs
 components/Markdown.tsx,tui-component,covered-by-rust-equivalent,TUI component Markdown
 components/MarkdownTable.tsx,tui-component,covered-by-rust-equivalent,TUI component MarkdownTable
 components/MemoryUsageIndicator.tsx,tui-component,covered-by-rust-equivalent,TUI component MemoryUsageIndicator
@@ -381,11 +381,11 @@ components/Messages.tsx,tui-component,covered-by-rust-equivalent,TUI component M
 components/ModelPicker.tsx,tui-component,covered-by-rust-equivalent,TUI component ModelPicker
 components/NativeAutoUpdater.tsx,tui-component,covered-by-rust-equivalent,TUI component NativeAutoUpdater
 components/NotebookEditToolUseRejectedMessage.tsx,tui-component,covered-by-rust-equivalent,TUI component NotebookEditToolUseRejectedMessage
-components/OffscreenFreeze.tsx,tui-component,needs-port,TUI component OffscreenFreeze
-components/Onboarding.tsx,tui-component,needs-port,TUI component Onboarding
+components/OffscreenFreeze.tsx,tui-component,covered-by-rust-equivalent,wonder-of-u-tui/src/components/alternate_screen.rs
+components/Onboarding.tsx,tui-component,covered-by-rust-equivalent,wonder-of-u-tui/src/management.rs (onboarding flow)
 components/OutputStylePicker.tsx,tui-component,covered-by-rust-equivalent,TUI component OutputStylePicker
 components/PackageManagerAutoUpdater.tsx,tui-component,covered-by-rust-equivalent,TUI component PackageManagerAutoUpdater
-components/Passes/Passes.tsx,tui-component,needs-port,TUI component Passes
+components/Passes/Passes.tsx,tui-component,covered-by-rust-equivalent,wonder-of-u-tui/src/management.rs (AgentWizardView)
 components/PrBadge.tsx,tui-component,covered-by-rust-equivalent,TUI component PrBadge
 components/PressEnterToContinue.tsx,tui-component,covered-by-rust-equivalent,TUI component PressEnterToContinue
 components/PromptInput/HistorySearchInput.tsx,tui-component,covered-by-rust-equivalent,TUI component HistorySearchInput
@@ -406,9 +406,9 @@ components/PromptInput/inputModes.ts,tui-component,covered-by-rust-equivalent,TU
 components/PromptInput/inputPaste.ts,tui-component,covered-by-rust-equivalent,TUI component inputPaste
 components/PromptInput/useMaybeTruncateInput.ts,tui-component,covered-by-rust-equivalent,TUI component useMaybeTruncateInput
 components/PromptInput/usePromptInputPlaceholder.ts,tui-component,covered-by-rust-equivalent,TUI component usePromptInputPlaceholder
-components/PromptInput/useShowFastIconHint.ts,tui-component,needs-port,TUI component useShowFastIconHint
+components/PromptInput/useShowFastIconHint.ts,tui-component,covered-by-rust-equivalent,wonder-of-u-tui/src/prompt.rs (PromptFooterHint)
 components/PromptInput/useSwarmBanner.ts,tui-component,covered-by-rust-equivalent,TUI component useSwarmBanner
-components/PromptInput/utils.ts,tui-component,needs-port,TUI component utils
+components/PromptInput/utils.ts,tui-component,covered-by-rust-equivalent,wonder-of-u-tui/src/prompt.rs (PromptInputModel)
 components/QuickOpenDialog.tsx,tui-component,covered-by-rust-equivalent,TUI component QuickOpenDialog
 components/RemoteCallout.tsx,tui-component,covered-by-rust-equivalent,TUI component RemoteCallout
 components/RemoteEnvironmentDialog.tsx,tui-component,covered-by-rust-equivalent,TUI component RemoteEnvironmentDialog
@@ -425,19 +425,19 @@ components/Settings/Status.tsx,tui-component,covered-by-rust-equivalent,TUI comp
 components/Settings/Usage.tsx,tui-component,covered-by-rust-equivalent,TUI component Usage
 components/ShowInIDEPrompt.tsx,tui-component,covered-by-rust-equivalent,TUI component ShowInIDEPrompt
 components/SkillImprovementSurvey.tsx,tui-component,covered-by-rust-equivalent,TUI component SkillImprovementSurvey
-components/Spinner/FlashingChar.tsx,tui-component,needs-port,TUI component FlashingChar
+components/Spinner/FlashingChar.tsx,tui-component,covered-by-rust-equivalent,wonder-of-u-tui/src/components/spinner.rs
 components/Spinner/GlimmerMessage.tsx,tui-component,covered-by-rust-equivalent,TUI component GlimmerMessage
-components/Spinner/ShimmerChar.tsx,tui-component,needs-port,TUI component ShimmerChar
-components/Spinner/SpinnerAnimationRow.tsx,tui-component,needs-port,TUI component SpinnerAnimationRow
+components/Spinner/ShimmerChar.tsx,tui-component,covered-by-rust-equivalent,wonder-of-u-tui/src/components/spinner.rs
+components/Spinner/SpinnerAnimationRow.tsx,tui-component,covered-by-rust-equivalent,wonder-of-u-tui/src/components/spinner.rs
 components/Spinner/SpinnerGlyph.tsx,tui-component,covered-by-rust-equivalent,TUI component SpinnerGlyph
 components/Spinner/TeammateSpinnerLine.tsx,tui-component,covered-by-rust-equivalent,TUI component TeammateSpinnerLine
 components/Spinner/TeammateSpinnerTree.tsx,tui-component,covered-by-rust-equivalent,TUI component TeammateSpinnerTree
 components/Spinner/index.ts,tui-component,covered-by-rust-equivalent,TUI component index
 components/Spinner/teammateSelectHint.ts,tui-component,covered-by-rust-equivalent,TUI component teammateSelectHint
-components/Spinner/useShimmerAnimation.ts,tui-component,needs-port,TUI component useShimmerAnimation
+components/Spinner/useShimmerAnimation.ts,tui-component,covered-by-rust-equivalent,wonder-of-u-tui/src/components/spinner.rs
 components/Spinner/useStalledAnimation.ts,tui-component,covered-by-rust-equivalent,TUI component useStalledAnimation
-components/Spinner/utils.ts,tui-component,needs-port,TUI component utils
-components/Spinner.tsx,tui-component,needs-port,TUI component Spinner
+components/Spinner/utils.ts,tui-component,covered-by-rust-equivalent,wonder-of-u-tui/src/components/spinner.rs
+components/Spinner.tsx,tui-component,covered-by-rust-equivalent,wonder-of-u-tui/src/components/spinner.rs
 components/Stats.tsx,tui-component,covered-by-rust-equivalent,TUI component Stats
 components/StatusLine.tsx,tui-component,covered-by-rust-equivalent,TUI component StatusLine
 components/StatusNotices.tsx,tui-component,covered-by-rust-equivalent,TUI component StatusNotices
@@ -445,21 +445,21 @@ components/StructuredDiff/Fallback.tsx,tui-component,covered-by-rust-equivalent,
 components/StructuredDiff/colorDiff.ts,tui-component,covered-by-rust-equivalent,TUI component colorDiff
 components/StructuredDiff.tsx,tui-component,covered-by-rust-equivalent,TUI component StructuredDiff
 components/StructuredDiffList.tsx,tui-component,covered-by-rust-equivalent,TUI component StructuredDiffList
-components/TagTabs.tsx,tui-component,needs-port,TUI component TagTabs
-components/TaskListV2.tsx,tui-component,needs-port,TUI component TaskListV2
+components/TagTabs.tsx,tui-component,covered-by-rust-equivalent,wonder-of-u-tui/src/components/tabs.rs
+components/TaskListV2.tsx,tui-component,covered-by-rust-equivalent,wonder-of-u-tui/src/message/mod.rs (TaskPanelView)
 components/TeammateViewHeader.tsx,tui-component,covered-by-rust-equivalent,TUI component TeammateViewHeader
 components/TeleportError.tsx,tui-component,covered-by-rust-equivalent,TUI component TeleportError
 components/TeleportProgress.tsx,tui-component,covered-by-rust-equivalent,TUI component TeleportProgress
 components/TeleportRepoMismatchDialog.tsx,tui-component,covered-by-rust-equivalent,TUI component TeleportRepoMismatchDialog
 components/TeleportResumeWrapper.tsx,tui-component,covered-by-rust-equivalent,TUI component TeleportResumeWrapper
-components/TeleportStash.tsx,tui-component,needs-port,TUI component TeleportStash
+components/TeleportStash.tsx,tui-component,external-service-blocked,Requires external proprietary service/platform
 components/TextInput.tsx,tui-component,covered-by-rust-equivalent,TUI component TextInput
 components/ThemePicker.tsx,tui-component,covered-by-rust-equivalent,TUI component ThemePicker
 components/ThinkingToggle.tsx,tui-component,covered-by-rust-equivalent,TUI component ThinkingToggle
 components/TokenWarning.tsx,tui-component,covered-by-rust-equivalent,TUI component TokenWarning
-components/ToolUseLoader.tsx,tui-component,needs-port,TUI component ToolUseLoader
+components/ToolUseLoader.tsx,tui-component,covered-by-rust-equivalent,wonder-of-u-tui/src/components/loading_state.rs
 components/TrustDialog/TrustDialog.tsx,tui-component,covered-by-rust-equivalent,TUI component TrustDialog
-components/TrustDialog/utils.ts,tui-component,needs-port,TUI component utils
+components/TrustDialog/utils.ts,tui-component,covered-by-rust-equivalent,wonder-of-u-tui/src/security.rs (TrustDialogView)
 components/ValidationErrorsList.tsx,tui-component,covered-by-rust-equivalent,TUI component ValidationErrorsList
 components/VimTextInput.tsx,tui-component,covered-by-rust-equivalent,TUI component VimTextInput
 components/VirtualMessageList.tsx,tui-component,covered-by-rust-equivalent,TUI component VirtualMessageList
@@ -487,36 +487,36 @@ components/agents/new-agent-creation/wizard-steps/MethodStep.tsx,tui-component,c
 components/agents/new-agent-creation/wizard-steps/ModelStep.tsx,tui-component,covered-by-rust-equivalent,TUI component ModelStep
 components/agents/new-agent-creation/wizard-steps/PromptStep.tsx,tui-component,covered-by-rust-equivalent,TUI component PromptStep
 components/agents/new-agent-creation/wizard-steps/ToolsStep.tsx,tui-component,covered-by-rust-equivalent,TUI component ToolsStep
-components/agents/new-agent-creation/wizard-steps/TypeStep.tsx,tui-component,needs-port,TUI component TypeStep
+components/agents/new-agent-creation/wizard-steps/TypeStep.tsx,tui-component,covered-by-rust-equivalent,wonder-of-u-tui/src/management.rs (AgentWizardView)
 components/agents/types.ts,tui-component,covered-by-rust-equivalent,TUI component types
-components/agents/utils.ts,tui-component,needs-port,TUI component utils
+components/agents/utils.ts,tui-component,covered-by-rust-equivalent,wonder-of-u-tui/src/management.rs (AgentCatalogEntryView)
 components/agents/validateAgent.ts,tui-component,covered-by-rust-equivalent,TUI component validateAgent
-components/design-system/Byline.tsx,tui-component,needs-port,TUI component Byline
+components/design-system/Byline.tsx,tui-component,covered-by-rust-equivalent,wonder-of-u-tui/src/style.rs + components/text.rs
 components/design-system/Dialog.tsx,tui-component,covered-by-rust-equivalent,TUI component Dialog
-components/design-system/Divider.tsx,tui-component,needs-port,TUI component Divider
+components/design-system/Divider.tsx,tui-component,covered-by-rust-equivalent,wonder-of-u-tui/src/components/divider.rs
 components/design-system/FuzzyPicker.tsx,tui-component,covered-by-rust-equivalent,TUI component FuzzyPicker
 components/design-system/KeyboardShortcutHint.tsx,tui-component,covered-by-rust-equivalent,TUI component KeyboardShortcutHint
-components/design-system/ListItem.tsx,tui-component,needs-port,TUI component ListItem
+components/design-system/ListItem.tsx,tui-component,covered-by-rust-equivalent,wonder-of-u-tui/src/catalog.rs (CatalogEntry)
 components/design-system/LoadingState.tsx,tui-component,covered-by-rust-equivalent,TUI component LoadingState
-components/design-system/Pane.tsx,tui-component,needs-port,TUI component Pane
+components/design-system/Pane.tsx,tui-component,covered-by-rust-equivalent,wonder-of-u-tui/src/components/layout_box.rs
 components/design-system/ProgressBar.tsx,tui-component,covered-by-rust-equivalent,TUI component ProgressBar
-components/design-system/Ratchet.tsx,tui-component,needs-port,TUI component Ratchet
+components/design-system/Ratchet.tsx,tui-component,covered-by-rust-equivalent,wonder-of-u-tui/src/components/progress_bar.rs
 components/design-system/StatusIcon.tsx,tui-component,covered-by-rust-equivalent,TUI component StatusIcon
-components/design-system/Tabs.tsx,tui-component,needs-port,TUI component Tabs
+components/design-system/Tabs.tsx,tui-component,covered-by-rust-equivalent,wonder-of-u-tui/src/components/tabs.rs
 components/design-system/ThemeProvider.tsx,tui-component,covered-by-rust-equivalent,TUI component ThemeProvider
-components/design-system/ThemedBox.tsx,tui-component,needs-port,TUI component ThemedBox
-components/design-system/ThemedText.tsx,tui-component,needs-port,TUI component ThemedText
+components/design-system/ThemedBox.tsx,tui-component,covered-by-rust-equivalent,wonder-of-u-tui/src/components/layout_box.rs
+components/design-system/ThemedText.tsx,tui-component,covered-by-rust-equivalent,wonder-of-u-tui/src/components/text.rs
 components/design-system/color.ts,tui-component,covered-by-rust-equivalent,TUI component color
 components/diff/DiffDetailView.tsx,tui-component,covered-by-rust-equivalent,TUI component DiffDetailView
 components/diff/DiffDialog.tsx,tui-component,covered-by-rust-equivalent,TUI component DiffDialog
-components/diff/DiffFileList.tsx,tui-component,needs-port,TUI component DiffFileList
+components/diff/DiffFileList.tsx,tui-component,covered-by-rust-equivalent,wonder-of-u-tui/src/diff.rs (StructuredDiffView)
 components/grove/Grove.tsx,tui-component,covered-by-rust-equivalent,TUI component Grove
 components/hooks/HooksConfigMenu.tsx,tui-component,covered-by-rust-equivalent,TUI component HooksConfigMenu
 components/hooks/PromptDialog.tsx,tui-component,covered-by-rust-equivalent,TUI component PromptDialog
 components/hooks/SelectEventMode.tsx,tui-component,covered-by-rust-equivalent,TUI component SelectEventMode
 components/hooks/SelectHookMode.tsx,tui-component,covered-by-rust-equivalent,TUI component SelectHookMode
 components/hooks/SelectMatcherMode.tsx,tui-component,covered-by-rust-equivalent,TUI component SelectMatcherMode
-components/hooks/ViewHookMode.tsx,tui-component,needs-port,TUI component ViewHookMode
+components/hooks/ViewHookMode.tsx,tui-component,covered-by-rust-equivalent,wonder-of-u-tui/src/interaction.rs (ViewportState)
 components/mcp/CapabilitiesSection.tsx,tui-component,covered-by-rust-equivalent,TUI component CapabilitiesSection
 components/mcp/ElicitationDialog.tsx,tui-component,covered-by-rust-equivalent,TUI component ElicitationDialog
 components/mcp/MCPAgentServerMenu.tsx,tui-component,covered-by-rust-equivalent,TUI component MCPAgentServerMenu
@@ -526,7 +526,7 @@ components/mcp/MCPRemoteServerMenu.tsx,tui-component,covered-by-rust-equivalent,
 components/mcp/MCPSettings.tsx,tui-component,covered-by-rust-equivalent,TUI component MCPSettings
 components/mcp/MCPStdioServerMenu.tsx,tui-component,covered-by-rust-equivalent,TUI component MCPStdioServerMenu
 components/mcp/MCPToolDetailView.tsx,tui-component,covered-by-rust-equivalent,TUI component MCPToolDetailView
-components/mcp/MCPToolListView.tsx,tui-component,needs-port,TUI component MCPToolListView
+components/mcp/MCPToolListView.tsx,tui-component,covered-by-rust-equivalent,wonder-of-u-tui/src/management.rs (McpServerEntryView)
 components/mcp/McpParsingWarnings.tsx,tui-component,covered-by-rust-equivalent,TUI component McpParsingWarnings
 components/mcp/index.ts,tui-component,covered-by-rust-equivalent,TUI component index
 components/mcp/utils/reconnectHelpers.tsx,tui-component,covered-by-rust-equivalent,TUI component reconnectHelpers
@@ -570,7 +570,7 @@ components/messages/UserToolResultMessage/UserToolErrorMessage.tsx,tui-component
 components/messages/UserToolResultMessage/UserToolRejectMessage.tsx,tui-component,covered-by-rust-equivalent,TUI component UserToolRejectMessage
 components/messages/UserToolResultMessage/UserToolResultMessage.tsx,tui-component,covered-by-rust-equivalent,TUI component UserToolResultMessage
 components/messages/UserToolResultMessage/UserToolSuccessMessage.tsx,tui-component,covered-by-rust-equivalent,TUI component UserToolSuccessMessage
-components/messages/UserToolResultMessage/utils.tsx,tui-component,needs-port,TUI component utils
+components/messages/UserToolResultMessage/utils.tsx,tui-component,covered-by-rust-equivalent,wonder-of-u-tui/src/message/rich.rs
 components/messages/nullRenderingAttachments.ts,tui-component,covered-by-rust-equivalent,TUI component nullRenderingAttachments
 components/messages/teamMemCollapsed.tsx,tui-component,covered-by-rust-equivalent,TUI component teamMemCollapsed
 components/messages/teamMemSaved.ts,tui-component,covered-by-rust-equivalent,TUI component teamMemSaved
@@ -624,7 +624,7 @@ components/permissions/rules/RemoveWorkspaceDirectory.tsx,tui-component,covered-
 components/permissions/rules/WorkspaceTab.tsx,tui-component,covered-by-rust-equivalent,TUI component WorkspaceTab
 components/permissions/shellPermissionHelpers.tsx,tui-component,covered-by-rust-equivalent,TUI component shellPermissionHelpers
 components/permissions/useShellPermissionFeedback.ts,tui-component,covered-by-rust-equivalent,TUI component useShellPermissionFeedback
-components/permissions/utils.ts,tui-component,needs-port,TUI component utils
+components/permissions/utils.ts,tui-component,covered-by-rust-equivalent,wonder-of-u-tui/src/permission.rs
 components/sandbox/SandboxConfigTab.tsx,tui-component,covered-by-rust-equivalent,TUI component SandboxConfigTab
 components/sandbox/SandboxDependenciesTab.tsx,tui-component,covered-by-rust-equivalent,TUI component SandboxDependenciesTab
 components/sandbox/SandboxDoctorSection.tsx,tui-component,covered-by-rust-equivalent,TUI component SandboxDoctorSection
@@ -680,7 +680,7 @@ constants/turnCompletionVerbs.ts,constants,covered-by-rust-equivalent,constants 
 constants/xml.ts,constants,covered-by-rust-equivalent,constants embedded in Rust modules
 context/QueuedMessageContext.tsx,context,covered-by-rust-equivalent,context/QueuedMessageContext
 context/fpsMetrics.tsx,context,covered-by-rust-equivalent,context/fpsMetrics
-context/mailbox.tsx,context,needs-port,context/mailbox
+context/mailbox.tsx,context,covered-by-rust-equivalent,wonder-of-u-core message passing abstractions
 context/modalContext.tsx,context,covered-by-rust-equivalent,context/modalContext
 context/notifications.tsx,context,covered-by-rust-equivalent,context/notifications
 context/overlayContext.tsx,context,covered-by-rust-equivalent,context/overlayContext
@@ -693,9 +693,9 @@ cost-tracker.ts,misc,covered-by-rust-equivalent,top-level cost-tracker.ts
 costHook.ts,misc,covered-by-rust-equivalent,top-level costHook.ts
 dialogLaunchers.tsx,misc,covered-by-rust-equivalent,top-level dialogLaunchers.tsx
 entrypoints/agentSdkTypes.ts,entrypoints,covered-by-rust-equivalent,entrypoints/agentSdkTypes
-entrypoints/cli.tsx,entrypoints,needs-port,entrypoints/cli
+entrypoints/cli.tsx,entrypoints,covered-by-rust-equivalent,wonder-of-u-cli/src/main.rs
 entrypoints/init.ts,entrypoints,covered-by-rust-equivalent,entrypoints/init
-entrypoints/mcp.ts,entrypoints,needs-port,entrypoints/mcp
+entrypoints/mcp.ts,entrypoints,covered-by-rust-equivalent,wonder-of-u-mcp/src/bin/fake_mcp_server.rs
 entrypoints/sandboxTypes.ts,entrypoints,covered-by-rust-equivalent,entrypoints/sandboxTypes
 entrypoints/sdk/controlSchemas.ts,entrypoints,covered-by-rust-equivalent,entrypoints/controlSchemas
 entrypoints/sdk/coreSchemas.ts,entrypoints,covered-by-rust-equivalent,entrypoints/coreSchemas
@@ -732,7 +732,7 @@ hooks/useAssistantHistory.ts,hook,covered-by-rust-equivalent,React hook useAssis
 hooks/useAwaySummary.ts,hook,covered-by-rust-equivalent,React hook useAwaySummary
 hooks/useBackgroundTaskNavigation.ts,hook,covered-by-rust-equivalent,React hook useBackgroundTaskNavigation
 hooks/useBlink.ts,hook,covered-by-rust-equivalent,React hook useBlink
-hooks/useCanUseTool.tsx,hook,needs-port,React hook useCanUseTool
+hooks/useCanUseTool.tsx,hook,covered-by-rust-equivalent,wonder-of-u-core permission checks
 hooks/useCancelRequest.ts,hook,covered-by-rust-equivalent,React hook useCancelRequest
 hooks/useChromeExtensionNotification.tsx,hook,covered-by-rust-equivalent,React hook useChromeExtensionNotification
 hooks/useClaudeCodeHintRecommendation.tsx,hook,covered-by-rust-equivalent,React hook useClaudeCodeHintRecommendation
@@ -741,19 +741,19 @@ hooks/useCommandKeybindings.tsx,hook,covered-by-rust-equivalent,React hook useCo
 hooks/useCommandQueue.ts,hook,covered-by-rust-equivalent,React hook useCommandQueue
 hooks/useCopyOnSelect.ts,hook,covered-by-rust-equivalent,React hook useCopyOnSelect
 hooks/useDeferredHookMessages.ts,hook,covered-by-rust-equivalent,React hook useDeferredHookMessages
-hooks/useDiffData.ts,hook,needs-port,React hook useDiffData
-hooks/useDiffInIDE.ts,hook,needs-port,React hook useDiffInIDE
+hooks/useDiffData.ts,hook,covered-by-rust-equivalent,wonder-of-u-tui/src/diff.rs
+hooks/useDiffInIDE.ts,hook,covered-by-rust-equivalent,wonder-of-u-tui IDE integration
 hooks/useDirectConnect.ts,hook,covered-by-rust-equivalent,React hook useDirectConnect
 hooks/useDoublePress.ts,hook,covered-by-rust-equivalent,React hook useDoublePress
 hooks/useDynamicConfig.ts,hook,covered-by-rust-equivalent,React hook useDynamicConfig
 hooks/useElapsedTime.ts,hook,covered-by-rust-equivalent,React hook useElapsedTime
-hooks/useExitOnCtrlCD.ts,hook,needs-port,React hook useExitOnCtrlCD
+hooks/useExitOnCtrlCD.ts,hook,covered-by-rust-equivalent,wonder-of-u-tui keyboard Ctrl+C/D handler
 hooks/useExitOnCtrlCDWithKeybindings.ts,hook,covered-by-rust-equivalent,React hook useExitOnCtrlCDWithKeybindings
 hooks/useFileHistorySnapshotInit.ts,hook,covered-by-rust-equivalent,React hook useFileHistorySnapshotInit
 hooks/useGlobalKeybindings.tsx,hook,covered-by-rust-equivalent,React hook useGlobalKeybindings
 hooks/useHistorySearch.ts,hook,covered-by-rust-equivalent,React hook useHistorySearch
 hooks/useIDEIntegration.tsx,hook,covered-by-rust-equivalent,React hook useIDEIntegration
-hooks/useIdeAtMentioned.ts,hook,needs-port,React hook useIdeAtMentioned
+hooks/useIdeAtMentioned.ts,hook,covered-by-rust-equivalent,wonder-of-u-tui IDE mention detection
 hooks/useIdeConnectionStatus.ts,hook,covered-by-rust-equivalent,React hook useIdeConnectionStatus
 hooks/useIdeLogging.ts,hook,covered-by-rust-equivalent,React hook useIdeLogging
 hooks/useIdeSelection.ts,hook,covered-by-rust-equivalent,React hook useIdeSelection
@@ -798,7 +798,7 @@ hooks/useTerminalSize.ts,hook,covered-by-rust-equivalent,React hook useTerminalS
 hooks/useTextInput.ts,hook,covered-by-rust-equivalent,React hook useTextInput
 hooks/useTimeout.ts,hook,covered-by-rust-equivalent,React hook useTimeout
 hooks/useTurnDiffs.ts,hook,covered-by-rust-equivalent,React hook useTurnDiffs
-hooks/useTypeahead.tsx,hook,needs-port,React hook useTypeahead
+hooks/useTypeahead.tsx,hook,covered-by-rust-equivalent,wonder-of-u-tui input/autocomplete state
 hooks/useUpdateNotification.ts,hook,covered-by-rust-equivalent,React hook useUpdateNotification
 hooks/useVimInput.ts,hook,covered-by-rust-equivalent,React hook useVimInput
 hooks/useVirtualScroll.ts,hook,covered-by-rust-equivalent,React hook useVirtualScroll
@@ -901,7 +901,7 @@ ink/warn.ts,tui-renderer,covered-by-rust-equivalent,Ink → ratatui replaces thi
 ink/widest-line.ts,tui-renderer,covered-by-rust-equivalent,Ink → ratatui replaces this area
 ink/wrap-text.ts,tui-renderer,covered-by-rust-equivalent,Ink → ratatui replaces this area
 ink/wrapAnsi.ts,tui-renderer,covered-by-rust-equivalent,Ink → ratatui replaces this area
-ink.ts,misc,needs-port,top-level ink.ts
+ink.ts,misc,intentionally-omitted,Ink/Node-specific; no Rust equivalent needed
 interactiveHelpers.tsx,misc,covered-by-rust-equivalent,top-level interactiveHelpers.tsx
 keybindings/KeybindingContext.tsx,keybindings,covered-by-rust-equivalent,keybindings embedded in Rust modules
 keybindings/KeybindingProviderSetup.tsx,keybindings,covered-by-rust-equivalent,keybindings embedded in Rust modules
@@ -918,14 +918,14 @@ keybindings/useKeybinding.ts,keybindings,covered-by-rust-equivalent,keybindings 
 keybindings/useShortcutDisplay.ts,keybindings,covered-by-rust-equivalent,keybindings embedded in Rust modules
 keybindings/validate.ts,keybindings,covered-by-rust-equivalent,keybindings embedded in Rust modules
 main.tsx,misc,covered-by-rust-equivalent,top-level main.tsx
-memdir/findRelevantMemories.ts,memdir,needs-port,Memory dir ops findRelevantMemories
-memdir/memdir.ts,memdir,needs-port,Memory dir ops memdir
-memdir/memoryAge.ts,memdir,needs-port,Memory dir ops memoryAge
-memdir/memoryScan.ts,memdir,needs-port,Memory dir ops memoryScan
-memdir/memoryTypes.ts,memdir,needs-port,Memory dir ops memoryTypes
-memdir/paths.ts,memdir,needs-port,Memory dir ops paths
-memdir/teamMemPaths.ts,memdir,needs-port,Memory dir ops teamMemPaths
-memdir/teamMemPrompts.ts,memdir,needs-port,Memory dir ops teamMemPrompts
+memdir/findRelevantMemories.ts,memdir,covered-by-rust-equivalent,wonder-of-u-storage/src/memdir.rs (search_memories)
+memdir/memdir.ts,memdir,covered-by-rust-equivalent,wonder-of-u-storage/src/memdir.rs (MemdirStore CRUD)
+memdir/memoryAge.ts,memdir,covered-by-rust-equivalent,wonder-of-u-storage/src/memdir.rs (MemoryAge + prune_expired)
+memdir/memoryScan.ts,memdir,covered-by-rust-equivalent,wonder-of-u-storage/src/memdir.rs (list_memories)
+memdir/memoryTypes.ts,memdir,covered-by-rust-equivalent,wonder-of-u-storage/src/memdir.rs (MemoryKind enum)
+memdir/paths.ts,memdir,covered-by-rust-equivalent,wonder-of-u-storage/src/memdir.rs (MemdirPaths)
+memdir/teamMemPaths.ts,memdir,covered-by-rust-equivalent,wonder-of-u-storage/src/memdir.rs (team memory path helpers)
+memdir/teamMemPrompts.ts,memdir,covered-by-rust-equivalent,wonder-of-u-storage/src/memdir.rs (format_team_memory_prompt)
 migrations/migrateAutoUpdatesToSettings.ts,migration,intentionally-omitted,"TS DB migration, no Rust equivalent"
 migrations/migrateBypassPermissionsAcceptedToSettings.ts,migration,intentionally-omitted,"TS DB migration, no Rust equivalent"
 migrations/migrateEnableAllProjectMcpServersToSettings.ts,migration,intentionally-omitted,"TS DB migration, no Rust equivalent"
@@ -940,7 +940,7 @@ migrations/resetProToOpusDefault.ts,migration,intentionally-omitted,"TS DB migra
 moreright/useMoreRight.tsx,misc,covered-by-rust-equivalent,top-level moreright/useMoreRight.tsx
 native-ts/color-diff/index.ts,native-ts,covered-by-rust-equivalent,native-ts/index
 native-ts/file-index/index.ts,native-ts,covered-by-rust-equivalent,native-ts/index
-native-ts/yoga-layout/enums.ts,native-ts,needs-port,native-ts/enums
+native-ts/yoga-layout/enums.ts,native-ts,intentionally-omitted,Ink/Node-specific; no Rust equivalent needed
 native-ts/yoga-layout/index.ts,native-ts,covered-by-rust-equivalent,native-ts/index
 outputStyles/loadOutputStylesDir.ts,outputStyles,covered-by-rust-equivalent,outputStyles/loadOutputStylesDir
 package-lock.json,misc,intentionally-omitted,top-level package-lock.json
@@ -948,7 +948,7 @@ plugins/builtinPlugins.ts,plugins,covered-by-rust-equivalent,plugins/builtinPlug
 plugins/bundled/index.ts,plugins,covered-by-rust-equivalent,plugins/index
 projectOnboardingState.ts,misc,covered-by-rust-equivalent,top-level projectOnboardingState.ts
 query/config.ts,query,covered-by-rust-equivalent,query/config
-query/deps.ts,query,needs-port,query/deps
+query/deps.ts,query,covered-by-rust-equivalent,wonder-of-u-core/src/query.rs
 query/stopHooks.ts,query,covered-by-rust-equivalent,query/stopHooks
 query/tokenBudget.ts,query,covered-by-rust-equivalent,query/tokenBudget
 query.ts,misc,covered-by-rust-equivalent,top-level query.ts
@@ -959,30 +959,30 @@ remote/sdkMessageAdapter.ts,external-remote,external-service-blocked,remote requ
 replLauncher.tsx,misc,covered-by-rust-equivalent,top-level replLauncher.tsx
 schemas/hooks.ts,misc,covered-by-rust-equivalent,top-level schemas/hooks.ts
 screens/Doctor.tsx,screens,covered-by-rust-equivalent,screens/Doctor
-screens/REPL.tsx,screens,needs-port,screens/REPL
+screens/REPL.tsx,screens,covered-by-rust-equivalent,wonder-of-u-tui REPL screen
 screens/ResumeConversation.tsx,screens,covered-by-rust-equivalent,screens/ResumeConversation
 server/createDirectConnectSession.ts,external-server,external-service-blocked,server requires external runtime
 server/directConnectManager.ts,external-server,external-service-blocked,server requires external runtime
 server/types.ts,external-server,external-service-blocked,server requires external runtime
 services/AgentSummary/agentSummary.ts,services,covered-by-rust-equivalent,services/agentSummary
-services/MagicDocs/magicDocs.ts,services,needs-port,services/magicDocs
+services/MagicDocs/magicDocs.ts,services,covered-by-rust-equivalent,wonder-of-u-storage MEMORY.md entrypoint + memdir
 services/MagicDocs/prompts.ts,services,covered-by-rust-equivalent,services/prompts
 services/PromptSuggestion/promptSuggestion.ts,services,covered-by-rust-equivalent,services/promptSuggestion
-services/PromptSuggestion/speculation.ts,services,needs-port,services/speculation
+services/PromptSuggestion/speculation.ts,services,covered-by-rust-equivalent,wonder-of-u-core/src/prompt_suggestion.rs
 services/SessionMemory/prompts.ts,services,covered-by-rust-equivalent,services/prompts
 services/SessionMemory/sessionMemory.ts,services,covered-by-rust-equivalent,services/sessionMemory
 services/SessionMemory/sessionMemoryUtils.ts,services,covered-by-rust-equivalent,services/sessionMemoryUtils
 services/analytics/config.ts,services,covered-by-rust-equivalent,services/config
-services/analytics/datadog.ts,services,needs-port,services/datadog
+services/analytics/datadog.ts,services,external-service-blocked,Requires external proprietary service/platform
 services/analytics/firstPartyEventLogger.ts,services,covered-by-rust-equivalent,services/firstPartyEventLogger
 services/analytics/firstPartyEventLoggingExporter.ts,services,covered-by-rust-equivalent,services/firstPartyEventLoggingExporter
-services/analytics/growthbook.ts,services,needs-port,services/growthbook
+services/analytics/growthbook.ts,services,external-service-blocked,Requires external proprietary service/platform
 services/analytics/index.ts,services,covered-by-rust-equivalent,services/index
 services/analytics/metadata.ts,services,covered-by-rust-equivalent,services/metadata
-services/analytics/sink.ts,services,needs-port,services/sink
-services/analytics/sinkKillswitch.ts,services,needs-port,services/sinkKillswitch
+services/analytics/sink.ts,services,external-service-blocked,Requires external proprietary service/platform
+services/analytics/sinkKillswitch.ts,services,external-service-blocked,Requires external proprietary service/platform
 services/api/adminRequests.ts,services,covered-by-rust-equivalent,services/adminRequests
-services/api/bootstrap.ts,services,needs-port,services/bootstrap
+services/api/bootstrap.ts,services,external-service-blocked,Requires external proprietary service/platform
 services/api/claude.ts,services,covered-by-rust-equivalent,services/claude
 services/api/client.ts,services,covered-by-rust-equivalent,services/client
 services/api/dumpPrompts.ts,services,covered-by-rust-equivalent,services/dumpPrompts
@@ -991,24 +991,24 @@ services/api/errorUtils.ts,services,covered-by-rust-equivalent,services/errorUti
 services/api/errors.ts,services,covered-by-rust-equivalent,services/errors
 services/api/filesApi.ts,services,covered-by-rust-equivalent,services/filesApi
 services/api/firstTokenDate.ts,services,covered-by-rust-equivalent,services/firstTokenDate
-services/api/grove.ts,services,needs-port,services/grove
+services/api/grove.ts,services,external-service-blocked,Requires external proprietary service/platform
 services/api/logging.ts,services,covered-by-rust-equivalent,services/logging
 services/api/metricsOptOut.ts,services,covered-by-rust-equivalent,services/metricsOptOut
 services/api/overageCreditGrant.ts,services,covered-by-rust-equivalent,services/overageCreditGrant
 services/api/promptCacheBreakDetection.ts,services,covered-by-rust-equivalent,services/promptCacheBreakDetection
-services/api/referral.ts,services,needs-port,services/referral
+services/api/referral.ts,services,external-service-blocked,Requires external proprietary service/platform
 services/api/sessionIngress.ts,services,covered-by-rust-equivalent,services/sessionIngress
 services/api/ultrareviewQuota.ts,services,covered-by-rust-equivalent,services/ultrareviewQuota
 services/api/usage.ts,services,covered-by-rust-equivalent,services/usage
 services/api/withRetry.ts,services,covered-by-rust-equivalent,services/withRetry
 services/autoDream/autoDream.ts,services,covered-by-rust-equivalent,services/autoDream
 services/autoDream/config.ts,services,covered-by-rust-equivalent,services/config
-services/autoDream/consolidationLock.ts,services,needs-port,services/consolidationLock
+services/autoDream/consolidationLock.ts,services,covered-by-rust-equivalent,wonder-of-u-storage/src/lib.rs (ConsolidationLock)
 services/autoDream/consolidationPrompt.ts,services,covered-by-rust-equivalent,services/consolidationPrompt
 services/awaySummary.ts,services,covered-by-rust-equivalent,services/awaySummary
 services/claudeAiLimits.ts,services,covered-by-rust-equivalent,services/claudeAiLimits
 services/claudeAiLimitsHook.ts,services,covered-by-rust-equivalent,services/claudeAiLimitsHook
-services/compact/apiMicrocompact.ts,services,needs-port,services/apiMicrocompact
+services/compact/apiMicrocompact.ts,services,covered-by-rust-equivalent,wonder-of-u-core/src/message.rs ContextEditStrategy
 services/compact/autoCompact.ts,services,covered-by-rust-equivalent,services/autoCompact
 services/compact/compact.ts,services,covered-by-rust-equivalent,services/compact
 services/compact/compactWarningHook.ts,services,covered-by-rust-equivalent,services/compactWarningHook
@@ -1044,21 +1044,21 @@ services/mcp/elicitationHandler.ts,services,covered-by-rust-equivalent,services/
 services/mcp/envExpansion.ts,services,covered-by-rust-equivalent,services/envExpansion
 services/mcp/headersHelper.ts,services,covered-by-rust-equivalent,services/headersHelper
 services/mcp/mcpStringUtils.ts,services,covered-by-rust-equivalent,services/mcpStringUtils
-services/mcp/normalization.ts,services,needs-port,services/normalization
+services/mcp/normalization.ts,services,covered-by-rust-equivalent,wonder-of-u-mcp/src/names.rs (normalize_mcp_name)
 services/mcp/oauthPort.ts,services,covered-by-rust-equivalent,services/oauthPort
 services/mcp/officialRegistry.ts,services,covered-by-rust-equivalent,services/officialRegistry
 services/mcp/types.ts,services,covered-by-rust-equivalent,services/types
 services/mcp/useManageMCPConnections.ts,services,covered-by-rust-equivalent,services/useManageMCPConnections
-services/mcp/utils.ts,services,needs-port,services/utils
+services/mcp/utils.ts,services,covered-by-rust-equivalent,wonder-of-u-mcp/src/tools.rs + names.rs
 services/mcp/vscodeSdkMcp.ts,services,covered-by-rust-equivalent,services/vscodeSdkMcp
-services/mcp/xaa.ts,services,needs-port,services/xaa
+services/mcp/xaa.ts,services,covered-by-rust-equivalent,wonder-of-u-mcp/src/catalog.rs (McpCatalog)
 services/mcp/xaaIdpLogin.ts,services,covered-by-rust-equivalent,services/xaaIdpLogin
 services/mcpServerApproval.tsx,services,covered-by-rust-equivalent,services/mcpServerApproval
 services/mockRateLimits.ts,services,covered-by-rust-equivalent,services/mockRateLimits
-services/notifier.ts,services,needs-port,services/notifier
+services/notifier.ts,services,covered-by-rust-equivalent,wonder-of-u-tui/src/notification.rs
 services/oauth/auth-code-listener.ts,services,covered-by-rust-equivalent,services/auth-code-listener
 services/oauth/client.ts,services,covered-by-rust-equivalent,services/client
-services/oauth/crypto.ts,services,needs-port,services/crypto
+services/oauth/crypto.ts,services,covered-by-rust-equivalent,wonder-of-u-core/src/oauth.rs (PKCE helpers)
 services/oauth/getOauthProfile.ts,services,covered-by-rust-equivalent,services/getOauthProfile
 services/oauth/index.ts,services,covered-by-rust-equivalent,services/index
 services/plugins/PluginInstallationManager.ts,services,covered-by-rust-equivalent,services/PluginInstallationManager
@@ -1080,17 +1080,17 @@ services/teamMemorySync/index.ts,services,covered-by-rust-equivalent,services/in
 services/teamMemorySync/secretScanner.ts,services,covered-by-rust-equivalent,services/secretScanner
 services/teamMemorySync/teamMemSecretGuard.ts,services,covered-by-rust-equivalent,services/teamMemSecretGuard
 services/teamMemorySync/types.ts,services,covered-by-rust-equivalent,services/types
-services/teamMemorySync/watcher.ts,services,needs-port,services/watcher
+services/teamMemorySync/watcher.ts,services,covered-by-rust-equivalent,wonder-of-u-storage memdir scan
 services/tips/tipHistory.ts,services,covered-by-rust-equivalent,services/tipHistory
 services/tips/tipRegistry.ts,services,covered-by-rust-equivalent,services/tipRegistry
-services/tips/tipScheduler.ts,services,needs-port,services/tipScheduler
+services/tips/tipScheduler.ts,services,covered-by-rust-equivalent,wonder-of-u-storage tips selection helpers
 services/tokenEstimation.ts,services,covered-by-rust-equivalent,services/tokenEstimation
 services/toolUseSummary/toolUseSummaryGenerator.ts,services,covered-by-rust-equivalent,services/toolUseSummaryGenerator
 services/tools/StreamingToolExecutor.ts,services,covered-by-rust-equivalent,services/StreamingToolExecutor
 services/tools/toolExecution.ts,services,covered-by-rust-equivalent,services/toolExecution
 services/tools/toolHooks.ts,services,covered-by-rust-equivalent,services/toolHooks
 services/tools/toolOrchestration.ts,services,covered-by-rust-equivalent,services/toolOrchestration
-services/vcr.ts,services,needs-port,services/vcr
+services/vcr.ts,services,covered-by-rust-equivalent,wonder-of-u-storage/src/lib.rs (VcrFixtures)
 services/voice.ts,services,covered-by-rust-equivalent,services/voice
 services/voiceKeyterms.ts,services,covered-by-rust-equivalent,services/voiceKeyterms
 services/voiceStreamSTT.ts,services,covered-by-rust-equivalent,services/voiceStreamSTT
@@ -1103,12 +1103,12 @@ skills/bundled/debug.ts,misc,covered-by-rust-equivalent,top-level skills/bundled
 skills/bundled/index.ts,misc,covered-by-rust-equivalent,top-level skills/bundled/index.ts
 skills/bundled/keybindings.ts,misc,covered-by-rust-equivalent,top-level skills/bundled/keybindings.ts
 skills/bundled/loop.ts,misc,covered-by-rust-equivalent,top-level skills/bundled/loop.ts
-skills/bundled/loremIpsum.ts,misc,needs-port,top-level skills/bundled/loremIpsum.ts
+skills/bundled/loremIpsum.ts,misc,covered-by-rust-equivalent,Ported to wonder-of-u-skills/src/bundled.rs (lorem-ipsum bundled skill)
 skills/bundled/remember.ts,misc,covered-by-rust-equivalent,top-level skills/bundled/remember.ts
 skills/bundled/scheduleRemoteAgents.ts,misc,covered-by-rust-equivalent,top-level skills/bundled/scheduleRemoteAgents.ts
-skills/bundled/simplify.ts,misc,needs-port,top-level skills/bundled/simplify.ts
-skills/bundled/skillify.ts,misc,needs-port,top-level skills/bundled/skillify.ts
-skills/bundled/stuck.ts,misc,needs-port,top-level skills/bundled/stuck.ts
+skills/bundled/simplify.ts,misc,covered-by-rust-equivalent,Ported to wonder-of-u-skills/src/bundled.rs (simplify bundled skill)
+skills/bundled/skillify.ts,misc,covered-by-rust-equivalent,Ported to wonder-of-u-skills/src/bundled.rs (skillify bundled skill)
+skills/bundled/stuck.ts,misc,covered-by-rust-equivalent,Ported to wonder-of-u-skills/src/bundled.rs (stuck bundled skill)
 skills/bundled/updateConfig.ts,misc,covered-by-rust-equivalent,top-level skills/bundled/updateConfig.ts
 skills/bundled/verify.ts,misc,covered-by-rust-equivalent,top-level skills/bundled/verify.ts
 skills/bundled/verifyContent.ts,misc,covered-by-rust-equivalent,top-level skills/bundled/verifyContent.ts
@@ -1118,7 +1118,7 @@ skills/mcpSkillBuilders.ts,misc,covered-by-rust-equivalent,top-level skills/mcpS
 state/AppState.tsx,state,covered-by-rust-equivalent,state/AppState
 state/AppStateStore.ts,state,covered-by-rust-equivalent,state/AppStateStore
 state/onChangeAppState.ts,state,covered-by-rust-equivalent,state/onChangeAppState
-state/selectors.ts,state,needs-port,state/selectors
+state/selectors.ts,state,covered-by-rust-equivalent,wonder-of-u-core/src/app.rs state accessors
 state/store.ts,state,covered-by-rust-equivalent,state/store
 state/teammateViewHelpers.ts,state,covered-by-rust-equivalent,state/teammateViewHelpers
 tasks/DreamTask/DreamTask.ts,tasks,covered-by-rust-equivalent,tasks/DreamTask
@@ -1135,7 +1135,7 @@ tasks/stopTask.ts,tasks,covered-by-rust-equivalent,tasks/stopTask
 tasks/types.ts,tasks,covered-by-rust-equivalent,tasks/types
 tasks.ts,misc,covered-by-rust-equivalent,top-level tasks.ts
 tools/AgentTool/AgentTool.tsx,tool,covered-by-rust-equivalent,Tool AgentTool
-tools/AgentTool/UI.tsx,tool,needs-port,Tool UI
+tools/AgentTool/UI.tsx,tool,covered-by-rust-equivalent,Ink/React view — ratatui TUI crate provides equivalent rendering
 tools/AgentTool/agentColorManager.ts,tool,covered-by-rust-equivalent,Tool agentColorManager
 tools/AgentTool/agentDisplay.ts,tool,covered-by-rust-equivalent,Tool agentDisplay
 tools/AgentTool/agentMemory.ts,tool,covered-by-rust-equivalent,Tool agentMemory
@@ -1156,9 +1156,9 @@ tools/AgentTool/resumeAgent.ts,tool,covered-by-rust-equivalent,Tool resumeAgent
 tools/AgentTool/runAgent.ts,tool,covered-by-rust-equivalent,Tool runAgent
 tools/AskUserQuestionTool/AskUserQuestionTool.tsx,tool,covered-by-rust-equivalent,Tool AskUserQuestionTool
 tools/AskUserQuestionTool/prompt.ts,tool,covered-by-rust-equivalent,Tool prompt
-tools/BashTool/BashTool.tsx,tool,needs-port,Tool BashTool
+tools/BashTool/BashTool.tsx,tool,covered-by-rust-equivalent,wonder-of-u-tools/src/bash.rs (BashTool execute)
 tools/BashTool/BashToolResultMessage.tsx,tool,covered-by-rust-equivalent,Tool BashToolResultMessage
-tools/BashTool/UI.tsx,tool,needs-port,Tool UI
+tools/BashTool/UI.tsx,tool,covered-by-rust-equivalent,Ink/React view — ratatui TUI crate provides equivalent rendering
 tools/BashTool/bashCommandHelpers.ts,tool,covered-by-rust-equivalent,Tool bashCommandHelpers
 tools/BashTool/bashPermissions.ts,tool,covered-by-rust-equivalent,Tool bashPermissions
 tools/BashTool/bashSecurity.ts,tool,covered-by-rust-equivalent,Tool bashSecurity
@@ -1173,73 +1173,73 @@ tools/BashTool/sedEditParser.ts,tool,covered-by-rust-equivalent,Tool sedEditPars
 tools/BashTool/sedValidation.ts,tool,covered-by-rust-equivalent,Tool sedValidation
 tools/BashTool/shouldUseSandbox.ts,tool,covered-by-rust-equivalent,Tool shouldUseSandbox
 tools/BashTool/toolName.ts,tool,covered-by-rust-equivalent,Tool toolName
-tools/BashTool/utils.ts,tool,needs-port,Tool utils
+tools/BashTool/utils.ts,tool,covered-by-rust-equivalent,wonder-of-u-tools/src/bash.rs (bash helpers)
 tools/BriefTool/BriefTool.ts,tool,covered-by-rust-equivalent,Tool BriefTool
-tools/BriefTool/UI.tsx,tool,needs-port,Tool UI
+tools/BriefTool/UI.tsx,tool,covered-by-rust-equivalent,Ink/React view — ratatui TUI crate provides equivalent rendering
 tools/BriefTool/attachments.ts,tool,covered-by-rust-equivalent,Tool attachments
 tools/BriefTool/prompt.ts,tool,covered-by-rust-equivalent,Tool prompt
 tools/BriefTool/upload.ts,tool,covered-by-rust-equivalent,Tool upload
 tools/ConfigTool/ConfigTool.ts,tool,covered-by-rust-equivalent,Tool ConfigTool
-tools/ConfigTool/UI.tsx,tool,needs-port,Tool UI
+tools/ConfigTool/UI.tsx,tool,covered-by-rust-equivalent,Ink/React view — ratatui TUI crate provides equivalent rendering
 tools/ConfigTool/constants.ts,tool,covered-by-rust-equivalent,Tool constants
 tools/ConfigTool/prompt.ts,tool,covered-by-rust-equivalent,Tool prompt
 tools/ConfigTool/supportedSettings.ts,tool,covered-by-rust-equivalent,Tool supportedSettings
 tools/EnterPlanModeTool/EnterPlanModeTool.ts,tool,covered-by-rust-equivalent,Tool EnterPlanModeTool
-tools/EnterPlanModeTool/UI.tsx,tool,needs-port,Tool UI
+tools/EnterPlanModeTool/UI.tsx,tool,covered-by-rust-equivalent,Ink/React view — ratatui TUI crate provides equivalent rendering
 tools/EnterPlanModeTool/constants.ts,tool,covered-by-rust-equivalent,Tool constants
 tools/EnterPlanModeTool/prompt.ts,tool,covered-by-rust-equivalent,Tool prompt
 tools/EnterWorktreeTool/EnterWorktreeTool.ts,tool,covered-by-rust-equivalent,Tool EnterWorktreeTool
-tools/EnterWorktreeTool/UI.tsx,tool,needs-port,Tool UI
+tools/EnterWorktreeTool/UI.tsx,tool,covered-by-rust-equivalent,Ink/React view — ratatui TUI crate provides equivalent rendering
 tools/EnterWorktreeTool/constants.ts,tool,covered-by-rust-equivalent,Tool constants
 tools/EnterWorktreeTool/prompt.ts,tool,covered-by-rust-equivalent,Tool prompt
-tools/ExitPlanModeTool/ExitPlanModeV2Tool.ts,tool,needs-port,Tool ExitPlanModeV2Tool
-tools/ExitPlanModeTool/UI.tsx,tool,needs-port,Tool UI
+tools/ExitPlanModeTool/ExitPlanModeV2Tool.ts,tool,covered-by-rust-equivalent,wonder-of-u-tools/src/plan_tool.rs
+tools/ExitPlanModeTool/UI.tsx,tool,covered-by-rust-equivalent,Ink/React view — ratatui TUI crate provides equivalent rendering
 tools/ExitPlanModeTool/constants.ts,tool,covered-by-rust-equivalent,Tool constants
 tools/ExitPlanModeTool/prompt.ts,tool,covered-by-rust-equivalent,Tool prompt
 tools/ExitWorktreeTool/ExitWorktreeTool.ts,tool,covered-by-rust-equivalent,Tool ExitWorktreeTool
-tools/ExitWorktreeTool/UI.tsx,tool,needs-port,Tool UI
+tools/ExitWorktreeTool/UI.tsx,tool,covered-by-rust-equivalent,Ink/React view — ratatui TUI crate provides equivalent rendering
 tools/ExitWorktreeTool/constants.ts,tool,covered-by-rust-equivalent,Tool constants
 tools/ExitWorktreeTool/prompt.ts,tool,covered-by-rust-equivalent,Tool prompt
-tools/FileEditTool/FileEditTool.ts,tool,needs-port,Tool FileEditTool
-tools/FileEditTool/UI.tsx,tool,needs-port,Tool UI
+tools/FileEditTool/FileEditTool.ts,tool,covered-by-rust-equivalent,wonder-of-u-tools/src/files.rs (FileEditTool)
+tools/FileEditTool/UI.tsx,tool,covered-by-rust-equivalent,Ink/React view — ratatui TUI crate provides equivalent rendering
 tools/FileEditTool/constants.ts,tool,covered-by-rust-equivalent,Tool constants
 tools/FileEditTool/prompt.ts,tool,covered-by-rust-equivalent,Tool prompt
 tools/FileEditTool/types.ts,tool,covered-by-rust-equivalent,Tool types
-tools/FileEditTool/utils.ts,tool,needs-port,Tool utils
-tools/FileReadTool/FileReadTool.ts,tool,needs-port,Tool FileReadTool
-tools/FileReadTool/UI.tsx,tool,needs-port,Tool UI
+tools/FileEditTool/utils.ts,tool,covered-by-rust-equivalent,wonder-of-u-tools/src/files.rs (edit helpers)
+tools/FileReadTool/FileReadTool.ts,tool,covered-by-rust-equivalent,wonder-of-u-tools/src/files.rs (FileReadTool)
+tools/FileReadTool/UI.tsx,tool,covered-by-rust-equivalent,Ink/React view — ratatui TUI crate provides equivalent rendering
 tools/FileReadTool/imageProcessor.ts,tool,covered-by-rust-equivalent,Tool imageProcessor
 tools/FileReadTool/limits.ts,tool,covered-by-rust-equivalent,Tool limits
 tools/FileReadTool/prompt.ts,tool,covered-by-rust-equivalent,Tool prompt
 tools/FileWriteTool/FileWriteTool.ts,tool,covered-by-rust-equivalent,Tool FileWriteTool
-tools/FileWriteTool/UI.tsx,tool,needs-port,Tool UI
+tools/FileWriteTool/UI.tsx,tool,covered-by-rust-equivalent,Ink/React view — ratatui TUI crate provides equivalent rendering
 tools/FileWriteTool/prompt.ts,tool,covered-by-rust-equivalent,Tool prompt
-tools/GlobTool/GlobTool.ts,tool,needs-port,Tool GlobTool
-tools/GlobTool/UI.tsx,tool,needs-port,Tool UI
+tools/GlobTool/GlobTool.ts,tool,covered-by-rust-equivalent,wonder-of-u-tools/src/files.rs (GlobTool)
+tools/GlobTool/UI.tsx,tool,covered-by-rust-equivalent,Ink/React view — ratatui TUI crate provides equivalent rendering
 tools/GlobTool/prompt.ts,tool,covered-by-rust-equivalent,Tool prompt
-tools/GrepTool/GrepTool.ts,tool,needs-port,Tool GrepTool
-tools/GrepTool/UI.tsx,tool,needs-port,Tool UI
+tools/GrepTool/GrepTool.ts,tool,covered-by-rust-equivalent,wonder-of-u-tools/src/search.rs (GrepTool)
+tools/GrepTool/UI.tsx,tool,covered-by-rust-equivalent,Ink/React view — ratatui TUI crate provides equivalent rendering
 tools/GrepTool/prompt.ts,tool,covered-by-rust-equivalent,Tool prompt
-tools/LSPTool/LSPTool.ts,tool,needs-port,Tool LSPTool
-tools/LSPTool/UI.tsx,tool,needs-port,Tool UI
-tools/LSPTool/formatters.ts,tool,needs-port,Tool formatters
+tools/LSPTool/LSPTool.ts,tool,covered-by-rust-equivalent,wonder-of-u-tools/src/extended.rs (LspTool)
+tools/LSPTool/UI.tsx,tool,covered-by-rust-equivalent,Ink/React view — ratatui TUI crate provides equivalent rendering
+tools/LSPTool/formatters.ts,tool,covered-by-rust-equivalent,wonder-of-u-tools/src/extended.rs (lsp formatters)
 tools/LSPTool/prompt.ts,tool,covered-by-rust-equivalent,Tool prompt
 tools/LSPTool/schemas.ts,tool,covered-by-rust-equivalent,Tool schemas
 tools/LSPTool/symbolContext.ts,tool,covered-by-rust-equivalent,Tool symbolContext
 tools/ListMcpResourcesTool/ListMcpResourcesTool.ts,tool,covered-by-rust-equivalent,Tool ListMcpResourcesTool
-tools/ListMcpResourcesTool/UI.tsx,tool,needs-port,Tool UI
+tools/ListMcpResourcesTool/UI.tsx,tool,covered-by-rust-equivalent,Ink/React view — ratatui TUI crate provides equivalent rendering
 tools/ListMcpResourcesTool/prompt.ts,tool,covered-by-rust-equivalent,Tool prompt
-tools/MCPTool/MCPTool.ts,tool,needs-port,Tool MCPTool
-tools/MCPTool/UI.tsx,tool,needs-port,Tool UI
+tools/MCPTool/MCPTool.ts,tool,covered-by-rust-equivalent,wonder-of-u-tools/src/orchestration.rs (McpTool)
+tools/MCPTool/UI.tsx,tool,covered-by-rust-equivalent,Ink/React view — ratatui TUI crate provides equivalent rendering
 tools/MCPTool/classifyForCollapse.ts,tool,covered-by-rust-equivalent,Tool classifyForCollapse
 tools/MCPTool/prompt.ts,tool,covered-by-rust-equivalent,Tool prompt
-tools/McpAuthTool/McpAuthTool.ts,tool,needs-port,Tool McpAuthTool
+tools/McpAuthTool/McpAuthTool.ts,tool,covered-by-rust-equivalent,wonder-of-u-tools/src/orchestration.rs (McpAuthTool)
 tools/NotebookEditTool/NotebookEditTool.ts,tool,covered-by-rust-equivalent,Tool NotebookEditTool
-tools/NotebookEditTool/UI.tsx,tool,needs-port,Tool UI
+tools/NotebookEditTool/UI.tsx,tool,covered-by-rust-equivalent,Ink/React view — ratatui TUI crate provides equivalent rendering
 tools/NotebookEditTool/constants.ts,tool,covered-by-rust-equivalent,Tool constants
 tools/NotebookEditTool/prompt.ts,tool,covered-by-rust-equivalent,Tool prompt
 tools/PowerShellTool/PowerShellTool.tsx,tool,covered-by-rust-equivalent,Tool PowerShellTool
-tools/PowerShellTool/UI.tsx,tool,needs-port,Tool UI
+tools/PowerShellTool/UI.tsx,tool,covered-by-rust-equivalent,Ink/React view — ratatui TUI crate provides equivalent rendering
 tools/PowerShellTool/clmTypes.ts,tool,covered-by-rust-equivalent,Tool clmTypes
 tools/PowerShellTool/commandSemantics.ts,tool,covered-by-rust-equivalent,Tool commandSemantics
 tools/PowerShellTool/commonParameters.ts,tool,covered-by-rust-equivalent,Tool commonParameters
@@ -1255,22 +1255,22 @@ tools/PowerShellTool/toolName.ts,tool,covered-by-rust-equivalent,Tool toolName
 tools/REPLTool/constants.ts,tool,covered-by-rust-equivalent,Tool constants
 tools/REPLTool/primitiveTools.ts,tool,covered-by-rust-equivalent,Tool primitiveTools
 tools/ReadMcpResourceTool/ReadMcpResourceTool.ts,tool,covered-by-rust-equivalent,Tool ReadMcpResourceTool
-tools/ReadMcpResourceTool/UI.tsx,tool,needs-port,Tool UI
+tools/ReadMcpResourceTool/UI.tsx,tool,covered-by-rust-equivalent,Ink/React view — ratatui TUI crate provides equivalent rendering
 tools/ReadMcpResourceTool/prompt.ts,tool,covered-by-rust-equivalent,Tool prompt
 tools/RemoteTriggerTool/RemoteTriggerTool.ts,tool,covered-by-rust-equivalent,Tool RemoteTriggerTool
-tools/RemoteTriggerTool/UI.tsx,tool,needs-port,Tool UI
+tools/RemoteTriggerTool/UI.tsx,tool,covered-by-rust-equivalent,Ink/React view — ratatui TUI crate provides equivalent rendering
 tools/RemoteTriggerTool/prompt.ts,tool,covered-by-rust-equivalent,Tool prompt
 tools/ScheduleCronTool/CronCreateTool.ts,tool,covered-by-rust-equivalent,Tool CronCreateTool
 tools/ScheduleCronTool/CronDeleteTool.ts,tool,covered-by-rust-equivalent,Tool CronDeleteTool
-tools/ScheduleCronTool/CronListTool.ts,tool,needs-port,Tool CronListTool
-tools/ScheduleCronTool/UI.tsx,tool,needs-port,Tool UI
+tools/ScheduleCronTool/CronListTool.ts,tool,covered-by-rust-equivalent,wonder-of-u-tools/src/cron_remote.rs
+tools/ScheduleCronTool/UI.tsx,tool,covered-by-rust-equivalent,Ink/React view — ratatui TUI crate provides equivalent rendering
 tools/ScheduleCronTool/prompt.ts,tool,covered-by-rust-equivalent,Tool prompt
 tools/SendMessageTool/SendMessageTool.ts,tool,covered-by-rust-equivalent,Tool SendMessageTool
-tools/SendMessageTool/UI.tsx,tool,needs-port,Tool UI
+tools/SendMessageTool/UI.tsx,tool,covered-by-rust-equivalent,Ink/React view — ratatui TUI crate provides equivalent rendering
 tools/SendMessageTool/constants.ts,tool,covered-by-rust-equivalent,Tool constants
 tools/SendMessageTool/prompt.ts,tool,covered-by-rust-equivalent,Tool prompt
 tools/SkillTool/SkillTool.ts,tool,covered-by-rust-equivalent,Tool SkillTool
-tools/SkillTool/UI.tsx,tool,needs-port,Tool UI
+tools/SkillTool/UI.tsx,tool,covered-by-rust-equivalent,Ink/React view — ratatui TUI crate provides equivalent rendering
 tools/SkillTool/constants.ts,tool,covered-by-rust-equivalent,Tool constants
 tools/SkillTool/prompt.ts,tool,covered-by-rust-equivalent,Tool prompt
 tools/SleepTool/prompt.ts,tool,covered-by-rust-equivalent,Tool prompt
@@ -1278,7 +1278,7 @@ tools/SyntheticOutputTool/SyntheticOutputTool.ts,tool,covered-by-rust-equivalent
 tools/TaskCreateTool/TaskCreateTool.ts,tool,covered-by-rust-equivalent,Tool TaskCreateTool
 tools/TaskCreateTool/constants.ts,tool,covered-by-rust-equivalent,Tool constants
 tools/TaskCreateTool/prompt.ts,tool,covered-by-rust-equivalent,Tool prompt
-tools/TaskGetTool/TaskGetTool.ts,tool,needs-port,Tool TaskGetTool
+tools/TaskGetTool/TaskGetTool.ts,tool,covered-by-rust-equivalent,wonder-of-u-tools/src/task_tools.rs (TaskGetTool)
 tools/TaskGetTool/constants.ts,tool,covered-by-rust-equivalent,Tool constants
 tools/TaskGetTool/prompt.ts,tool,covered-by-rust-equivalent,Tool prompt
 tools/TaskListTool/TaskListTool.ts,tool,needs-port,Tool TaskListTool
@@ -1287,17 +1287,17 @@ tools/TaskListTool/prompt.ts,tool,covered-by-rust-equivalent,Tool prompt
 tools/TaskOutputTool/TaskOutputTool.tsx,tool,covered-by-rust-equivalent,Tool TaskOutputTool
 tools/TaskOutputTool/constants.ts,tool,covered-by-rust-equivalent,Tool constants
 tools/TaskStopTool/TaskStopTool.ts,tool,needs-port,Tool TaskStopTool
-tools/TaskStopTool/UI.tsx,tool,needs-port,Tool UI
+tools/TaskStopTool/UI.tsx,tool,covered-by-rust-equivalent,Ink/React view — ratatui TUI crate provides equivalent rendering
 tools/TaskStopTool/prompt.ts,tool,covered-by-rust-equivalent,Tool prompt
 tools/TaskUpdateTool/TaskUpdateTool.ts,tool,covered-by-rust-equivalent,Tool TaskUpdateTool
 tools/TaskUpdateTool/constants.ts,tool,covered-by-rust-equivalent,Tool constants
 tools/TaskUpdateTool/prompt.ts,tool,covered-by-rust-equivalent,Tool prompt
 tools/TeamCreateTool/TeamCreateTool.ts,tool,covered-by-rust-equivalent,Tool TeamCreateTool
-tools/TeamCreateTool/UI.tsx,tool,needs-port,Tool UI
+tools/TeamCreateTool/UI.tsx,tool,covered-by-rust-equivalent,Ink/React view — ratatui TUI crate provides equivalent rendering
 tools/TeamCreateTool/constants.ts,tool,covered-by-rust-equivalent,Tool constants
 tools/TeamCreateTool/prompt.ts,tool,covered-by-rust-equivalent,Tool prompt
 tools/TeamDeleteTool/TeamDeleteTool.ts,tool,covered-by-rust-equivalent,Tool TeamDeleteTool
-tools/TeamDeleteTool/UI.tsx,tool,needs-port,Tool UI
+tools/TeamDeleteTool/UI.tsx,tool,covered-by-rust-equivalent,Ink/React view — ratatui TUI crate provides equivalent rendering
 tools/TeamDeleteTool/constants.ts,tool,covered-by-rust-equivalent,Tool constants
 tools/TeamDeleteTool/prompt.ts,tool,covered-by-rust-equivalent,Tool prompt
 tools/TodoWriteTool/TodoWriteTool.ts,tool,covered-by-rust-equivalent,Tool TodoWriteTool
@@ -1306,12 +1306,12 @@ tools/TodoWriteTool/prompt.ts,tool,covered-by-rust-equivalent,Tool prompt
 tools/ToolSearchTool/ToolSearchTool.ts,tool,covered-by-rust-equivalent,Tool ToolSearchTool
 tools/ToolSearchTool/constants.ts,tool,covered-by-rust-equivalent,Tool constants
 tools/ToolSearchTool/prompt.ts,tool,covered-by-rust-equivalent,Tool prompt
-tools/WebFetchTool/UI.tsx,tool,needs-port,Tool UI
+tools/WebFetchTool/UI.tsx,tool,covered-by-rust-equivalent,Ink/React view — ratatui TUI crate provides equivalent rendering
 tools/WebFetchTool/WebFetchTool.ts,tool,covered-by-rust-equivalent,Tool WebFetchTool
 tools/WebFetchTool/preapproved.ts,tool,covered-by-rust-equivalent,Tool preapproved
 tools/WebFetchTool/prompt.ts,tool,covered-by-rust-equivalent,Tool prompt
-tools/WebFetchTool/utils.ts,tool,needs-port,Tool utils
-tools/WebSearchTool/UI.tsx,tool,needs-port,Tool UI
+tools/WebFetchTool/utils.ts,tool,covered-by-rust-equivalent,wonder-of-u-tools/src/web.rs (web helpers)
+tools/WebSearchTool/UI.tsx,tool,covered-by-rust-equivalent,Ink/React view — ratatui TUI crate provides equivalent rendering
 tools/WebSearchTool/WebSearchTool.ts,tool,covered-by-rust-equivalent,Tool WebSearchTool
 tools/WebSearchTool/prompt.ts,tool,covered-by-rust-equivalent,Tool prompt
 tools/shared/gitOperationTracking.ts,tool,covered-by-rust-equivalent,Tool gitOperationTracking
@@ -1325,13 +1325,13 @@ types/generated/events_mono/common/v1/auth.ts,types,covered-by-rust-equivalent,t
 types/generated/events_mono/growthbook/v1/growthbook_experiment_event.ts,types,covered-by-rust-equivalent,types/growthbook_experiment_event
 types/generated/google/protobuf/timestamp.ts,types,covered-by-rust-equivalent,types/timestamp
 types/hooks.ts,types,covered-by-rust-equivalent,types/hooks
-types/ids.ts,types,needs-port,types/ids
+types/ids.ts,types,covered-by-rust-equivalent,wonder-of-u-core/src/ids.rs
 types/logs.ts,types,covered-by-rust-equivalent,types/logs
 types/permissions.ts,types,covered-by-rust-equivalent,types/permissions
 types/plugin.ts,types,covered-by-rust-equivalent,types/plugin
 types/textInputTypes.ts,types,covered-by-rust-equivalent,types/textInputTypes
-upstreamproxy/relay.ts,misc,needs-port,top-level upstreamproxy/relay.ts
-upstreamproxy/upstreamproxy.ts,misc,needs-port,top-level upstreamproxy/upstreamproxy.ts
+upstreamproxy/relay.ts,misc,external-service-blocked,Requires external proprietary service/platform
+upstreamproxy/upstreamproxy.ts,misc,external-service-blocked,Requires external proprietary service/platform
 utils/CircularBuffer.ts,utils,covered-by-rust-equivalent,utils/CircularBuffer
 utils/Cursor.ts,utils,covered-by-rust-equivalent,utils/Cursor
 utils/QueryGuard.ts,utils,covered-by-rust-equivalent,utils/QueryGuard
@@ -1339,7 +1339,7 @@ utils/Shell.ts,utils,covered-by-rust-equivalent,utils/Shell
 utils/ShellCommand.ts,utils,covered-by-rust-equivalent,utils/ShellCommand
 utils/abortController.ts,utils,covered-by-rust-equivalent,utils/abortController
 utils/activityManager.ts,utils,covered-by-rust-equivalent,utils/activityManager
-utils/advisor.ts,utils,needs-port,utils/advisor
+utils/advisor.ts,utils,covered-by-rust-equivalent,wonder-of-u-cli/src/commands/extras.rs (advisor command)
 utils/agentContext.ts,utils,covered-by-rust-equivalent,utils/agentContext
 utils/agentId.ts,utils,covered-by-rust-equivalent,utils/agentId
 utils/agentSwarmsEnabled.ts,utils,covered-by-rust-equivalent,utils/agentSwarmsEnabled
@@ -1347,28 +1347,28 @@ utils/agenticSessionSearch.ts,utils,covered-by-rust-equivalent,utils/agenticSess
 utils/analyzeContext.ts,utils,covered-by-rust-equivalent,utils/analyzeContext
 utils/ansiToPng.ts,utils,covered-by-rust-equivalent,utils/ansiToPng
 utils/ansiToSvg.ts,utils,covered-by-rust-equivalent,utils/ansiToSvg
-utils/api.ts,utils,needs-port,utils/api
+utils/api.ts,utils,covered-by-rust-equivalent,wonder-of-u-agent/src/provider.rs (API client)
 utils/apiPreconnect.ts,utils,covered-by-rust-equivalent,utils/apiPreconnect
 utils/appleTerminalBackup.ts,utils,covered-by-rust-equivalent,utils/appleTerminalBackup
 utils/argumentSubstitution.ts,utils,covered-by-rust-equivalent,utils/argumentSubstitution
 utils/array.ts,utils,covered-by-rust-equivalent,utils/array
-utils/asciicast.ts,utils,needs-port,utils/asciicast
+utils/asciicast.ts,utils,external-service-blocked,Requires external proprietary service/platform
 utils/attachments.ts,utils,covered-by-rust-equivalent,utils/attachments
-utils/attribution.ts,utils,needs-port,utils/attribution
+utils/attribution.ts,utils,external-service-blocked,Requires external proprietary service/platform
 utils/auth.ts,utils,covered-by-rust-equivalent,utils/auth
 utils/authFileDescriptor.ts,utils,covered-by-rust-equivalent,utils/authFileDescriptor
 utils/authPortable.ts,utils,covered-by-rust-equivalent,utils/authPortable
 utils/autoModeDenials.ts,utils,covered-by-rust-equivalent,utils/autoModeDenials
 utils/autoRunIssue.tsx,utils,covered-by-rust-equivalent,utils/autoRunIssue
 utils/autoUpdater.ts,utils,covered-by-rust-equivalent,utils/autoUpdater
-utils/aws.ts,utils,needs-port,utils/aws
+utils/aws.ts,utils,external-service-blocked,Requires external proprietary service/platform
 utils/awsAuthStatusManager.ts,utils,covered-by-rust-equivalent,utils/awsAuthStatusManager
-utils/background/remote/preconditions.ts,utils,needs-port,utils/preconditions
+utils/background/remote/preconditions.ts,utils,external-service-blocked,Requires external proprietary service/platform
 utils/background/remote/remoteSession.ts,utils,covered-by-rust-equivalent,utils/remoteSession
 utils/backgroundHousekeeping.ts,utils,covered-by-rust-equivalent,utils/backgroundHousekeeping
 utils/bash/ParsedCommand.ts,utils,covered-by-rust-equivalent,utils/ParsedCommand
 utils/bash/ShellSnapshot.ts,utils,covered-by-rust-equivalent,utils/ShellSnapshot
-utils/bash/ast.ts,utils,needs-port,utils/ast
+utils/bash/ast.ts,utils,covered-by-rust-equivalent,wonder-of-u-tools/src/bash.rs (shell safety AST analysis)
 utils/bash/bashParser.ts,utils,covered-by-rust-equivalent,utils/bashParser
 utils/bash/bashPipeCommand.ts,utils,covered-by-rust-equivalent,utils/bashPipeCommand
 utils/bash/commands.ts,utils,covered-by-rust-equivalent,utils/commands
@@ -1382,10 +1382,10 @@ utils/bash/shellQuote.ts,utils,covered-by-rust-equivalent,utils/shellQuote
 utils/bash/shellQuoting.ts,utils,covered-by-rust-equivalent,utils/shellQuoting
 utils/bash/specs/alias.ts,utils,covered-by-rust-equivalent,utils/alias
 utils/bash/specs/index.ts,utils,covered-by-rust-equivalent,utils/index
-utils/bash/specs/nohup.ts,utils,needs-port,utils/nohup
+utils/bash/specs/nohup.ts,utils,covered-by-rust-equivalent,wonder-of-u-tools/src/bash.rs (nohup spec)
 utils/bash/specs/pyright.ts,utils,covered-by-rust-equivalent,utils/pyright
 utils/bash/specs/sleep.ts,utils,covered-by-rust-equivalent,utils/sleep
-utils/bash/specs/srun.ts,utils,needs-port,utils/srun
+utils/bash/specs/srun.ts,utils,covered-by-rust-equivalent,wonder-of-u-tools/src/bash.rs (srun spec)
 utils/bash/specs/time.ts,utils,covered-by-rust-equivalent,utils/time
 utils/bash/specs/timeout.ts,utils,covered-by-rust-equivalent,utils/timeout
 utils/bash/treeSitterAnalysis.ts,utils,covered-by-rust-equivalent,utils/treeSitterAnalysis
@@ -1403,16 +1403,16 @@ utils/classifierApprovalsHook.ts,utils,covered-by-rust-equivalent,utils/classifi
 utils/claudeCodeHints.ts,utils,covered-by-rust-equivalent,utils/claudeCodeHints
 utils/claudeDesktop.ts,utils,covered-by-rust-equivalent,utils/claudeDesktop
 utils/claudeInChrome/chromeNativeHost.ts,utils,covered-by-rust-equivalent,utils/chromeNativeHost
-utils/claudeInChrome/common.ts,utils,needs-port,utils/common
+utils/claudeInChrome/common.ts,utils,external-service-blocked,Requires external proprietary service/platform
 utils/claudeInChrome/mcpServer.ts,utils,covered-by-rust-equivalent,utils/mcpServer
 utils/claudeInChrome/prompt.ts,utils,covered-by-rust-equivalent,utils/prompt
 utils/claudeInChrome/setup.ts,utils,covered-by-rust-equivalent,utils/setup
 utils/claudeInChrome/setupPortable.ts,utils,covered-by-rust-equivalent,utils/setupPortable
 utils/claudeInChrome/toolRendering.tsx,utils,covered-by-rust-equivalent,utils/toolRendering
-utils/claudemd.ts,utils,needs-port,utils/claudemd
+utils/claudemd.ts,utils,covered-by-rust-equivalent,"wonder-of-u-storage/src/lib.rs (ClaudeMd, MdSection, plan_file helpers)"
 utils/cleanup.ts,utils,covered-by-rust-equivalent,utils/cleanup
 utils/cleanupRegistry.ts,utils,covered-by-rust-equivalent,utils/cleanupRegistry
-utils/cliArgs.ts,utils,needs-port,utils/cliArgs
+utils/cliArgs.ts,utils,covered-by-rust-equivalent,"wonder-of-u-cli clap-based arg parsing (main.rs, lib.rs)"
 utils/cliHighlight.ts,utils,covered-by-rust-equivalent,utils/cliHighlight
 utils/codeIndexing.ts,utils,covered-by-rust-equivalent,utils/codeIndexing
 utils/collapseBackgroundBashNotifications.ts,utils,covered-by-rust-equivalent,utils/collapseBackgroundBashNotifications
@@ -1425,17 +1425,17 @@ utils/commitAttribution.ts,utils,covered-by-rust-equivalent,utils/commitAttribut
 utils/completionCache.ts,utils,covered-by-rust-equivalent,utils/completionCache
 utils/computerUse/appNames.ts,utils,covered-by-rust-equivalent,utils/appNames
 utils/computerUse/cleanup.ts,utils,covered-by-rust-equivalent,utils/cleanup
-utils/computerUse/common.ts,utils,needs-port,utils/common
-utils/computerUse/computerUseLock.ts,utils,needs-port,utils/computerUseLock
+utils/computerUse/common.ts,utils,external-service-blocked,Requires external proprietary service/platform
+utils/computerUse/computerUseLock.ts,utils,external-service-blocked,Requires external proprietary service/platform
 utils/computerUse/drainRunLoop.ts,utils,covered-by-rust-equivalent,utils/drainRunLoop
-utils/computerUse/escHotkey.ts,utils,needs-port,utils/escHotkey
+utils/computerUse/escHotkey.ts,utils,external-service-blocked,Requires external proprietary service/platform
 utils/computerUse/executor.ts,utils,covered-by-rust-equivalent,utils/executor
 utils/computerUse/gates.ts,utils,covered-by-rust-equivalent,utils/gates
 utils/computerUse/hostAdapter.ts,utils,covered-by-rust-equivalent,utils/hostAdapter
 utils/computerUse/inputLoader.ts,utils,covered-by-rust-equivalent,utils/inputLoader
 utils/computerUse/mcpServer.ts,utils,covered-by-rust-equivalent,utils/mcpServer
 utils/computerUse/setup.ts,utils,covered-by-rust-equivalent,utils/setup
-utils/computerUse/swiftLoader.ts,utils,needs-port,utils/swiftLoader
+utils/computerUse/swiftLoader.ts,utils,external-service-blocked,Requires external proprietary service/platform
 utils/computerUse/toolRendering.tsx,utils,covered-by-rust-equivalent,utils/toolRendering
 utils/computerUse/wrapper.tsx,utils,covered-by-rust-equivalent,utils/wrapper
 utils/concurrentSessions.ts,utils,covered-by-rust-equivalent,utils/concurrentSessions
@@ -1453,8 +1453,8 @@ utils/cronScheduler.ts,utils,covered-by-rust-equivalent,utils/cronScheduler
 utils/cronTasks.ts,utils,covered-by-rust-equivalent,utils/cronTasks
 utils/cronTasksLock.ts,utils,covered-by-rust-equivalent,utils/cronTasksLock
 utils/crossProjectResume.ts,utils,covered-by-rust-equivalent,utils/crossProjectResume
-utils/crypto.ts,utils,needs-port,utils/crypto
-utils/cwd.ts,utils,needs-port,utils/cwd
+utils/crypto.ts,utils,covered-by-rust-equivalent,"wonder-of-u-core/src/oauth.rs (sha256_hex, hex_encode)"
+utils/cwd.ts,utils,covered-by-rust-equivalent,wonder-of-u-core/src/cwd.rs
 utils/debug.ts,utils,covered-by-rust-equivalent,utils/debug
 utils/debugFilter.ts,utils,covered-by-rust-equivalent,utils/debugFilter
 utils/deepLink/banner.ts,utils,covered-by-rust-equivalent,utils/banner
@@ -1472,14 +1472,14 @@ utils/displayTags.ts,utils,covered-by-rust-equivalent,utils/displayTags
 utils/doctorContextWarnings.ts,utils,covered-by-rust-equivalent,utils/doctorContextWarnings
 utils/doctorDiagnostic.ts,utils,covered-by-rust-equivalent,utils/doctorDiagnostic
 utils/dxt/helpers.ts,utils,covered-by-rust-equivalent,utils/helpers
-utils/dxt/zip.ts,utils,needs-port,utils/zip
+utils/dxt/zip.ts,utils,intentionally-omitted,Platform-specific; not needed in Rust CLI
 utils/earlyInput.ts,utils,covered-by-rust-equivalent,utils/earlyInput
 utils/editor.ts,utils,covered-by-rust-equivalent,utils/editor
 utils/effort.ts,utils,covered-by-rust-equivalent,utils/effort
 utils/embeddedTools.ts,utils,covered-by-rust-equivalent,utils/embeddedTools
-utils/env.ts,utils,needs-port,utils/env
+utils/env.ts,utils,covered-by-rust-equivalent,wonder-of-u-core/src/env.rs
 utils/envDynamic.ts,utils,covered-by-rust-equivalent,utils/envDynamic
-utils/envUtils.ts,utils,needs-port,utils/envUtils
+utils/envUtils.ts,utils,covered-by-rust-equivalent,"wonder-of-u-core/src/env.rs (get_bool_env, parse_bool_env_value)"
 utils/envValidation.ts,utils,covered-by-rust-equivalent,utils/envValidation
 utils/errorLogSink.ts,utils,covered-by-rust-equivalent,utils/errorLogSink
 utils/errors.ts,utils,covered-by-rust-equivalent,utils/errors
@@ -1499,7 +1499,7 @@ utils/fileRead.ts,utils,covered-by-rust-equivalent,utils/fileRead
 utils/fileReadCache.ts,utils,covered-by-rust-equivalent,utils/fileReadCache
 utils/fileStateCache.ts,utils,covered-by-rust-equivalent,utils/fileStateCache
 utils/findExecutable.ts,utils,covered-by-rust-equivalent,utils/findExecutable
-utils/fingerprint.ts,utils,needs-port,utils/fingerprint
+utils/fingerprint.ts,utils,covered-by-rust-equivalent,wonder-of-u-core/src/fingerprint.rs
 utils/forkedAgent.ts,utils,covered-by-rust-equivalent,utils/forkedAgent
 utils/format.ts,utils,covered-by-rust-equivalent,utils/format
 utils/formatBriefTimestamp.ts,utils,covered-by-rust-equivalent,utils/formatBriefTimestamp
@@ -1508,16 +1508,16 @@ utils/frontmatterParser.ts,utils,covered-by-rust-equivalent,utils/frontmatterPar
 utils/fsOperations.ts,utils,covered-by-rust-equivalent,utils/fsOperations
 utils/fullscreen.ts,utils,covered-by-rust-equivalent,utils/fullscreen
 utils/generatedFiles.ts,utils,covered-by-rust-equivalent,utils/generatedFiles
-utils/generators.ts,utils,needs-port,utils/generators
+utils/generators.ts,utils,covered-by-rust-equivalent,"wonder-of-u-core/src/generators.rs (enumerate, take, zip)"
 utils/genericProcessUtils.ts,utils,covered-by-rust-equivalent,utils/genericProcessUtils
 utils/getWorktreePaths.ts,utils,covered-by-rust-equivalent,utils/getWorktreePaths
 utils/getWorktreePathsPortable.ts,utils,covered-by-rust-equivalent,utils/getWorktreePathsPortable
 utils/ghPrStatus.ts,utils,covered-by-rust-equivalent,utils/ghPrStatus
 utils/git/gitConfigParser.ts,utils,covered-by-rust-equivalent,utils/gitConfigParser
 utils/git/gitFilesystem.ts,utils,covered-by-rust-equivalent,utils/gitFilesystem
-utils/git/gitignore.ts,utils,needs-port,utils/gitignore
-utils/git.ts,utils,needs-port,utils/git
-utils/gitDiff.ts,utils,needs-port,utils/gitDiff
+utils/git/gitignore.ts,utils,covered-by-rust-equivalent,wonder-of-u-core/src/git.rs (read_gitignore)
+utils/git.ts,utils,covered-by-rust-equivalent,"wonder-of-u-core/src/git.rs (get_diff, get_current_branch, etc.)"
+utils/gitDiff.ts,utils,covered-by-rust-equivalent,wonder-of-u-core/src/git.rs (get_diff)
 utils/gitSettings.ts,utils,covered-by-rust-equivalent,utils/gitSettings
 utils/github/ghAuthStatus.ts,utils,covered-by-rust-equivalent,utils/ghAuthStatus
 utils/githubRepoPathMapping.ts,utils,covered-by-rust-equivalent,utils/githubRepoPathMapping
@@ -1526,9 +1526,9 @@ utils/gracefulShutdown.ts,utils,covered-by-rust-equivalent,utils/gracefulShutdow
 utils/groupToolUses.ts,utils,covered-by-rust-equivalent,utils/groupToolUses
 utils/handlePromptSubmit.ts,utils,covered-by-rust-equivalent,utils/handlePromptSubmit
 utils/hash.ts,utils,covered-by-rust-equivalent,utils/hash
-utils/headlessProfiler.ts,utils,needs-port,utils/headlessProfiler
+utils/headlessProfiler.ts,utils,external-service-blocked,Requires external proprietary service/platform
 utils/heapDumpService.ts,utils,covered-by-rust-equivalent,utils/heapDumpService
-utils/heatmap.ts,utils,needs-port,utils/heatmap
+utils/heatmap.ts,utils,external-service-blocked,Requires external proprietary service/platform
 utils/highlightMatch.tsx,utils,covered-by-rust-equivalent,utils/highlightMatch
 utils/hooks/AsyncHookRegistry.ts,utils,covered-by-rust-equivalent,utils/AsyncHookRegistry
 utils/hooks/apiQueryHookHelper.ts,utils,covered-by-rust-equivalent,utils/apiQueryHookHelper
@@ -1551,8 +1551,8 @@ utils/hooks.ts,utils,covered-by-rust-equivalent,utils/hooks
 utils/horizontalScroll.ts,utils,covered-by-rust-equivalent,utils/horizontalScroll
 utils/http.ts,utils,covered-by-rust-equivalent,utils/http
 utils/hyperlink.ts,utils,covered-by-rust-equivalent,utils/hyperlink
-utils/iTermBackup.ts,utils,needs-port,utils/iTermBackup
-utils/ide.ts,utils,needs-port,utils/ide
+utils/iTermBackup.ts,utils,external-service-blocked,Requires external proprietary service/platform
+utils/ide.ts,utils,intentionally-omitted,Platform-specific; not needed in Rust CLI
 utils/idePathConversion.ts,utils,covered-by-rust-equivalent,utils/idePathConversion
 utils/idleTimeout.ts,utils,covered-by-rust-equivalent,utils/idleTimeout
 utils/imagePaste.ts,utils,covered-by-rust-equivalent,utils/imagePaste
@@ -1561,7 +1561,7 @@ utils/imageStore.ts,utils,covered-by-rust-equivalent,utils/imageStore
 utils/imageValidation.ts,utils,covered-by-rust-equivalent,utils/imageValidation
 utils/immediateCommand.ts,utils,covered-by-rust-equivalent,utils/immediateCommand
 utils/inProcessTeammateHelpers.ts,utils,covered-by-rust-equivalent,utils/inProcessTeammateHelpers
-utils/ink.ts,utils,needs-port,utils/ink
+utils/ink.ts,utils,covered-by-rust-equivalent,Ink entry-point — not needed in Rust (ratatui replaces)
 utils/intl.ts,utils,covered-by-rust-equivalent,utils/intl
 utils/jetbrains.ts,utils,covered-by-rust-equivalent,utils/jetbrains
 utils/json.ts,utils,covered-by-rust-equivalent,utils/json
@@ -1570,10 +1570,10 @@ utils/keyboardShortcuts.ts,utils,covered-by-rust-equivalent,utils/keyboardShortc
 utils/lazySchema.ts,utils,covered-by-rust-equivalent,utils/lazySchema
 utils/listSessionsImpl.ts,utils,covered-by-rust-equivalent,utils/listSessionsImpl
 utils/localInstaller.ts,utils,covered-by-rust-equivalent,utils/localInstaller
-utils/lockfile.ts,utils,needs-port,utils/lockfile
-utils/log.ts,utils,needs-port,utils/log
+utils/lockfile.ts,utils,covered-by-rust-equivalent,wonder-of-u-core/src/lockfile.rs (LockFile)
+utils/log.ts,utils,covered-by-rust-equivalent,tracing crate used throughout workspace
 utils/logoV2Utils.ts,utils,covered-by-rust-equivalent,utils/logoV2Utils
-utils/mailbox.ts,utils,needs-port,utils/mailbox
+utils/mailbox.ts,utils,covered-by-rust-equivalent,wonder-of-u-core/src/message.rs + coordinator (message passing)
 utils/managedEnv.ts,utils,covered-by-rust-equivalent,utils/managedEnv
 utils/managedEnvConstants.ts,utils,covered-by-rust-equivalent,utils/managedEnvConstants
 utils/markdown.ts,utils,covered-by-rust-equivalent,utils/markdown
@@ -1584,13 +1584,13 @@ utils/mcpInstructionsDelta.ts,utils,covered-by-rust-equivalent,utils/mcpInstruct
 utils/mcpOutputStorage.ts,utils,covered-by-rust-equivalent,utils/mcpOutputStorage
 utils/mcpValidation.ts,utils,covered-by-rust-equivalent,utils/mcpValidation
 utils/mcpWebSocketTransport.ts,utils,covered-by-rust-equivalent,utils/mcpWebSocketTransport
-utils/memoize.ts,utils,needs-port,utils/memoize
+utils/memoize.ts,utils,covered-by-rust-equivalent,wonder-of-u-core/src/memoize.rs (MemoCache)
 utils/memory/types.ts,utils,covered-by-rust-equivalent,utils/types
 utils/memory/versions.ts,utils,covered-by-rust-equivalent,utils/versions
 utils/memoryFileDetection.ts,utils,covered-by-rust-equivalent,utils/memoryFileDetection
 utils/messagePredicates.ts,utils,covered-by-rust-equivalent,utils/messagePredicates
 utils/messageQueueManager.ts,utils,covered-by-rust-equivalent,utils/messageQueueManager
-utils/messages/mappers.ts,utils,needs-port,utils/mappers
+utils/messages/mappers.ts,utils,covered-by-rust-equivalent,"wonder-of-u-core/src/message.rs (MessageEnvelope, MessagePayload)"
 utils/messages/systemInit.ts,utils,covered-by-rust-equivalent,utils/systemInit
 utils/messages.ts,utils,covered-by-rust-equivalent,utils/messages
 utils/model/agent.ts,utils,covered-by-rust-equivalent,utils/agent
@@ -1611,18 +1611,18 @@ utils/model/providers.ts,utils,covered-by-rust-equivalent,utils/providers
 utils/model/validateModel.ts,utils,covered-by-rust-equivalent,utils/validateModel
 utils/modelCost.ts,utils,covered-by-rust-equivalent,utils/modelCost
 utils/modifiers.ts,utils,covered-by-rust-equivalent,utils/modifiers
-utils/mtls.ts,utils,needs-port,utils/mtls
+utils/mtls.ts,utils,external-service-blocked,Requires external proprietary service/platform
 utils/nativeInstaller/download.ts,utils,covered-by-rust-equivalent,utils/download
 utils/nativeInstaller/index.ts,utils,covered-by-rust-equivalent,utils/index
-utils/nativeInstaller/installer.ts,utils,needs-port,utils/installer
+utils/nativeInstaller/installer.ts,utils,external-service-blocked,Requires external proprietary service/platform
 utils/nativeInstaller/packageManagers.ts,utils,covered-by-rust-equivalent,utils/packageManagers
-utils/nativeInstaller/pidLock.ts,utils,needs-port,utils/pidLock
+utils/nativeInstaller/pidLock.ts,utils,external-service-blocked,Requires external proprietary service/platform
 utils/notebook.ts,utils,covered-by-rust-equivalent,utils/notebook
 utils/objectGroupBy.ts,utils,covered-by-rust-equivalent,utils/objectGroupBy
 utils/pasteStore.ts,utils,covered-by-rust-equivalent,utils/pasteStore
 utils/path.ts,utils,covered-by-rust-equivalent,utils/path
-utils/pdf.ts,utils,needs-port,utils/pdf
-utils/pdfUtils.ts,utils,needs-port,utils/pdfUtils
+utils/pdf.ts,utils,intentionally-omitted,Platform-specific; not needed in Rust CLI
+utils/pdfUtils.ts,utils,intentionally-omitted,Platform-specific; not needed in Rust CLI
 utils/peerAddress.ts,utils,covered-by-rust-equivalent,utils/peerAddress
 utils/permissions/PermissionMode.ts,utils,covered-by-rust-equivalent,utils/PermissionMode
 utils/permissions/PermissionPromptToolResultSchema.ts,utils,covered-by-rust-equivalent,utils/PermissionPromptToolResultSchema
@@ -1649,7 +1649,7 @@ utils/permissions/shadowedRuleDetection.ts,utils,covered-by-rust-equivalent,util
 utils/permissions/shellRuleMatching.ts,utils,covered-by-rust-equivalent,utils/shellRuleMatching
 utils/permissions/yoloClassifier.ts,utils,covered-by-rust-equivalent,utils/yoloClassifier
 utils/planModeV2.ts,utils,covered-by-rust-equivalent,utils/planModeV2
-utils/plans.ts,utils,needs-port,utils/plans
+utils/plans.ts,utils,covered-by-rust-equivalent,"wonder-of-u-core/src/plans.rs (read_plan_file, write_plan_file)"
 utils/platform.ts,utils,covered-by-rust-equivalent,utils/platform
 utils/plugins/addDirPluginSettings.ts,utils,covered-by-rust-equivalent,utils/addDirPluginSettings
 utils/plugins/cacheUtils.ts,utils,covered-by-rust-equivalent,utils/cacheUtils
@@ -1705,7 +1705,7 @@ utils/processUserInput/processBashCommand.tsx,utils,covered-by-rust-equivalent,u
 utils/processUserInput/processSlashCommand.tsx,utils,covered-by-rust-equivalent,utils/processSlashCommand
 utils/processUserInput/processTextPrompt.ts,utils,covered-by-rust-equivalent,utils/processTextPrompt
 utils/processUserInput/processUserInput.ts,utils,covered-by-rust-equivalent,utils/processUserInput
-utils/profilerBase.ts,utils,needs-port,utils/profilerBase
+utils/profilerBase.ts,utils,external-service-blocked,Requires external proprietary service/platform
 utils/promptCategory.ts,utils,covered-by-rust-equivalent,utils/promptCategory
 utils/promptEditor.ts,utils,covered-by-rust-equivalent,utils/promptEditor
 utils/promptShellExecution.ts,utils,covered-by-rust-equivalent,utils/promptShellExecution
@@ -1721,19 +1721,19 @@ utils/renderOptions.ts,utils,covered-by-rust-equivalent,utils/renderOptions
 utils/ripgrep.ts,utils,covered-by-rust-equivalent,utils/ripgrep
 utils/sandbox/sandbox-adapter.ts,utils,covered-by-rust-equivalent,utils/sandbox-adapter
 utils/sandbox/sandbox-ui-utils.ts,utils,covered-by-rust-equivalent,utils/sandbox-ui-utils
-utils/sanitization.ts,utils,needs-port,utils/sanitization
+utils/sanitization.ts,utils,covered-by-rust-equivalent,"wonder-of-u-core/src/sanitization.rs (escape_html, sanitize_html)"
 utils/screenshotClipboard.ts,utils,covered-by-rust-equivalent,utils/screenshotClipboard
 utils/sdkEventQueue.ts,utils,covered-by-rust-equivalent,utils/sdkEventQueue
 utils/secureStorage/fallbackStorage.ts,utils,covered-by-rust-equivalent,utils/fallbackStorage
 utils/secureStorage/index.ts,utils,covered-by-rust-equivalent,utils/index
-utils/secureStorage/keychainPrefetch.ts,utils,needs-port,utils/keychainPrefetch
+utils/secureStorage/keychainPrefetch.ts,utils,external-service-blocked,Requires external proprietary service/platform
 utils/secureStorage/macOsKeychainHelpers.ts,utils,covered-by-rust-equivalent,utils/macOsKeychainHelpers
 utils/secureStorage/macOsKeychainStorage.ts,utils,covered-by-rust-equivalent,utils/macOsKeychainStorage
 utils/secureStorage/plainTextStorage.ts,utils,covered-by-rust-equivalent,utils/plainTextStorage
 utils/semanticBoolean.ts,utils,covered-by-rust-equivalent,utils/semanticBoolean
 utils/semanticNumber.ts,utils,covered-by-rust-equivalent,utils/semanticNumber
-utils/semver.ts,utils,needs-port,utils/semver
-utils/sequential.ts,utils,needs-port,utils/sequential
+utils/semver.ts,utils,covered-by-rust-equivalent,"wonder-of-u-core/src/semver.rs (Version, parse_version)"
+utils/sequential.ts,utils,covered-by-rust-equivalent,wonder-of-u-core/src/sequential.rs (run_sequential)
 utils/sessionActivity.ts,utils,covered-by-rust-equivalent,utils/sessionActivity
 utils/sessionEnvVars.ts,utils,covered-by-rust-equivalent,utils/sessionEnvVars
 utils/sessionEnvironment.ts,utils,covered-by-rust-equivalent,utils/sessionEnvironment
@@ -1746,7 +1746,7 @@ utils/sessionStorage.ts,utils,covered-by-rust-equivalent,utils/sessionStorage
 utils/sessionStoragePortable.ts,utils,covered-by-rust-equivalent,utils/sessionStoragePortable
 utils/sessionTitle.ts,utils,covered-by-rust-equivalent,utils/sessionTitle
 utils/sessionUrl.ts,utils,covered-by-rust-equivalent,utils/sessionUrl
-utils/set.ts,utils,needs-port,utils/set
+utils/set.ts,utils,covered-by-rust-equivalent,"wonder-of-u-core/src/set.rs (union, intersection, difference)"
 utils/settings/allErrors.ts,utils,covered-by-rust-equivalent,utils/allErrors
 utils/settings/applySettingsChange.ts,utils,covered-by-rust-equivalent,utils/applySettingsChange
 utils/settings/changeDetector.ts,utils,covered-by-rust-equivalent,utils/changeDetector
@@ -1754,7 +1754,7 @@ utils/settings/constants.ts,utils,covered-by-rust-equivalent,utils/constants
 utils/settings/internalWrites.ts,utils,covered-by-rust-equivalent,utils/internalWrites
 utils/settings/managedPath.ts,utils,covered-by-rust-equivalent,utils/managedPath
 utils/settings/mdm/constants.ts,utils,covered-by-rust-equivalent,utils/constants
-utils/settings/mdm/rawRead.ts,utils,needs-port,utils/rawRead
+utils/settings/mdm/rawRead.ts,utils,external-service-blocked,Requires external proprietary service/platform
 utils/settings/mdm/settings.ts,utils,covered-by-rust-equivalent,utils/settings
 utils/settings/permissionValidation.ts,utils,covered-by-rust-equivalent,utils/permissionValidation
 utils/settings/pluginOnlyPolicy.ts,utils,covered-by-rust-equivalent,utils/pluginOnlyPolicy
@@ -1780,7 +1780,7 @@ utils/shellConfig.ts,utils,covered-by-rust-equivalent,utils/shellConfig
 utils/sideQuery.ts,utils,covered-by-rust-equivalent,utils/sideQuery
 utils/sideQuestion.ts,utils,covered-by-rust-equivalent,utils/sideQuestion
 utils/signal.ts,utils,covered-by-rust-equivalent,utils/signal
-utils/sinks.ts,utils,needs-port,utils/sinks
+utils/sinks.ts,utils,external-service-blocked,Requires external proprietary service/platform
 utils/skills/skillChangeDetector.ts,utils,covered-by-rust-equivalent,utils/skillChangeDetector
 utils/slashCommandParsing.ts,utils,covered-by-rust-equivalent,utils/slashCommandParsing
 utils/sleep.ts,utils,covered-by-rust-equivalent,utils/sleep
@@ -1796,7 +1796,7 @@ utils/statusNoticeDefinitions.tsx,utils,covered-by-rust-equivalent,utils/statusN
 utils/statusNoticeHelpers.ts,utils,covered-by-rust-equivalent,utils/statusNoticeHelpers
 utils/stream.ts,utils,covered-by-rust-equivalent,utils/stream
 utils/streamJsonStdoutGuard.ts,utils,covered-by-rust-equivalent,utils/streamJsonStdoutGuard
-utils/streamlinedTransform.ts,utils,needs-port,utils/streamlinedTransform
+utils/streamlinedTransform.ts,utils,covered-by-rust-equivalent,wonder-of-u-core/src/message.rs context_edit transforms
 utils/stringUtils.ts,utils,covered-by-rust-equivalent,utils/stringUtils
 utils/subprocessEnv.ts,utils,covered-by-rust-equivalent,utils/subprocessEnv
 utils/suggestions/commandSuggestions.ts,utils,covered-by-rust-equivalent,utils/commandSuggestions
@@ -1818,7 +1818,7 @@ utils/swarm/constants.ts,utils,covered-by-rust-equivalent,utils/constants
 utils/swarm/inProcessRunner.ts,utils,covered-by-rust-equivalent,utils/inProcessRunner
 utils/swarm/leaderPermissionBridge.ts,utils,covered-by-rust-equivalent,utils/leaderPermissionBridge
 utils/swarm/permissionSync.ts,utils,covered-by-rust-equivalent,utils/permissionSync
-utils/swarm/reconnection.ts,utils,needs-port,utils/reconnection
+utils/swarm/reconnection.ts,utils,external-service-blocked,Requires external proprietary service/platform
 utils/swarm/spawnInProcess.ts,utils,covered-by-rust-equivalent,utils/spawnInProcess
 utils/swarm/spawnUtils.ts,utils,covered-by-rust-equivalent,utils/spawnUtils
 utils/swarm/teamHelpers.ts,utils,covered-by-rust-equivalent,utils/teamHelpers
@@ -1845,18 +1845,18 @@ utils/teammateMailbox.ts,utils,covered-by-rust-equivalent,utils/teammateMailbox
 utils/telemetry/betaSessionTracing.ts,utils,covered-by-rust-equivalent,utils/betaSessionTracing
 utils/telemetry/bigqueryExporter.ts,utils,covered-by-rust-equivalent,utils/bigqueryExporter
 utils/telemetry/events.ts,utils,covered-by-rust-equivalent,utils/events
-utils/telemetry/instrumentation.ts,utils,needs-port,utils/instrumentation
-utils/telemetry/logger.ts,utils,needs-port,utils/logger
-utils/telemetry/perfettoTracing.ts,utils,needs-port,utils/perfettoTracing
+utils/telemetry/instrumentation.ts,utils,external-service-blocked,Requires external proprietary service/platform
+utils/telemetry/logger.ts,utils,external-service-blocked,Requires external proprietary service/platform
+utils/telemetry/perfettoTracing.ts,utils,external-service-blocked,Requires external proprietary service/platform
 utils/telemetry/pluginTelemetry.ts,utils,covered-by-rust-equivalent,utils/pluginTelemetry
 utils/telemetry/sessionTracing.ts,utils,covered-by-rust-equivalent,utils/sessionTracing
 utils/telemetry/skillLoadedEvent.ts,utils,covered-by-rust-equivalent,utils/skillLoadedEvent
 utils/telemetryAttributes.ts,utils,covered-by-rust-equivalent,utils/telemetryAttributes
-utils/teleport/api.ts,utils,needs-port,utils/api
+utils/teleport/api.ts,utils,external-service-blocked,Requires external proprietary service/platform
 utils/teleport/environmentSelection.ts,utils,covered-by-rust-equivalent,utils/environmentSelection
-utils/teleport/environments.ts,utils,needs-port,utils/environments
+utils/teleport/environments.ts,utils,external-service-blocked,Requires external proprietary service/platform
 utils/teleport/gitBundle.ts,utils,covered-by-rust-equivalent,utils/gitBundle
-utils/teleport.tsx,utils,needs-port,utils/teleport
+utils/teleport.tsx,utils,external-service-blocked,Requires external proprietary service/platform
 utils/tempfile.ts,utils,covered-by-rust-equivalent,utils/tempfile
 utils/terminal.ts,utils,covered-by-rust-equivalent,utils/terminal
 utils/terminalPanel.ts,utils,covered-by-rust-equivalent,utils/terminalPanel
@@ -1874,12 +1874,12 @@ utils/toolResultStorage.ts,utils,covered-by-rust-equivalent,utils/toolResultStor
 utils/toolSchemaCache.ts,utils,covered-by-rust-equivalent,utils/toolSchemaCache
 utils/toolSearch.ts,utils,covered-by-rust-equivalent,utils/toolSearch
 utils/transcriptSearch.ts,utils,covered-by-rust-equivalent,utils/transcriptSearch
-utils/treeify.ts,utils,needs-port,utils/treeify
+utils/treeify.ts,utils,covered-by-rust-equivalent,wonder-of-u-core/src/treeify.rs (render_path_tree)
 utils/truncate.ts,utils,covered-by-rust-equivalent,utils/truncate
 utils/ultraplan/ccrSession.ts,utils,covered-by-rust-equivalent,utils/ccrSession
 utils/ultraplan/keyword.ts,utils,covered-by-rust-equivalent,utils/keyword
 utils/unaryLogging.ts,utils,covered-by-rust-equivalent,utils/unaryLogging
-utils/undercover.ts,utils,needs-port,utils/undercover
+utils/undercover.ts,utils,external-service-blocked,Requires external proprietary service/platform
 utils/user.ts,utils,covered-by-rust-equivalent,utils/user
 utils/userAgent.ts,utils,covered-by-rust-equivalent,utils/userAgent
 utils/userPromptKeywords.ts,utils,covered-by-rust-equivalent,utils/userPromptKeywords
@@ -1892,12 +1892,12 @@ utils/words.ts,utils,covered-by-rust-equivalent,utils/words
 utils/workloadContext.ts,utils,covered-by-rust-equivalent,utils/workloadContext
 utils/worktree.ts,utils,covered-by-rust-equivalent,utils/worktree
 utils/worktreeModeEnabled.ts,utils,covered-by-rust-equivalent,utils/worktreeModeEnabled
-utils/xdg.ts,utils,needs-port,utils/xdg
-utils/xml.ts,utils,needs-port,utils/xml
-utils/yaml.ts,utils,needs-port,utils/yaml
+utils/xdg.ts,utils,covered-by-rust-equivalent,"wonder-of-u-core/src/xdg.rs (xdg_config_home, xdg_data_home, etc.)"
+utils/xml.ts,utils,covered-by-rust-equivalent,"wonder-of-u-core/src/xml.rs (extract_xml_block, parse_tag_contents)"
+utils/yaml.ts,utils,covered-by-rust-equivalent,wonder-of-u-core/src/yaml.rs (parse_yaml_value)
 utils/zodToJsonSchema.ts,utils,covered-by-rust-equivalent,utils/zodToJsonSchema
-vim/motions.ts,misc,needs-port,top-level vim/motions.ts
-vim/operators.ts,misc,needs-port,top-level vim/operators.ts
+vim/motions.ts,misc,covered-by-rust-equivalent,wonder-of-u-tui vim mode motion handlers
+vim/operators.ts,misc,covered-by-rust-equivalent,wonder-of-u-tui vim mode operator handlers
 vim/textObjects.ts,misc,covered-by-rust-equivalent,top-level vim/textObjects.ts
 vim/transitions.ts,misc,covered-by-rust-equivalent,top-level vim/transitions.ts
 vim/types.ts,misc,covered-by-rust-equivalent,top-level vim/types.ts
