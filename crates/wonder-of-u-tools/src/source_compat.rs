@@ -1,4 +1,5 @@
 use std::{
+    collections::BTreeMap,
     env, fs,
     io::ErrorKind,
     path::{Path, PathBuf},
@@ -25,6 +26,16 @@ const SOURCE_BRIEF_RUNTIME_UNAVAILABLE: &str = "SendUserMessage delivery is not 
 const SOURCE_CONFIG_WRITE_UNAVAILABLE: &str =
     "config writes are not implemented in wonder-of-u-tools";
 const SOURCE_CONFIG_READ_UNAVAILABLE: &str = "that setting is not backed by the Rust runtime yet";
+const WRITABLE_SOURCE_SETTINGS: &[&str] = &[
+    "model",
+    "selectedModel",
+    "provider",
+    "selectedProvider",
+    "fastMode",
+    "fast_mode",
+    "effortLevel",
+    "effort",
+];
 
 const KNOWN_SOURCE_SETTINGS: &[&str] = &[
     "editorMode",
@@ -255,10 +266,41 @@ enum ConfigReadMode {
     Unsupported(&'static str),
 }
 
+#[derive(Clone, Copy)]
+enum ConfigWriteMode {
+    SelectedModel,
+    SelectedProvider,
+    FastMode,
+    EffortLevel,
+}
+
 struct ConfigSetting<'a> {
     key: &'a str,
     description: &'static str,
     read_mode: ConfigReadMode,
+    write_mode: Option<ConfigWriteMode>,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+struct PersistedAgentSettings {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    selected_provider: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    selected_model: Option<String>,
+    #[serde(default)]
+    fast_mode: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    effort_level: Option<String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    providers: BTreeMap<String, PersistedProviderOverride>,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+struct PersistedProviderOverride {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    api_base: Option<String>,
 }
 
 #[async_trait]
@@ -358,7 +400,7 @@ impl Tool for ConfigTool {
                     "description": "configuration key to inspect, such as `model` or `permissions.defaultMode`"
                 },
                 "value": {
-                    "description": "source-compatible write value; set requests are currently unsupported",
+                    "description": "source-compatible write value; set requests are supported for a small persisted subset",
                     "oneOf": [
                         { "type": "string" },
                         { "type": "boolean" },
@@ -369,7 +411,7 @@ impl Tool for ConfigTool {
             "required": ["setting"],
             "additionalProperties": false
         });
-        spec.read_only = true;
+        spec.read_only = false;
         spec.concurrency_safe = true;
         spec
     }
@@ -387,16 +429,38 @@ impl Tool for ConfigTool {
         let input = parse_input::<ConfigInput>("config", &input)?;
         input.validate()?;
 
-        if input.value.is_some() {
-            let mut result = ToolResult::failure(
+        if let Some(value) = input.value.as_ref() {
+            let Some(write_mode) =
+                config_setting(&input.setting).and_then(|setting| setting.write_mode)
+            else {
+                let mut result = ToolResult::failure(
+                    use_id,
+                    format!("config set is unavailable: {SOURCE_CONFIG_WRITE_UNAVAILABLE}"),
+                );
+                result.metadata = json!({
+                    "supported": false,
+                    "tool": "config",
+                    "operation": "set",
+                    "setting": input.setting,
+                });
+                return Ok(result);
+            };
+
+            let storage_root = app_root()?;
+            let new_value = write_config_setting(&storage_root, write_mode, value)?;
+            let mut result = ToolResult::success(
                 use_id,
-                format!("config set is unavailable: {SOURCE_CONFIG_WRITE_UNAVAILABLE}"),
+                format!(
+                    "setting={}\nnewValue={}",
+                    input.setting,
+                    render_config_value(&new_value)
+                ),
             );
             result.metadata = json!({
-                "supported": false,
-                "tool": "config",
+                "success": true,
                 "operation": "set",
                 "setting": input.setting,
+                "newValue": new_value,
             });
             return Ok(result);
         }
@@ -704,11 +768,37 @@ fn config_setting(key: &str) -> Option<ConfigSetting<'_>> {
             key,
             description: "Override the default model",
             read_mode: ConfigReadMode::SelectedModel,
+            write_mode: Some(ConfigWriteMode::SelectedModel),
+        },
+        "selectedModel" => ConfigSetting {
+            key,
+            description: "Override the default model",
+            read_mode: ConfigReadMode::SelectedModel,
+            write_mode: Some(ConfigWriteMode::SelectedModel),
+        },
+        "provider" | "selectedProvider" => ConfigSetting {
+            key,
+            description: "Override the default provider",
+            read_mode: ConfigReadMode::Unsupported(SOURCE_CONFIG_READ_UNAVAILABLE),
+            write_mode: Some(ConfigWriteMode::SelectedProvider),
+        },
+        "fastMode" | "fast_mode" => ConfigSetting {
+            key,
+            description: "Toggle fast mode",
+            read_mode: ConfigReadMode::Unsupported(SOURCE_CONFIG_READ_UNAVAILABLE),
+            write_mode: Some(ConfigWriteMode::FastMode),
+        },
+        "effortLevel" | "effort" => ConfigSetting {
+            key,
+            description: "Override the configured effort level",
+            read_mode: ConfigReadMode::Unsupported(SOURCE_CONFIG_READ_UNAVAILABLE),
+            write_mode: Some(ConfigWriteMode::EffortLevel),
         },
         "permissions.defaultMode" => ConfigSetting {
             key,
             description: "Default permission mode for tool usage",
             read_mode: ConfigReadMode::PermissionMode,
+            write_mode: None,
         },
         "theme" => ConfigSetting {
             key,
@@ -716,11 +806,19 @@ fn config_setting(key: &str) -> Option<ConfigSetting<'_>> {
             read_mode: ConfigReadMode::Unsupported(
                 "theme is session/UI state and is not persisted in the current Rust runtime",
             ),
+            write_mode: None,
         },
         _ if KNOWN_SOURCE_SETTINGS.contains(&key) => ConfigSetting {
             key,
             description: "Source-compatible setting key",
             read_mode: ConfigReadMode::Unsupported(SOURCE_CONFIG_READ_UNAVAILABLE),
+            write_mode: None,
+        },
+        _ if WRITABLE_SOURCE_SETTINGS.contains(&key) => ConfigSetting {
+            key,
+            description: "Source-compatible writable setting key",
+            read_mode: ConfigReadMode::Unsupported(SOURCE_CONFIG_READ_UNAVAILABLE),
+            write_mode: None,
         },
         _ => return None,
     })
@@ -730,19 +828,89 @@ fn read_selected_model(storage_root: Option<&Path>) -> Result<String> {
     let Some(storage_root) = storage_root else {
         return Ok("default".into());
     };
-    let path = StoragePaths::new(storage_root).settings_path();
-    let content = match fs::read_to_string(path) {
-        Ok(content) => content,
-        Err(error) if error.kind() == ErrorKind::NotFound => return Ok("default".into()),
-        Err(error) => return Err(error.into()),
-    };
-    let value: Value = serde_json::from_str(&content)?;
-    Ok(value
-        .get("selected_model")
-        .and_then(Value::as_str)
+    Ok(read_agent_settings(storage_root)?
+        .selected_model
+        .as_deref()
         .filter(|model| !model.trim().is_empty())
         .unwrap_or("default")
         .to_string())
+}
+
+fn read_agent_settings(storage_root: &Path) -> Result<PersistedAgentSettings> {
+    let path = StoragePaths::new(storage_root).settings_path();
+    match fs::read_to_string(path) {
+        Ok(content) => serde_json::from_str(&content).map_err(Into::into),
+        Err(error) if error.kind() == ErrorKind::NotFound => Ok(PersistedAgentSettings::default()),
+        Err(error) => Err(error.into()),
+    }
+}
+
+fn write_agent_settings(storage_root: &Path, settings: &PersistedAgentSettings) -> Result<()> {
+    let paths = StoragePaths::new(storage_root);
+    fs::create_dir_all(paths.config_dir())?;
+    let mut content = serde_json::to_string_pretty(settings)?;
+    content.push('\n');
+    fs::write(paths.settings_path(), content)?;
+    Ok(())
+}
+
+fn write_config_setting(
+    storage_root: &Path,
+    mode: ConfigWriteMode,
+    value: &Value,
+) -> Result<Value> {
+    let mut settings = read_agent_settings(storage_root)?;
+    let new_value = apply_config_write(&mut settings, mode, value)?;
+    write_agent_settings(storage_root, &settings)?;
+    Ok(new_value)
+}
+
+fn apply_config_write(
+    settings: &mut PersistedAgentSettings,
+    mode: ConfigWriteMode,
+    value: &Value,
+) -> Result<Value> {
+    match mode {
+        ConfigWriteMode::SelectedModel => {
+            let value = string_config_value("model", value)?;
+            settings.selected_model = Some(value.clone());
+            Ok(Value::String(value))
+        }
+        ConfigWriteMode::SelectedProvider => {
+            let value = string_config_value("provider", value)?;
+            settings.selected_provider = Some(value.clone());
+            Ok(Value::String(value))
+        }
+        ConfigWriteMode::FastMode => {
+            let value = value.as_bool().ok_or_else(|| {
+                WonderError::validation("config fastMode requires a boolean value")
+            })?;
+            settings.fast_mode = value;
+            Ok(Value::Bool(value))
+        }
+        ConfigWriteMode::EffortLevel => {
+            let value = string_config_value("effortLevel", value)?;
+            settings.effort_level = Some(value.clone());
+            Ok(Value::String(value))
+        }
+    }
+}
+
+fn string_config_value(setting: &str, value: &Value) -> Result<String> {
+    match value {
+        Value::String(value) => Ok(value.clone()),
+        Value::Number(value) => Ok(value.to_string()),
+        _ => Err(WonderError::validation(format!(
+            "config {setting} requires a string or number value"
+        ))),
+    }
+}
+
+fn render_config_value(value: &Value) -> String {
+    value
+        .as_str()
+        .map(ToOwned::to_owned)
+        .unwrap_or_else(|| value.to_string())
 }
 
 fn resolve_attachments(cwd: &Path, attachments: &[PathBuf]) -> Result<Vec<BriefAttachment>> {
@@ -1061,15 +1229,54 @@ mod tests {
         assert!(!read.success);
         assert_eq!(read.metadata["setting"], "theme");
 
+        let spec = tool.spec();
+        assert!(!spec.read_only);
+
         let write = block_on(tool.execute(
             context,
             ToolUseId::new(),
-            json!({ "setting": "model", "value": "opus" }),
+            json!({ "setting": "theme", "value": "dark" }),
         ))
         .expect("write");
         assert!(!write.success);
         assert!(write.content.contains(SOURCE_CONFIG_WRITE_UNAVAILABLE));
         assert_eq!(write.metadata["operation"], "set");
+    }
+
+    #[test]
+    fn config_writes_supported_settings_to_disk() {
+        let storage = unique_test_dir("tools-config-write");
+
+        assert_eq!(
+            write_config_setting(&storage, ConfigWriteMode::SelectedModel, &json!("opus"))
+                .expect("write model"),
+            json!("opus")
+        );
+        assert_eq!(
+            write_config_setting(
+                &storage,
+                ConfigWriteMode::SelectedProvider,
+                &json!("anthropic")
+            )
+            .expect("write provider"),
+            json!("anthropic")
+        );
+        assert_eq!(
+            write_config_setting(&storage, ConfigWriteMode::FastMode, &json!(true))
+                .expect("write fast mode"),
+            json!(true)
+        );
+        assert_eq!(
+            write_config_setting(&storage, ConfigWriteMode::EffortLevel, &json!(2))
+                .expect("write effort"),
+            json!("2")
+        );
+
+        let settings = read_agent_settings(&storage).expect("settings");
+        assert_eq!(settings.selected_model.as_deref(), Some("opus"));
+        assert_eq!(settings.selected_provider.as_deref(), Some("anthropic"));
+        assert!(settings.fast_mode);
+        assert_eq!(settings.effort_level.as_deref(), Some("2"));
     }
 
     #[test]

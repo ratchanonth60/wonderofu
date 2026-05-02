@@ -6,12 +6,29 @@ use crate::{
     layout::ShellLayout,
     measure::widest_line,
     message::{
-        HistorySearchView, MessageLineView, MessageRole, PickerView, TaskPanelView, footer_text,
-        message_lines, queued_panel_view, status_text, task_panel_view,
+        HistorySearchView, MessageLineView, MessageRole, PickerListView, PickerView, TaskPanelView,
+        footer_text, message_lines, queued_panel_view, status_text, task_panel_view,
     },
     notification::{NotificationSeverity, NotificationView},
     style::{Color, TextStyle, Theme},
 };
+
+/// A single entry shown in the slash-command autocomplete overlay.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SlashSuggestionEntry {
+    /// The text shown in the left column (e.g. `/status`).
+    pub display: String,
+    /// Short description shown in the right column.
+    pub description: String,
+    /// Whether this entry is currently highlighted.
+    pub selected: bool,
+}
+
+/// State passed to the renderer when the slash-autocomplete overlay should be visible.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct SlashSuggestionsOverlay {
+    pub entries: Vec<SlashSuggestionEntry>,
+}
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct ShellView {
@@ -20,12 +37,17 @@ pub struct ShellView {
     pub prompt: String,
     pub history_search: Option<HistorySearchView>,
     pub status: String,
+    pub loading: bool,
+    pub loading_verb: Option<String>,
     pub footer: String,
     pub queued_panel: Option<TaskPanelView>,
     pub task_panel: Option<TaskPanelView>,
     pub dialog: Option<DialogView>,
     pub picker_view: Option<PickerView>,
+    pub picker_list: Option<PickerListView>,
     pub notifications: Vec<NotificationView>,
+    /// When `Some`, display the slash-command autocomplete overlay.
+    pub slash_suggestions: Option<SlashSuggestionsOverlay>,
 }
 
 impl ShellView {
@@ -36,8 +58,8 @@ impl ShellView {
             None => text_line_count(&self.prompt),
         };
         u16::try_from(line_count)
-            .unwrap_or(u16::MAX.saturating_sub(1))
-            .saturating_add(1)
+            .unwrap_or(u16::MAX.saturating_sub(2))
+            .saturating_add(2)
     }
 
     #[must_use]
@@ -48,12 +70,16 @@ impl ShellView {
             prompt: prompt.into(),
             history_search: None,
             status: status_text(app),
+            loading: false,
+            loading_verb: None,
             footer: footer_text(app),
             queued_panel: queued_panel_view(app),
             task_panel: task_panel_view(app),
             dialog: None,
             picker_view: None,
+            picker_list: None,
             notifications: Vec::new(),
+            slash_suggestions: None,
         }
     }
 }
@@ -70,17 +96,27 @@ pub fn render_shell(frame: &mut FrameBuffer, view: &ShellView, theme: &Theme) {
 
     draw_message_view(frame, layout.messages, view, theme);
     draw_prompt_view(frame, layout.prompt, view, theme);
-    draw_status_line(frame, layout.status, &view.status, theme.status);
-    draw_status_line(frame, layout.footer, &view.footer, theme.footer);
+    draw_status_line(frame, layout.status, &status_line_text(view), theme.status);
+    draw_footer_line(frame, layout.footer, &view.footer, theme);
     draw_notification_stack(frame, layout.messages, &view.notifications, theme);
 
     if let Some(dialog) = &view.dialog {
         draw_dialog(frame, layout.messages, dialog, theme);
     }
 
+    if let Some(picker_list) = &view.picker_list {
+        draw_picker_list(frame, layout.messages, picker_list, theme);
+    }
+
     if let Some(pv) = &view.picker_view {
         if let Some(preview) = &pv.preview {
             draw_picker_preview(frame, layout.messages.inset(1), preview, theme);
+        }
+    }
+
+    if let Some(overlay) = &view.slash_suggestions {
+        if !overlay.entries.is_empty() {
+            draw_slash_suggestions(frame, layout.messages, overlay, theme);
         }
     }
 }
@@ -105,7 +141,7 @@ fn draw_panel(
 
     frame.fill_rect(area, ' ', theme.background);
     if area.width >= 2 && area.height >= 2 {
-        frame.draw_border(area, theme.border);
+        draw_rounded_border(frame, area, theme.border);
         if let Some(title) = title.filter(|title| !title.is_empty()) {
             let max_title_width = area.width.saturating_sub(4);
             frame.write_str(
@@ -147,7 +183,13 @@ fn draw_message_view(frame: &mut FrameBuffer, area: Rect, view: &ShellView, them
 
     let title_height = u16::from(!view.title.is_empty() && area.height > 0);
     if title_height == 1 {
-        frame.write_str(area.x, area.y, &view.title, theme.title, area.width);
+        frame.write_str(
+            area.x,
+            area.y,
+            &shell_header_text(&view.title),
+            theme.title,
+            area.width,
+        );
     }
 
     let docked_lines = if view.dialog.is_some() {
@@ -180,13 +222,25 @@ fn draw_prompt_view(frame: &mut FrameBuffer, area: Rect, view: &ShellView, theme
     }
 
     frame.fill_rect(area, ' ', theme.background);
-    draw_rule(frame, area.x, area.y, area.width, theme.border);
+    if area.width < 4 || area.height < 3 {
+        draw_lines(frame, area, &prompt_panel_lines(view, theme));
+        return;
+    }
+
+    draw_rounded_border(frame, area, theme.border);
+    frame.write_str(
+        area.x.saturating_add(2),
+        area.y,
+        " prompt ",
+        theme.footer,
+        area.width.saturating_sub(4),
+    );
 
     let content = Rect::new(
-        area.x,
+        area.x.saturating_add(2),
         area.y.saturating_add(1),
-        area.width,
-        area.height.saturating_sub(1),
+        area.width.saturating_sub(4),
+        area.height.saturating_sub(2),
     );
     draw_lines(frame, content, &prompt_panel_lines(view, theme));
 }
@@ -249,6 +303,47 @@ fn draw_rule(frame: &mut FrameBuffer, x: u16, y: u16, width: u16, style: TextSty
     }
 }
 
+fn draw_rounded_border(frame: &mut FrameBuffer, area: Rect, style: TextStyle) {
+    if area.is_empty() {
+        return;
+    }
+
+    if area.width == 1 && area.height == 1 {
+        frame.put(area.x, area.y, '•', style);
+        return;
+    }
+
+    if area.height == 1 {
+        draw_rule(frame, area.x, area.y, area.width, style);
+        return;
+    }
+
+    if area.width == 1 {
+        for y in area.y..area.bottom() {
+            frame.put(area.x, y, '│', style);
+        }
+        return;
+    }
+
+    let right = area.right().saturating_sub(1);
+    let bottom = area.bottom().saturating_sub(1);
+
+    frame.put(area.x, area.y, '╭', style);
+    frame.put(right, area.y, '╮', style);
+    frame.put(area.x, bottom, '╰', style);
+    frame.put(right, bottom, '╯', style);
+
+    for x in area.x.saturating_add(1)..right {
+        frame.put(x, area.y, '─', style);
+        frame.put(x, bottom, '─', style);
+    }
+
+    for y in area.y.saturating_add(1)..bottom {
+        frame.put(area.x, y, '│', style);
+        frame.put(right, y, '│', style);
+    }
+}
+
 fn draw_dialog(frame: &mut FrameBuffer, viewport: Rect, dialog: &DialogView, theme: &Theme) {
     if viewport.width < 12 || viewport.height < 5 {
         return;
@@ -297,7 +392,7 @@ fn draw_notification_stack(
         return;
     }
 
-    let mut y = viewport.y;
+    let mut y = viewport.y.saturating_add(u16::from(viewport.height > 3));
     for notification in notifications {
         let title = notification_title(notification);
         let lines = notification_panel_lines(notification, theme);
@@ -317,7 +412,7 @@ fn draw_notification_stack(
 
         let rect = Rect::new(viewport.right().saturating_sub(width), y, width, height);
         draw_notification(frame, rect, &title, notification, &lines, theme);
-        y = y.saturating_add(height.saturating_add(1));
+        y = y.saturating_add(height);
     }
 }
 
@@ -416,6 +511,229 @@ fn draw_picker_preview(frame: &mut FrameBuffer, viewport: Rect, preview: &str, t
     );
 }
 
+fn draw_slash_suggestions(
+    frame: &mut FrameBuffer,
+    viewport: Rect,
+    overlay: &SlashSuggestionsOverlay,
+    theme: &Theme,
+) {
+    const MAX_VISIBLE: usize = 8;
+    const MIN_WIDTH: u16 = 30;
+
+    let entries = &overlay.entries;
+    let visible_count = entries.len().min(MAX_VISIBLE);
+    if visible_count == 0 || viewport.width < MIN_WIDTH || viewport.height < 3 {
+        return;
+    }
+
+    // Compute panel dimensions.
+    let content_width = entries
+        .iter()
+        .take(MAX_VISIBLE)
+        .map(|e| {
+            let desc_part = if e.description.is_empty() {
+                0
+            } else {
+                e.description.len() + 3 // " ─ " separator
+            };
+            e.display.len() + desc_part
+        })
+        .max()
+        .unwrap_or(0);
+    let panel_width = u16::try_from(content_width.saturating_add(4))
+        .unwrap_or(viewport.width)
+        .clamp(MIN_WIDTH, viewport.width);
+    let panel_height = u16::try_from(visible_count.saturating_add(2))
+        .unwrap_or(viewport.height)
+        .min(viewport.height);
+
+    // Anchor to bottom-left of viewport, just above the prompt rule.
+    let rect = Rect::new(
+        viewport.x,
+        viewport.bottom().saturating_sub(panel_height),
+        panel_width,
+        panel_height,
+    );
+
+    let lines: Vec<StyledLine> = entries
+        .iter()
+        .take(MAX_VISIBLE)
+        .map(|e| {
+            let text = if e.description.is_empty() {
+                e.display.clone()
+            } else {
+                format!("{} ─ {}", e.display, e.description)
+            };
+            StyledLine {
+                text,
+                style: if e.selected {
+                    theme.prompt.bold()
+                } else {
+                    theme.messages
+                },
+            }
+        })
+        .collect();
+
+    let border_theme = Theme {
+        border: theme.prompt,
+        title: theme.prompt.bold(),
+        ..*theme
+    };
+    draw_panel(frame, rect, Some("commands"), &lines, &border_theme);
+}
+
+fn draw_picker_list(
+    frame: &mut FrameBuffer,
+    viewport: Rect,
+    picker: &PickerListView,
+    theme: &Theme,
+) {
+    const MIN_WIDTH: u16 = 30;
+    const MIN_HEIGHT: u16 = 6;
+
+    if viewport.width < MIN_WIDTH || viewport.height < MIN_HEIGHT {
+        return;
+    }
+
+    let width = viewport.width.saturating_mul(4) / 5;
+    let width = width.clamp(MIN_WIDTH, viewport.width);
+    let max_height = viewport.height.saturating_mul(3) / 5;
+    let desired_height =
+        u16::try_from(picker.entries.len().saturating_add(4)).unwrap_or(viewport.height);
+    let height = desired_height.clamp(MIN_HEIGHT, max_height.max(MIN_HEIGHT));
+    let rect = Rect::new(
+        viewport.x + viewport.width.saturating_sub(width) / 2,
+        viewport.y + viewport.height.saturating_sub(height) / 2,
+        width,
+        height,
+    );
+
+    draw_modal_shadow(frame, rect, viewport, theme);
+
+    let panel_theme = Theme {
+        border: theme.prompt,
+        title: theme.prompt.bold(),
+        ..*theme
+    };
+    draw_panel(frame, rect, Some(&picker.title), &[], &panel_theme);
+
+    let inner = rect.inset(1);
+    if inner.is_empty() {
+        return;
+    }
+
+    frame.write_str(
+        inner.x,
+        inner.y,
+        &format!("Search: {}", picker.query),
+        theme.status,
+        inner.width,
+    );
+
+    if inner.height <= 2 {
+        return;
+    }
+
+    let hint_y = inner.bottom().saturating_sub(1);
+    frame.write_str(inner.x, hint_y, &picker.hint, theme.footer, inner.width);
+
+    let list_area = Rect::new(
+        inner.x,
+        inner.y.saturating_add(1),
+        inner.width,
+        inner.height.saturating_sub(2),
+    );
+    if list_area.is_empty() {
+        return;
+    }
+
+    if picker.entries.is_empty() {
+        frame.write_str(
+            list_area.x,
+            list_area.y,
+            "No matches.",
+            theme.messages,
+            list_area.width,
+        );
+        return;
+    }
+
+    let selected = picker
+        .entries
+        .iter()
+        .position(|entry| entry.selected)
+        .unwrap_or_default();
+    let visible = usize::from(list_area.height);
+    let scroll_padding = visible / 2;
+    let start = selected
+        .saturating_sub(scroll_padding)
+        .min(picker.entries.len().saturating_sub(visible.max(1)));
+
+    for (offset, entry) in picker.entries.iter().skip(start).take(visible).enumerate() {
+        let y = list_area
+            .y
+            .saturating_add(u16::try_from(offset).unwrap_or(u16::MAX));
+        let tag = entry
+            .tag
+            .as_deref()
+            .filter(|tag| !tag.is_empty())
+            .map(|tag| format!(" [{tag}]"))
+            .unwrap_or_default();
+        let description = if entry.description.is_empty() {
+            String::new()
+        } else {
+            format!(" — {}", entry.description)
+        };
+        if entry.selected {
+            frame.fill_rect(
+                Rect::new(list_area.x, y, list_area.width, 1),
+                ' ',
+                theme.prompt.reversed().bold(),
+            );
+        }
+        let text = format!(
+            "{} {}{}{}",
+            if entry.selected { "▸" } else { " " },
+            entry.label,
+            tag,
+            description
+        );
+        let style = if entry.selected {
+            theme.prompt.reversed().bold()
+        } else {
+            theme.messages
+        };
+        frame.write_str(list_area.x, y, &text, style, list_area.width);
+    }
+}
+
+fn draw_modal_shadow(frame: &mut FrameBuffer, rect: Rect, viewport: Rect, theme: &Theme) {
+    if rect.width < 2 || rect.height < 2 {
+        return;
+    }
+    let shadow_style = TextStyle::default()
+        .bg(Color::DarkGrey)
+        .fg(Color::DarkGrey)
+        .dim();
+    let shadow = Rect::new(
+        rect.x
+            .saturating_add(1)
+            .min(viewport.right().saturating_sub(1)),
+        rect.y
+            .saturating_add(1)
+            .min(viewport.bottom().saturating_sub(1)),
+        rect.width
+            .min(viewport.right().saturating_sub(rect.x.saturating_add(1))),
+        rect.height
+            .min(viewport.bottom().saturating_sub(rect.y.saturating_add(1))),
+    );
+    if !shadow.is_empty() {
+        frame.fill_rect(shadow, ' ', shadow_style);
+    }
+    frame.fill_rect(rect, ' ', theme.background);
+}
+
 fn draw_status_line(frame: &mut FrameBuffer, area: Rect, text: &str, style: TextStyle) {
     if area.is_empty() {
         return;
@@ -423,6 +741,61 @@ fn draw_status_line(frame: &mut FrameBuffer, area: Rect, text: &str, style: Text
 
     frame.fill_rect(area, ' ', style);
     frame.write_str(area.x, area.y, text, style, area.width);
+}
+
+fn draw_footer_line(frame: &mut FrameBuffer, area: Rect, text: &str, theme: &Theme) {
+    if area.is_empty() {
+        return;
+    }
+
+    frame.fill_rect(area, ' ', theme.background);
+    let badges = footer_badges(text);
+    let max_width = usize::from(area.width);
+    let display = if badges.len() > max_width {
+        text.to_string()
+    } else {
+        badges
+    };
+    let display_width = u16::try_from(display.chars().count()).unwrap_or(area.width);
+    let x = area
+        .right()
+        .saturating_sub(display_width.min(area.width))
+        .min(area.x.saturating_add(area.width.saturating_sub(1)));
+    frame.write_str(x, area.y, &display, theme.footer, area.width);
+}
+
+fn footer_badges(text: &str) -> String {
+    let badges = text
+        .split('|')
+        .map(str::trim)
+        .filter(|segment| !segment.is_empty())
+        .map(|segment| format!(" {segment} "))
+        .collect::<Vec<_>>();
+    badges.join("·")
+}
+
+fn status_line_text(view: &ShellView) -> String {
+    match (
+        view.loading,
+        view.loading_verb.as_deref(),
+        view.status.is_empty(),
+    ) {
+        (true, Some(verb), false) => format!("⠿ {verb}… | {}", view.status),
+        (true, Some(verb), true) => format!("⠿ {verb}…"),
+        (true, None, false) => format!("⠿ {}", view.status),
+        (true, None, true) => "⠿".into(),
+        (false, _, false) => format!("◆ {}", view.status),
+        (false, _, true) => "◆".into(),
+    }
+}
+
+fn shell_header_text(title: &str) -> String {
+    let session = title.strip_prefix("Session: ").unwrap_or(title).trim();
+    if session.is_empty() {
+        "▸ wonder-of-u".into()
+    } else {
+        format!("▸ wonder-of-u  {session}")
+    }
 }
 
 fn message_panel_lines(view: &ShellView, theme: &Theme) -> Vec<StyledLine> {
@@ -448,7 +821,11 @@ fn message_lines_to_styled(lines: &[MessageLineView], theme: &Theme) -> Vec<Styl
 
 fn prompt_panel_lines(view: &ShellView, theme: &Theme) -> Vec<StyledLine> {
     let Some(search) = &view.history_search else {
-        return plain_lines(&split_lines(&view.prompt), theme.prompt);
+        let mut lines = split_lines(&view.prompt);
+        if let Some(first) = lines.first_mut() {
+            *first = format!("› {first}");
+        }
+        return plain_lines(&lines, theme.prompt);
     };
 
     let mut lines = vec![
@@ -548,12 +925,16 @@ mod tests {
             prompt: String::new(),
             history_search: None,
             status: "prompt | 0 messages".into(),
+            loading: false,
+            loading_verb: None,
             footer: "ctrl-c interrupt".into(),
             queued_panel: None,
             task_panel: None,
             dialog: None,
             picker_view: None,
+            picker_list: None,
             notifications: Vec::new(),
+            slash_suggestions: None,
         };
 
         let frame = render_snapshot(30, 9, &view, &Theme::default());
@@ -561,15 +942,15 @@ mod tests {
         assert_eq!(
             frame.to_plain_text(),
             [
-                "Session: Empty",
+                "▸ wonder-of-u  Empty",
                 "No messages yet.",
                 "",
                 "",
-                "",
-                "──────────────────────────────",
-                "",
-                "prompt | 0 messages",
-                "ctrl-c interrupt",
+                "╭─ prompt ───────────────────╮",
+                "│ ›                          │",
+                "╰────────────────────────────╯",
+                "◆ prompt | 0 messages",
+                "             ctrl-c interrupt",
             ]
             .join("\n")
         );
@@ -586,6 +967,8 @@ mod tests {
             prompt: "/status".into(),
             history_search: None,
             status: "prompt | 2 messages".into(),
+            loading: false,
+            loading_verb: None,
             footer: "cwd=/workspace | ctrl-c interrupt".into(),
             queued_panel: None,
             task_panel: Some(TaskPanelView {
@@ -597,7 +980,9 @@ mod tests {
             }),
             dialog: None,
             picker_view: None,
+            picker_list: None,
             notifications: Vec::new(),
+            slash_suggestions: None,
         };
 
         let frame = render_snapshot(48, 10, &view, &Theme::default());
@@ -605,16 +990,16 @@ mod tests {
         assert_eq!(
             frame.to_plain_text(),
             [
-                "Session: Demo",
+                "▸ wonder-of-u  Demo",
                 "system> ready",
                 "assistant> hello",
-                "",
                 "Tasks",
                 "[running] shell: index workspace",
-                "────────────────────────────────────────────────",
-                "/status",
-                "prompt | 2 messages",
-                "cwd=/workspace | ctrl-c interrupt",
+                "╭─ prompt ─────────────────────────────────────╮",
+                "│ › /status                                    │",
+                "╰──────────────────────────────────────────────╯",
+                "◆ prompt | 2 messages",
+                "              cwd=/workspace · ctrl-c interrupt",
             ]
             .join("\n")
         );
@@ -676,6 +1061,8 @@ mod tests {
             prompt: "/plan".into(),
             history_search: None,
             status: "prompt | 1 messages".into(),
+            loading: false,
+            loading_verb: None,
             footer: "cwd=/workspace | ctrl-c interrupt".into(),
             queued_panel: Some(TaskPanelView {
                 title: "Queued".into(),
@@ -688,7 +1075,9 @@ mod tests {
             task_panel: None,
             dialog: None,
             picker_view: None,
+            picker_list: None,
             notifications: Vec::new(),
+            slash_suggestions: None,
         };
 
         let frame = render_snapshot(42, 12, &view, &Theme::default());
@@ -696,18 +1085,18 @@ mod tests {
         assert_eq!(
             frame.to_plain_text(),
             [
-                "Session: Demo",
+                "▸ wonder-of-u  Demo",
                 "assistant> ready",
-                "",
                 "",
                 "Queued",
                 "1. /status",
                 "2. draft migration plan",
                 "+2 more queued",
-                "──────────────────────────────────────────",
-                "/plan",
-                "prompt | 1 messages",
-                "cwd=/workspace | ctrl-c interrupt",
+                "╭─ prompt ───────────────────────────────╮",
+                "│ › /plan                                │",
+                "╰────────────────────────────────────────╯",
+                "◆ prompt | 1 messages",
+                "        cwd=/workspace · ctrl-c interrupt",
             ]
             .join("\n")
         );
@@ -721,6 +1110,8 @@ mod tests {
             prompt: "continue?".into(),
             history_search: None,
             status: "permission | 1 messages".into(),
+            loading: false,
+            loading_verb: None,
             footer: "cwd=/workspace | ctrl-c interrupt".into(),
             queued_panel: None,
             task_panel: None,
@@ -729,7 +1120,9 @@ mod tests {
                 ["Approve command execution", "This cannot be undone"],
             )),
             picker_view: None,
+            picker_list: None,
             notifications: Vec::new(),
+            slash_suggestions: None,
         };
 
         let frame = render_snapshot(42, 12, &view, &Theme::default());
@@ -738,17 +1131,17 @@ mod tests {
             frame.to_plain_text(),
             [
                 "",
-                " +-Confirm action-----------------------+",
-                " |Approve command execution             |",
-                " |This cannot be undone                 |",
-                " |[Confirm]  Cancel                     |",
-                " +--------------------------------------+",
+                " ╭─Confirm action───────────────────────╮",
+                " │Approve command execution             │",
+                " │This cannot be undone                 │",
+                " │[Confirm]  Cancel                     │",
+                " ╰──────────────────────────────────────╯",
                 "",
-                "",
-                "──────────────────────────────────────────",
-                "continue?",
-                "permission | 1 messages",
-                "cwd=/workspace | ctrl-c interrupt",
+                "╭─ prompt ───────────────────────────────╮",
+                "│ › continue?                            │",
+                "╰────────────────────────────────────────╯",
+                "◆ permission | 1 messages",
+                "        cwd=/workspace · ctrl-c interrupt",
             ]
             .join("\n")
         );
@@ -770,12 +1163,16 @@ mod tests {
                 match_total: 3,
             }),
             status: "prompt | 1 messages".into(),
+            loading: false,
+            loading_verb: None,
             footer: "cwd=/workspace | ctrl-c interrupt".into(),
             queued_panel: None,
             task_panel: None,
             dialog: None,
             picker_view: None,
+            picker_list: None,
             notifications: Vec::new(),
+            slash_suggestions: None,
         };
 
         let frame = render_snapshot(42, 14, &view, &Theme::default());
@@ -783,20 +1180,20 @@ mod tests {
         assert_eq!(
             frame.to_plain_text(),
             [
-                "Session: Search",
+                "▸ wonder-of-u  Search",
                 "assistant> ready",
                 "",
                 "",
                 "",
                 "",
                 "",
-                "",
-                "──────────────────────────────────────────",
-                "search: pla",
-                "match 2/3",
-                "draft plan",
-                "prompt | 1 messages",
-                "cwd=/workspace | ctrl-c interrupt",
+                "╭─ prompt ───────────────────────────────╮",
+                "│ search: pla                            │",
+                "│ match 2/3                              │",
+                "│ draft plan                             │",
+                "╰────────────────────────────────────────╯",
+                "◆ prompt | 1 messages",
+                "        cwd=/workspace · ctrl-c interrupt",
             ]
             .join("\n")
         );
@@ -814,12 +1211,16 @@ mod tests {
             prompt: "tail".into(),
             history_search: None,
             status: "prompt | 6 messages".into(),
+            loading: false,
+            loading_verb: None,
             footer: "cwd=/workspace | ctrl-c interrupt".into(),
             queued_panel: None,
             task_panel: None,
             dialog: None,
             picker_view: None,
+            picker_list: None,
             notifications: Vec::new(),
+            slash_suggestions: None,
         };
 
         let frame = render_snapshot(32, 9, &view, &Theme::default());
@@ -842,12 +1243,16 @@ mod tests {
             prompt: String::new(),
             history_search: None,
             status: "prompt | 2 messages".into(),
+            loading: false,
+            loading_verb: None,
             footer: "cwd=/workspace | ctrl-c interrupt".into(),
             queued_panel: None,
             task_panel: None,
             dialog: None,
             picker_view: None,
+            picker_list: None,
             notifications: Vec::new(),
+            slash_suggestions: None,
         };
 
         let frame = render_snapshot(48, 8, &view, &Theme::default());
@@ -855,14 +1260,14 @@ mod tests {
         assert_eq!(
             frame.to_plain_text(),
             [
-                "Session: Demo",
+                "▸ wonder-of-u  Demo",
                 "tools[bash]> 1 call",
                 "  • #00000000 ok · command=\"echo hi\" → done",
-                "",
-                "────────────────────────────────────────────────",
-                "",
-                "prompt | 2 messages",
-                "cwd=/workspace | ctrl-c interrupt",
+                "╭─ prompt ─────────────────────────────────────╮",
+                "│ ›                                            │",
+                "╰──────────────────────────────────────────────╯",
+                "◆ prompt | 2 messages",
+                "              cwd=/workspace · ctrl-c interrupt",
             ]
             .join("\n")
         );
@@ -879,11 +1284,14 @@ mod tests {
             prompt: String::new(),
             history_search: None,
             status: "prompt | 1 messages".into(),
+            loading: false,
+            loading_verb: None,
             footer: "cwd=/workspace | ctrl-c interrupt".into(),
             queued_panel: None,
             task_panel: None,
             dialog: None,
             picker_view: None,
+            picker_list: None,
             notifications: vec![
                 NotificationView {
                     key: "source-status".into(),
@@ -900,6 +1308,7 @@ mod tests {
                     focused: true,
                 },
             ],
+            slash_suggestions: None,
         };
 
         let frame = render_snapshot(48, 12, &view, &Theme::default());
@@ -907,20 +1316,95 @@ mod tests {
         assert_eq!(
             frame.to_plain_text(),
             [
-                "Session: Demo      +-info Source status--------+",
-                "assistant> ready   |workspace index refreshed  |",
-                "                   +---------------------------+",
-                "",
-                "                      +-ok Task update • focus-+",
-                "                      |tests passed            |",
-                "                      +------------------------+",
-                "",
-                "────────────────────────────────────────────────",
-                "",
-                "prompt | 1 messages",
-                "cwd=/workspace | ctrl-c interrupt",
+                "▸ wonder-of-u  Demo",
+                "assistant> ready   ╭─info Source status────────╮",
+                "                   │workspace index refreshed  │",
+                "                   ╰───────────────────────────╯",
+                "                      ╭─ok Task update • focus─╮",
+                "                      │tests passed            │",
+                "                      ╰────────────────────────╯",
+                "╭─ prompt ─────────────────────────────────────╮",
+                "│ ›                                            │",
+                "╰──────────────────────────────────────────────╯",
+                "◆ prompt | 1 messages",
+                "              cwd=/workspace · ctrl-c interrupt",
             ]
             .join("\n")
         );
+    }
+
+    #[test]
+    fn shell_snapshot_renders_picker_list_overlay() {
+        let view = ShellView {
+            title: "Session: Picker".into(),
+            messages: vec![MessageLineView::new(
+                "assistant> ready",
+                MessageRole::Assistant,
+            )],
+            prompt: String::new(),
+            history_search: None,
+            status: "prompt | 1 messages".into(),
+            loading: false,
+            loading_verb: None,
+            footer: "cwd=/workspace | ctrl-c interrupt".into(),
+            queued_panel: None,
+            task_panel: None,
+            dialog: None,
+            picker_view: None,
+            picker_list: Some(PickerListView {
+                title: "Select Theme".into(),
+                query: "mid".into(),
+                entries: vec![
+                    crate::message::PickerListEntry {
+                        label: "Midnight".into(),
+                        description: "Dark theme".into(),
+                        tag: Some("current".into()),
+                        selected: true,
+                    },
+                    crate::message::PickerListEntry {
+                        label: "Light".into(),
+                        description: "Bright theme".into(),
+                        tag: None,
+                        selected: false,
+                    },
+                ],
+                hint: "↑↓ navigate  Tab/Enter select  Esc cancel".into(),
+            }),
+            notifications: Vec::new(),
+            slash_suggestions: None,
+        };
+
+        let frame = render_snapshot(60, 16, &view, &Theme::default());
+        let text = frame.to_plain_text();
+
+        assert!(text.contains("Select Theme"));
+        assert!(text.contains("Search: mid"));
+        assert!(text.contains("Midnight [current] — Dark theme"));
+        assert!(text.contains("↑↓ navigate  Tab/Enter select  Esc cancel"));
+    }
+
+    #[test]
+    fn shell_snapshot_prefixes_loading_status() {
+        let view = ShellView {
+            title: "Session: Loading".into(),
+            messages: Vec::new(),
+            prompt: String::new(),
+            history_search: None,
+            status: "turn=active".into(),
+            loading: true,
+            loading_verb: Some("thinking".into()),
+            footer: String::new(),
+            queued_panel: None,
+            task_panel: None,
+            dialog: None,
+            picker_view: None,
+            picker_list: None,
+            notifications: Vec::new(),
+            slash_suggestions: None,
+        };
+
+        let frame = render_snapshot(32, 8, &view, &Theme::default());
+
+        assert!(frame.to_plain_text().contains("⠿ thinking… | turn=active"));
     }
 }

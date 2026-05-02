@@ -626,6 +626,9 @@ pub struct AppState {
     pub brief_mode: bool,
     #[serde(default)]
     pub fast_mode: bool,
+    /// Optional advisor/secondary model for multi-model reasoning.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub advisor_model: Option<String>,
     #[serde(default)]
     pub auth: AuthState,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -652,6 +655,7 @@ impl AppState {
             effort_level: None,
             brief_mode: false,
             fast_mode: false,
+            advisor_model: None,
             auth: AuthState::default(),
             pending_tool_approval: None,
             costs: CostState::new(),
@@ -715,6 +719,11 @@ impl AppState {
 
     pub fn set_fast_mode(&mut self, fast_mode: bool) {
         self.fast_mode = fast_mode;
+        self.session.updated_at = OffsetDateTime::now_utc();
+    }
+
+    pub fn set_advisor_model(&mut self, model: Option<String>) {
+        self.advisor_model = model;
         self.session.updated_at = OffsetDateTime::now_utc();
     }
 

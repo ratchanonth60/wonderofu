@@ -15,6 +15,8 @@ use wonder_of_u_core::{
 mod commands;
 mod tui_runtime;
 
+pub use commands::registry as build_command_registry;
+
 #[derive(Debug, Parser)]
 #[command(
     name = "wonder-of-u",

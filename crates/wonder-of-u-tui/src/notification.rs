@@ -299,6 +299,161 @@ impl NotificationQueue {
     }
 }
 
+/// Options for sending an OS-level desktop notification.
+#[derive(Clone, Debug)]
+pub struct OsNotificationOptions {
+    pub title: String,
+    pub message: String,
+    /// Optional application icon name (e.g. "dialog-information").
+    pub icon: Option<String>,
+}
+
+impl OsNotificationOptions {
+    #[must_use]
+    pub fn new(title: impl Into<String>, message: impl Into<String>) -> Self {
+        Self {
+            title: title.into(),
+            message: message.into(),
+            icon: None,
+        }
+    }
+
+    #[must_use]
+    pub fn icon(mut self, icon: impl Into<String>) -> Self {
+        self.icon = Some(icon.into());
+        self
+    }
+}
+
+/// Result of an OS notification attempt.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum OsNotificationResult {
+    Sent,
+    Unsupported,
+    Failed,
+}
+
+/// Attempt to send a desktop notification using OS-native tools.
+///
+/// On Linux: tries `notify-send`.
+/// On macOS: tries `osascript`.
+/// On other platforms: returns `Unsupported`.
+pub fn send_os_notification(opts: &OsNotificationOptions) -> OsNotificationResult {
+    #[cfg(target_os = "linux")]
+    {
+        use std::process::Command;
+        let mut cmd = Command::new("notify-send");
+        if let Some(ref icon) = opts.icon {
+            cmd.args(["--icon", icon]);
+        }
+        cmd.arg(&opts.title).arg(&opts.message);
+        match cmd.output() {
+            Ok(output) if output.status.success() => return OsNotificationResult::Sent,
+            _ => return OsNotificationResult::Failed,
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        use std::process::Command;
+        let script = format!(
+            "display notification \"{}\" with title \"{}\"",
+            opts.message.replace('"', "\\\""),
+            opts.title.replace('"', "\\\""),
+        );
+        match Command::new("osascript").args(["-e", &script]).output() {
+            Ok(output) if output.status.success() => return OsNotificationResult::Sent,
+            _ => return OsNotificationResult::Failed,
+        }
+    }
+
+    #[allow(unreachable_code)]
+    OsNotificationResult::Unsupported
+}
+
+/// Print a terminal bell character as a minimal notification fallback.
+pub fn send_terminal_bell() {
+    print!("\x07");
+}
+
+/// A tip to display to the user during idle/spinner periods.
+#[derive(Clone, Debug)]
+pub struct Tip {
+    pub id: &'static str,
+    pub text: &'static str,
+    pub cooldown_sessions: u32,
+}
+
+/// Built-in tips matching the `claude-leak/services/tips/tipRegistry.ts` entries.
+pub static BUILT_IN_TIPS: &[Tip] = &[
+    Tip {
+        id: "shift-enter-multiline",
+        text: "Tip: Use Shift+Enter to add a new line without sending.",
+        cooldown_sessions: 3,
+    },
+    Tip {
+        id: "ctrl-r-history",
+        text: "Tip: Press Ctrl+R to search your command history.",
+        cooldown_sessions: 5,
+    },
+    Tip {
+        id: "slash-help",
+        text: "Tip: Type /help to see all available commands.",
+        cooldown_sessions: 3,
+    },
+    Tip {
+        id: "esc-cancel",
+        text: "Tip: Press Escape to cancel the current operation.",
+        cooldown_sessions: 3,
+    },
+    Tip {
+        id: "ctrl-c-interrupt",
+        text: "Tip: Press Ctrl+C to interrupt Claude mid-response.",
+        cooldown_sessions: 5,
+    },
+    Tip {
+        id: "at-file-attach",
+        text: "Tip: Use @ to attach files or folders to your prompt.",
+        cooldown_sessions: 3,
+    },
+    Tip {
+        id: "compact-context",
+        text: "Tip: Use /compact to compress long conversations and free up context.",
+        cooldown_sessions: 4,
+    },
+    Tip {
+        id: "vim-mode",
+        text: "Tip: Enable /vim for vi-style prompt editing.",
+        cooldown_sessions: 5,
+    },
+    Tip {
+        id: "memory-md",
+        text: "Tip: Add a MEMORY.md file to persist context across sessions.",
+        cooldown_sessions: 6,
+    },
+    Tip {
+        id: "tab-complete",
+        text: "Tip: Press Tab to auto-complete file paths in the prompt.",
+        cooldown_sessions: 4,
+    },
+];
+
+/// Select a tip to show, preferring the one least recently shown.
+/// `session_counts` maps tip IDs to number of sessions since last shown.
+#[must_use]
+pub fn select_tip(session_counts: &[(&'static str, u32)]) -> Option<&'static Tip> {
+    if BUILT_IN_TIPS.is_empty() {
+        return None;
+    }
+    // Find the tip with the most sessions since last shown (or never shown).
+    BUILT_IN_TIPS.iter().max_by_key(|tip| {
+        session_counts
+            .iter()
+            .find(|(id, _)| *id == tip.id)
+            .map_or(u32::MAX, |(_, count)| *count)
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

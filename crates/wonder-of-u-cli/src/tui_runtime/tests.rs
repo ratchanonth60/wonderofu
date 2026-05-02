@@ -239,7 +239,9 @@ fn controller_opens_model_picker_for_bare_model_command() {
 
     assert_eq!(
         controller.status_note.as_deref(),
-        Some("model picker: type to filter, use Up/Down to choose, Enter to select, Esc to cancel")
+        Some(
+            "model picker: type to filter, use Up/Down to choose, Tab/Enter to select, Esc to cancel"
+        )
     );
     assert!(controller.pending_model_picker.is_some());
     assert!(matches!(
@@ -295,7 +297,9 @@ fn controller_filters_model_picker_with_visible_query_and_match_count() {
     assert!(!dialog.body.iter().any(|line| line.contains("sonnet")));
     assert_eq!(
         controller.status_note.as_deref(),
-        Some("model picker: type to filter, use Up/Down to choose, Enter to select, Esc to cancel")
+        Some(
+            "model picker: type to filter, use Up/Down to choose, Tab/Enter to select, Esc to cancel"
+        )
     );
 }
 
@@ -381,8 +385,8 @@ fn controller_cancels_model_picker() {
 }
 
 #[test]
-fn controller_model_picker_preview_shows_selected_description() {
-    let dir = unique_test_dir("tui-model-picker-preview");
+fn controller_model_picker_view_lists_selected_description() {
+    let dir = unique_test_dir("tui-model-picker-list");
     let registry = commands::registry(Some(dir.clone())).expect("registry");
     let mut controller = TuiController::new(
         test_context(&dir),
@@ -397,25 +401,30 @@ fn controller_model_picker_preview_shows_selected_description() {
         .expect("open model picker");
 
     let view = controller.view();
-    let pv = view
-        .picker_view
+    let picker = view
+        .picker_list
         .as_ref()
-        .expect("picker_view present while model picker is open");
-    let preview = pv
-        .preview
-        .as_deref()
-        .expect("preview Some when a model option is highlighted");
-    // The preview must name both the provider and the selected model.
+        .expect("picker_list present while model picker is open");
+    let selected = picker
+        .entries
+        .iter()
+        .find(|entry| entry.selected)
+        .expect("selected entry");
     assert!(
-        preview.contains("Anthropic") || preview.contains("Copilot") || preview.contains("OpenAI"),
-        "preview should contain provider display name, got: {preview:?}"
+        selected.description.contains("Anthropic")
+            || selected.description.contains("Copilot")
+            || selected.description.contains("OpenAI"),
+        "selected entry should contain provider display name, got: {selected:?}"
     );
-    assert!(!preview.is_empty(), "preview should not be empty");
+    assert!(
+        !selected.label.is_empty(),
+        "selected label should not be empty"
+    );
 }
 
 #[test]
-fn controller_picker_preview_is_none_when_no_matches() {
-    let dir = unique_test_dir("tui-picker-preview-no-matches");
+fn controller_picker_list_is_empty_when_no_matches() {
+    let dir = unique_test_dir("tui-picker-list-no-matches");
     let registry = commands::registry(Some(dir.clone())).expect("registry");
     let mut controller = TuiController::new(
         test_context(&dir),
@@ -438,14 +447,51 @@ fn controller_picker_preview_is_none_when_no_matches() {
     }
 
     let view = controller.view();
-    let pv = view
-        .picker_view
+    let picker = view
+        .picker_list
         .as_ref()
-        .expect("picker_view present while theme picker is open");
+        .expect("picker_list present while theme picker is open");
     assert!(
-        pv.preview.is_none(),
-        "preview should be None when filter has no matches"
+        picker.entries.is_empty(),
+        "picker should be empty when filter has no matches"
     );
+}
+
+#[test]
+fn controller_empty_prompt_status_shows_shortcut_hint() {
+    let dir = unique_test_dir("tui-empty-prompt-status");
+    let registry = commands::registry(Some(dir.clone())).expect("registry");
+    let controller = TuiController::new(
+        test_context(&dir),
+        &registry,
+        Some(dir.as_path()),
+        TuiLaunchOptions { session_id: None },
+    )
+    .expect("controller");
+
+    assert_eq!(
+        controller.view().status,
+        "  / commands  ·  ↑ history  ·  ⌃R search"
+    );
+}
+
+#[test]
+fn controller_sets_loading_status_for_active_turns() {
+    let dir = unique_test_dir("tui-loading-status");
+    let registry = commands::registry(Some(dir.clone())).expect("registry");
+    let mut controller = TuiController::new(
+        test_context(&dir),
+        &registry,
+        Some(dir.as_path()),
+        TuiLaunchOptions { session_id: None },
+    )
+    .expect("controller");
+
+    controller.turn_state = TurnState::ModelRequestActive;
+
+    let view = controller.view();
+    assert!(view.loading);
+    assert_eq!(view.loading_verb.as_deref(), Some("thinking"));
 }
 
 #[test]
@@ -466,7 +512,9 @@ fn controller_opens_theme_picker_for_bare_theme_command() {
 
     assert_eq!(
         controller.status_note.as_deref(),
-        Some("theme picker: type to filter, use Up/Down to choose, Enter to select, Esc to cancel")
+        Some(
+            "theme picker: type to filter, use Up/Down to choose, Tab/Enter to select, Esc to cancel"
+        )
     );
     assert!(controller.pending_theme_picker.is_some());
     assert!(matches!(
@@ -500,7 +548,7 @@ fn controller_selects_theme_from_picker() {
     assert!(controller.pending_theme_picker.is_none());
     assert!(controller.dialog.is_none());
     assert_eq!(controller.state.theme.as_deref(), Some("midnight"));
-    assert!(controller.view().footer.contains("theme=midnight"));
+    assert!(controller.view().footer.contains("theme:midnight"));
     assert!(matches!(
         controller.state.messages.last().map(|message| &message.payload),
         Some(MessagePayload::Command { input, output })
@@ -618,8 +666,8 @@ fn controller_hydrates_persisted_fast_and_effort_on_launch() {
 
     assert_eq!(controller.state.effort_level.as_deref(), Some("high"));
     assert!(controller.state.fast_mode);
-    assert!(controller.view().footer.contains("effort=high"));
-    assert!(controller.view().footer.contains("fast=on"));
+    assert!(controller.view().footer.contains("effort:high"));
+    assert!(controller.view().footer.contains("fast:on"));
 }
 
 #[test]
@@ -640,7 +688,7 @@ fn controller_sets_session_color_from_command() {
 
     assert_eq!(controller.state.session_color.as_deref(), Some("purple"));
     assert_eq!(controller.status_note.as_deref(), Some("color purple"));
-    assert!(controller.view().footer.contains("color=purple"));
+    assert!(controller.view().footer.contains("color:purple"));
     assert!(matches!(
         controller.state.messages.last().map(|message| &message.payload),
         Some(MessagePayload::Command { input, output })
@@ -700,7 +748,7 @@ fn controller_toggles_brief_mode_from_command() {
 
     assert!(controller.state.brief_mode);
     assert_eq!(controller.status_note.as_deref(), Some("brief on"));
-    assert!(controller.view().footer.contains("brief=on"));
+    assert!(controller.view().footer.contains("brief:on"));
     assert!(matches!(
         controller.state.messages.last().map(|message| &message.payload),
         Some(MessagePayload::Command { input, output })
@@ -760,7 +808,7 @@ fn controller_toggles_fast_mode_from_command() {
 
     assert!(controller.state.fast_mode);
     assert_eq!(controller.status_note.as_deref(), Some("fast on"));
-    assert!(controller.view().footer.contains("fast=on"));
+    assert!(controller.view().footer.contains("fast:on"));
     assert!(matches!(
         controller.state.messages.last().map(|message| &message.payload),
         Some(MessagePayload::Command { input, output })
@@ -820,7 +868,7 @@ fn controller_sets_effort_from_command() {
 
     assert_eq!(controller.state.effort_level.as_deref(), Some("high"));
     assert_eq!(controller.status_note.as_deref(), Some("effort high"));
-    assert!(controller.view().footer.contains("effort=high"));
+    assert!(controller.view().footer.contains("effort:high"));
     assert!(matches!(
         controller.state.messages.last().map(|message| &message.payload),
         Some(MessagePayload::Command { input, output })
@@ -1165,7 +1213,7 @@ fn controller_opens_memory_picker_for_bare_memory_command() {
 
     assert_eq!(
         controller.status_note.as_deref(),
-        Some("memory: type to filter, use Up/Down to choose, Enter to select, Esc to cancel")
+        Some("memory: type to filter, use Up/Down to choose, Tab/Enter to select, Esc to cancel")
     );
     assert!(controller.pending_memory_picker.is_some());
     assert!(matches!(
@@ -1705,7 +1753,7 @@ fn controller_opens_permissions_picker() {
     assert_eq!(
         controller.status_note.as_deref(),
         Some(
-            "permission mode: type to filter, use Up/Down to choose, Enter to select, Esc to cancel"
+            "permission mode: type to filter, use Up/Down to choose, Tab/Enter to select, Esc to cancel"
         )
     );
     assert!(controller.pending_permission_picker.is_some());
@@ -3353,7 +3401,7 @@ fn controller_executes_vim_normal_mode_edits() {
         .expect("insert after append");
     assert_eq!(controller.prompt.text(), "abz");
     assert_eq!(controller.status_note, None);
-    assert!(controller.view().footer.contains("vim=insert"));
+    assert!(controller.view().footer.contains("vim:insert"));
 }
 
 #[test]
@@ -3813,7 +3861,7 @@ fn controller_restores_status_note_from_snapshot_resume() {
     assert_eq!(controller.state.session_color.as_deref(), Some("purple"));
     assert_eq!(controller.status_note.as_deref(), Some("color purple"));
     assert!(controller.view().dialog.is_none());
-    assert!(controller.view().footer.contains("color=purple"));
+    assert!(controller.view().footer.contains("color:purple"));
 }
 
 #[test]
@@ -3916,18 +3964,13 @@ fn controller_preserves_restored_provider_selection_on_resume() {
         Some("claude-3-7-sonnet-latest")
     );
     assert!(controller.state.auth.is_ready());
-    assert!(
-        controller
-            .view()
-            .status
-            .contains("anthropic:claude-3-7-sonnet-latest")
-    );
+    assert!(controller.view().footer.contains("runtime=tool-loop"));
 }
 
 #[test]
 fn prompt_cursor_tracks_edit_position_inside_prompt_panel() {
     let (x, y) = prompt_cursor_position(40, 10, "abc", 2);
-    assert_eq!((x, y), (2, 7));
+    assert_eq!((x, y), (6, 6));
 }
 
 /// Verify that enabling brief mode injects the hint into the system prompt

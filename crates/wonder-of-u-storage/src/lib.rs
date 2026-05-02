@@ -1,5 +1,7 @@
 //! Append-only session storage primitives.
 
+pub mod memdir;
+
 use std::{
     collections::BTreeMap,
     ffi::OsStr,
@@ -2008,5 +2010,124 @@ mod tests {
             paths.plugin_settings_path(),
             PathBuf::from("/workspace/.wonder/config/plugins/settings.json")
         );
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Memdir / MEMORY.md truncation utilities
+// Mirrors `claude-leak/memdir/memdir.ts` → `truncateEntrypointContent`.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Maximum lines for the MEMORY.md entrypoint file.
+pub const MAX_ENTRYPOINT_LINES: usize = 200;
+/// Maximum bytes for the MEMORY.md entrypoint file (~25 KB).
+pub const MAX_ENTRYPOINT_BYTES: usize = 25_000;
+/// Name of the entrypoint memory file.
+pub const ENTRYPOINT_NAME: &str = "MEMORY.md";
+
+/// Result of truncating MEMORY.md content.
+#[derive(Clone, Debug)]
+pub struct EntrypointTruncation {
+    /// The possibly-truncated content, with a warning appended if cut.
+    pub content: String,
+    pub line_count: usize,
+    pub byte_count: usize,
+    pub was_line_truncated: bool,
+    pub was_byte_truncated: bool,
+}
+
+/// Truncate MEMORY.md content to `MAX_ENTRYPOINT_LINES` and `MAX_ENTRYPOINT_BYTES`,
+/// appending a warning that names which cap fired.
+///
+/// Line-truncates first (natural boundary), then byte-truncates at the last
+/// newline before the cap to avoid cutting mid-line.
+#[must_use]
+pub fn truncate_entrypoint_content(raw: &str) -> EntrypointTruncation {
+    let trimmed = raw.trim();
+    let content_lines: Vec<&str> = trimmed.split('\n').collect();
+    let line_count = content_lines.len();
+    let byte_count = trimmed.len();
+
+    let was_line_truncated = line_count > MAX_ENTRYPOINT_LINES;
+    let was_byte_truncated = byte_count > MAX_ENTRYPOINT_BYTES;
+
+    if !was_line_truncated && !was_byte_truncated {
+        return EntrypointTruncation {
+            content: trimmed.to_string(),
+            line_count,
+            byte_count,
+            was_line_truncated: false,
+            was_byte_truncated: false,
+        };
+    }
+
+    let mut truncated = if was_line_truncated {
+        content_lines[..MAX_ENTRYPOINT_LINES].join("\n")
+    } else {
+        trimmed.to_string()
+    };
+
+    if truncated.len() > MAX_ENTRYPOINT_BYTES {
+        let cut_at = truncated[..MAX_ENTRYPOINT_BYTES]
+            .rfind('\n')
+            .map_or(MAX_ENTRYPOINT_BYTES, |p| p);
+        truncated.truncate(cut_at);
+    }
+
+    let reason = match (was_byte_truncated, was_line_truncated) {
+        (true, false) => format!(
+            "{} bytes (limit: {} bytes) — index entries are too long",
+            byte_count, MAX_ENTRYPOINT_BYTES
+        ),
+        (false, true) => format!("{} lines (limit: {})", line_count, MAX_ENTRYPOINT_LINES),
+        _ => format!("{} lines and {} bytes", line_count, byte_count),
+    };
+
+    truncated.push_str(&format!(
+        "\n\n> WARNING: {ENTRYPOINT_NAME} is {reason}. Only part of it was loaded. \
+         Keep index entries to one line under ~200 chars; move detail into topic files."
+    ));
+
+    EntrypointTruncation {
+        content: truncated,
+        line_count,
+        byte_count,
+        was_line_truncated,
+        was_byte_truncated,
+    }
+}
+
+#[cfg(test)]
+mod memdir_tests {
+    use super::*;
+
+    #[test]
+    fn no_truncation_when_under_limits() {
+        let content = "# Memory\n\nsome notes here\n";
+        let result = truncate_entrypoint_content(content);
+        assert!(!result.was_line_truncated);
+        assert!(!result.was_byte_truncated);
+        assert!(result.content.starts_with("# Memory"));
+        assert!(!result.content.contains("WARNING"));
+    }
+
+    #[test]
+    fn line_truncation_fires_at_limit() {
+        let lines: Vec<String> = (0..=MAX_ENTRYPOINT_LINES)
+            .map(|i| format!("line {i}"))
+            .collect();
+        let raw = lines.join("\n");
+        let result = truncate_entrypoint_content(&raw);
+        assert!(result.was_line_truncated);
+        assert!(result.content.contains("WARNING"));
+        assert!(result.content.contains("lines"));
+    }
+
+    #[test]
+    fn byte_truncation_fires_at_limit() {
+        let long_line = "x".repeat(MAX_ENTRYPOINT_BYTES + 100);
+        let result = truncate_entrypoint_content(&long_line);
+        assert!(result.was_byte_truncated);
+        assert!(result.content.contains("WARNING"));
     }
 }

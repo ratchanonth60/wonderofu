@@ -33,6 +33,10 @@ pub(super) struct TuiController<'a> {
     /// Countdown ticks until the task notification dialog is auto-dismissed.
     pub(super) task_notice_ttl: Option<u8>,
     pub(super) notifications: NotificationQueue,
+    /// All slash-command suggestions, built once at startup.
+    pub(super) slash_suggestions: Vec<PromptSuggestion>,
+    /// Live filtered state when the user is typing a `/` command.
+    pub(super) active_suggestions: Option<PromptSuggestionState>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -183,6 +187,8 @@ impl<'a> TuiController<'a> {
             pending_external_editor: None,
             task_notice_ttl: None,
             notifications: NotificationQueue::new(),
+            slash_suggestions: build_slash_suggestions(registry),
+            active_suggestions: None,
         };
         controller.hydrate_initial_settings()?;
         controller.refresh_runtime_state()?;
@@ -273,6 +279,31 @@ impl<'a> TuiController<'a> {
         if self.history_search.is_some() {
             return self.handle_history_search_key(key, resolved);
         }
+
+        // Slash-autocomplete intercepts: Tab accepts, Up/Down navigate, Esc dismisses.
+        if self.active_suggestions.is_some() {
+            match key.code {
+                KeyCode::Tab => {
+                    self.accept_slash_suggestion();
+                    return Ok(());
+                }
+                KeyCode::Esc => {
+                    self.active_suggestions = None;
+                    self.needs_render = true;
+                    return Ok(());
+                }
+                KeyCode::Up => {
+                    self.navigate_slash_suggestions(-1);
+                    return Ok(());
+                }
+                KeyCode::Down => {
+                    self.navigate_slash_suggestions(1);
+                    return Ok(());
+                }
+                _ => {}
+            }
+        }
+
         let Some(resolved) = resolved else {
             return if self.vim.mode() == VimMode::Normal || key.code == KeyCode::Esc {
                 self.handle_vim_key(key)
@@ -292,16 +323,30 @@ impl<'a> TuiController<'a> {
                 self.state.input_mode = InputMode::Prompt;
                 self.reset_history_recall();
                 self.status_note = None;
+                self.update_slash_suggestions();
                 self.needs_render = true;
                 Ok(())
             }
-            ResolvedKey::Edit(EditAction::InsertNewline) => self.submit_prompt(before_blocking),
+            ResolvedKey::Edit(EditAction::InsertNewline) => {
+                // If a suggestion is selected and the user presses Enter, accept it.
+                if self
+                    .active_suggestions
+                    .as_ref()
+                    .is_some_and(|s| s.selected().is_some())
+                {
+                    self.accept_slash_suggestion();
+                    return self.submit_prompt(before_blocking);
+                }
+                self.active_suggestions = None;
+                self.submit_prompt(before_blocking)
+            }
             ResolvedKey::Edit(action) => {
                 self.prompt.apply_edit_action(action);
                 self.turn_state = TurnState::EditingInput;
                 self.state.input_mode = InputMode::Prompt;
                 self.reset_history_recall();
                 self.status_note = None;
+                self.update_slash_suggestions();
                 self.needs_render = true;
                 Ok(())
             }
@@ -324,6 +369,54 @@ impl<'a> TuiController<'a> {
         });
         self.needs_render = true;
         Ok(())
+    }
+
+    /// Rebuild the slash-command suggestion overlay based on the current prompt buffer.
+    pub(super) fn update_slash_suggestions(&mut self) {
+        let text = self.prompt.text();
+        if let Some(query) = text.strip_prefix('/') {
+            let state = self
+                .active_suggestions
+                .get_or_insert_with(|| PromptSuggestionState::new(self.slash_suggestions.clone()));
+            state.set_filter(query);
+            if state.filtered().is_empty() {
+                self.active_suggestions = None;
+            }
+        } else {
+            self.active_suggestions = None;
+        }
+    }
+
+    /// Move the selection cursor in the active suggestion list by `delta` (+1 down, -1 up).
+    pub(super) fn navigate_slash_suggestions(&mut self, delta: i32) {
+        let Some(state) = self.active_suggestions.as_mut() else {
+            return;
+        };
+        let count = state.filtered().len();
+        if count == 0 {
+            return;
+        }
+        let current = state.selected_index as i32;
+        let next = (current + delta).rem_euclid(count as i32) as usize;
+        state.selected_index = next;
+        self.needs_render = true;
+    }
+
+    /// Accept the currently selected suggestion: replace the prompt buffer with its replacement text.
+    pub(super) fn accept_slash_suggestion(&mut self) {
+        let replacement = self
+            .active_suggestions
+            .as_ref()
+            .and_then(|s| s.selected())
+            .map(|s| s.replacement.clone());
+        if let Some(text) = replacement {
+            self.prompt = TextBuffer::new(false);
+            for ch in text.chars() {
+                self.prompt.insert_char(ch);
+            }
+            self.active_suggestions = None;
+            self.needs_render = true;
+        }
     }
 
     pub(super) fn handle_system_action(
@@ -460,6 +553,7 @@ impl<'a> TuiController<'a> {
         resolved: Option<ResolvedKey>,
     ) -> Result<()> {
         match key.code {
+            KeyCode::Tab => self.complete_permission_picker(),
             KeyCode::Up => {
                 self.step_permission_picker(-1);
                 Ok(())
@@ -496,6 +590,7 @@ impl<'a> TuiController<'a> {
         F: FnMut(&Self) -> Result<()>,
     {
         match key.code {
+            KeyCode::Tab => self.complete_model_picker(),
             KeyCode::Up => {
                 self.step_model_picker(-1);
                 Ok(())
@@ -526,6 +621,7 @@ impl<'a> TuiController<'a> {
         resolved: Option<ResolvedKey>,
     ) -> Result<()> {
         match key.code {
+            KeyCode::Tab => self.complete_memory_picker(),
             KeyCode::Up => {
                 self.step_memory_picker(-1);
                 Ok(())
@@ -556,6 +652,7 @@ impl<'a> TuiController<'a> {
         resolved: Option<ResolvedKey>,
     ) -> Result<()> {
         match key.code {
+            KeyCode::Tab => self.complete_theme_picker(),
             KeyCode::Up => {
                 self.step_theme_picker(-1);
                 Ok(())
@@ -1970,6 +2067,21 @@ impl<'a> TuiController<'a> {
             status.push_str(note);
         }
         view.status = status;
+        view.loading = matches!(
+            self.turn_state,
+            TurnState::ModelRequestActive
+                | TurnState::CommandQueued
+                | TurnState::ToolPermissionPending
+        );
+        view.loading_verb = match self.turn_state {
+            TurnState::ModelRequestActive => Some("thinking".to_string()),
+            TurnState::CommandQueued => Some("running".to_string()),
+            TurnState::ToolPermissionPending => Some("waiting".to_string()),
+            _ => None,
+        };
+        if self.prompt.is_empty() && !matches!(self.turn_state, TurnState::ModelRequestActive) {
+            view.status = "  / commands  ·  ↑ history  ·  ⌃R search".to_string();
+        }
 
         let mut footer = session_footer_text(&self.state);
         footer.push_str(if self.persistence.persisted {
@@ -1982,18 +2094,18 @@ impl<'a> TuiController<'a> {
             self.state.provider.as_deref(),
             self.state.model.as_deref(),
         ));
-        footer.push_str(" | vim=");
+        footer.push_str(" | vim:");
         footer.push_str(match self.vim.mode() {
             VimMode::Insert => "insert",
             VimMode::Normal => "normal",
         });
-        footer.push_str(" | theme=");
+        footer.push_str(" | theme:");
         footer.push_str(match self.state.theme.as_deref() {
             Some("midnight") => "midnight",
             Some("light") => "light",
             _ => "default",
         });
-        footer.push_str(" | color=");
+        footer.push_str(" | color:");
         footer.push_str(match self.state.session_color.as_deref() {
             Some("red") => "red",
             Some("blue") => "blue",
@@ -2005,7 +2117,7 @@ impl<'a> TuiController<'a> {
             Some("cyan") => "cyan",
             _ => "default",
         });
-        footer.push_str(" | effort=");
+        footer.push_str(" | effort:");
         footer.push_str(match self.state.effort_level.as_deref() {
             Some("low") => "low",
             Some("medium") => "medium",
@@ -2013,21 +2125,34 @@ impl<'a> TuiController<'a> {
             Some("max") => "max",
             _ => "auto",
         });
-        footer.push_str(" | fast=");
+        footer.push_str(" | fast:");
         footer.push_str(if self.state.fast_mode { "on" } else { "off" });
-        footer.push_str(" | brief=");
+        footer.push_str(" | brief:");
         footer.push_str(if self.state.brief_mode { "on" } else { "off" });
-        footer.push_str(" | enter submit");
+        footer.push_str(" | ⌃C exit | ? help");
         view.footer = footer;
-        view.dialog = self.dialog.clone();
-        view.picker_view = if self.has_picker_overlay() {
-            Some(PickerView {
-                preview: self.current_picker_preview(),
-            })
-        } else {
+        let picker_list = self.current_picker_list_view();
+        view.dialog = if picker_list.is_some() {
             None
+        } else {
+            self.dialog.clone()
         };
+        view.picker_view = None;
+        view.picker_list = picker_list;
         view.notifications = self.notifications.view(3);
+        view.slash_suggestions = self.active_suggestions.as_ref().map(|state| {
+            let filtered = state.filtered();
+            let entries = filtered
+                .iter()
+                .enumerate()
+                .map(|(i, s)| SlashSuggestionEntry {
+                    display: s.display_text.clone(),
+                    description: s.description.clone().unwrap_or_default(),
+                    selected: i == state.selected_index.min(filtered.len().saturating_sub(1)),
+                })
+                .collect();
+            SlashSuggestionsOverlay { entries }
+        });
         view
     }
 
@@ -2801,9 +2926,9 @@ impl<'a> TuiController<'a> {
             || self.pending_model_picker.is_some()
     }
 
-    /// Returns the formatted preview string for the currently highlighted picker
-    /// option, or `None` when the filter yields no matches.
-    pub(super) fn current_picker_preview(&self) -> Option<String> {
+    pub(super) fn current_picker_list_view(&self) -> Option<PickerListView> {
+        const PICKER_HINT: &str = "↑↓ navigate  Tab/Enter select  Esc cancel";
+
         if let Some(picker) = &self.pending_model_picker {
             let filtered = filtered_picker_indices(&picker.query, &picker.options, |opt| {
                 format!(
@@ -2811,40 +2936,101 @@ impl<'a> TuiController<'a> {
                     opt.provider, opt.provider_display, opt.model, opt.model_display, opt.auth
                 )
             });
-            let idx = selected_picker_index(picker.selected_index, &filtered)?;
-            let opt = picker.options.get(idx)?;
-            return Some(format!("{} / {}", opt.provider_display, opt.model_display));
+            return Some(PickerListView {
+                title: "Select Model".into(),
+                query: picker.query.text(),
+                entries: filtered
+                    .into_iter()
+                    .filter_map(|index| picker.options.get(index))
+                    .map(|opt| {
+                        let mut tag = opt.auth.clone();
+                        if opt.default {
+                            tag.push_str(", default");
+                        }
+                        if opt.selected {
+                            tag.push_str(", current");
+                        }
+                        PickerListEntry {
+                            label: opt.model_display.clone(),
+                            description: opt.provider_display.clone(),
+                            tag: Some(tag),
+                            selected: opt.model == picker.options[picker.selected_index].model
+                                && opt.provider == picker.options[picker.selected_index].provider,
+                        }
+                    })
+                    .collect(),
+                hint: PICKER_HINT.into(),
+            });
         }
         if let Some(picker) = &self.pending_theme_picker {
             let filtered = filtered_picker_indices(&picker.query, &picker.options, |opt| {
                 format!("{} {} {}", opt.theme, opt.label, opt.description)
             });
-            let idx = selected_picker_index(picker.selected_index, &filtered)?;
-            let opt = picker.options.get(idx)?;
-            return Some(format!("{} — {}", opt.label, opt.description));
+            return Some(PickerListView {
+                title: "Select Theme".into(),
+                query: picker.query.text(),
+                entries: filtered
+                    .into_iter()
+                    .filter_map(|index| picker.options.get(index))
+                    .map(|opt| PickerListEntry {
+                        label: opt.label.clone(),
+                        description: opt.description.clone(),
+                        tag: opt.selected.then(|| "current".into()),
+                        selected: opt.theme == picker.options[picker.selected_index].theme,
+                    })
+                    .collect(),
+                hint: PICKER_HINT.into(),
+            });
         }
         if let Some(picker) = &self.pending_permission_picker {
             let filtered = filtered_picker_indices(&picker.query, &picker.options, |opt| {
                 format!("{} {}", opt.label, opt.description)
             });
-            let idx = selected_picker_index(picker.selected_index, &filtered)?;
-            let opt = picker.options.get(idx)?;
-            return Some(format!("{} — {}", opt.label, opt.description));
+            let title = self
+                .state
+                .pending_tool_approval
+                .as_ref()
+                .map(|pending| {
+                    format!(
+                        "Tool: {} — allow?",
+                        pending.pending_call.provider_call.tool_name
+                    )
+                })
+                .unwrap_or_else(|| "Allow Tool?".into());
+            return Some(PickerListView {
+                title,
+                query: picker.query.text(),
+                entries: filtered
+                    .into_iter()
+                    .filter_map(|index| picker.options.get(index))
+                    .map(|opt| PickerListEntry {
+                        label: opt.label.clone(),
+                        description: opt.description.clone(),
+                        tag: opt.selected.then(|| "current".into()),
+                        selected: opt.mode == picker.options[picker.selected_index].mode,
+                    })
+                    .collect(),
+                hint: PICKER_HINT.into(),
+            });
         }
         if let Some(picker) = &self.pending_memory_picker {
             let filtered = filtered_picker_indices(&picker.query, &picker.options, |opt| {
                 format!("{} {} {}", opt.label, opt.description, opt.path.display())
             });
-            let idx = selected_picker_index(picker.selected_index, &filtered)?;
-            let opt = picker.options.get(idx)?;
-            let path_str = opt.path.display().to_string();
-            let first_line = std::fs::read_to_string(&opt.path)
-                .ok()
-                .and_then(|s| s.lines().next().map(str::to_string))
-                .filter(|l| !l.is_empty());
-            return Some(match first_line {
-                Some(line) => format!("{path_str}\n{line}"),
-                None => path_str,
+            return Some(PickerListView {
+                title: "Select Memory Target".into(),
+                query: picker.query.text(),
+                entries: filtered
+                    .into_iter()
+                    .filter_map(|index| picker.options.get(index))
+                    .map(|opt| PickerListEntry {
+                        label: opt.label.clone(),
+                        description: format!("{} ({})", opt.description, opt.path.display()),
+                        tag: opt.selected.then(|| "default".into()),
+                        selected: opt.target == picker.options[picker.selected_index].target,
+                    })
+                    .collect(),
+                hint: PICKER_HINT.into(),
             });
         }
         None
@@ -3120,4 +3306,22 @@ impl<'a> TuiController<'a> {
     pub(super) fn mark_rendered(&mut self) {
         self.needs_render = false;
     }
+}
+
+/// Build the full list of slash-command suggestions from the command registry.
+///
+/// Called once at TUI startup; the result is stored on `TuiController` and
+/// re-used (with live filtering) on every keystroke.
+pub(super) fn build_slash_suggestions(registry: &CommandRegistry) -> Vec<PromptSuggestion> {
+    registry
+        .all_specs()
+        .into_iter()
+        .filter(|spec| !spec.hidden)
+        .map(|spec| {
+            let slash = format!("/{}", spec.name);
+            PromptSuggestion::new(spec.name.clone(), slash.clone(), slash)
+                .with_description(spec.description.clone())
+                .with_keywords(spec.aliases.iter().map(|a| format!("/{a}")))
+        })
+        .collect()
 }

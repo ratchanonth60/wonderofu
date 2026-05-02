@@ -218,20 +218,24 @@ pub(super) fn prompt_cursor_position(
             prompt: prompt.into(),
             history_search: None,
             status: String::new(),
+            loading: false,
+            loading_verb: None,
             footer: String::new(),
             queued_panel: None,
             task_panel: None,
             dialog: None,
             picker_view: None,
+            picker_list: None,
             notifications: Vec::new(),
+            slash_suggestions: None,
         }
         .prompt_height(),
     );
     let inner = wonder_of_u_tui::Rect::new(
-        layout.prompt.x,
+        layout.prompt.x.saturating_add(2),
         layout.prompt.y.saturating_add(1),
-        layout.prompt.width,
-        layout.prompt.height.saturating_sub(1),
+        layout.prompt.width.saturating_sub(4),
+        layout.prompt.height.saturating_sub(2),
     );
     let cursor_text = prompt.chars().take(cursor).collect::<String>();
     let mut line = 0u16;
@@ -247,6 +251,7 @@ pub(super) fn prompt_cursor_position(
     (
         inner
             .x
+            .saturating_add(2)
             .saturating_add(column.min(inner.width.saturating_sub(1))),
         inner
             .y
@@ -268,20 +273,24 @@ pub(super) fn history_search_cursor_position(
             prompt: view.match_text.clone().unwrap_or_default(),
             history_search: Some(view.clone()),
             status: String::new(),
+            loading: false,
+            loading_verb: None,
             footer: String::new(),
             queued_panel: None,
             task_panel: None,
             dialog: None,
             picker_view: None,
+            picker_list: None,
             notifications: Vec::new(),
+            slash_suggestions: None,
         }
         .prompt_height(),
     );
     let inner = wonder_of_u_tui::Rect::new(
-        layout.prompt.x,
+        layout.prompt.x.saturating_add(2),
         layout.prompt.y.saturating_add(1),
-        layout.prompt.width,
-        layout.prompt.height.saturating_sub(1),
+        layout.prompt.width.saturating_sub(4),
+        layout.prompt.height.saturating_sub(2),
     );
     let query_prefix = "search: ".chars().count();
     (

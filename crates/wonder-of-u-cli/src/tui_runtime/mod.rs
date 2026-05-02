@@ -38,8 +38,10 @@ use wonder_of_u_tools::provider_tool_specs;
 use wonder_of_u_tui::{
     CrosstermEventSource, DialogView, EditAction, EventLoop, HistorySearchView, KeyBindingContext,
     KeyBindingResolver, KeyCode, KeyEvent, NotificationInput, NotificationLifetime,
-    NotificationQueue, NotificationSeverity, PermissionSummaryView, PickerView, ResolvedKey,
-    ShellLayout, ShellView, TextBuffer, Theme, TurnState, UiEvent, VimMode, VimState,
+    NotificationQueue, NotificationSeverity, PermissionSummaryView, PickerListEntry,
+    PickerListView, PromptSuggestion, PromptSuggestionState, ResolvedKey, ShellLayout, ShellView,
+    SlashSuggestionEntry, SlashSuggestionsOverlay, TextBuffer, Theme, TurnState, UiEvent, VimMode,
+    VimState,
 };
 
 use crate::commands;
@@ -54,7 +56,7 @@ pub(crate) struct TuiLaunchOptions {
 
 const MAX_TOOL_LOOP_ITERATIONS: usize = 6;
 const PICKER_CONTROLS_NOTE: &str =
-    "type to filter, use Up/Down to choose, Enter to select, Esc to cancel";
+    "type to filter, use Up/Down to choose, Tab/Enter to select, Esc to cancel";
 const HISTORY_SEARCH_CONTROLS_NOTE: &str =
     "type to filter, Ctrl+R/Up/Down to cycle, Enter to accept, Esc to cancel";
 /// Number of ticks before an auto-dismissed task notification dialog disappears.

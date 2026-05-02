@@ -169,6 +169,42 @@ impl PluginConfigStore {
         self.write(&config)?;
         Ok(config)
     }
+
+    /// Add a plugin directory to the additional search paths. No-ops if already present.
+    pub fn add_plugin_dir(&self, dir: &Path) -> Result<PluginConfig> {
+        let mut config = self.read()?;
+        if !config.additional_plugin_dirs.contains(&dir.to_path_buf()) {
+            config.additional_plugin_dirs.push(dir.to_path_buf());
+        }
+        self.write(&config)?;
+        Ok(config)
+    }
+
+    /// Remove a plugin directory that was previously added via [`add_plugin_dir`].
+    /// Returns `true` if a directory was removed. Uses the plugin id as a basename
+    /// match when the argument does not look like a path.
+    pub fn remove_plugin_dir_by_id(&self, plugin_id_or_path: &str) -> Result<bool> {
+        let mut config = self.read()?;
+        let before = config.additional_plugin_dirs.len();
+        config.additional_plugin_dirs.retain(|dir| {
+            // Match by exact path or by directory basename containing the plugin id
+            let path_match = dir.to_string_lossy() == plugin_id_or_path;
+            let id_match = dir
+                .file_name()
+                .map(|n| {
+                    let name = n.to_string_lossy().to_lowercase();
+                    let normalized = plugin_id_or_path.to_lowercase().replace(' ', "-");
+                    name == normalized
+                })
+                .unwrap_or(false);
+            !path_match && !id_match
+        });
+        let removed = config.additional_plugin_dirs.len() < before;
+        if removed {
+            self.write(&config)?;
+        }
+        Ok(removed)
+    }
 }
 
 #[cfg(test)]
