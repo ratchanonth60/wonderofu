@@ -30,9 +30,6 @@ const SEND_USER_FILE_RUNTIME_UNAVAILABLE: &str =
 const SUGGEST_BACKGROUND_PR_RUNTIME_UNAVAILABLE: &str = "suggest_background_pr is unavailable: background PR suggestion workflows are not implemented in wonder-of-u-tools";
 const MCP_TOOL_RUNTIME_UNAVAILABLE: &str =
     "mcp is unavailable: dynamic MCP tool invocation is not implemented in wonder-of-u-tools";
-const WORKFLOW_RUNTIME_UNAVAILABLE: &str =
-    "workflow is unavailable: workflow script execution is not implemented in wonder-of-u-tools";
-const PUSH_NOTIFICATION_RUNTIME_UNAVAILABLE: &str = "push_notification is unavailable: push notification delivery is not implemented in wonder-of-u-tools";
 const MONITOR_RUNTIME_UNAVAILABLE: &str =
     "monitor is unavailable: runtime monitoring hooks are not implemented in wonder-of-u-tools";
 const SUBSCRIBE_PR_RUNTIME_UNAVAILABLE: &str = "subscribe_pr is unavailable: PR webhook subscriptions are not implemented in wonder-of-u-tools";
@@ -904,24 +901,126 @@ impl Tool for WorkflowTool {
 
     async fn execute(
         &self,
-        _context: ToolContext,
+        context: ToolContext,
         use_id: ToolUseId,
         input: Value,
     ) -> Result<ToolResult> {
         let input = parse_input::<WorkflowInput>("workflow", &input)?;
         input.validate()?;
-        unsupported_result(
-            use_id,
-            WORKFLOW_RUNTIME_UNAVAILABLE,
-            json!({
-                "supported": false,
+
+        let workflow_name = match input.workflow.as_deref().filter(|s| !s.is_empty()) {
+            Some(name) => name.to_owned(),
+            None => {
+                // No workflow name given — list available workflows.
+                let scripts = find_workflow_scripts(&context.cwd);
+                let list = if scripts.is_empty() {
+                    format!(
+                        "No workflow scripts found. Add shell scripts under \
+                         {cwd}/.wonder/workflows/ (e.g. my-task.sh) and name \
+                         them with the 'workflow' parameter.",
+                        cwd = context.cwd.display()
+                    )
+                } else {
+                    format!(
+                        "Available workflows:\n{}",
+                        scripts
+                            .iter()
+                            .map(|p| format!(
+                                "  - {}",
+                                p.file_stem()
+                                    .and_then(|s| s.to_str())
+                                    .unwrap_or("?")
+                            ))
+                            .collect::<Vec<_>>()
+                            .join("\n")
+                    )
+                };
+                return Ok(ToolResult::success(use_id, list).with_metadata(json!({
+                    "tool": "workflow",
+                    "listed": true,
+                })));
+            }
+        };
+
+        let script_path = context
+            .cwd
+            .join(".wonder")
+            .join("workflows")
+            .join(format!("{workflow_name}.sh"));
+
+        if !script_path.exists() {
+            return Ok(ToolResult::failure(
+                use_id,
+                format!(
+                    "Workflow script not found: {path}\n\
+                     Create {path} to define this workflow.",
+                    path = script_path.display()
+                ),
+            )
+            .with_metadata(json!({
                 "tool": "workflow",
-                "workflow": input.workflow,
-                "command": input.command,
-                "prompt": input.prompt,
-                "args": input.args,
-            }),
-        )
+                "workflow": workflow_name,
+                "found": false,
+            })));
+        }
+
+        let mut cmd = std::process::Command::new("sh");
+        cmd.arg(&script_path).current_dir(&context.cwd);
+
+        // Forward command/prompt/args as environment variables.
+        if let Some(ref command) = input.command {
+            cmd.env("WORKFLOW_COMMAND", command);
+        }
+        if let Some(ref prompt) = input.prompt {
+            cmd.env("WORKFLOW_PROMPT", prompt);
+        }
+        if !input.args.is_null() {
+            cmd.env(
+                "WORKFLOW_ARGS",
+                serde_json::to_string(&input.args).unwrap_or_default(),
+            );
+        }
+
+        match cmd.output() {
+            Ok(output) => {
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                let combined = if stderr.is_empty() {
+                    stdout.to_string()
+                } else {
+                    format!("{stdout}\n{stderr}")
+                };
+                let content = combined.trim().to_string();
+                let result = if output.status.success() {
+                    ToolResult::success(use_id, if content.is_empty() {
+                        format!("Workflow '{workflow_name}' completed (exit 0).")
+                    } else {
+                        content
+                    })
+                } else {
+                    let code = output.status.code().unwrap_or(-1);
+                    ToolResult::failure(
+                        use_id,
+                        format!(
+                            "Workflow '{workflow_name}' failed (exit {code}).\n{content}"
+                        ),
+                    )
+                };
+                Ok(result.with_metadata(json!({
+                    "tool": "workflow",
+                    "workflow": workflow_name,
+                    "exit_code": output.status.code(),
+                })))
+            }
+            Err(err) => Ok(ToolResult::failure(
+                use_id,
+                format!("Failed to execute workflow '{workflow_name}': {err}"),
+            )
+            .with_metadata(json!({
+                "tool": "workflow",
+                "workflow": workflow_name,
+            }))),
+        }
     }
 }
 
@@ -969,16 +1068,36 @@ impl Tool for PushNotificationTool {
     ) -> Result<ToolResult> {
         let input = parse_input::<PushNotificationInput>("push_notification", &input)?;
         input.validate()?;
-        unsupported_result(
-            use_id,
-            PUSH_NOTIFICATION_RUNTIME_UNAVAILABLE,
-            json!({
-                "supported": false,
-                "tool": "push_notification",
-                "title": input.title,
-                "message": input.message,
-            }),
-        )
+
+        let title = input
+            .title
+            .as_deref()
+            .unwrap_or("wonder-of-u")
+            .to_string();
+        let message = input
+            .message
+            .as_deref()
+            .unwrap_or("Task complete")
+            .to_string();
+
+        let sent = send_os_notification_impl(&title, &message);
+        let content = if sent {
+            format!("Notification sent: {title} — {message}")
+        } else {
+            // Fallback: write to stderr as terminal bell.
+            eprint!("\x07");
+            format!(
+                "Notification delivered via terminal bell (OS notification not available): \
+                 {title} — {message}"
+            )
+        };
+
+        Ok(ToolResult::success(use_id, content).with_metadata(json!({
+            "tool": "push_notification",
+            "title": title,
+            "message": message,
+            "sent_via_os": sent,
+        })))
     }
 }
 
@@ -1374,6 +1493,52 @@ const fn default_overflow_chars() -> usize {
     131_072
 }
 
+/// List .wonder/workflows/*.sh scripts under `cwd`.
+fn find_workflow_scripts(cwd: &Path) -> Vec<PathBuf> {
+    let dir = cwd.join(".wonder").join("workflows");
+    match fs::read_dir(&dir) {
+        Ok(entries) => {
+            let mut scripts: Vec<PathBuf> = entries
+                .filter_map(|e| e.ok())
+                .map(|e| e.path())
+                .filter(|p| p.extension().and_then(|e| e.to_str()) == Some("sh"))
+                .collect();
+            scripts.sort();
+            scripts
+        }
+        Err(_) => vec![],
+    }
+}
+
+/// Send an OS desktop notification. Returns `true` if successfully dispatched.
+fn send_os_notification_impl(title: &str, message: &str) -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        use std::process::Command;
+        if let Ok(output) = Command::new("notify-send").arg(title).arg(message).output() {
+            return output.status.success();
+        }
+        return false;
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        use std::process::Command;
+        let script = format!(
+            "display notification \"{}\" with title \"{}\"",
+            message.replace('"', "\\\""),
+            title.replace('"', "\\\""),
+        );
+        if let Ok(output) = Command::new("osascript").args(["-e", &script]).output() {
+            return output.status.success();
+        }
+        return false;
+    }
+
+    #[allow(unreachable_code)]
+    false
+}
+
 #[cfg(test)]
 mod tests {
     use std::{collections::BTreeSet, sync::Arc};
@@ -1488,8 +1653,9 @@ mod tests {
             json!({ "workflow": "triage", "prompt": "summarize" }),
         ))
         .expect("execute");
+        // Script doesn't exist in the test dir, so it should fail with not-found.
         assert!(!workflow.success);
-        assert!(workflow.content.contains(WORKFLOW_RUNTIME_UNAVAILABLE));
+        assert!(workflow.content.contains("triage"));
         assert_eq!(workflow.metadata["workflow"], "triage");
 
         let push = block_on(PushNotificationTool.execute(
@@ -1498,8 +1664,10 @@ mod tests {
             json!({ "title": "Done", "body": "Work finished" }),
         ))
         .expect("execute");
-        assert!(!push.success);
-        assert!(push.content.contains(PUSH_NOTIFICATION_RUNTIME_UNAVAILABLE));
+        // push_notification always succeeds (OS notify or terminal bell fallback).
+        assert!(push.success);
+        assert!(push.content.contains("Work finished"));
+        assert_eq!(push.metadata["title"], "Done");
         assert_eq!(push.metadata["message"], "Work finished");
     }
 

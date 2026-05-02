@@ -300,6 +300,13 @@ impl ToolResult {
             metadata: Value::Null,
         }
     }
+
+    /// Attach structured metadata to this result.
+    #[must_use]
+    pub fn with_metadata(mut self, metadata: Value) -> Self {
+        self.metadata = metadata;
+        self
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

@@ -445,11 +445,13 @@ impl SandboxToggleCommand {
     }
 
     pub fn command_spec() -> CommandSpec {
-        CommandSpec::new(
+        let mut spec = CommandSpec::new(
             "sandbox",
             "Toggle sandbox isolation for bash command execution",
             CommandKind::Local,
-        )
+        );
+        spec.aliases.push("sandbox-toggle".into());
+        spec
     }
 }
 
@@ -482,6 +484,7 @@ impl ThinkbackCommand {
             "Your Claude Code year in review",
             CommandKind::NonInteractive,
         );
+        spec.aliases.push("thinkback".into());
         spec.hidden = true;
         spec
     }
