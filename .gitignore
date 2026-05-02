@@ -1,3 +1,15 @@
-/target
-*/*/target
-/claud*
+/target/
+**/target/
+/claude-leak/
+
+# Local secrets and machine-specific overrides.
+.env
+.env.*
+*.local
+
+# Editor and OS noise.
+.DS_Store
+Thumbs.db
+*.swp
+
+docs/par*.csv

@@ -5,6 +5,8 @@ All notable changes are documented here.
 ## [Unreleased]
 
 ### Added
+- `install.sh` for local release/debug installs and uninstalling the binary.
+- User-facing documentation for installation, usage, configuration, and development.
 - Ctrl+R incremental history search overlay
 - Picker preview panel for model/theme/memory/permission choosers
 - Task panel lifecycle polish with auto-dismiss notices
