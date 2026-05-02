@@ -72,6 +72,22 @@ pub struct PickerView {
     pub preview: Option<String>,
 }
 
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct PickerListEntry {
+    pub label: String,
+    pub description: String,
+    pub tag: Option<String>,
+    pub selected: bool,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct PickerListView {
+    pub title: String,
+    pub query: String,
+    pub entries: Vec<PickerListEntry>,
+    pub hint: String,
+}
+
 pub fn message_lines(messages: &[MessageEnvelope]) -> Vec<MessageLineView> {
     rich_message_views(messages)
         .into_iter()
