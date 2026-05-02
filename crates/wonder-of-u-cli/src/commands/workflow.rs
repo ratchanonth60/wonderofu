@@ -96,11 +96,13 @@ impl TerminalSetupCommand {
     }
 
     pub fn command_spec() -> CommandSpec {
-        CommandSpec::new(
+        let mut spec = CommandSpec::new(
             "terminal-setup",
             "Explain multiline prompt setup and keybinding options for the local TUI",
             CommandKind::Local,
-        )
+        );
+        spec.aliases.push("terminalSetup".into());
+        spec
     }
 }
 

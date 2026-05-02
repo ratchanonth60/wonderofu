@@ -13,6 +13,7 @@ use wonder_of_u_core::{
 mod advanced;
 pub(crate) mod auth;
 mod doctor;
+mod extras;
 mod features;
 mod help;
 mod mcp;
@@ -29,6 +30,17 @@ pub(crate) mod workflow;
 use advanced::{BridgeCommand, DebugCommand, DiagnosticsCommand, VoiceCommand};
 use auth::{ConfigCommand, LoginCommand, LogoutCommand, ModelCommand};
 use doctor::DoctorCommand;
+use extras::{
+    AdvisorCommand, AntTraceCommand, AutofixPrCommand, BackfillSessionsCommand, BreakCacheCommand,
+    BridgeKickCommand, BtwCommand, BughunterCommand, CreateMovedToPluginCommand, CtxVizCommand,
+    DebugToolCallCommand, EnvCommand, ExtraUsageCommand, GoodClaudeCommand, HeapdumpCommand,
+    InitVerifiersCommand, InstallCommand, InstallGithubAppCommand, InstallSlackAppCommand,
+    IssueCommand, MockLimitsCommand, OauthRefreshCommand, OnboardingCommand, PassesCommand,
+    PerfIssueCommand, PrCommentsCommand, RateLimitOptionsCommand, RemoteEnvCommand,
+    RemoteSetupCommand, ResetLimitsCommand, RewindCommand, SandboxToggleCommand, ShareCommand,
+    StickersCommand, SummaryCommand, TeleportCommand, ThinkbackCommand, ThinkbackPlayCommand,
+    UltraplanCommand,
+};
 use features::FeaturesCommand;
 use help::HelpCommand;
 use mcp::McpCommand;
@@ -69,6 +81,15 @@ pub fn registry(storage_dir: Option<PathBuf>) -> Result<CommandRegistry> {
         BridgeCommand::command_spec(),
         VoiceCommand::command_spec(),
         DebugCommand::command_spec(),
+        HeapdumpCommand::command_spec(),
+        AntTraceCommand::command_spec(),
+        CtxVizCommand::command_spec(),
+        DebugToolCallCommand::command_spec(),
+        GoodClaudeCommand::command_spec(),
+        BreakCacheCommand::command_spec(),
+        BackfillSessionsCommand::command_spec(),
+        PerfIssueCommand::command_spec(),
+        BughunterCommand::command_spec(),
         UpgradeCommand::command_spec(),
         DesktopCommand::command_spec(),
         MobileCommand::command_spec(),
@@ -124,6 +145,36 @@ pub fn registry(storage_dir: Option<PathBuf>) -> Result<CommandRegistry> {
         ExitCommand::command_spec(),
         FeaturesCommand::command_spec(),
         OutputStyleCommand::command_spec(),
+        BtwCommand::command_spec(),
+        AdvisorCommand::command_spec(),
+        StickersCommand::command_spec(),
+        RewindCommand::command_spec(),
+        InitVerifiersCommand::command_spec(),
+        ExtraUsageCommand::command_spec(),
+        PassesCommand::command_spec(),
+        RateLimitOptionsCommand::command_spec(),
+        MockLimitsCommand::command_spec(),
+        ResetLimitsCommand::command_spec(),
+        OnboardingCommand::command_spec(),
+        TeleportCommand::command_spec(),
+        RemoteEnvCommand::command_spec(),
+        RemoteSetupCommand::command_spec(),
+        BridgeKickCommand::command_spec(),
+        SandboxToggleCommand::command_spec(),
+        UltraplanCommand::command_spec(),
+        ThinkbackCommand::command_spec(),
+        ThinkbackPlayCommand::command_spec(),
+        AutofixPrCommand::command_spec(),
+        PrCommentsCommand::command_spec(),
+        SummaryCommand::command_spec(),
+        EnvCommand::command_spec(),
+        OauthRefreshCommand::command_spec(),
+        IssueCommand::command_spec(),
+        ShareCommand::command_spec(),
+        InstallCommand::command_spec(),
+        InstallGithubAppCommand::command_spec(),
+        InstallSlackAppCommand::command_spec(),
+        CreateMovedToPluginCommand::command_spec(),
         TuiCommand::command_spec(),
     ]
     .into();
@@ -146,6 +197,15 @@ pub fn registry(storage_dir: Option<PathBuf>) -> Result<CommandRegistry> {
     registry.register(Arc::new(BridgeCommand::new(storage_dir.clone())))?;
     registry.register(Arc::new(VoiceCommand::new()))?;
     registry.register(Arc::new(DebugCommand::new(storage_dir.clone())))?;
+    registry.register(Arc::new(HeapdumpCommand::new()))?;
+    registry.register(Arc::new(AntTraceCommand::new()))?;
+    registry.register(Arc::new(CtxVizCommand::new()))?;
+    registry.register(Arc::new(DebugToolCallCommand::new()))?;
+    registry.register(Arc::new(GoodClaudeCommand::new()))?;
+    registry.register(Arc::new(BreakCacheCommand::new()))?;
+    registry.register(Arc::new(BackfillSessionsCommand::new(storage_dir.clone())))?;
+    registry.register(Arc::new(PerfIssueCommand::new()))?;
+    registry.register(Arc::new(BughunterCommand::new()))?;
     registry.register(Arc::new(UpgradeCommand::new()))?;
     registry.register(Arc::new(DesktopCommand::new()))?;
     registry.register(Arc::new(MobileCommand::new()))?;
@@ -204,6 +264,36 @@ pub fn registry(storage_dir: Option<PathBuf>) -> Result<CommandRegistry> {
     registry.register(Arc::new(ExitCommand::new()))?;
     registry.register(Arc::new(FeaturesCommand::new()))?;
     registry.register(Arc::new(OutputStyleCommand::new()))?;
+    registry.register(Arc::new(BtwCommand::new()))?;
+    registry.register(Arc::new(AdvisorCommand::new(storage_dir.clone())))?;
+    registry.register(Arc::new(StickersCommand::new()))?;
+    registry.register(Arc::new(RewindCommand::new(storage_dir.clone())))?;
+    registry.register(Arc::new(InitVerifiersCommand::new(Arc::clone(&tool_specs))))?;
+    registry.register(Arc::new(ExtraUsageCommand::new()))?;
+    registry.register(Arc::new(PassesCommand::new()))?;
+    registry.register(Arc::new(RateLimitOptionsCommand::new()))?;
+    registry.register(Arc::new(MockLimitsCommand::new()))?;
+    registry.register(Arc::new(ResetLimitsCommand::new()))?;
+    registry.register(Arc::new(OnboardingCommand::new()))?;
+    registry.register(Arc::new(TeleportCommand::new()))?;
+    registry.register(Arc::new(RemoteEnvCommand::new()))?;
+    registry.register(Arc::new(RemoteSetupCommand::new()))?;
+    registry.register(Arc::new(BridgeKickCommand::new()))?;
+    registry.register(Arc::new(SandboxToggleCommand::new()))?;
+    registry.register(Arc::new(UltraplanCommand::new()))?;
+    registry.register(Arc::new(ThinkbackCommand::new()))?;
+    registry.register(Arc::new(ThinkbackPlayCommand::new()))?;
+    registry.register(Arc::new(AutofixPrCommand::new()))?;
+    registry.register(Arc::new(PrCommentsCommand::new()))?;
+    registry.register(Arc::new(SummaryCommand::new()))?;
+    registry.register(Arc::new(EnvCommand::new()))?;
+    registry.register(Arc::new(OauthRefreshCommand::new(storage_dir.clone())))?;
+    registry.register(Arc::new(IssueCommand::new()))?;
+    registry.register(Arc::new(ShareCommand::new()))?;
+    registry.register(Arc::new(InstallCommand::new()))?;
+    registry.register(Arc::new(InstallGithubAppCommand::new()))?;
+    registry.register(Arc::new(InstallSlackAppCommand::new()))?;
+    registry.register(Arc::new(CreateMovedToPluginCommand::new()))?;
     registry.register(Arc::new(TuiCommand::new()))?;
     Ok(registry)
 }
