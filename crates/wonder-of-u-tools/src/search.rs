@@ -18,13 +18,16 @@ use crate::{base_spec, display_path, parse_input, require_non_empty_path, requir
 
 const DEFAULT_GLOB_LIMIT: usize = 200;
 const DEFAULT_GREP_LIMIT: usize = 100;
-
+/// Enumerates glob entry type
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum GlobEntryType {
+    /// Represents all
     All,
+    /// Represents files
     #[default]
     Files,
+    /// Represents directories
     Directories,
 }
 
@@ -37,15 +40,19 @@ impl GlobEntryType {
         }
     }
 }
-
+/// Represents glob input
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct GlobInput {
+    /// Stores the pattern
     pub pattern: String,
+    /// Stores the path
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub path: Option<PathBuf>,
+    /// Stores the entry type
     #[serde(default)]
     pub entry_type: GlobEntryType,
+    /// Stores the limit
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub limit: Option<usize>,
 }
@@ -69,17 +76,22 @@ impl GlobInput {
         self.limit.unwrap_or(DEFAULT_GLOB_LIMIT)
     }
 }
-
+/// Represents grep input
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct GrepInput {
+    /// Stores the pattern
     pub pattern: String,
+    /// Stores the path
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub path: Option<PathBuf>,
+    /// Stores the glob
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub glob: Option<String>,
+    /// Stores the case insensitive
     #[serde(default)]
     pub case_insensitive: bool,
+    /// Stores the limit
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub limit: Option<usize>,
 }
@@ -106,10 +118,10 @@ impl GrepInput {
         self.limit.unwrap_or(DEFAULT_GREP_LIMIT)
     }
 }
-
+/// Represents glob tool
 #[derive(Debug, Default)]
 pub struct GlobTool;
-
+/// Represents grep tool
 #[derive(Debug, Default)]
 pub struct GrepTool;
 

@@ -6,28 +6,39 @@ use time::OffsetDateTime;
 
 use crate::{MessageId, SessionId, TaskId, ToolUseId, app::TaskStatus};
 
+/// Schema version for message
 pub const MESSAGE_SCHEMA_VERSION: u16 = 1;
 
 /// Stable serialized envelope for JSONL transcripts.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct MessageEnvelope {
+    /// Stores the schema version
     pub schema_version: u16,
+    /// Stores the id
     pub id: MessageId,
+    /// Stores the session identifier
     pub session_id: SessionId,
+    /// Stores the timestamp
     #[serde(with = "time::serde::rfc3339")]
     pub timestamp: OffsetDateTime,
+    /// Stores the cwd
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cwd: Option<PathBuf>,
+    /// Stores the git branch
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub git_branch: Option<String>,
+    /// Stores the entrypoint
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub entrypoint: Option<String>,
+    /// Stores the app version
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub app_version: Option<String>,
+    /// Stores the payload
     pub payload: MessagePayload,
 }
 
 impl MessageEnvelope {
+    /// Creates a new value
     #[must_use]
     pub fn new(session_id: SessionId, payload: MessagePayload) -> Self {
         Self {
@@ -42,21 +53,21 @@ impl MessageEnvelope {
             payload,
         }
     }
-
+    /// Handles with context
     #[must_use]
     pub fn with_context(mut self, cwd: Option<PathBuf>, git_branch: Option<String>) -> Self {
         self.cwd = cwd;
         self.git_branch = git_branch;
         self
     }
-
+    /// Handles with runtime
     #[must_use]
     pub fn with_runtime(mut self, entrypoint: Option<String>, app_version: Option<String>) -> Self {
         self.entrypoint = entrypoint;
         self.app_version = app_version;
         self
     }
-
+    /// Handles user text
     #[must_use]
     pub fn user_text(session_id: SessionId, content: impl Into<String>) -> Self {
         Self::new(
@@ -66,7 +77,7 @@ impl MessageEnvelope {
             },
         )
     }
-
+    /// Handles user paste reference
     #[must_use]
     pub fn user_paste_reference(
         session_id: SessionId,
@@ -81,7 +92,7 @@ impl MessageEnvelope {
             },
         )
     }
-
+    /// Handles system
     #[must_use]
     pub fn system(session_id: SessionId, content: impl Into<String>) -> Self {
         Self::new(
@@ -98,71 +109,122 @@ impl MessageEnvelope {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", content = "data", rename_all = "snake_case")]
 pub enum MessagePayload {
+    /// Represents user text
     UserText {
+        /// Stores the content
         content: String,
     },
+    /// Represents user attachment
     UserAttachment {
+        /// Stores the label
         label: String,
+        /// Stores the uri
         uri: String,
     },
+    /// Represents user paste reference
     UserPasteReference {
+        /// Stores the sha256
         sha256: String,
+        /// Stores the bytes
         bytes: usize,
     },
+    /// Represents assistant text
     AssistantText {
+        /// Stores the content
         content: String,
     },
+    /// Represents assistant thinking
     AssistantThinking {
+        /// Stores the content
         content: String,
+        /// Stores the collapsed
         collapsed: bool,
     },
+    /// Represents assistant tool use
     AssistantToolUse {
+        /// Stores the tool
         tool: String,
+        /// Stores the use id
         use_id: ToolUseId,
+        /// Stores the input
         input: Value,
     },
+    /// Represents tool result
     ToolResult {
+        /// Stores the tool
         tool: String,
+        /// Stores the use id
         use_id: ToolUseId,
+        /// Stores the success
         success: bool,
+        /// Stores the content
         content: String,
     },
+    /// Represents bash output
     BashOutput {
+        /// Stores the stdout
         stdout: String,
+        /// Stores the stderr
         stderr: String,
+        /// Stores the exit code
         exit_code: Option<i32>,
     },
+    /// Represents system
     System {
+        /// Stores the content
         content: String,
     },
+    /// Represents progress
     Progress {
+        /// Stores the label
         label: String,
+        /// Stores the detail
         detail: Option<String>,
     },
+    /// Represents command
     Command {
+        /// Stores the input
         input: String,
+        /// Stores the output
         output: Option<String>,
     },
+    /// Represents hook result
     HookResult {
+        /// Stores the hook
         hook: String,
+        /// Stores the success
         success: bool,
+        /// Stores the output
         output: String,
     },
+    /// Represents compact boundary
     CompactBoundary {
+        /// Stores the summary
         summary: String,
     },
+    /// Represents task
     Task {
+        /// Stores the task id
         task_id: TaskId,
+        /// Stores the status
         status: TaskStatus,
+        /// Stores the message
         message: String,
     },
+    /// Represents permission
     Permission {
+        /// Stores the tool
         tool: String,
+        /// Stores the decision
         decision: String,
+        /// Stores the reason
         reason: String,
     },
+    /// Represents plan approval
     PlanApproval {
+        /// Stores the summary
         summary: String,
+        /// Stores the approved
         approved: bool,
     },
 }

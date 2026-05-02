@@ -5,17 +5,24 @@ use std::ops::Range;
 /// Imperative scroll state tracked independently from rendering.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct ScrollBoxState {
+    /// Stores the scroll top
     pub scroll_top: u16,
+    /// Stores the pending delta
     pub pending_delta: i32,
+    /// Stores the scroll height
     pub scroll_height: u16,
+    /// Stores the viewport height
     pub viewport_height: u16,
+    /// Stores the viewport top
     pub viewport_top: u16,
+    /// Stores the sticky
     pub sticky: bool,
     clamp_min: Option<u16>,
     clamp_max: Option<u16>,
 }
 
 impl ScrollBoxState {
+    /// Constant fn
     #[must_use]
     pub const fn new(viewport_height: u16, scroll_height: u16) -> Self {
         Self {
@@ -29,12 +36,12 @@ impl ScrollBoxState {
             clamp_max: None,
         }
     }
-
+    /// Constant fn
     #[must_use]
     pub const fn max_scroll_top(self) -> u16 {
         self.scroll_height.saturating_sub(self.viewport_height)
     }
-
+    /// Handles visible range
     #[must_use]
     pub fn visible_range(self) -> Range<u16> {
         let top = self.effective_scroll_top();
@@ -44,34 +51,39 @@ impl ScrollBoxState {
         top..bottom
     }
 
+    /// Handles scroll to
     pub fn scroll_to(&mut self, y: u16) {
         self.sticky = false;
         self.pending_delta = 0;
         self.scroll_top = self.clamp_scroll_top(y);
     }
 
+    /// Handles scroll by
     pub fn scroll_by(&mut self, delta: i32) {
         self.sticky = false;
         self.pending_delta = self.pending_delta.saturating_add(delta);
     }
 
+    /// Handles apply pending delta
     pub fn apply_pending_delta(&mut self) {
         let top = i32::from(self.scroll_top).saturating_add(self.pending_delta);
         self.scroll_top = self.clamp_scroll_top(top.max(0) as u16);
         self.pending_delta = 0;
     }
 
+    /// Handles scroll to bottom
     pub fn scroll_to_bottom(&mut self) {
         self.pending_delta = 0;
         self.sticky = true;
         self.scroll_top = self.max_scroll_top();
     }
 
+    /// Handles set clamp bounds
     pub fn set_clamp_bounds(&mut self, min: Option<u16>, max: Option<u16>) {
         self.clamp_min = min;
         self.clamp_max = max;
     }
-
+    /// Handles effective scroll top
     #[must_use]
     pub fn effective_scroll_top(self) -> u16 {
         self.clamp_scroll_top(self.scroll_top)

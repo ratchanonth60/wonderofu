@@ -16,22 +16,29 @@ use crate::{
 const WORKTREE_NAME_MAX_LEN: usize = 64;
 const ENTER_WORKTREE_UNSUPPORTED: &str = "enter_worktree is not supported in wonder-of-u-tools because the Rust runtime does not yet expose session-scoped worktree creation or cwd switching; no git state was changed";
 const EXIT_WORKTREE_UNSUPPORTED: &str = "exit_worktree is not supported in wonder-of-u-tools because the Rust runtime does not yet expose EnterWorktree session state or cwd restoration; no git state was changed";
-
+/// Represents worktree session state
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct WorktreeSessionState {
+    /// Stores the original cwd
     pub original_cwd: PathBuf,
+    /// Stores the repository root
     pub repository_root: PathBuf,
+    /// Stores the worktree path
     pub worktree_path: PathBuf,
+    /// Stores the worktree branch
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub worktree_branch: Option<String>,
+    /// Stores the original head commit
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub original_head_commit: Option<String>,
+    /// Stores the tmux session name
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tmux_session_name: Option<String>,
 }
 
 impl WorktreeSessionState {
+    /// Validates the value
     pub fn validate(&self) -> Result<()> {
         require_non_empty_path("worktree_session_state", "original_cwd", &self.original_cwd)?;
         require_non_empty_path(
@@ -70,10 +77,11 @@ impl WorktreeSessionState {
         Ok(())
     }
 }
-
+/// Represents enter worktree input
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct EnterWorktreeInput {
+    /// Stores the name
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
 }
@@ -86,23 +94,27 @@ impl EnterWorktreeInput {
         Ok(())
     }
 }
-
+/// Enumerates exit worktree action
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ExitWorktreeAction {
+    /// Represents keep
     Keep,
+    /// Represents remove
     Remove,
 }
-
+/// Represents exit worktree input
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ExitWorktreeInput {
+    /// Stores the action
     pub action: ExitWorktreeAction,
     #[serde(
         default,
         alias = "discardChanges",
         skip_serializing_if = "Option::is_none"
     )]
+    /// Stores the discard changes
     pub discard_changes: Option<bool>,
 }
 
@@ -111,10 +123,10 @@ impl ExitWorktreeInput {
         Ok(())
     }
 }
-
+/// Represents enter worktree tool
 #[derive(Debug, Default)]
 pub struct EnterWorktreeTool;
-
+/// Represents exit worktree tool
 #[derive(Debug, Default)]
 pub struct ExitWorktreeTool;
 

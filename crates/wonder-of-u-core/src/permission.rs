@@ -9,23 +9,32 @@ use serde::{Deserialize, Serialize};
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum PermissionMode {
+    /// Represents default
     #[default]
     Default,
+    /// Represents accept edits
     AcceptEdits,
+    /// Represents bypass permissions
     BypassPermissions,
+    /// Represents dont ask
     DontAsk,
+    /// Represents plan
     Plan,
 }
-
+/// Enumerates permission rule behavior
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PermissionRuleBehavior {
+    /// Represents allow
     Allow,
+    /// Represents deny
     Deny,
+    /// Represents ask
     Ask,
 }
 
 impl PermissionRuleBehavior {
+    /// Constant fn
     #[must_use]
     pub const fn precedence(self) -> u8 {
         match self {
@@ -34,7 +43,7 @@ impl PermissionRuleBehavior {
             Self::Allow => 2,
         }
     }
-
+    /// Constant fn
     #[must_use]
     pub const fn label(self) -> &'static str {
         match self {
@@ -44,16 +53,23 @@ impl PermissionRuleBehavior {
         }
     }
 }
-
+/// Enumerates permission rule source
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PermissionRuleSource {
+    /// Represents policy
     Policy,
+    /// Represents cli arg
     CliArg,
+    /// Represents session runtime
     SessionRuntime,
+    /// Represents command
     Command,
+    /// Represents local
     Local,
+    /// Represents project
     Project,
+    /// Represents user
     User,
 }
 
@@ -73,7 +89,7 @@ impl PermissionRuleSource {
             Self::User => 6,
         }
     }
-
+    /// Constant fn
     #[must_use]
     pub const fn label(self) -> &'static str {
         match self {
@@ -87,32 +103,43 @@ impl PermissionRuleSource {
         }
     }
 }
-
+/// Enumerates permission rule constraint
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum PermissionRuleConstraint {
+    /// Represents any
     #[default]
     Any,
+    /// Represents path prefix
     PathPrefix {
+        /// Stores the path
         path: PathBuf,
     },
+    /// Represents shell command contains
     ShellCommandContains {
+        /// Stores the text
         text: String,
     },
 }
-
+/// Represents permission rule
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct PermissionRule {
+    /// Stores the tool
     pub tool: String,
+    /// Stores the behavior
     pub behavior: PermissionRuleBehavior,
+    /// Stores the source
     pub source: PermissionRuleSource,
+    /// Stores the constraint
     #[serde(default)]
     pub constraint: PermissionRuleConstraint,
+    /// Stores the reason
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
 }
 
 impl PermissionRule {
+    /// Creates a new value
     #[must_use]
     pub fn new(
         tool: impl Into<String>,
@@ -127,25 +154,25 @@ impl PermissionRule {
             reason: None,
         }
     }
-
+    /// Handles for path prefix
     #[must_use]
     pub fn for_path_prefix(mut self, path: impl Into<PathBuf>) -> Self {
         self.constraint = PermissionRuleConstraint::PathPrefix { path: path.into() };
         self
     }
-
+    /// Handles for shell command
     #[must_use]
     pub fn for_shell_command(mut self, text: impl Into<String>) -> Self {
         self.constraint = PermissionRuleConstraint::ShellCommandContains { text: text.into() };
         self
     }
-
+    /// Handles with reason
     #[must_use]
     pub fn with_reason(mut self, reason: impl Into<String>) -> Self {
         self.reason = Some(reason.into());
         self
     }
-
+    /// Handles matches
     #[must_use]
     pub fn matches(&self, context: &ToolPermissionContext, request: &PermissionRequest) -> bool {
         let tool = normalize_tool_name(&self.tool);
@@ -173,14 +200,17 @@ impl PermissionRule {
         }
     }
 }
-
+/// Represents additional working directory
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct AdditionalWorkingDirectory {
+    /// Stores the path
     pub path: PathBuf,
+    /// Stores the source
     pub source: PermissionRuleSource,
 }
 
 impl AdditionalWorkingDirectory {
+    /// Creates a new value
     #[must_use]
     pub fn new(path: impl Into<PathBuf>, source: PermissionRuleSource) -> Self {
         Self {
@@ -189,18 +219,23 @@ impl AdditionalWorkingDirectory {
         }
     }
 }
-
+/// Represents tool permission context
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct ToolPermissionContext {
+    /// Stores the cwd
     pub cwd: PathBuf,
+    /// Stores the mode
     pub mode: PermissionMode,
+    /// Stores the additional working directories
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub additional_working_directories: Vec<AdditionalWorkingDirectory>,
+    /// Stores the rules
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub rules: Vec<PermissionRule>,
 }
 
 impl ToolPermissionContext {
+    /// Creates a new value
     #[must_use]
     pub fn new(cwd: impl Into<PathBuf>, mode: PermissionMode) -> Self {
         Self {
@@ -210,13 +245,13 @@ impl ToolPermissionContext {
             rules: Vec::new(),
         }
     }
-
+    /// Handles with rule
     #[must_use]
     pub fn with_rule(mut self, rule: PermissionRule) -> Self {
         self.rules.push(rule);
         self
     }
-
+    /// Handles with additional directory
     #[must_use]
     pub fn with_additional_directory(
         mut self,
@@ -227,7 +262,7 @@ impl ToolPermissionContext {
             .push(AdditionalWorkingDirectory::new(path, source));
         self
     }
-
+    /// Handles working directories
     #[must_use]
     pub fn working_directories(&self) -> Vec<PathBuf> {
         std::iter::once(canonicalize_best_effort(&self.resolve_path(&self.cwd)))
@@ -238,12 +273,12 @@ impl ToolPermissionContext {
             )
             .collect()
     }
-
+    /// Resolves path
     #[must_use]
     pub fn resolve_path(&self, path: impl AsRef<Path>) -> PathBuf {
         resolve_path(path.as_ref(), &self.cwd)
     }
-
+    /// Handles path in scope
     #[must_use]
     pub fn path_in_scope(&self, path: impl AsRef<Path>) -> bool {
         let resolved = canonicalize_best_effort(&self.resolve_path(path));
@@ -251,7 +286,7 @@ impl ToolPermissionContext {
             .into_iter()
             .any(|scope| is_path_within(&resolved, &scope))
     }
-
+    /// Handles first path outside scope
     #[must_use]
     pub fn first_path_outside_scope(&self, paths: &[PathBuf]) -> Option<PathBuf> {
         paths
@@ -277,29 +312,36 @@ impl ToolPermissionContext {
             (raw_inside && canonical_outside).then_some(canonical)
         })
     }
-
+    /// Handles evaluate
     #[must_use]
     pub fn evaluate(&self, request: &PermissionRequest) -> PermissionDecision {
         evaluate_permission(self, request)
     }
 }
-
+/// Represents permission request
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct PermissionRequest {
+    /// Stores the tool name
     pub tool_name: String,
+    /// Stores the tool aliases
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tool_aliases: Vec<String>,
+    /// Stores the read only
     #[serde(default)]
     pub read_only: bool,
+    /// Stores the destructive
     #[serde(default)]
     pub destructive: bool,
+    /// Stores the paths
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub paths: Vec<PathBuf>,
+    /// Stores the shell command
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub shell_command: Option<String>,
 }
 
 impl PermissionRequest {
+    /// Creates a new value
     #[must_use]
     pub fn new(tool_name: impl Into<String>) -> Self {
         Self {
@@ -311,50 +353,50 @@ impl PermissionRequest {
             shell_command: None,
         }
     }
-
+    /// Handles with alias
     #[must_use]
     pub fn with_alias(mut self, alias: impl Into<String>) -> Self {
         self.tool_aliases.push(alias.into());
         self
     }
-
+    /// Handles with aliases
     #[must_use]
     pub fn with_aliases(mut self, aliases: impl IntoIterator<Item = impl Into<String>>) -> Self {
         self.tool_aliases
             .extend(aliases.into_iter().map(Into::into));
         self
     }
-
+    /// Reads only
     #[must_use]
     pub fn read_only(mut self, read_only: bool) -> Self {
         self.read_only = read_only;
         self
     }
-
+    /// Handles destructive
     #[must_use]
     pub fn destructive(mut self, destructive: bool) -> Self {
         self.destructive = destructive;
         self
     }
-
+    /// Handles with path
     #[must_use]
     pub fn with_path(mut self, path: impl Into<PathBuf>) -> Self {
         self.paths.push(path.into());
         self
     }
-
+    /// Handles with paths
     #[must_use]
     pub fn with_paths(mut self, paths: impl IntoIterator<Item = impl Into<PathBuf>>) -> Self {
         self.paths.extend(paths.into_iter().map(Into::into));
         self
     }
-
+    /// Handles with shell command
     #[must_use]
     pub fn with_shell_command(mut self, shell_command: impl Into<String>) -> Self {
         self.shell_command = Some(shell_command.into());
         self
     }
-
+    /// Handles matches tool name
     #[must_use]
     pub fn matches_tool_name(&self, name: &str) -> bool {
         let Some(name) = normalize_tool_name(name) else {
@@ -369,34 +411,48 @@ impl PermissionRequest {
                 .any(|alias| alias == name)
     }
 }
-
+/// Enumerates shell safety verdict
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum ShellSafetyVerdict {
+    /// Represents review
     Review,
+    /// Represents blocked
     Blocked,
 }
-
+/// Represents shell safety issue
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct ShellSafetyIssue {
+    /// Stores the verdict
     pub verdict: ShellSafetyVerdict,
+    /// Stores the message
     pub message: String,
 }
-
+/// Enumerates permission decision reason
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum PermissionDecisionReason {
+    /// Represents rule
     Rule {
+        /// Stores the rule
         rule: PermissionRule,
     },
+    /// Represents mode
     Mode {
+        /// Stores the mode
         mode: PermissionMode,
+        /// Stores the detail
         detail: String,
     },
+    /// Represents path scope
     PathScope {
+        /// Stores the path
         path: PathBuf,
+        /// Stores the allowed roots
         allowed_roots: Vec<PathBuf>,
     },
+    /// Represents shell safety
     ShellSafety {
+        /// Stores the issue
         issue: ShellSafetyIssue,
     },
 }
@@ -448,36 +504,49 @@ impl fmt::Display for PermissionDecisionReason {
         }
     }
 }
-
+/// Enumerates permission decision
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "decision", rename_all = "snake_case")]
 pub enum PermissionDecision {
-    Allow { reason: PermissionDecisionReason },
-    Ask { reason: PermissionDecisionReason },
-    Deny { reason: PermissionDecisionReason },
+    /// Represents allow
+    Allow {
+        /// Stores the reason
+        reason: PermissionDecisionReason,
+    },
+    /// Represents ask
+    Ask {
+        /// Stores the reason
+        reason: PermissionDecisionReason,
+    },
+    /// Represents deny
+    Deny {
+        /// Stores the reason
+        reason: PermissionDecisionReason,
+    },
 }
 
 impl PermissionDecision {
+    /// Handles allow
     #[must_use]
     pub fn allow(reason: PermissionDecisionReason) -> Self {
         Self::Allow { reason }
     }
-
+    /// Handles ask
     #[must_use]
     pub fn ask(reason: PermissionDecisionReason) -> Self {
         Self::Ask { reason }
     }
-
+    /// Handles deny
     #[must_use]
     pub fn deny(reason: PermissionDecisionReason) -> Self {
         Self::Deny { reason }
     }
-
+    /// Returns whether allowed
     #[must_use]
     pub fn is_allowed(&self) -> bool {
         matches!(self, Self::Allow { .. })
     }
-
+    /// Handles reason
     #[must_use]
     pub fn reason(&self) -> &PermissionDecisionReason {
         match self {
@@ -485,7 +554,7 @@ impl PermissionDecision {
         }
     }
 }
-
+/// Evaluates permission
 #[must_use]
 pub fn evaluate_permission(
     context: &ToolPermissionContext,
@@ -560,7 +629,7 @@ pub fn evaluate_permission(
         .mode
         .default_decision(request.read_only, request.destructive)
 }
-
+/// Checks shell safety
 #[must_use]
 pub fn check_shell_safety(command: &str) -> Option<ShellSafetyIssue> {
     let normalized = normalize_shell_command(command);
@@ -747,7 +816,7 @@ fn pipes_into_shell(command: &str) -> bool {
             .is_some_and(|token| matches!(*token, "sh" | "bash" | "dash" | "ksh" | "zsh"))
     })
 }
-
+/// Resolves path
 #[must_use]
 pub fn resolve_path(path: &Path, cwd: &Path) -> PathBuf {
     let absolute = if path.is_absolute() {
@@ -757,7 +826,7 @@ pub fn resolve_path(path: &Path, cwd: &Path) -> PathBuf {
     };
     normalize_path(&absolute)
 }
-
+/// Returns whether path within
 #[must_use]
 pub fn is_path_within(path: &Path, root: &Path) -> bool {
     let path = normalize_path(path);

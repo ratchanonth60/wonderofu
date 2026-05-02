@@ -11,7 +11,9 @@ use unicode_width::UnicodeWidthStr;
 /// Visible text dimensions in terminal cells.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct TextMeasurement {
+    /// Stores the width
     pub width: usize,
+    /// Stores the height
     pub height: usize,
 }
 

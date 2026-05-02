@@ -12,29 +12,40 @@ use wonder_of_u_core::{
 };
 
 use crate::{app_root, base_spec, parse_input, require_non_empty_text};
-
+/// Represents agent input
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AgentInput {
+    /// Stores the prompt
     pub prompt: String,
+    /// Stores the description
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
+    /// Stores the subagent type
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub subagent_type: Option<String>,
+    /// Stores the model
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
+    /// Stores the run in background
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub run_in_background: Option<bool>,
+    /// Stores the name
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
+    /// Stores the team name
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub team_name: Option<String>,
+    /// Stores the mode
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mode: Option<String>,
+    /// Stores the isolation
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub isolation: Option<String>,
+    /// Stores the cwd
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cwd: Option<String>,
+    /// Stores the tools
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tools: Option<Vec<String>>,
 }
@@ -79,7 +90,7 @@ impl AgentInput {
         Ok(())
     }
 }
-
+/// Represents agent tool
 #[derive(Debug, Default)]
 pub struct AgentTool;
 

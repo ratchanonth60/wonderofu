@@ -1,24 +1,42 @@
 use crossterm::style::Color as CrosstermColor;
-
+/// Enumerates color
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Color {
+    /// Represents reset
     Reset,
+    /// Represents black
     Black,
+    /// Represents dark grey
     DarkGrey,
+    /// Represents red
     Red,
+    /// Represents dark red
     DarkRed,
+    /// Represents green
     Green,
+    /// Represents dark green
     DarkGreen,
+    /// Represents yellow
     Yellow,
+    /// Represents dark yellow
     DarkYellow,
+    /// Represents blue
     Blue,
+    /// Represents dark blue
     DarkBlue,
+    /// Represents magenta
     Magenta,
+    /// Represents dark magenta
     DarkMagenta,
+    /// Represents cyan
     Cyan,
+    /// Represents dark cyan
     DarkCyan,
+    /// Represents grey
     Grey,
+    /// Represents white
     White,
+    /// Represents rgb
     Rgb(u8, u8, u8),
 }
 
@@ -46,70 +64,85 @@ impl From<Color> for CrosstermColor {
         }
     }
 }
-
+/// Represents text style
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct TextStyle {
+    /// Stores the fg
     pub fg: Option<Color>,
+    /// Stores the bg
     pub bg: Option<Color>,
+    /// Stores the bold
     pub bold: bool,
+    /// Stores the dim
     pub dim: bool,
+    /// Stores the italic
     pub italic: bool,
+    /// Stores the underlined
     pub underlined: bool,
+    /// Stores the reversed
     pub reversed: bool,
 }
 
 impl TextStyle {
+    /// Constant fn
     #[must_use]
     pub const fn fg(mut self, color: Color) -> Self {
         self.fg = Some(color);
         self
     }
-
+    /// Constant fn
     #[must_use]
     pub const fn bg(mut self, color: Color) -> Self {
         self.bg = Some(color);
         self
     }
-
+    /// Constant fn
     #[must_use]
     pub const fn bold(mut self) -> Self {
         self.bold = true;
         self
     }
-
+    /// Constant fn
     #[must_use]
     pub const fn dim(mut self) -> Self {
         self.dim = true;
         self
     }
-
+    /// Constant fn
     #[must_use]
     pub const fn italic(mut self) -> Self {
         self.italic = true;
         self
     }
-
+    /// Constant fn
     #[must_use]
     pub const fn underlined(mut self) -> Self {
         self.underlined = true;
         self
     }
-
+    /// Constant fn
     #[must_use]
     pub const fn reversed(mut self) -> Self {
         self.reversed = true;
         self
     }
 }
-
+/// Represents theme
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Theme {
+    /// Stores the background
     pub background: TextStyle,
+    /// Stores the border
     pub border: TextStyle,
+    /// Stores the title
     pub title: TextStyle,
+    /// Stores the messages
     pub messages: TextStyle,
+    /// Stores the prompt
     pub prompt: TextStyle,
+    /// Stores the status
     pub status: TextStyle,
+    /// Stores the footer
     pub footer: TextStyle,
 }
 

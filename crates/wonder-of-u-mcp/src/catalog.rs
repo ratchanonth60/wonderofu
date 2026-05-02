@@ -1,14 +1,17 @@
 use wonder_of_u_core::{ToolKind, ToolSource, ToolSpec};
 
 use crate::{McpResource, McpTool, build_mcp_resource_name, build_mcp_tool_name};
-
+/// Stores mcp catalog
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct McpCatalog {
+    /// Stores the tools
     pub tools: Vec<McpToolRegistration>,
+    /// Stores the resources
     pub resources: Vec<McpResourceRegistration>,
 }
 
 impl McpCatalog {
+    /// Handles from server
     #[must_use]
     pub fn from_server(
         server_name: &str,
@@ -26,7 +29,7 @@ impl McpCatalog {
                 .collect(),
         }
     }
-
+    /// Handles tool specs
     #[must_use]
     pub fn tool_specs(&self) -> Vec<ToolSpec> {
         self.tools
@@ -35,15 +38,19 @@ impl McpCatalog {
             .collect()
     }
 }
-
+/// Represents mcp tool registration
 #[derive(Clone, Debug, PartialEq)]
 pub struct McpToolRegistration {
+    /// Stores the server name
     pub server_name: String,
+    /// Stores the qualified name
     pub qualified_name: String,
+    /// Stores the tool
     pub tool: McpTool,
 }
 
 impl McpToolRegistration {
+    /// Creates a new value
     #[must_use]
     pub fn new(server_name: &str, tool: McpTool) -> Self {
         Self {
@@ -52,7 +59,7 @@ impl McpToolRegistration {
             tool,
         }
     }
-
+    /// Handles tool spec
     #[must_use]
     pub fn tool_spec(&self) -> ToolSpec {
         let mut spec = ToolSpec::new(
@@ -67,15 +74,19 @@ impl McpToolRegistration {
         spec
     }
 }
-
+/// Represents mcp resource registration
 #[derive(Clone, Debug, PartialEq)]
 pub struct McpResourceRegistration {
+    /// Stores the server name
     pub server_name: String,
+    /// Stores the qualified name
     pub qualified_name: String,
+    /// Stores the resource
     pub resource: McpResource,
 }
 
 impl McpResourceRegistration {
+    /// Creates a new value
     #[must_use]
     pub fn new(server_name: &str, resource: McpResource) -> Self {
         Self {

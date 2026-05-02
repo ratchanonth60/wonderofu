@@ -1,25 +1,40 @@
+/// Enumerates motion
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Motion {
+    /// Represents left
     Left,
+    /// Represents right
     Right,
+    /// Represents up
     Up,
+    /// Represents down
     Down,
+    /// Represents line start
     LineStart,
+    /// Represents line end
     LineEnd,
+    /// Represents first non blank
     FirstNonBlank,
+    /// Represents word forward
     WordForward,
+    /// Represents word backward
     WordBackward,
+    /// Represents word end
     WordEnd,
 }
-
+/// Enumerates edit action
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum EditAction {
+    /// Represents move
     Move(Motion),
+    /// Represents insert newline
     InsertNewline,
+    /// Represents backspace
     Backspace,
+    /// Represents delete
     Delete,
 }
-
+/// Represents text buffer
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TextBuffer {
     chars: Vec<char>,
@@ -34,6 +49,7 @@ impl Default for TextBuffer {
 }
 
 impl TextBuffer {
+    /// Creates a new value
     #[must_use]
     pub fn new(multiline: bool) -> Self {
         Self {
@@ -42,7 +58,7 @@ impl TextBuffer {
             multiline,
         }
     }
-
+    /// Handles from text
     #[must_use]
     pub fn from_text(text: impl AsRef<str>, multiline: bool) -> Self {
         let chars: Vec<char> = text.as_ref().chars().collect();
@@ -53,31 +69,33 @@ impl TextBuffer {
             multiline,
         }
     }
-
+    /// Handles text
     #[must_use]
     pub fn text(&self) -> String {
         self.chars.iter().collect()
     }
-
+    /// Constant fn
     #[must_use]
     pub const fn cursor(&self) -> usize {
         self.cursor
     }
-
+    /// Constant fn
     #[must_use]
     pub const fn is_multiline(&self) -> bool {
         self.multiline
     }
-
+    /// Returns whether empty
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.chars.is_empty()
     }
 
+    /// Handles set cursor
     pub fn set_cursor(&mut self, cursor: usize) {
         self.cursor = cursor.min(self.chars.len());
     }
 
+    /// Handles insert char
     pub fn insert_char(&mut self, ch: char) {
         if ch == '\n' && !self.multiline {
             return;
@@ -87,12 +105,14 @@ impl TextBuffer {
         self.cursor += 1;
     }
 
+    /// Handles insert text
     pub fn insert_text(&mut self, text: &str) {
         for ch in text.chars() {
             self.insert_char(ch);
         }
     }
 
+    /// Handles apply edit action
     pub fn apply_edit_action(&mut self, action: EditAction) {
         match action {
             EditAction::Move(motion) => self.move_caret(motion, 1),
@@ -106,6 +126,7 @@ impl TextBuffer {
         }
     }
 
+    /// Handles move caret
     pub fn move_caret(&mut self, motion: Motion, count: usize) {
         let count = count.max(1);
         match motion {
@@ -122,6 +143,7 @@ impl TextBuffer {
         }
     }
 
+    /// Handles move normal
     pub fn move_normal(&mut self, motion: Motion, count: usize) {
         if self.chars.is_empty() {
             self.cursor = 0;
@@ -144,6 +166,7 @@ impl TextBuffer {
         };
     }
 
+    /// Handles enter normal mode
     pub fn enter_normal_mode(&mut self) {
         if self.chars.is_empty() {
             self.cursor = 0;
@@ -160,6 +183,7 @@ impl TextBuffer {
         self.cursor = self.cursor.min(self.last_cursor());
     }
 
+    /// Handles append after cursor
     pub fn append_after_cursor(&mut self) {
         if self.chars.is_empty() {
             self.cursor = 0;
@@ -169,14 +193,17 @@ impl TextBuffer {
         self.cursor = (self.normal_cursor() + 1).min(self.chars.len());
     }
 
+    /// Handles append line end
     pub fn append_line_end(&mut self) {
         self.cursor = self.line_end(self.normal_cursor_for_insert());
     }
 
+    /// Handles insert line start
     pub fn insert_line_start(&mut self) {
         self.cursor = self.first_non_blank_in_line(self.normal_cursor_for_insert());
     }
 
+    /// Handles backspace
     pub fn backspace(&mut self) -> bool {
         if self.cursor == 0 {
             return false;
@@ -187,6 +214,7 @@ impl TextBuffer {
         true
     }
 
+    /// Handles delete
     pub fn delete(&mut self) -> bool {
         if self.cursor >= self.chars.len() {
             return false;
@@ -196,6 +224,7 @@ impl TextBuffer {
         true
     }
 
+    /// Handles delete char under cursor
     pub fn delete_char_under_cursor(&mut self, count: usize) -> bool {
         if self.chars.is_empty() {
             return false;
@@ -212,6 +241,7 @@ impl TextBuffer {
         true
     }
 
+    /// Handles delete motion
     pub fn delete_motion(&mut self, motion: Motion, count: usize) -> bool {
         let Some((start, end)) = self.motion_delete_range(motion, count) else {
             return false;

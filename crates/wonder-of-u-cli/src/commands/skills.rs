@@ -17,15 +17,18 @@ use super::{
     },
 };
 
+/// Represents skills command
 pub struct SkillsCommand {
     storage_dir: Option<PathBuf>,
 }
 
 impl SkillsCommand {
+    /// Constant fn
     pub const fn new(storage_dir: Option<PathBuf>) -> Self {
         Self { storage_dir }
     }
 
+    /// Handles command spec
     pub fn command_spec() -> CommandSpec {
         let mut spec = CommandSpec::new(
             "skills",

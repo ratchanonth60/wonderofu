@@ -58,18 +58,27 @@ const KNOWN_SOURCE_SETTINGS: &[&str] = &[
     "inputNeededNotifEnabled",
     "agentPushNotifEnabled",
 ];
-
+/// Enumerates lsp operation
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum LspOperation {
+    /// Represents go to definition
     GoToDefinition,
+    /// Represents find references
     FindReferences,
+    /// Represents hover
     Hover,
+    /// Represents document symbol
     DocumentSymbol,
+    /// Represents workspace symbol
     WorkspaceSymbol,
+    /// Represents go to implementation
     GoToImplementation,
+    /// Represents prepare call hierarchy
     PrepareCallHierarchy,
+    /// Represents incoming calls
     IncomingCalls,
+    /// Represents outgoing calls
     OutgoingCalls,
 }
 
@@ -88,14 +97,18 @@ impl LspOperation {
         }
     }
 }
-
+/// Represents lsp input
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct LspInput {
+    /// Stores the operation
     pub operation: LspOperation,
+    /// Stores the file path
     #[serde(rename = "file_path", alias = "filePath")]
     pub file_path: PathBuf,
+    /// Stores the line
     pub line: usize,
+    /// Stores the character
     pub character: usize,
 }
 
@@ -137,11 +150,13 @@ impl LspInput {
         Ok(resolved)
     }
 }
-
+/// Represents config input
 #[derive(Clone, Debug, PartialEq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ConfigInput {
+    /// Stores the setting
     pub setting: String,
+    /// Stores the value
     #[serde(default)]
     pub value: Option<Value>,
 }
@@ -159,11 +174,13 @@ impl ConfigInput {
         Ok(())
     }
 }
-
+/// Enumerates brief status
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum BriefStatus {
+    /// Represents normal
     Normal,
+    /// Represents proactive
     Proactive,
 }
 
@@ -175,13 +192,16 @@ impl BriefStatus {
         }
     }
 }
-
+/// Represents brief input
 #[derive(Clone, Debug, Eq, PartialEq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct BriefInput {
+    /// Stores the message
     pub message: String,
+    /// Stores the attachments
     #[serde(default)]
     pub attachments: Vec<PathBuf>,
+    /// Stores the status
     pub status: BriefStatus,
 }
 
@@ -194,11 +214,13 @@ impl BriefInput {
         Ok(())
     }
 }
-
+/// Represents skill input
 #[derive(Clone, Debug, Eq, PartialEq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SkillInput {
+    /// Stores the skill
     pub skill: String,
+    /// Stores the args
     #[serde(default)]
     pub args: Option<String>,
 }
@@ -212,11 +234,13 @@ impl SkillInput {
         self.skill.trim().trim_start_matches('/')
     }
 }
-
+/// Represents tool search input
 #[derive(Clone, Debug, Eq, PartialEq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ToolSearchInput {
+    /// Stores the query
     pub query: String,
+    /// Stores the max results
     #[serde(default)]
     pub max_results: Option<usize>,
 }
@@ -236,19 +260,19 @@ impl ToolSearchInput {
         self.max_results.unwrap_or(5)
     }
 }
-
+/// Represents lsp tool
 #[derive(Debug, Default)]
 pub struct LspTool;
-
+/// Represents config tool
 #[derive(Debug, Default)]
 pub struct ConfigTool;
-
+/// Represents brief tool
 #[derive(Debug, Default)]
 pub struct BriefTool;
-
+/// Represents skill tool
 #[derive(Debug, Default)]
 pub struct SkillTool;
-
+/// Represents tool search tool
 #[derive(Debug, Default)]
 pub struct ToolSearchTool;
 

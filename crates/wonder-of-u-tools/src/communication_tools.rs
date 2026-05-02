@@ -67,24 +67,34 @@ fn communication_spec(name: &str, description: &str) -> ToolSpec {
     spec.required_features.insert(FeatureFlag::Agents);
     spec
 }
-
+/// Enumerates structured message
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum StructuredMessage {
+    /// Represents shutdown request
     ShutdownRequest {
         #[serde(default, skip_serializing_if = "Option::is_none")]
+        /// Stores the reason
         reason: Option<String>,
     },
+    /// Represents shutdown response
     ShutdownResponse {
+        /// Stores the request id
         request_id: String,
+        /// Stores the approve
         approve: bool,
         #[serde(default, skip_serializing_if = "Option::is_none")]
+        /// Stores the reason
         reason: Option<String>,
     },
+    /// Represents plan approval response
     PlanApprovalResponse {
+        /// Stores the request id
         request_id: String,
+        /// Stores the approve
         approve: bool,
         #[serde(default, skip_serializing_if = "Option::is_none")]
+        /// Stores the feedback
         feedback: Option<String>,
     },
 }
@@ -145,11 +155,13 @@ impl StructuredMessage {
         }
     }
 }
-
+/// Enumerates send message payload
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum SendMessagePayload {
+    /// Represents text
     Text(String),
+    /// Represents structured
     Structured(StructuredMessage),
 }
 
@@ -182,13 +194,16 @@ impl SendMessagePayload {
         }
     }
 }
-
+/// Represents send message input
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SendMessageInput {
+    /// Stores the to
     pub to: String,
+    /// Stores the summary
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub summary: Option<String>,
+    /// Stores the message
     pub message: SendMessagePayload,
 }
 
@@ -206,7 +221,7 @@ impl SendMessageInput {
             .validate(&self.to, kind, self.summary.as_deref())
     }
 }
-
+/// Represents send message tool
 #[derive(Debug, Default)]
 pub struct SendMessageTool;
 
@@ -316,13 +331,16 @@ impl Tool for SendMessageTool {
         ))
     }
 }
-
+/// Represents team create input
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TeamCreateInput {
+    /// Stores the team name
     pub team_name: String,
+    /// Stores the description
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
+    /// Stores the agent type
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent_type: Option<String>,
 }
@@ -336,7 +354,7 @@ impl TeamCreateInput {
         Ok(())
     }
 }
-
+/// Represents team create tool
 #[derive(Debug, Default)]
 pub struct TeamCreateTool;
 
@@ -395,11 +413,11 @@ impl Tool for TeamCreateTool {
         ))
     }
 }
-
+/// Represents team delete input
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TeamDeleteInput {}
-
+/// Represents team delete tool
 #[derive(Debug, Default)]
 pub struct TeamDeleteTool;
 
@@ -443,11 +461,11 @@ impl Tool for TeamDeleteTool {
         ))
     }
 }
-
+/// Represents list peers input
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ListPeersInput {}
-
+/// Represents list peers tool
 #[derive(Debug, Default)]
 pub struct ListPeersTool;
 

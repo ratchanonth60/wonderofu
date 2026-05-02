@@ -8,33 +8,54 @@ use crossterm::event::{
     KeyEventKind, MouseButton as CrosstermMouseButton, MouseEvent as CrosstermMouseEvent,
     MouseEventKind as CrosstermMouseEventKind,
 };
-
+/// Enumerates key code
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum KeyCode {
+    /// Represents backspace
     Backspace,
+    /// Represents enter
     Enter,
+    /// Represents left
     Left,
+    /// Represents right
     Right,
+    /// Represents up
     Up,
+    /// Represents down
     Down,
+    /// Represents home
     Home,
+    /// Represents end
     End,
+    /// Represents page up
     PageUp,
+    /// Represents page down
     PageDown,
+    /// Represents tab
     Tab,
+    /// Represents back tab
     BackTab,
+    /// Represents delete
     Delete,
+    /// Represents insert
     Insert,
+    /// Represents esc
     Esc,
+    /// Represents char
     Char(char),
+    /// Represents f
     F(u8),
+    /// Represents null
     Null,
 }
-
+/// Represents key modifiers
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct KeyModifiers {
+    /// Stores the shift
     pub shift: bool,
+    /// Stores the control
     pub control: bool,
+    /// Stores the alt
     pub alt: bool,
 }
 
@@ -47,25 +68,31 @@ impl From<event::KeyModifiers> for KeyModifiers {
         }
     }
 }
-
+/// Represents key event
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct KeyEvent {
+    /// Stores the code
     pub code: KeyCode,
+    /// Stores the modifiers
     pub modifiers: KeyModifiers,
 }
 
 impl KeyEvent {
+    /// Returns whether ctrl char
     #[must_use]
     pub fn is_ctrl_char(self, expected: char) -> bool {
         matches!(self.code, KeyCode::Char(actual)
             if actual.eq_ignore_ascii_case(&expected) && self.modifiers.control)
     }
 }
-
+/// Enumerates mouse button
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum MouseButton {
+    /// Represents left
     Left,
+    /// Represents middle
     Middle,
+    /// Represents right
     Right,
 }
 
@@ -78,32 +105,48 @@ impl From<CrosstermMouseButton> for MouseButton {
         }
     }
 }
-
+/// Enumerates mouse event kind
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum MouseEventKind {
+    /// Represents down
     Down(MouseButton),
+    /// Represents up
     Up(MouseButton),
+    /// Represents drag
     Drag(MouseButton),
+    /// Represents moved
     Moved,
+    /// Represents scroll up
     ScrollUp,
+    /// Represents scroll down
     ScrollDown,
+    /// Represents scroll left
     ScrollLeft,
+    /// Represents scroll right
     ScrollRight,
 }
-
+/// Represents mouse event
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct MouseEvent {
+    /// Stores the kind
     pub kind: MouseEventKind,
+    /// Stores the column
     pub column: u16,
+    /// Stores the row
     pub row: u16,
+    /// Stores the modifiers
     pub modifiers: KeyModifiers,
 }
-
+/// Represents click event
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ClickEvent {
+    /// Stores the button
     pub button: MouseButton,
+    /// Stores the column
     pub column: u16,
+    /// Stores the row
     pub row: u16,
+    /// Stores the modifiers
     pub modifiers: KeyModifiers,
 }
 
@@ -115,13 +158,14 @@ struct PressState {
     modifiers: KeyModifiers,
     dragged: bool,
 }
-
+/// Represents click tracker
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct ClickTracker {
     pressed: PressState,
 }
 
 impl ClickTracker {
+    /// Updates state from a UI event
     pub fn observe(&mut self, event: MouseEvent) -> Option<ClickEvent> {
         match event.kind {
             MouseEventKind::Down(button) => {
@@ -170,19 +214,32 @@ impl ClickTracker {
         }
     }
 }
-
+/// Enumerates ui event
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum UiEvent {
+    /// Represents key
     Key(KeyEvent),
+    /// Represents mouse
     Mouse(CrosstermMouseEvent),
+    /// Represents paste
     Paste(String),
-    Resize { width: u16, height: u16 },
+    /// Represents resize
+    Resize {
+        /// Stores the width
+        width: u16,
+        /// Stores the height
+        height: u16,
+    },
+    /// Represents focus gained
     FocusGained,
+    /// Represents focus lost
     FocusLost,
+    /// Represents tick
     Tick,
 }
 
 impl UiEvent {
+    /// Handles from crossterm
     #[must_use]
     pub fn from_crossterm(event: CrosstermEvent) -> Option<Self> {
         match event {
@@ -194,7 +251,7 @@ impl UiEvent {
             CrosstermEvent::FocusLost => Some(Self::FocusLost),
         }
     }
-
+    /// Handles normalized mouse
     #[must_use]
     pub fn normalized_mouse(&self) -> Option<MouseEvent> {
         match self {
@@ -203,7 +260,7 @@ impl UiEvent {
         }
     }
 }
-
+/// Normalizes key event
 #[must_use]
 pub fn normalize_key_event(event: CrosstermKeyEvent) -> Option<KeyEvent> {
     if matches!(event.kind, KeyEventKind::Release) {
@@ -215,7 +272,7 @@ pub fn normalize_key_event(event: CrosstermKeyEvent) -> Option<KeyEvent> {
         modifiers: event.modifiers.into(),
     })
 }
-
+/// Normalizes mouse event
 #[must_use]
 pub fn normalize_mouse_event(event: CrosstermMouseEvent) -> MouseEvent {
     MouseEvent {
@@ -262,11 +319,14 @@ fn normalize_mouse_kind(kind: CrosstermMouseEventKind) -> MouseEventKind {
     }
 }
 
+/// Defines event source behavior
 pub trait EventSource {
+    /// Handles poll
     fn poll(&mut self, timeout: Duration) -> io::Result<bool>;
+    /// Handles read
     fn read(&mut self) -> io::Result<CrosstermEvent>;
 }
-
+/// Represents crossterm event source
 #[derive(Clone, Copy, Debug, Default)]
 pub struct CrosstermEventSource;
 
@@ -279,25 +339,37 @@ impl EventSource for CrosstermEventSource {
         event::read()
     }
 }
-
+/// Enumerates turn state
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum TurnState {
+    /// Represents idle
     #[default]
     Idle,
+    /// Represents editing input
     EditingInput,
+    /// Represents command queued
     CommandQueued,
+    /// Represents model request active
     ModelRequestActive,
+    /// Represents tool permission pending
     ToolPermissionPending,
+    /// Represents tool executing
     ToolExecuting,
+    /// Represents streaming response
     StreamingResponse,
+    /// Represents interrupted
     Interrupted,
+    /// Represents completed
     Completed,
 }
-
+/// Represents event loop state
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct EventLoopState {
+    /// Stores the turn state
     pub turn_state: TurnState,
+    /// Stores the needs render
     pub needs_render: bool,
+    /// Stores the exit requested
     pub exit_requested: bool,
 }
 
@@ -312,6 +384,7 @@ impl Default for EventLoopState {
 }
 
 impl EventLoopState {
+    /// Updates state from a UI event
     pub fn observe(&mut self, event: &UiEvent) {
         match event {
             UiEvent::Key(key) if key.is_ctrl_char('c') => {
@@ -335,16 +408,18 @@ impl EventLoopState {
         }
     }
 
+    /// Handles transition
     pub fn transition(&mut self, turn_state: TurnState) {
         self.turn_state = turn_state;
         self.needs_render = true;
     }
 
+    /// Handles rendered
     pub fn rendered(&mut self) {
         self.needs_render = false;
     }
 }
-
+/// Represents event loop
 #[derive(Debug)]
 pub struct EventLoop<S> {
     source: S,
@@ -353,6 +428,7 @@ pub struct EventLoop<S> {
 }
 
 impl<S: EventSource> EventLoop<S> {
+    /// Creates a new value
     #[must_use]
     pub fn new(source: S, tick_rate: Duration) -> Self {
         Self {
@@ -361,16 +437,18 @@ impl<S: EventSource> EventLoop<S> {
             last_tick: Instant::now(),
         }
     }
-
+    /// Constant fn
     #[must_use]
     pub const fn tick_rate(&self) -> Duration {
         self.tick_rate
     }
 
+    /// Handles next event
     pub fn next_event(&mut self) -> io::Result<UiEvent> {
         self.next_event_at(Instant::now())
     }
 
+    /// Handles next event at
     pub fn next_event_at(&mut self, now: Instant) -> io::Result<UiEvent> {
         let elapsed = now.saturating_duration_since(self.last_tick);
         let timeout = self.tick_rate.saturating_sub(elapsed);

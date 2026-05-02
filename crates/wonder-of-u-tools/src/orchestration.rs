@@ -120,18 +120,23 @@ pub fn statically_denied_by_rule(spec: &ToolSpec, context: &ToolContext) -> bool
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ToolConcurrencyClass {
+    /// Represents exclusive
     Exclusive,
+    /// Represents parallel safe
     ParallelSafe,
 }
 
 /// Static concurrency metadata derived from a tool spec.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct ToolConcurrencyMetadata {
+    /// Stores the class
     pub class: ToolConcurrencyClass,
+    /// Stores the max parallelism
     pub max_parallelism: usize,
 }
 
 impl ToolConcurrencyMetadata {
+    /// Handles from spec
     #[must_use]
     pub fn from_spec(spec: &ToolSpec) -> Self {
         if spec.concurrency_safe {
@@ -151,9 +156,13 @@ impl ToolConcurrencyMetadata {
 /// Runtime-wide tool result limits surfaced to orchestration code.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct ToolRuntimeLimits {
+    /// Stores the max result size chars
     pub max_result_size_chars: usize,
+    /// Stores the max result tokens
     pub max_result_tokens: usize,
+    /// Stores the max result bytes
     pub max_result_bytes: usize,
+    /// Stores the max results per message chars
     pub max_results_per_message_chars: usize,
 }
 
@@ -172,10 +181,15 @@ impl Default for ToolRuntimeLimits {
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ToolExecutionState {
+    /// Represents queued
     Queued,
+    /// Represents executing
     Executing,
+    /// Represents completed
     Completed,
+    /// Represents yielded
     Yielded,
+    /// Represents cancelled
     Cancelled,
 }
 
@@ -183,24 +197,32 @@ pub enum ToolExecutionState {
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ToolCancellationReason {
+    /// Represents user interrupted
     UserInterrupted,
+    /// Represents sibling error
     SiblingError,
+    /// Represents streaming fallback
     StreamingFallback,
 }
 
 /// Mutable progress snapshot suitable for orchestration UIs and transcript summaries.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ToolProgressState {
+    /// Stores the state
     pub state: ToolExecutionState,
+    /// Stores the message
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub message: Option<String>,
+    /// Stores the percent
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub percent: Option<f32>,
+    /// Stores the cancellation
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cancellation: Option<ToolCancellationReason>,
 }
 
 impl ToolProgressState {
+    /// Handles queued
     #[must_use]
     pub fn queued() -> Self {
         Self {
@@ -209,6 +231,7 @@ impl ToolProgressState {
         }
     }
 
+    /// Handles apply progress
     pub fn apply_progress(&mut self, progress: &ToolProgress) {
         self.state = ToolExecutionState::Executing;
         self.message = Some(progress.message.clone());
@@ -216,17 +239,20 @@ impl ToolProgressState {
         self.cancellation = None;
     }
 
+    /// Handles mark completed
     pub fn mark_completed(&mut self) {
         self.state = ToolExecutionState::Completed;
         self.percent = Some(100.0);
         self.cancellation = None;
     }
 
+    /// Handles mark yielded
     pub fn mark_yielded(&mut self) {
         self.state = ToolExecutionState::Yielded;
         self.cancellation = None;
     }
 
+    /// Handles cancel
     pub fn cancel(&mut self, reason: ToolCancellationReason) {
         self.state = ToolExecutionState::Cancelled;
         self.cancellation = Some(reason);
@@ -247,14 +273,20 @@ impl Default for ToolProgressState {
 /// Summary of a tool result whose full output was persisted elsewhere.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct PersistedToolResultSummary {
+    /// Stores the filepath
     pub filepath: String,
+    /// Stores the original size bytes
     pub original_size_bytes: usize,
+    /// Stores whether json
     pub is_json: bool,
+    /// Stores the preview
     pub preview: String,
+    /// Stores whether more
     pub has_more: bool,
 }
 
 impl PersistedToolResultSummary {
+    /// Handles from content
     #[must_use]
     pub fn from_content(
         filepath: impl Into<String>,
@@ -271,7 +303,7 @@ impl PersistedToolResultSummary {
             has_more,
         }
     }
-
+    /// Handles format notice
     #[must_use]
     pub fn format_notice(&self, preview_size_bytes: usize) -> String {
         let mut message = String::new();

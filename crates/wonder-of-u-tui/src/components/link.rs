@@ -3,12 +3,16 @@
 /// Link label, destination, and fallback text.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct LinkView {
+    /// Stores the label
     pub label: String,
+    /// Stores the url
     pub url: String,
+    /// Stores the fallback label
     pub fallback_label: Option<String>,
 }
 
 impl LinkView {
+    /// Creates a new value
     #[must_use]
     pub fn new(url: impl Into<String>) -> Self {
         let url = url.into();
@@ -18,19 +22,19 @@ impl LinkView {
             fallback_label: None,
         }
     }
-
+    /// Handles with label
     #[must_use]
     pub fn with_label(mut self, label: impl Into<String>) -> Self {
         self.label = label.into();
         self
     }
-
+    /// Handles with fallback
     #[must_use]
     pub fn with_fallback(mut self, fallback_label: impl Into<String>) -> Self {
         self.fallback_label = Some(fallback_label.into());
         self
     }
-
+    /// Handles display label
     #[must_use]
     pub fn display_label(&self, supports_hyperlinks: bool) -> &str {
         if supports_hyperlinks {

@@ -12,6 +12,7 @@ use wonder_of_u_storage::StoragePaths;
 
 use crate::normalize_plugin_id;
 
+/// Schema version for plugin config
 pub const PLUGIN_CONFIG_SCHEMA_VERSION: u16 = 1;
 
 fn default_schema_version() -> u16 {
@@ -34,17 +35,21 @@ fn write_json_atomically<T: Serialize>(path: &Path, value: &T) -> Result<()> {
     fs::rename(pending_path, path)?;
     Ok(())
 }
-
+/// Enumerates plugin trust decision
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PluginTrustDecision {
+    /// Represents trusted
     Trusted,
+    /// Represents untrusted
     #[default]
     Untrusted,
+    /// Represents blocked
     Blocked,
 }
 
 impl PluginTrustDecision {
+    /// Constant fn
     #[must_use]
     pub const fn label(self) -> &'static str {
         match self {
@@ -54,15 +59,19 @@ impl PluginTrustDecision {
         }
     }
 }
-
+/// Represents plugin config
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct PluginConfig {
+    /// Stores the schema version
     #[serde(default = "default_schema_version")]
     pub schema_version: u16,
+    /// Stores the additional plugin dirs
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub additional_plugin_dirs: Vec<PathBuf>,
+    /// Stores the additional skill dirs
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub additional_skill_dirs: Vec<PathBuf>,
+    /// Stores the trust
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub trust: BTreeMap<String, PluginTrustDecision>,
 }
@@ -79,6 +88,7 @@ impl Default for PluginConfig {
 }
 
 impl PluginConfig {
+    /// Validates the value
     pub fn validate(&self) -> Result<()> {
         if self.schema_version != PLUGIN_CONFIG_SCHEMA_VERSION {
             return Err(WonderError::validation(format!(
@@ -110,38 +120,41 @@ impl PluginConfig {
 
         Ok(())
     }
-
+    /// Handles trust for
     #[must_use]
     pub fn trust_for(&self, plugin_id: &str) -> Option<PluginTrustDecision> {
         let normalized = normalize_plugin_id(plugin_id).ok()?;
         self.trust.get(&normalized).copied()
     }
 
+    /// Handles set trust
     pub fn set_trust(&mut self, plugin_id: &str, decision: PluginTrustDecision) -> Result<()> {
         let normalized = normalize_plugin_id(plugin_id)?;
         self.trust.insert(normalized, decision);
         Ok(())
     }
 }
-
+/// Stores plugin config store
 #[derive(Clone, Debug)]
 pub struct PluginConfigStore {
     paths: StoragePaths,
 }
 
 impl PluginConfigStore {
+    /// Creates a new value
     #[must_use]
     pub fn new(base_dir: impl Into<PathBuf>) -> Self {
         Self {
             paths: StoragePaths::new(base_dir),
         }
     }
-
+    /// Handles paths
     #[must_use]
     pub fn paths(&self) -> &StoragePaths {
         &self.paths
     }
 
+    /// Handles read
     pub fn read(&self) -> Result<PluginConfig> {
         let path = self.paths.plugin_settings_path();
         if !path.exists() {
@@ -153,12 +166,14 @@ impl PluginConfigStore {
         Ok(config)
     }
 
+    /// Handles write
     pub fn write(&self, config: &PluginConfig) -> Result<()> {
         config.validate()?;
         fs::create_dir_all(self.paths.plugins_config_dir())?;
         write_json_atomically(&self.paths.plugin_settings_path(), config)
     }
 
+    /// Handles set trust
     pub fn set_trust(
         &self,
         plugin_id: &str,

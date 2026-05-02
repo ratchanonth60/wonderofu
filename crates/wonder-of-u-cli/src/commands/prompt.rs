@@ -83,15 +83,18 @@ struct PromptOrchestrationState {
     coordinator: CoordinatorState,
 }
 
+/// Represents prompt command
 pub struct PromptCommand {
     storage_dir: Option<PathBuf>,
 }
 
 impl PromptCommand {
+    /// Constant fn
     pub const fn new(storage_dir: Option<PathBuf>) -> Self {
         Self { storage_dir }
     }
 
+    /// Handles command spec
     pub fn command_spec() -> CommandSpec {
         let mut spec = CommandSpec::new(
             "prompt",

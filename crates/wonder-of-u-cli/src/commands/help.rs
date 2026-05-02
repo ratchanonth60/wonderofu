@@ -10,16 +10,19 @@ use wonder_of_u_core::{
     CommandSpec, Result, WonderError,
 };
 
+/// Represents help command
 pub struct HelpCommand {
     specs: Arc<[CommandSpec]>,
     storage_dir: Option<PathBuf>,
 }
 
 impl HelpCommand {
+    /// Creates a new value
     pub fn new(specs: Arc<[CommandSpec]>, storage_dir: Option<PathBuf>) -> Self {
         Self { specs, storage_dir }
     }
 
+    /// Handles command spec
     pub fn command_spec() -> CommandSpec {
         let mut spec = CommandSpec::new(
             "help",

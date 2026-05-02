@@ -28,47 +28,56 @@ fn write_json_atomically<T: Serialize>(path: &Path, value: &T) -> Result<()> {
     fs::rename(pending_path, path)?;
     Ok(())
 }
-
+/// Represents agent settings
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub struct AgentSettings {
+    /// Stores the selected provider
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub selected_provider: Option<String>,
+    /// Stores the selected model
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub selected_model: Option<String>,
+    /// Stores the fast mode
     #[serde(default)]
     pub fast_mode: bool,
+    /// Stores the effort level
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub effort_level: Option<String>,
+    /// Stores the providers
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub providers: BTreeMap<String, ProviderOverride>,
 }
-
+/// Represents provider override
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub struct ProviderOverride {
+    /// Stores the model
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
+    /// Stores the api base
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub api_base: Option<String>,
 }
-
+/// Stores settings store
 #[derive(Clone, Debug)]
 pub struct SettingsStore {
     paths: StoragePaths,
 }
 
 impl SettingsStore {
+    /// Creates a new value
     #[must_use]
     pub fn new(base_dir: impl Into<PathBuf>) -> Self {
         Self {
             paths: StoragePaths::new(base_dir),
         }
     }
-
+    /// Handles paths
     #[must_use]
     pub fn paths(&self) -> &StoragePaths {
         &self.paths
     }
 
+    /// Handles read
     pub fn read(&self) -> Result<AgentSettings> {
         let path = self.paths.settings_path();
         if !path.exists() {
@@ -78,18 +87,20 @@ impl SettingsStore {
         serde_json::from_str(&fs::read_to_string(path)?).map_err(Into::into)
     }
 
+    /// Handles write
     pub fn write(&self, settings: &AgentSettings) -> Result<()> {
         fs::create_dir_all(self.paths.config_dir())?;
         write_json_atomically(&self.paths.settings_path(), settings)
     }
 }
-
+/// Stores credential store
 #[derive(Clone, Debug)]
 pub struct CredentialStore {
     paths: StoragePaths,
 }
 
 impl CredentialStore {
+    /// Creates a new value
     #[must_use]
     pub fn new(base_dir: impl Into<PathBuf>) -> Self {
         Self {
@@ -97,6 +108,7 @@ impl CredentialStore {
         }
     }
 
+    /// Handles read
     pub fn read(&self) -> Result<StoredCredentials> {
         let path = self.paths.credentials_path();
         if !path.exists() {
@@ -106,11 +118,13 @@ impl CredentialStore {
         serde_json::from_str(&fs::read_to_string(path)?).map_err(Into::into)
     }
 
+    /// Handles write
     pub fn write(&self, credentials: &StoredCredentials) -> Result<()> {
         fs::create_dir_all(self.paths.config_dir())?;
         write_json_atomically(&self.paths.credentials_path(), credentials)
     }
 
+    /// Handles set api key
     pub fn set_api_key(&self, provider: &str, api_key: impl Into<String>) -> Result<()> {
         let mut credentials = self.read()?;
         credentials.providers.insert(
@@ -122,6 +136,7 @@ impl CredentialStore {
         self.write(&credentials)
     }
 
+    /// Handles set oauth token
     pub fn set_oauth_token(
         &self,
         provider: &str,
@@ -141,6 +156,7 @@ impl CredentialStore {
         self.write(&credentials)
     }
 
+    /// Handles remove
     pub fn remove(&self, provider: &str) -> Result<bool> {
         let mut credentials = self.read()?;
         let removed = credentials.providers.remove(provider).is_some();
@@ -149,6 +165,7 @@ impl CredentialStore {
     }
 }
 
+/// Handles require storage dir
 pub fn require_storage_dir(storage_dir: Option<PathBuf>) -> Result<PathBuf> {
     storage_dir.ok_or_else(|| {
         WonderError::validation(

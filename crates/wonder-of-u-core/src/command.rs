@@ -11,47 +11,68 @@ use crate::{
     AdditionalWorkingDirectory, FeatureFlag, FeatureSet, PermissionMode, Result, SessionId,
     WonderError,
 };
-
+/// Enumerates command kind
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CommandKind {
+    /// Represents prompt
     Prompt,
+    /// Represents local
     Local,
+    /// Represents tui
     Tui,
+    /// Represents non interactive
     NonInteractive,
+    /// Represents resume entrypoint
     ResumeEntrypoint,
 }
-
+/// Enumerates command source
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CommandSource {
+    /// Represents built in
     BuiltIn,
+    /// Represents skill
     Skill,
+    /// Represents plugin
     Plugin,
+    /// Represents workflow
     Workflow,
+    /// Represents mcp
     Mcp,
+    /// Represents dynamic
     Dynamic,
 }
-
+/// Represents command spec
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct CommandSpec {
+    /// Stores the name
     pub name: String,
+    /// Stores the aliases
     #[serde(default)]
     pub aliases: Vec<String>,
+    /// Stores the description
     pub description: String,
+    /// Stores the kind
     pub kind: CommandKind,
+    /// Stores the source
     pub source: CommandSource,
+    /// Stores the required features
     #[serde(default)]
     pub required_features: BTreeSet<FeatureFlag>,
+    /// Stores the hidden
     #[serde(default)]
     pub hidden: bool,
+    /// Stores the requires auth
     #[serde(default)]
     pub requires_auth: bool,
+    /// Stores the interactive only
     #[serde(default)]
     pub interactive_only: bool,
 }
 
 impl CommandSpec {
+    /// Creates a new value
     #[must_use]
     pub fn new(name: impl Into<String>, description: impl Into<String>, kind: CommandKind) -> Self {
         Self {
@@ -67,6 +88,7 @@ impl CommandSpec {
         }
     }
 
+    /// Validates the value
     pub fn validate(&self) -> Result<()> {
         let canonical = normalize_name(&self.name)?;
         let mut seen = BTreeSet::from([canonical]);
@@ -80,7 +102,7 @@ impl CommandSpec {
         }
         Ok(())
     }
-
+    /// Returns whether available
     #[must_use]
     pub fn is_available(
         &self,
@@ -92,23 +114,28 @@ impl CommandSpec {
             && (!self.requires_auth || authenticated)
             && (!self.interactive_only || interactive)
     }
-
+    /// Returns whether visible
     #[must_use]
     pub fn is_visible(&self, query: &CommandQuery) -> bool {
         (query.include_hidden || !self.hidden)
             && self.is_available(&query.features, query.authenticated, query.interactive)
     }
 }
-
+/// Represents command query
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CommandQuery {
+    /// Stores the features
     pub features: FeatureSet,
+    /// Stores the authenticated
     pub authenticated: bool,
+    /// Stores the interactive
     pub interactive: bool,
+    /// Stores the include hidden
     pub include_hidden: bool,
 }
 
 impl CommandQuery {
+    /// Creates a new value
     #[must_use]
     pub fn new(features: FeatureSet) -> Self {
         Self {
@@ -118,13 +145,13 @@ impl CommandQuery {
             include_hidden: false,
         }
     }
-
+    /// Handles including hidden
     #[must_use]
     pub fn including_hidden(mut self) -> Self {
         self.include_hidden = true;
         self
     }
-
+    /// Returns whether the query allows the item
     #[must_use]
     pub fn allows(&self, spec: &CommandSpec) -> bool {
         spec.is_available(&self.features, self.authenticated, self.interactive)
@@ -141,45 +168,68 @@ impl From<&CommandContext> for CommandQuery {
         }
     }
 }
-
+/// Represents command invocation
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CommandInvocation {
+    /// Stores the name
     pub name: String,
+    /// Stores the args
     pub args: String,
+    /// Stores the raw
     pub raw: String,
 }
-
+/// Enumerates command output
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", content = "data", rename_all = "snake_case")]
 pub enum CommandOutput {
+    /// Represents text
     Text(String),
+    /// Represents enqueue prompt
     EnqueuePrompt(String),
+    /// Represents open ui
     OpenUi(String),
+    /// Represents exit requested
     ExitRequested,
+    /// Represents noop
     Noop,
 }
-
+/// Represents command context
 #[derive(Clone, Debug)]
 pub struct CommandContext {
+    /// Stores the session identifier
     pub session_id: SessionId,
+    /// Stores the cwd
     pub cwd: PathBuf,
+    /// Stores the features
     pub features: FeatureSet,
+    /// Stores the authenticated
     pub authenticated: bool,
+    /// Stores the interactive
     pub interactive: bool,
+    /// Stores the permission mode
     pub permission_mode: PermissionMode,
+    /// Stores the theme
     pub theme: Option<String>,
+    /// Stores the session color
     pub session_color: Option<String>,
+    /// Stores the effort level
     pub effort_level: Option<String>,
+    /// Stores the brief mode
     pub brief_mode: bool,
+    /// Stores the fast mode
     pub fast_mode: bool,
+    /// Stores the session tags
     pub session_tags: Vec<String>,
+    /// Stores the additional working directories
     pub additional_working_directories: Vec<AdditionalWorkingDirectory>,
 }
-
+/// Defines command behavior
 #[async_trait]
 pub trait Command: Send + Sync {
+    /// Returns the item specification
     fn spec(&self) -> CommandSpec;
 
+    /// Executes the operation
     async fn execute(
         &self,
         context: CommandContext,
@@ -192,7 +242,7 @@ struct CommandEntry {
     spec: CommandSpec,
     command: Arc<dyn Command>,
 }
-
+/// Stores command registry
 #[derive(Default)]
 pub struct CommandRegistry {
     commands: BTreeMap<String, CommandEntry>,
@@ -201,11 +251,13 @@ pub struct CommandRegistry {
 }
 
 impl CommandRegistry {
+    /// Creates a new value
     #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
 
+    /// Handles register
     pub fn register(&mut self, command: Arc<dyn Command>) -> Result<()> {
         let spec = command.spec();
         spec.validate()?;
@@ -234,13 +286,13 @@ impl CommandRegistry {
             .insert(canonical, CommandEntry { spec, command });
         Ok(())
     }
-
+    /// Handles resolve
     #[must_use]
     pub fn resolve(&self, name: &str) -> Option<Arc<dyn Command>> {
         self.resolve_entry(name)
             .map(|entry| Arc::clone(&entry.command))
     }
-
+    /// Resolves enabled
     #[must_use]
     pub fn resolve_enabled(&self, name: &str, query: &CommandQuery) -> Option<Arc<dyn Command>> {
         let entry = self.resolve_entry(name)?;
@@ -248,12 +300,13 @@ impl CommandRegistry {
             .allows(&entry.spec)
             .then(|| Arc::clone(&entry.command))
     }
-
+    /// Resolves spec
     #[must_use]
     pub fn resolve_spec(&self, name: &str) -> Option<CommandSpec> {
         self.resolve_entry(name).map(|entry| entry.spec.clone())
     }
 
+    /// Handles all specs
     pub fn all_specs(&self) -> Vec<CommandSpec> {
         self.order
             .iter()
@@ -262,6 +315,7 @@ impl CommandRegistry {
             .collect()
     }
 
+    /// Handles available specs
     pub fn available_specs(&self, query: &CommandQuery) -> Vec<CommandSpec> {
         self.all_specs()
             .into_iter()
@@ -269,18 +323,19 @@ impl CommandRegistry {
             .collect()
     }
 
+    /// Handles visible specs
     pub fn visible_specs(&self, query: &CommandQuery) -> Vec<CommandSpec> {
         self.all_specs()
             .into_iter()
             .filter(|spec| spec.is_visible(query))
             .collect()
     }
-
+    /// Handles len
     #[must_use]
     pub fn len(&self) -> usize {
         self.commands.len()
     }
-
+    /// Returns whether empty
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.commands.is_empty()
@@ -295,7 +350,7 @@ impl CommandRegistry {
         })
     }
 }
-
+/// Parses slash command
 #[must_use]
 pub fn parse_slash_command(input: &str) -> Option<CommandInvocation> {
     let rest = input.strip_prefix('/')?.trim_start();

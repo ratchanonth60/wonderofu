@@ -1,14 +1,17 @@
 use std::path::PathBuf;
 
 use crate::manifest::SkillManifest;
-
+/// Represents bundled skill
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct BundledSkill {
+    /// Stores the manifest
     pub manifest: SkillManifest,
+    /// Stores the prompt
     pub prompt: String,
 }
 
 impl BundledSkill {
+    /// Handles inline
     #[must_use]
     pub fn inline(
         name: impl Into<String>,
@@ -93,7 +96,7 @@ The user thinks another Claude Code session on this machine is frozen, stuck, or
    - Sample CPU twice 2s apart to confirm it's not transient
 3. Report: PID, CPU%, RSS, uptime, state, and a 1-sentence diagnosis
 4. Suggest: kill, wait, or investigate further"#;
-
+/// Handles bundled skills
 #[must_use]
 pub fn bundled_skills() -> Vec<BundledSkill> {
     vec![

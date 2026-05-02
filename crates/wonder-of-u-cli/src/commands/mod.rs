@@ -1,3 +1,5 @@
+//! Provides commands support
+//!
 use std::{
     path::{Path, PathBuf},
     process::Command as ProcessCommand,
@@ -68,6 +70,7 @@ use workflow::{
     TerminalSetupCommand, ThemeCommand, VimCommand,
 };
 
+/// Builds the registry
 pub fn registry(storage_dir: Option<PathBuf>) -> Result<CommandRegistry> {
     let tool_specs: Arc<[ToolSpec]> = builtin_tool_registry()?.all_specs().into();
     let specs: Arc<[CommandSpec]> = vec![

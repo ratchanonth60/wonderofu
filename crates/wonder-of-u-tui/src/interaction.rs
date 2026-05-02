@@ -14,11 +14,14 @@ pub const DEFAULT_TAB_WIDTH: u16 = 8;
 /// A zero-based screen coordinate.
 #[derive(Clone, Copy, Debug, Default, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct ScreenPoint {
+    /// Stores the column
     pub column: u16,
+    /// Stores the row
     pub row: u16,
 }
 
 impl ScreenPoint {
+    /// Constant fn
     #[must_use]
     pub const fn new(column: u16, row: u16) -> Self {
         Self { column, row }
@@ -28,11 +31,14 @@ impl ScreenPoint {
 /// The normalized bounds of a selection.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct SelectionBounds {
+    /// Stores the start
     pub start: ScreenPoint,
+    /// Stores the end
     pub end: ScreenPoint,
 }
 
 impl SelectionBounds {
+    /// Handles contains
     #[must_use]
     pub fn contains(self, point: ScreenPoint) -> bool {
         point.row >= self.start.row
@@ -45,9 +51,12 @@ impl SelectionBounds {
 /// Coarse selection granularity.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum SelectionMode {
+    /// Represents character
     #[default]
     Character,
+    /// Represents word
     Word,
+    /// Represents line
     Line,
 }
 
@@ -61,21 +70,22 @@ pub struct SelectionState {
 }
 
 impl SelectionState {
+    /// Constant fn
     #[must_use]
     pub const fn anchor(&self) -> Option<ScreenPoint> {
         self.anchor
     }
-
+    /// Constant fn
     #[must_use]
     pub const fn focus(&self) -> Option<ScreenPoint> {
         self.focus
     }
-
+    /// Constant fn
     #[must_use]
     pub const fn mode(&self) -> SelectionMode {
         self.mode
     }
-
+    /// Constant fn
     #[must_use]
     pub const fn is_dragging(&self) -> bool {
         self.dragging
@@ -125,19 +135,21 @@ impl SelectionState {
         self.dragging = false;
     }
 
+    /// Handles finish
     pub fn finish(&mut self) {
         self.dragging = false;
     }
 
+    /// Handles clear
     pub fn clear(&mut self) {
         *self = Self::default();
     }
-
+    /// Constant fn
     #[must_use]
     pub const fn has_selection(&self) -> bool {
         self.anchor.is_some() && self.focus.is_some()
     }
-
+    /// Handles bounds
     #[must_use]
     pub fn bounds(&self) -> Option<SelectionBounds> {
         let (anchor, focus) = (self.anchor?, self.focus?);
@@ -153,7 +165,7 @@ impl SelectionState {
             }
         })
     }
-
+    /// Handles contains
     #[must_use]
     pub fn contains(&self, point: ScreenPoint) -> bool {
         self.bounds().is_some_and(|bounds| bounds.contains(point))
@@ -163,12 +175,16 @@ impl SelectionState {
 /// A viewport plus scroll offsets into backing content.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct ViewportState {
+    /// Stores the area
     pub area: Rect,
+    /// Stores the scroll x
     pub scroll_x: u16,
+    /// Stores the scroll y
     pub scroll_y: u16,
 }
 
 impl ViewportState {
+    /// Constant fn
     #[must_use]
     pub const fn new(area: Rect) -> Self {
         Self {
@@ -177,7 +193,7 @@ impl ViewportState {
             scroll_y: 0,
         }
     }
-
+    /// Handles contains screen point
     #[must_use]
     pub fn contains_screen_point(self, point: ScreenPoint) -> bool {
         if self.area.is_empty() {
@@ -189,7 +205,7 @@ impl ViewportState {
             && point.row >= self.area.y
             && point.row < self.area.bottom()
     }
-
+    /// Handles clamp screen point
     #[must_use]
     pub fn clamp_screen_point(self, point: ScreenPoint) -> Option<ScreenPoint> {
         if self.area.is_empty() {
@@ -203,7 +219,7 @@ impl ViewportState {
             point.row.clamp(self.area.y, max_row),
         ))
     }
-
+    /// Handles screen to local
     #[must_use]
     pub fn screen_to_local(self, point: ScreenPoint) -> Option<ScreenPoint> {
         self.contains_screen_point(point).then(|| {
@@ -213,7 +229,7 @@ impl ViewportState {
             )
         })
     }
-
+    /// Handles screen to content
     #[must_use]
     pub fn screen_to_content(self, point: ScreenPoint) -> Option<ScreenPoint> {
         self.screen_to_local(point).map(|local| {
@@ -223,7 +239,7 @@ impl ViewportState {
             )
         })
     }
-
+    /// Handles content to screen
     #[must_use]
     pub fn content_to_screen(self, point: ScreenPoint) -> Option<ScreenPoint> {
         let local_column = point.column.checked_sub(self.scroll_x)?;
@@ -235,6 +251,7 @@ impl ViewportState {
         self.contains_screen_point(screen).then_some(screen)
     }
 
+    /// Handles scroll by
     pub fn scroll_by(&mut self, dx: i16, dy: i16) {
         self.scroll_x = scroll_offset(self.scroll_x, dx);
         self.scroll_y = scroll_offset(self.scroll_y, dy);
@@ -244,12 +261,16 @@ impl ViewportState {
 /// A hit-testable region.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct HitRegion<T> {
+    /// Stores the id
     pub id: T,
+    /// Stores the area
     pub area: Rect,
+    /// Stores the z index
     pub z_index: i32,
 }
 
 impl<T> HitRegion<T> {
+    /// Constant fn
     #[must_use]
     pub const fn new(id: T, area: Rect) -> Self {
         Self {
@@ -258,7 +279,7 @@ impl<T> HitRegion<T> {
             z_index: 0,
         }
     }
-
+    /// Constant fn
     #[must_use]
     pub const fn with_z_index(mut self, z_index: i32) -> Self {
         self.z_index = z_index;
@@ -280,7 +301,9 @@ pub fn hit_test<T>(regions: &[HitRegion<T>], point: ScreenPoint) -> Option<&HitR
 /// Search case handling for match projection.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum SearchCase {
+    /// Represents sensitive
     Sensitive,
+    /// Represents insensitive
     #[default]
     Insensitive,
 }
@@ -288,7 +311,9 @@ pub enum SearchCase {
 /// A visible search match identified by row and character columns.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SearchMatch {
+    /// Stores the row
     pub row: usize,
+    /// Stores the columns
     pub columns: Range<usize>,
 }
 
@@ -322,18 +347,19 @@ impl Default for TabStops {
 }
 
 impl TabStops {
+    /// Constant fn
     #[must_use]
     pub const fn new(interval: u16) -> Self {
         Self {
             interval: if interval == 0 { 1 } else { interval },
         }
     }
-
+    /// Constant fn
     #[must_use]
     pub const fn interval(self) -> u16 {
         self.interval
     }
-
+    /// Handles next stop
     #[must_use]
     pub fn next_stop(self, column: u16) -> u16 {
         let remainder = column % self.interval;
@@ -343,7 +369,7 @@ impl TabStops {
             column.saturating_add(self.interval - remainder)
         }
     }
-
+    /// Handles advance column
     #[must_use]
     pub fn advance_column(self, column: u16, text: &str) -> u16 {
         let mut column = column;
@@ -359,7 +385,7 @@ impl TabStops {
         }
         column
     }
-
+    /// Handles expand
     #[must_use]
     pub fn expand(self, text: &str) -> String {
         let mut result = String::with_capacity(text.len());
@@ -407,11 +433,14 @@ impl<T: Clone + Eq> Default for FocusState<T> {
 /// Describes a focus transition.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct FocusChange<T> {
+    /// Stores the previous
     pub previous: Option<T>,
+    /// Stores the current
     pub current: Option<T>,
 }
 
 impl<T: Clone + Eq> FocusState<T> {
+    /// Creates a new value
     #[must_use]
     pub fn new(history_limit: usize) -> Self {
         Self {
@@ -421,25 +450,28 @@ impl<T: Clone + Eq> FocusState<T> {
             history: VecDeque::new(),
         }
     }
-
+    /// Constant fn
     #[must_use]
     pub const fn active(&self) -> Option<&T> {
         self.active.as_ref()
     }
-
+    /// Constant fn
     #[must_use]
     pub const fn is_enabled(&self) -> bool {
         self.enabled
     }
 
+    /// Handles enable
     pub fn enable(&mut self) {
         self.enabled = true;
     }
 
+    /// Handles disable
     pub fn disable(&mut self) {
         self.enabled = false;
     }
 
+    /// Handles focus
     pub fn focus(&mut self, target: T) -> Option<FocusChange<T>> {
         if !self.enabled || self.active.as_ref() == Some(&target) {
             return None;
@@ -456,6 +488,7 @@ impl<T: Clone + Eq> FocusState<T> {
         })
     }
 
+    /// Handles blur
     pub fn blur(&mut self) -> Option<FocusChange<T>> {
         let previous = self.active.take()?;
         Some(FocusChange {
@@ -464,6 +497,7 @@ impl<T: Clone + Eq> FocusState<T> {
         })
     }
 
+    /// Handles remove
     pub fn remove(&mut self, target: &T, focusable: &[T]) -> Option<FocusChange<T>> {
         self.history
             .retain(|candidate| candidate != target && focusable.contains(candidate));
@@ -489,10 +523,12 @@ impl<T: Clone + Eq> FocusState<T> {
         })
     }
 
+    /// Handles focus next
     pub fn focus_next(&mut self, focusable: &[T]) -> Option<FocusChange<T>> {
         self.cycle(focusable, 1)
     }
 
+    /// Handles focus previous
     pub fn focus_previous(&mut self, focusable: &[T]) -> Option<FocusChange<T>> {
         self.cycle(focusable, -1)
     }
