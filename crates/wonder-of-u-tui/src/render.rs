@@ -58,8 +58,8 @@ impl ShellView {
             None => text_line_count(&self.prompt),
         };
         u16::try_from(line_count)
-            .unwrap_or(u16::MAX.saturating_sub(1))
-            .saturating_add(1)
+            .unwrap_or(u16::MAX.saturating_sub(2))
+            .saturating_add(2)
     }
 
     #[must_use]
@@ -97,7 +97,7 @@ pub fn render_shell(frame: &mut FrameBuffer, view: &ShellView, theme: &Theme) {
     draw_message_view(frame, layout.messages, view, theme);
     draw_prompt_view(frame, layout.prompt, view, theme);
     draw_status_line(frame, layout.status, &status_line_text(view), theme.status);
-    draw_status_line(frame, layout.footer, &view.footer, theme.footer);
+    draw_footer_line(frame, layout.footer, &view.footer, theme);
     draw_notification_stack(frame, layout.messages, &view.notifications, theme);
 
     if let Some(dialog) = &view.dialog {
@@ -141,7 +141,7 @@ fn draw_panel(
 
     frame.fill_rect(area, ' ', theme.background);
     if area.width >= 2 && area.height >= 2 {
-        frame.draw_border(area, theme.border);
+        draw_rounded_border(frame, area, theme.border);
         if let Some(title) = title.filter(|title| !title.is_empty()) {
             let max_title_width = area.width.saturating_sub(4);
             frame.write_str(
@@ -183,7 +183,13 @@ fn draw_message_view(frame: &mut FrameBuffer, area: Rect, view: &ShellView, them
 
     let title_height = u16::from(!view.title.is_empty() && area.height > 0);
     if title_height == 1 {
-        frame.write_str(area.x, area.y, &view.title, theme.title, area.width);
+        frame.write_str(
+            area.x,
+            area.y,
+            &shell_header_text(&view.title),
+            theme.title,
+            area.width,
+        );
     }
 
     let docked_lines = if view.dialog.is_some() {
@@ -216,13 +222,25 @@ fn draw_prompt_view(frame: &mut FrameBuffer, area: Rect, view: &ShellView, theme
     }
 
     frame.fill_rect(area, ' ', theme.background);
-    draw_rule(frame, area.x, area.y, area.width, theme.border);
+    if area.width < 4 || area.height < 3 {
+        draw_lines(frame, area, &prompt_panel_lines(view, theme));
+        return;
+    }
+
+    draw_rounded_border(frame, area, theme.border);
+    frame.write_str(
+        area.x.saturating_add(2),
+        area.y,
+        " prompt ",
+        theme.footer,
+        area.width.saturating_sub(4),
+    );
 
     let content = Rect::new(
-        area.x,
+        area.x.saturating_add(2),
         area.y.saturating_add(1),
-        area.width,
-        area.height.saturating_sub(1),
+        area.width.saturating_sub(4),
+        area.height.saturating_sub(2),
     );
     draw_lines(frame, content, &prompt_panel_lines(view, theme));
 }
@@ -285,6 +303,47 @@ fn draw_rule(frame: &mut FrameBuffer, x: u16, y: u16, width: u16, style: TextSty
     }
 }
 
+fn draw_rounded_border(frame: &mut FrameBuffer, area: Rect, style: TextStyle) {
+    if area.is_empty() {
+        return;
+    }
+
+    if area.width == 1 && area.height == 1 {
+        frame.put(area.x, area.y, '•', style);
+        return;
+    }
+
+    if area.height == 1 {
+        draw_rule(frame, area.x, area.y, area.width, style);
+        return;
+    }
+
+    if area.width == 1 {
+        for y in area.y..area.bottom() {
+            frame.put(area.x, y, '│', style);
+        }
+        return;
+    }
+
+    let right = area.right().saturating_sub(1);
+    let bottom = area.bottom().saturating_sub(1);
+
+    frame.put(area.x, area.y, '╭', style);
+    frame.put(right, area.y, '╮', style);
+    frame.put(area.x, bottom, '╰', style);
+    frame.put(right, bottom, '╯', style);
+
+    for x in area.x.saturating_add(1)..right {
+        frame.put(x, area.y, '─', style);
+        frame.put(x, bottom, '─', style);
+    }
+
+    for y in area.y.saturating_add(1)..bottom {
+        frame.put(area.x, y, '│', style);
+        frame.put(right, y, '│', style);
+    }
+}
+
 fn draw_dialog(frame: &mut FrameBuffer, viewport: Rect, dialog: &DialogView, theme: &Theme) {
     if viewport.width < 12 || viewport.height < 5 {
         return;
@@ -333,7 +392,7 @@ fn draw_notification_stack(
         return;
     }
 
-    let mut y = viewport.y;
+    let mut y = viewport.y.saturating_add(u16::from(viewport.height > 3));
     for notification in notifications {
         let title = notification_title(notification);
         let lines = notification_panel_lines(notification, theme);
@@ -353,7 +412,7 @@ fn draw_notification_stack(
 
         let rect = Rect::new(viewport.right().saturating_sub(width), y, width, height);
         draw_notification(frame, rect, &title, notification, &lines, theme);
-        y = y.saturating_add(height.saturating_add(1));
+        y = y.saturating_add(height);
     }
 }
 
@@ -550,6 +609,8 @@ fn draw_picker_list(
         height,
     );
 
+    draw_modal_shadow(frame, rect, viewport, theme);
+
     let panel_theme = Theme {
         border: theme.prompt,
         title: theme.prompt.bold(),
@@ -624,20 +685,53 @@ fn draw_picker_list(
         } else {
             format!(" — {}", entry.description)
         };
+        if entry.selected {
+            frame.fill_rect(
+                Rect::new(list_area.x, y, list_area.width, 1),
+                ' ',
+                theme.prompt.reversed().bold(),
+            );
+        }
         let text = format!(
             "{} {}{}{}",
-            if entry.selected { "›" } else { " " },
+            if entry.selected { "▸" } else { " " },
             entry.label,
             tag,
             description
         );
         let style = if entry.selected {
-            theme.prompt.bold()
+            theme.prompt.reversed().bold()
         } else {
             theme.messages
         };
         frame.write_str(list_area.x, y, &text, style, list_area.width);
     }
+}
+
+fn draw_modal_shadow(frame: &mut FrameBuffer, rect: Rect, viewport: Rect, theme: &Theme) {
+    if rect.width < 2 || rect.height < 2 {
+        return;
+    }
+    let shadow_style = TextStyle::default()
+        .bg(Color::DarkGrey)
+        .fg(Color::DarkGrey)
+        .dim();
+    let shadow = Rect::new(
+        rect.x
+            .saturating_add(1)
+            .min(viewport.right().saturating_sub(1)),
+        rect.y
+            .saturating_add(1)
+            .min(viewport.bottom().saturating_sub(1)),
+        rect.width
+            .min(viewport.right().saturating_sub(rect.x.saturating_add(1))),
+        rect.height
+            .min(viewport.bottom().saturating_sub(rect.y.saturating_add(1))),
+    );
+    if !shadow.is_empty() {
+        frame.fill_rect(shadow, ' ', shadow_style);
+    }
+    frame.fill_rect(rect, ' ', theme.background);
 }
 
 fn draw_status_line(frame: &mut FrameBuffer, area: Rect, text: &str, style: TextStyle) {
@@ -647,6 +741,37 @@ fn draw_status_line(frame: &mut FrameBuffer, area: Rect, text: &str, style: Text
 
     frame.fill_rect(area, ' ', style);
     frame.write_str(area.x, area.y, text, style, area.width);
+}
+
+fn draw_footer_line(frame: &mut FrameBuffer, area: Rect, text: &str, theme: &Theme) {
+    if area.is_empty() {
+        return;
+    }
+
+    frame.fill_rect(area, ' ', theme.background);
+    let badges = footer_badges(text);
+    let max_width = usize::from(area.width);
+    let display = if badges.len() > max_width {
+        text.to_string()
+    } else {
+        badges
+    };
+    let display_width = u16::try_from(display.chars().count()).unwrap_or(area.width);
+    let x = area
+        .right()
+        .saturating_sub(display_width.min(area.width))
+        .min(area.x.saturating_add(area.width.saturating_sub(1)));
+    frame.write_str(x, area.y, &display, theme.footer, area.width);
+}
+
+fn footer_badges(text: &str) -> String {
+    let badges = text
+        .split('|')
+        .map(str::trim)
+        .filter(|segment| !segment.is_empty())
+        .map(|segment| format!(" {segment} "))
+        .collect::<Vec<_>>();
+    badges.join("·")
 }
 
 fn status_line_text(view: &ShellView) -> String {
@@ -661,6 +786,15 @@ fn status_line_text(view: &ShellView) -> String {
         (true, None, true) => "⠿".into(),
         (false, _, false) => format!("◆ {}", view.status),
         (false, _, true) => "◆".into(),
+    }
+}
+
+fn shell_header_text(title: &str) -> String {
+    let session = title.strip_prefix("Session: ").unwrap_or(title).trim();
+    if session.is_empty() {
+        "▸ wonder-of-u".into()
+    } else {
+        format!("▸ wonder-of-u  {session}")
     }
 }
 
@@ -687,7 +821,11 @@ fn message_lines_to_styled(lines: &[MessageLineView], theme: &Theme) -> Vec<Styl
 
 fn prompt_panel_lines(view: &ShellView, theme: &Theme) -> Vec<StyledLine> {
     let Some(search) = &view.history_search else {
-        return plain_lines(&split_lines(&view.prompt), theme.prompt);
+        let mut lines = split_lines(&view.prompt);
+        if let Some(first) = lines.first_mut() {
+            *first = format!("› {first}");
+        }
+        return plain_lines(&lines, theme.prompt);
     };
 
     let mut lines = vec![
@@ -804,15 +942,15 @@ mod tests {
         assert_eq!(
             frame.to_plain_text(),
             [
-                "Session: Empty",
+                "▸ wonder-of-u  Empty",
                 "No messages yet.",
                 "",
                 "",
-                "",
-                "──────────────────────────────",
-                "",
+                "╭─ prompt ───────────────────╮",
+                "│ ›                          │",
+                "╰────────────────────────────╯",
                 "◆ prompt | 0 messages",
-                "ctrl-c interrupt",
+                "             ctrl-c interrupt",
             ]
             .join("\n")
         );
@@ -852,16 +990,16 @@ mod tests {
         assert_eq!(
             frame.to_plain_text(),
             [
-                "Session: Demo",
+                "▸ wonder-of-u  Demo",
                 "system> ready",
                 "assistant> hello",
-                "",
                 "Tasks",
                 "[running] shell: index workspace",
-                "────────────────────────────────────────────────",
-                "/status",
+                "╭─ prompt ─────────────────────────────────────╮",
+                "│ › /status                                    │",
+                "╰──────────────────────────────────────────────╯",
                 "◆ prompt | 2 messages",
-                "cwd=/workspace | ctrl-c interrupt",
+                "              cwd=/workspace · ctrl-c interrupt",
             ]
             .join("\n")
         );
@@ -947,18 +1085,18 @@ mod tests {
         assert_eq!(
             frame.to_plain_text(),
             [
-                "Session: Demo",
+                "▸ wonder-of-u  Demo",
                 "assistant> ready",
-                "",
                 "",
                 "Queued",
                 "1. /status",
                 "2. draft migration plan",
                 "+2 more queued",
-                "──────────────────────────────────────────",
-                "/plan",
+                "╭─ prompt ───────────────────────────────╮",
+                "│ › /plan                                │",
+                "╰────────────────────────────────────────╯",
                 "◆ prompt | 1 messages",
-                "cwd=/workspace | ctrl-c interrupt",
+                "        cwd=/workspace · ctrl-c interrupt",
             ]
             .join("\n")
         );
@@ -993,17 +1131,17 @@ mod tests {
             frame.to_plain_text(),
             [
                 "",
-                " +-Confirm action-----------------------+",
-                " |Approve command execution             |",
-                " |This cannot be undone                 |",
-                " |[Confirm]  Cancel                     |",
-                " +--------------------------------------+",
+                " ╭─Confirm action───────────────────────╮",
+                " │Approve command execution             │",
+                " │This cannot be undone                 │",
+                " │[Confirm]  Cancel                     │",
+                " ╰──────────────────────────────────────╯",
                 "",
-                "",
-                "──────────────────────────────────────────",
-                "continue?",
+                "╭─ prompt ───────────────────────────────╮",
+                "│ › continue?                            │",
+                "╰────────────────────────────────────────╯",
                 "◆ permission | 1 messages",
-                "cwd=/workspace | ctrl-c interrupt",
+                "        cwd=/workspace · ctrl-c interrupt",
             ]
             .join("\n")
         );
@@ -1042,20 +1180,20 @@ mod tests {
         assert_eq!(
             frame.to_plain_text(),
             [
-                "Session: Search",
+                "▸ wonder-of-u  Search",
                 "assistant> ready",
                 "",
                 "",
                 "",
                 "",
                 "",
-                "",
-                "──────────────────────────────────────────",
-                "search: pla",
-                "match 2/3",
-                "draft plan",
+                "╭─ prompt ───────────────────────────────╮",
+                "│ search: pla                            │",
+                "│ match 2/3                              │",
+                "│ draft plan                             │",
+                "╰────────────────────────────────────────╯",
                 "◆ prompt | 1 messages",
-                "cwd=/workspace | ctrl-c interrupt",
+                "        cwd=/workspace · ctrl-c interrupt",
             ]
             .join("\n")
         );
@@ -1122,14 +1260,14 @@ mod tests {
         assert_eq!(
             frame.to_plain_text(),
             [
-                "Session: Demo",
+                "▸ wonder-of-u  Demo",
                 "tools[bash]> 1 call",
                 "  • #00000000 ok · command=\"echo hi\" → done",
-                "",
-                "────────────────────────────────────────────────",
-                "",
+                "╭─ prompt ─────────────────────────────────────╮",
+                "│ ›                                            │",
+                "╰──────────────────────────────────────────────╯",
                 "◆ prompt | 2 messages",
-                "cwd=/workspace | ctrl-c interrupt",
+                "              cwd=/workspace · ctrl-c interrupt",
             ]
             .join("\n")
         );
@@ -1178,18 +1316,18 @@ mod tests {
         assert_eq!(
             frame.to_plain_text(),
             [
-                "Session: Demo      +-info Source status--------+",
-                "assistant> ready   |workspace index refreshed  |",
-                "                   +---------------------------+",
-                "",
-                "                      +-ok Task update • focus-+",
-                "                      |tests passed            |",
-                "                      +------------------------+",
-                "",
-                "────────────────────────────────────────────────",
-                "",
+                "▸ wonder-of-u  Demo",
+                "assistant> ready   ╭─info Source status────────╮",
+                "                   │workspace index refreshed  │",
+                "                   ╰───────────────────────────╯",
+                "                      ╭─ok Task update • focus─╮",
+                "                      │tests passed            │",
+                "                      ╰────────────────────────╯",
+                "╭─ prompt ─────────────────────────────────────╮",
+                "│ ›                                            │",
+                "╰──────────────────────────────────────────────╯",
                 "◆ prompt | 1 messages",
-                "cwd=/workspace | ctrl-c interrupt",
+                "              cwd=/workspace · ctrl-c interrupt",
             ]
             .join("\n")
         );

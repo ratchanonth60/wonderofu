@@ -3970,7 +3970,7 @@ fn controller_preserves_restored_provider_selection_on_resume() {
 #[test]
 fn prompt_cursor_tracks_edit_position_inside_prompt_panel() {
     let (x, y) = prompt_cursor_position(40, 10, "abc", 2);
-    assert_eq!((x, y), (2, 7));
+    assert_eq!((x, y), (6, 6));
 }
 
 /// Verify that enabling brief mode injects the hint into the system prompt
