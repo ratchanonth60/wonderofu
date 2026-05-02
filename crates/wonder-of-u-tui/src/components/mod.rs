@@ -36,7 +36,7 @@ pub use no_select::{NoSelectMode, NoSelectView};
 pub use progress_bar::{ProgressBarView, ProgressDirection};
 pub use scroll_box::ScrollBoxState;
 pub use spacer::SpacerView;
-pub use status_icon::{StatusIconKind, StatusIconView, SPINNER_FRAMES};
+pub use status_icon::{SPINNER_FRAMES, StatusIconKind, StatusIconView};
 pub use tabs::{TabEntry, TabsView};
 pub use terminal::{TerminalFocusState, TerminalFocusView, TerminalSize};
 pub use text::{TextAttributes, TextView, TextWeight, TextWrap};

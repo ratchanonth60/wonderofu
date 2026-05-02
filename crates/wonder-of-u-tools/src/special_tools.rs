@@ -974,9 +974,7 @@ impl Tool for WorkflowTool {
                             .iter()
                             .map(|p| format!(
                                 "  - {}",
-                                p.file_stem()
-                                    .and_then(|s| s.to_str())
-                                    .unwrap_or("?")
+                                p.file_stem().and_then(|s| s.to_str()).unwrap_or("?")
                             ))
                             .collect::<Vec<_>>()
                             .join("\n")
@@ -1039,18 +1037,19 @@ impl Tool for WorkflowTool {
                 };
                 let content = combined.trim().to_string();
                 let result = if output.status.success() {
-                    ToolResult::success(use_id, if content.is_empty() {
-                        format!("Workflow '{workflow_name}' completed (exit 0).")
-                    } else {
-                        content
-                    })
+                    ToolResult::success(
+                        use_id,
+                        if content.is_empty() {
+                            format!("Workflow '{workflow_name}' completed (exit 0).")
+                        } else {
+                            content
+                        },
+                    )
                 } else {
                     let code = output.status.code().unwrap_or(-1);
                     ToolResult::failure(
                         use_id,
-                        format!(
-                            "Workflow '{workflow_name}' failed (exit {code}).\n{content}"
-                        ),
+                        format!("Workflow '{workflow_name}' failed (exit {code}).\n{content}"),
                     )
                 };
                 Ok(result.with_metadata(json!({
@@ -1116,11 +1115,7 @@ impl Tool for PushNotificationTool {
         let input = parse_input::<PushNotificationInput>("push_notification", &input)?;
         input.validate()?;
 
-        let title = input
-            .title
-            .as_deref()
-            .unwrap_or("wonder-of-u")
-            .to_string();
+        let title = input.title.as_deref().unwrap_or("wonder-of-u").to_string();
         let message = input
             .message
             .as_deref()

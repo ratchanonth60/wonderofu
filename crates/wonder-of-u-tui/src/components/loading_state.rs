@@ -10,7 +10,10 @@ pub struct LoadingStep {
 impl LoadingStep {
     #[must_use]
     pub fn new(label: impl Into<String>) -> Self {
-        Self { label: label.into(), done: false }
+        Self {
+            label: label.into(),
+            done: false,
+        }
     }
 
     #[must_use]

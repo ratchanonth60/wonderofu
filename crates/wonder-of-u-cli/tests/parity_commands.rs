@@ -110,8 +110,7 @@ const CLAUDE_LEAK_COMMANDS: &[&str] = &[
 
 fn registry_names() -> HashSet<String> {
     let dir = tempfile::tempdir().expect("temp dir");
-    let registry = build_command_registry(Some(dir.path().to_path_buf()))
-        .expect("build registry");
+    let registry = build_command_registry(Some(dir.path().to_path_buf())).expect("build registry");
 
     let mut names: HashSet<String> = HashSet::new();
     for spec in registry.all_specs() {
@@ -146,8 +145,7 @@ fn all_claude_leak_commands_are_registered() {
 #[test]
 fn registry_has_no_duplicate_names() {
     let dir = tempfile::tempdir().expect("temp dir");
-    let registry = build_command_registry(Some(dir.path().to_path_buf()))
-        .expect("build registry");
+    let registry = build_command_registry(Some(dir.path().to_path_buf())).expect("build registry");
 
     let mut seen: HashSet<String> = HashSet::new();
     let mut duplicates: Vec<String> = Vec::new();

@@ -54,7 +54,10 @@ pub struct StatusIconView {
 impl StatusIconView {
     #[must_use]
     pub fn new(kind: StatusIconKind) -> Self {
-        Self { kind, spinner_frame: 0 }
+        Self {
+            kind,
+            spinner_frame: 0,
+        }
     }
 
     /// Advance the spinner frame by one tick.
