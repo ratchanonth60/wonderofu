@@ -13,6 +13,23 @@ use crate::{
     style::{Color, TextStyle, Theme},
 };
 
+/// A single entry shown in the slash-command autocomplete overlay.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SlashSuggestionEntry {
+    /// The text shown in the left column (e.g. `/status`).
+    pub display: String,
+    /// Short description shown in the right column.
+    pub description: String,
+    /// Whether this entry is currently highlighted.
+    pub selected: bool,
+}
+
+/// State passed to the renderer when the slash-autocomplete overlay should be visible.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct SlashSuggestionsOverlay {
+    pub entries: Vec<SlashSuggestionEntry>,
+}
+
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct ShellView {
     pub title: String,
@@ -26,6 +43,8 @@ pub struct ShellView {
     pub dialog: Option<DialogView>,
     pub picker_view: Option<PickerView>,
     pub notifications: Vec<NotificationView>,
+    /// When `Some`, display the slash-command autocomplete overlay.
+    pub slash_suggestions: Option<SlashSuggestionsOverlay>,
 }
 
 impl ShellView {
@@ -54,6 +73,7 @@ impl ShellView {
             dialog: None,
             picker_view: None,
             notifications: Vec::new(),
+            slash_suggestions: None,
         }
     }
 }
@@ -81,6 +101,12 @@ pub fn render_shell(frame: &mut FrameBuffer, view: &ShellView, theme: &Theme) {
     if let Some(pv) = &view.picker_view {
         if let Some(preview) = &pv.preview {
             draw_picker_preview(frame, layout.messages.inset(1), preview, theme);
+        }
+    }
+
+    if let Some(overlay) = &view.slash_suggestions {
+        if !overlay.entries.is_empty() {
+            draw_slash_suggestions(frame, layout.messages, overlay, theme);
         }
     }
 }
@@ -416,6 +442,78 @@ fn draw_picker_preview(frame: &mut FrameBuffer, viewport: Rect, preview: &str, t
     );
 }
 
+fn draw_slash_suggestions(
+    frame: &mut FrameBuffer,
+    viewport: Rect,
+    overlay: &SlashSuggestionsOverlay,
+    theme: &Theme,
+) {
+    const MAX_VISIBLE: usize = 8;
+    const MIN_WIDTH: u16 = 30;
+
+    let entries = &overlay.entries;
+    let visible_count = entries.len().min(MAX_VISIBLE);
+    if visible_count == 0 || viewport.width < MIN_WIDTH || viewport.height < 3 {
+        return;
+    }
+
+    // Compute panel dimensions.
+    let content_width = entries
+        .iter()
+        .take(MAX_VISIBLE)
+        .map(|e| {
+            let desc_part = if e.description.is_empty() {
+                0
+            } else {
+                e.description.len() + 3 // " ─ " separator
+            };
+            e.display.len() + desc_part
+        })
+        .max()
+        .unwrap_or(0);
+    let panel_width = u16::try_from(content_width.saturating_add(4))
+        .unwrap_or(viewport.width)
+        .clamp(MIN_WIDTH, viewport.width);
+    let panel_height = u16::try_from(visible_count.saturating_add(2))
+        .unwrap_or(viewport.height)
+        .min(viewport.height);
+
+    // Anchor to bottom-left of viewport, just above the prompt rule.
+    let rect = Rect::new(
+        viewport.x,
+        viewport.bottom().saturating_sub(panel_height),
+        panel_width,
+        panel_height,
+    );
+
+    let lines: Vec<StyledLine> = entries
+        .iter()
+        .take(MAX_VISIBLE)
+        .map(|e| {
+            let text = if e.description.is_empty() {
+                e.display.clone()
+            } else {
+                format!("{} ─ {}", e.display, e.description)
+            };
+            StyledLine {
+                text,
+                style: if e.selected {
+                    theme.prompt.bold()
+                } else {
+                    theme.messages
+                },
+            }
+        })
+        .collect();
+
+    let border_theme = Theme {
+        border: theme.prompt,
+        title: theme.prompt.bold(),
+        ..*theme
+    };
+    draw_panel(frame, rect, Some("commands"), &lines, &border_theme);
+}
+
 fn draw_status_line(frame: &mut FrameBuffer, area: Rect, text: &str, style: TextStyle) {
     if area.is_empty() {
         return;
@@ -554,6 +652,7 @@ mod tests {
             dialog: None,
             picker_view: None,
             notifications: Vec::new(),
+            slash_suggestions: None,
         };
 
         let frame = render_snapshot(30, 9, &view, &Theme::default());
@@ -598,6 +697,7 @@ mod tests {
             dialog: None,
             picker_view: None,
             notifications: Vec::new(),
+            slash_suggestions: None,
         };
 
         let frame = render_snapshot(48, 10, &view, &Theme::default());
@@ -689,6 +789,7 @@ mod tests {
             dialog: None,
             picker_view: None,
             notifications: Vec::new(),
+            slash_suggestions: None,
         };
 
         let frame = render_snapshot(42, 12, &view, &Theme::default());
@@ -730,6 +831,7 @@ mod tests {
             )),
             picker_view: None,
             notifications: Vec::new(),
+            slash_suggestions: None,
         };
 
         let frame = render_snapshot(42, 12, &view, &Theme::default());
@@ -776,6 +878,7 @@ mod tests {
             dialog: None,
             picker_view: None,
             notifications: Vec::new(),
+            slash_suggestions: None,
         };
 
         let frame = render_snapshot(42, 14, &view, &Theme::default());
@@ -820,6 +923,7 @@ mod tests {
             dialog: None,
             picker_view: None,
             notifications: Vec::new(),
+            slash_suggestions: None,
         };
 
         let frame = render_snapshot(32, 9, &view, &Theme::default());
@@ -848,6 +952,7 @@ mod tests {
             dialog: None,
             picker_view: None,
             notifications: Vec::new(),
+            slash_suggestions: None,
         };
 
         let frame = render_snapshot(48, 8, &view, &Theme::default());
@@ -900,6 +1005,7 @@ mod tests {
                     focused: true,
                 },
             ],
+            slash_suggestions: None,
         };
 
         let frame = render_snapshot(48, 12, &view, &Theme::default());

@@ -33,6 +33,10 @@ pub(super) struct TuiController<'a> {
     /// Countdown ticks until the task notification dialog is auto-dismissed.
     pub(super) task_notice_ttl: Option<u8>,
     pub(super) notifications: NotificationQueue,
+    /// All slash-command suggestions, built once at startup.
+    pub(super) slash_suggestions: Vec<PromptSuggestion>,
+    /// Live filtered state when the user is typing a `/` command.
+    pub(super) active_suggestions: Option<PromptSuggestionState>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -183,6 +187,8 @@ impl<'a> TuiController<'a> {
             pending_external_editor: None,
             task_notice_ttl: None,
             notifications: NotificationQueue::new(),
+            slash_suggestions: build_slash_suggestions(registry),
+            active_suggestions: None,
         };
         controller.hydrate_initial_settings()?;
         controller.refresh_runtime_state()?;
@@ -273,6 +279,31 @@ impl<'a> TuiController<'a> {
         if self.history_search.is_some() {
             return self.handle_history_search_key(key, resolved);
         }
+
+        // Slash-autocomplete intercepts: Tab accepts, Up/Down navigate, Esc dismisses.
+        if self.active_suggestions.is_some() {
+            match key.code {
+                KeyCode::Tab => {
+                    self.accept_slash_suggestion();
+                    return Ok(());
+                }
+                KeyCode::Esc => {
+                    self.active_suggestions = None;
+                    self.needs_render = true;
+                    return Ok(());
+                }
+                KeyCode::Up => {
+                    self.navigate_slash_suggestions(-1);
+                    return Ok(());
+                }
+                KeyCode::Down => {
+                    self.navigate_slash_suggestions(1);
+                    return Ok(());
+                }
+                _ => {}
+            }
+        }
+
         let Some(resolved) = resolved else {
             return if self.vim.mode() == VimMode::Normal || key.code == KeyCode::Esc {
                 self.handle_vim_key(key)
@@ -292,16 +323,30 @@ impl<'a> TuiController<'a> {
                 self.state.input_mode = InputMode::Prompt;
                 self.reset_history_recall();
                 self.status_note = None;
+                self.update_slash_suggestions();
                 self.needs_render = true;
                 Ok(())
             }
-            ResolvedKey::Edit(EditAction::InsertNewline) => self.submit_prompt(before_blocking),
+            ResolvedKey::Edit(EditAction::InsertNewline) => {
+                // If a suggestion is selected and the user presses Enter, accept it.
+                if self
+                    .active_suggestions
+                    .as_ref()
+                    .is_some_and(|s| s.selected().is_some())
+                {
+                    self.accept_slash_suggestion();
+                    return self.submit_prompt(before_blocking);
+                }
+                self.active_suggestions = None;
+                self.submit_prompt(before_blocking)
+            }
             ResolvedKey::Edit(action) => {
                 self.prompt.apply_edit_action(action);
                 self.turn_state = TurnState::EditingInput;
                 self.state.input_mode = InputMode::Prompt;
                 self.reset_history_recall();
                 self.status_note = None;
+                self.update_slash_suggestions();
                 self.needs_render = true;
                 Ok(())
             }
@@ -324,6 +369,54 @@ impl<'a> TuiController<'a> {
         });
         self.needs_render = true;
         Ok(())
+    }
+
+    /// Rebuild the slash-command suggestion overlay based on the current prompt buffer.
+    pub(super) fn update_slash_suggestions(&mut self) {
+        let text = self.prompt.text();
+        if let Some(query) = text.strip_prefix('/') {
+            let state = self
+                .active_suggestions
+                .get_or_insert_with(|| PromptSuggestionState::new(self.slash_suggestions.clone()));
+            state.set_filter(query);
+            if state.filtered().is_empty() {
+                self.active_suggestions = None;
+            }
+        } else {
+            self.active_suggestions = None;
+        }
+    }
+
+    /// Move the selection cursor in the active suggestion list by `delta` (+1 down, -1 up).
+    pub(super) fn navigate_slash_suggestions(&mut self, delta: i32) {
+        let Some(state) = self.active_suggestions.as_mut() else {
+            return;
+        };
+        let count = state.filtered().len();
+        if count == 0 {
+            return;
+        }
+        let current = state.selected_index as i32;
+        let next = (current + delta).rem_euclid(count as i32) as usize;
+        state.selected_index = next;
+        self.needs_render = true;
+    }
+
+    /// Accept the currently selected suggestion: replace the prompt buffer with its replacement text.
+    pub(super) fn accept_slash_suggestion(&mut self) {
+        let replacement = self
+            .active_suggestions
+            .as_ref()
+            .and_then(|s| s.selected())
+            .map(|s| s.replacement.clone());
+        if let Some(text) = replacement {
+            self.prompt = TextBuffer::new(false);
+            for ch in text.chars() {
+                self.prompt.insert_char(ch);
+            }
+            self.active_suggestions = None;
+            self.needs_render = true;
+        }
     }
 
     pub(super) fn handle_system_action(
@@ -2028,6 +2121,19 @@ impl<'a> TuiController<'a> {
             None
         };
         view.notifications = self.notifications.view(3);
+        view.slash_suggestions = self.active_suggestions.as_ref().map(|state| {
+            let filtered = state.filtered();
+            let entries = filtered
+                .iter()
+                .enumerate()
+                .map(|(i, s)| SlashSuggestionEntry {
+                    display: s.display_text.clone(),
+                    description: s.description.clone().unwrap_or_default(),
+                    selected: i == state.selected_index.min(filtered.len().saturating_sub(1)),
+                })
+                .collect();
+            SlashSuggestionsOverlay { entries }
+        });
         view
     }
 
@@ -3120,4 +3226,22 @@ impl<'a> TuiController<'a> {
     pub(super) fn mark_rendered(&mut self) {
         self.needs_render = false;
     }
+}
+
+/// Build the full list of slash-command suggestions from the command registry.
+///
+/// Called once at TUI startup; the result is stored on `TuiController` and
+/// re-used (with live filtering) on every keystroke.
+pub(super) fn build_slash_suggestions(registry: &CommandRegistry) -> Vec<PromptSuggestion> {
+    registry
+        .all_specs()
+        .into_iter()
+        .filter(|spec| !spec.hidden)
+        .map(|spec| {
+            let slash = format!("/{}", spec.name);
+            PromptSuggestion::new(spec.name.clone(), slash.clone(), slash)
+                .with_description(spec.description.clone())
+                .with_keywords(spec.aliases.iter().map(|a| format!("/{a}")))
+        })
+        .collect()
 }

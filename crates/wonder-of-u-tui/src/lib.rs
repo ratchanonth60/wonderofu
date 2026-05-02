@@ -111,7 +111,9 @@ pub use prompt::{
     PromptModeIndicator, PromptQueueView, PromptQueuedCommandView, PromptSuggestion,
     PromptSuggestionState,
 };
-pub use render::{ShellView, render_shell, render_snapshot};
+pub use render::{
+    ShellView, SlashSuggestionEntry, SlashSuggestionsOverlay, render_shell, render_snapshot,
+};
 pub use security::{
     ManagedSettingRiskView, ManagedSettingsEnforcement, ManagedSettingsSecurityDialogView,
     SecurityActionKind, SecurityActionView, TrustDialogView, WorkspaceRiskKind, WorkspaceRiskView,

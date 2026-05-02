@@ -38,8 +38,9 @@ use wonder_of_u_tools::provider_tool_specs;
 use wonder_of_u_tui::{
     CrosstermEventSource, DialogView, EditAction, EventLoop, HistorySearchView, KeyBindingContext,
     KeyBindingResolver, KeyCode, KeyEvent, NotificationInput, NotificationLifetime,
-    NotificationQueue, NotificationSeverity, PermissionSummaryView, PickerView, ResolvedKey,
-    ShellLayout, ShellView, TextBuffer, Theme, TurnState, UiEvent, VimMode, VimState,
+    NotificationQueue, NotificationSeverity, PermissionSummaryView, PickerView, PromptSuggestion,
+    PromptSuggestionState, ResolvedKey, ShellLayout, ShellView, SlashSuggestionEntry,
+    SlashSuggestionsOverlay, TextBuffer, Theme, TurnState, UiEvent, VimMode, VimState,
 };
 
 use crate::commands;

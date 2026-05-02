@@ -224,6 +224,7 @@ pub(super) fn prompt_cursor_position(
             dialog: None,
             picker_view: None,
             notifications: Vec::new(),
+            slash_suggestions: None,
         }
         .prompt_height(),
     );
@@ -274,6 +275,7 @@ pub(super) fn history_search_cursor_position(
             dialog: None,
             picker_view: None,
             notifications: Vec::new(),
+            slash_suggestions: None,
         }
         .prompt_height(),
     );
