@@ -5,13 +5,18 @@ use super::spinner::SPINNER_GLYPHS;
 /// Static mascot poses used by the animated logo.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ClawdPose {
+    /// Represents default
     Default,
+    /// Represents arms up
     ArmsUp,
+    /// Represents look left
     LookLeft,
+    /// Represents look right
     LookRight,
 }
 
 impl ClawdPose {
+    /// Constant fn
     #[must_use]
     pub const fn ascii_lines(self) -> [&'static str; 3] {
         match self {
@@ -26,11 +31,14 @@ impl ClawdPose {
 /// A single feed item shown beside or below the logo.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct LogoFeedItem {
+    /// Stores the title
     pub title: String,
+    /// Stores the body
     pub body: Vec<String>,
 }
 
 impl LogoFeedItem {
+    /// Creates a new value
     #[must_use]
     pub fn new(
         title: impl Into<String>,
@@ -46,14 +54,20 @@ impl LogoFeedItem {
 /// Renderer-neutral Claude Code logo view.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct LogoView {
+    /// Stores the version
     pub version: String,
+    /// Stores the condensed
     pub condensed: bool,
+    /// Stores the frame
     pub frame: u64,
+    /// Stores the feed
     pub feed: Vec<LogoFeedItem>,
+    /// Stores the emergency tip
     pub emergency_tip: Option<String>,
 }
 
 impl LogoView {
+    /// Creates a new value
     #[must_use]
     pub fn new(version: impl Into<String>) -> Self {
         Self {
@@ -64,31 +78,31 @@ impl LogoView {
             emergency_tip: None,
         }
     }
-
+    /// Constant fn
     #[must_use]
     pub const fn condensed(mut self, condensed: bool) -> Self {
         self.condensed = condensed;
         self
     }
-
+    /// Constant fn
     #[must_use]
     pub const fn frame(mut self, frame: u64) -> Self {
         self.frame = frame;
         self
     }
-
+    /// Handles feed
     #[must_use]
     pub fn feed(mut self, feed: Vec<LogoFeedItem>) -> Self {
         self.feed = feed;
         self
     }
-
+    /// Handles emergency tip
     #[must_use]
     pub fn emergency_tip(mut self, emergency_tip: impl Into<String>) -> Self {
         self.emergency_tip = Some(emergency_tip.into());
         self
     }
-
+    /// Renders lines
     #[must_use]
     pub fn render_lines(&self, width: usize) -> Vec<String> {
         let mut lines = if self.condensed {
@@ -117,7 +131,7 @@ impl LogoView {
             .map(|line| truncate_line(&line, width))
             .collect()
     }
-
+    /// Constant fn
     #[must_use]
     pub const fn clawd_pose(&self) -> ClawdPose {
         match (self.frame / 4) % 4 {
@@ -154,13 +168,18 @@ impl LogoView {
 /// Welcome screen composition built around [`LogoView`].
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct WelcomeView {
+    /// Stores the title
     pub title: String,
+    /// Stores the subtitle
     pub subtitle: Option<String>,
+    /// Stores the logo
     pub logo: LogoView,
+    /// Stores the shortcuts
     pub shortcuts: Vec<String>,
 }
 
 impl WelcomeView {
+    /// Creates a new value
     #[must_use]
     pub fn new(title: impl Into<String>, logo: LogoView) -> Self {
         Self {
@@ -170,19 +189,19 @@ impl WelcomeView {
             shortcuts: Vec::new(),
         }
     }
-
+    /// Handles subtitle
     #[must_use]
     pub fn subtitle(mut self, subtitle: impl Into<String>) -> Self {
         self.subtitle = Some(subtitle.into());
         self
     }
-
+    /// Handles shortcuts
     #[must_use]
     pub fn shortcuts(mut self, shortcuts: impl IntoIterator<Item = impl Into<String>>) -> Self {
         self.shortcuts = shortcuts.into_iter().map(Into::into).collect();
         self
     }
-
+    /// Renders lines
     #[must_use]
     pub fn render_lines(&self, width: usize) -> Vec<String> {
         let mut lines = self.logo.render_lines(width);

@@ -9,11 +9,14 @@ const DEFAULT_VISIBLE_QUEUED_COMMANDS: usize = 3;
 /// Describes the prompt glyph for the active input mode.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct PromptModeIndicator {
+    /// Stores the symbol
     pub symbol: char,
+    /// Stores the label
     pub label: &'static str,
 }
 
 impl PromptModeIndicator {
+    /// Constant fn
     #[must_use]
     pub const fn from_mode(mode: InputMode) -> Self {
         match mode {
@@ -32,16 +35,19 @@ impl PromptModeIndicator {
 /// Aggregates visible paste and attachment counts for the prompt footer.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct PromptAttachmentIndicator {
+    /// Stores the pastes
     pub pastes: usize,
+    /// Stores the attachments
     pub attachments: usize,
 }
 
 impl PromptAttachmentIndicator {
+    /// Constant fn
     #[must_use]
     pub const fn is_empty(self) -> bool {
         self.pastes == 0 && self.attachments == 0
     }
-
+    /// Handles summary
     #[must_use]
     pub fn summary(self) -> Option<String> {
         if self.is_empty() {
@@ -62,15 +68,27 @@ impl PromptAttachmentIndicator {
 /// Footer text emitted by the prompt input family.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum PromptFooterHint {
+    /// Represents exit confirmation
     ExitConfirmation(String),
+    /// Represents pasting
     Pasting,
-    HistorySearch { query: String, failed: bool },
+    /// Represents history search
+    HistorySearch {
+        /// Stores the query
+        query: String,
+        /// Stores the failed
+        failed: bool,
+    },
+    /// Represents vim insert
     VimInsert,
+    /// Represents mode
     Mode(InputMode),
+    /// Represents shortcuts
     Shortcuts,
 }
 
 impl PromptFooterHint {
+    /// Handles text
     #[must_use]
     pub fn text(&self) -> String {
         match self {
@@ -92,13 +110,18 @@ impl PromptFooterHint {
 /// Captures footer state without tying it to any specific renderer.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct PromptFooterModel {
+    /// Stores the exit confirmation key
     pub exit_confirmation_key: Option<String>,
+    /// Stores the history search
     pub history_search: Option<HistorySearchView>,
+    /// Stores whether pasting
     pub is_pasting: bool,
+    /// Stores the show shortcuts hint
     pub show_shortcuts_hint: bool,
 }
 
 impl PromptFooterModel {
+    /// Handles hints
     #[must_use]
     pub fn hints(&self, mode: InputMode, vim_mode: Option<VimMode>) -> Vec<PromptFooterHint> {
         if let Some(key) = &self.exit_confirmation_key {
@@ -133,12 +156,16 @@ impl PromptFooterModel {
 /// Wrapped prompt sizing data for renderer layout decisions.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct PromptLayout {
+    /// Stores the line count
     pub line_count: usize,
+    /// Stores the visible line count
     pub visible_line_count: usize,
+    /// Stores the clipped line count
     pub clipped_line_count: usize,
 }
 
 impl PromptLayout {
+    /// Handles from buffer
     #[must_use]
     pub fn from_buffer(
         buffer: &TextBuffer,
@@ -147,7 +174,7 @@ impl PromptLayout {
     ) -> Self {
         Self::from_text(&buffer.text(), width, max_visible_lines)
     }
-
+    /// Handles from text
     #[must_use]
     pub fn from_text(text: &str, width: usize, max_visible_lines: Option<usize>) -> Self {
         let line_count = measure_text(text, width).height.max(1);
@@ -161,7 +188,7 @@ impl PromptLayout {
             clipped_line_count: line_count.saturating_sub(visible_line_count),
         }
     }
-
+    /// Constant fn
     #[must_use]
     pub const fn is_multiline(self) -> bool {
         self.line_count > 1
@@ -171,18 +198,23 @@ impl PromptLayout {
 /// A single queued command preview line.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PromptQueuedCommandView {
+    /// Stores the index
     pub index: usize,
+    /// Stores the preview
     pub preview: String,
 }
 
 /// Visible queued-command state for prompt footers and overlays.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct PromptQueueView {
+    /// Stores the commands
     pub commands: Vec<PromptQueuedCommandView>,
+    /// Stores the hidden count
     pub hidden_count: usize,
 }
 
 impl PromptQueueView {
+    /// Handles from commands
     #[must_use]
     pub fn from_commands(commands: &[QueuedCommand]) -> Option<Self> {
         Self::from_commands_with_limits(
@@ -191,7 +223,7 @@ impl PromptQueueView {
             DEFAULT_QUEUE_PREVIEW_CHARS,
         )
     }
-
+    /// Handles from commands with limits
     #[must_use]
     pub fn from_commands_with_limits(
         commands: &[QueuedCommand],
@@ -217,7 +249,7 @@ impl PromptQueueView {
             hidden_count: commands.len().saturating_sub(max_visible),
         })
     }
-
+    /// Handles lines
     #[must_use]
     pub fn lines(&self) -> Vec<String> {
         let mut lines = self
@@ -230,7 +262,7 @@ impl PromptQueueView {
         }
         lines
     }
-
+    /// Handles overflow label
     #[must_use]
     pub fn overflow_label(&self) -> Option<String> {
         (self.hidden_count > 0).then(|| format!("+{} more queued", self.hidden_count))
@@ -240,15 +272,22 @@ impl PromptQueueView {
 /// A single command suggestion shown below the prompt.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PromptSuggestion {
+    /// Stores the id
     pub id: String,
+    /// Stores the display text
     pub display_text: String,
+    /// Stores the replacement
     pub replacement: String,
+    /// Stores the description
     pub description: Option<String>,
+    /// Stores the tag
     pub tag: Option<String>,
+    /// Stores the keywords
     pub keywords: Vec<String>,
 }
 
 impl PromptSuggestion {
+    /// Creates a new value
     #[must_use]
     pub fn new(
         id: impl Into<String>,
@@ -264,19 +303,19 @@ impl PromptSuggestion {
             keywords: Vec::new(),
         }
     }
-
+    /// Handles with description
     #[must_use]
     pub fn with_description(mut self, description: impl Into<String>) -> Self {
         self.description = Some(description.into());
         self
     }
-
+    /// Handles with tag
     #[must_use]
     pub fn with_tag(mut self, tag: impl Into<String>) -> Self {
         self.tag = Some(tag.into());
         self
     }
-
+    /// Handles with keywords
     #[must_use]
     pub fn with_keywords(mut self, keywords: impl IntoIterator<Item = impl Into<String>>) -> Self {
         self.keywords = keywords.into_iter().map(Into::into).collect();
@@ -309,12 +348,16 @@ impl PromptSuggestion {
 /// Mutable suggestion state including filter text and active selection.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct PromptSuggestionState {
+    /// Stores the suggestions
     pub suggestions: Vec<PromptSuggestion>,
+    /// Stores the filter
     pub filter: String,
+    /// Stores the selected index
     pub selected_index: usize,
 }
 
 impl PromptSuggestionState {
+    /// Creates a new value
     #[must_use]
     pub fn new(suggestions: impl IntoIterator<Item = PromptSuggestion>) -> Self {
         Self {
@@ -324,11 +367,12 @@ impl PromptSuggestionState {
         }
     }
 
+    /// Handles set filter
     pub fn set_filter(&mut self, filter: impl Into<String>) {
         self.filter = filter.into();
         self.selected_index = 0;
     }
-
+    /// Handles filtered
     #[must_use]
     pub fn filtered(&self) -> Vec<&PromptSuggestion> {
         let terms = self
@@ -343,7 +387,7 @@ impl PromptSuggestionState {
             .filter(|suggestion| suggestion.matches_filter(&terms))
             .collect()
     }
-
+    /// Handles selected
     #[must_use]
     pub fn selected(&self) -> Option<&PromptSuggestion> {
         let filtered = self.filtered();
@@ -356,12 +400,19 @@ impl PromptSuggestionState {
 /// Renderer-agnostic state for the prompt input family.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PromptInputModel {
+    /// Stores the buffer
     pub buffer: TextBuffer,
+    /// Stores the input mode
     pub input_mode: InputMode,
+    /// Stores the vim mode
     pub vim_mode: Option<VimMode>,
+    /// Stores the footer
     pub footer: PromptFooterModel,
+    /// Stores the attachments
     pub attachments: PromptAttachmentIndicator,
+    /// Stores the queued commands
     pub queued_commands: Vec<QueuedCommand>,
+    /// Stores the suggestions
     pub suggestions: PromptSuggestionState,
 }
 
@@ -372,6 +423,7 @@ impl Default for PromptInputModel {
 }
 
 impl PromptInputModel {
+    /// Creates a new value
     #[must_use]
     pub fn new(multiline: bool) -> Self {
         Self {
@@ -384,7 +436,7 @@ impl PromptInputModel {
             suggestions: PromptSuggestionState::default(),
         }
     }
-
+    /// Handles from text
     #[must_use]
     pub fn from_text(text: impl AsRef<str>, multiline: bool) -> Self {
         Self {
@@ -392,27 +444,27 @@ impl PromptInputModel {
             ..Self::new(multiline)
         }
     }
-
+    /// Handles mode indicator
     #[must_use]
     pub fn mode_indicator(&self) -> PromptModeIndicator {
         PromptModeIndicator::from_mode(self.input_mode)
     }
-
+    /// Handles footer hints
     #[must_use]
     pub fn footer_hints(&self) -> Vec<PromptFooterHint> {
         self.footer.hints(self.input_mode, self.vim_mode)
     }
-
+    /// Handles layout
     #[must_use]
     pub fn layout(&self, width: usize, max_visible_lines: Option<usize>) -> PromptLayout {
         PromptLayout::from_buffer(&self.buffer, width, max_visible_lines)
     }
-
+    /// Handles queue view
     #[must_use]
     pub fn queue_view(&self) -> Option<PromptQueueView> {
         PromptQueueView::from_commands(&self.queued_commands)
     }
-
+    /// Handles attachment summary
     #[must_use]
     pub fn attachment_summary(&self) -> Option<String> {
         self.attachments.summary()

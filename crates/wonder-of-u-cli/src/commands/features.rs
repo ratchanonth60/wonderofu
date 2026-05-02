@@ -3,13 +3,16 @@ use wonder_of_u_core::{
     Command, CommandContext, CommandInvocation, CommandKind, CommandOutput, CommandSpec, Result,
 };
 
+/// Represents features command
 pub struct FeaturesCommand;
 
 impl FeaturesCommand {
+    /// Constant fn
     pub const fn new() -> Self {
         Self
     }
 
+    /// Handles command spec
     pub fn command_spec() -> CommandSpec {
         let mut spec = CommandSpec::new(
             "features",

@@ -17,17 +17,22 @@ use wonder_of_u_core::{
 use crate::{base_spec, display_path, parse_input, require_non_empty_path, require_non_empty_text};
 
 const DEFAULT_TIMEOUT_SECS: u64 = 30;
-
+/// Represents bash input
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct BashInput {
+    /// Stores the command
     pub command: String,
+    /// Stores the cwd
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cwd: Option<PathBuf>,
+    /// Stores the timeout secs
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub timeout_secs: Option<u64>,
+    /// Stores the timeout
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub timeout: Option<u64>,
+    /// Stores the description
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
     #[serde(
@@ -35,6 +40,7 @@ pub struct BashInput {
         rename = "run_in_background",
         skip_serializing_if = "Option::is_none"
     )]
+    /// Stores the run in background
     pub run_in_background: Option<bool>,
     #[serde(
         default,
@@ -42,6 +48,7 @@ pub struct BashInput {
         alias = "dangerously_disable_sandbox",
         skip_serializing_if = "Option::is_none"
     )]
+    /// Stores the dangerously disable sandbox
     pub dangerously_disable_sandbox: Option<bool>,
 }
 
@@ -85,7 +92,7 @@ impl BashInput {
             .unwrap_or(DEFAULT_TIMEOUT_SECS)
     }
 }
-
+/// Represents bash tool
 #[derive(Debug, Default)]
 pub struct BashTool;
 

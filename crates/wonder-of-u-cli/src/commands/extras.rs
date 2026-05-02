@@ -19,13 +19,16 @@ use wonder_of_u_core::{
 };
 use wonder_of_u_storage::{STORAGE_SCHEMA_VERSION, SessionMetadata, StoragePaths, TranscriptStore};
 
+/// Represents heapdump command
 pub struct HeapdumpCommand;
 
 impl HeapdumpCommand {
+    /// Constant fn
     pub const fn new() -> Self {
         Self
     }
 
+    /// Handles command spec
     pub fn command_spec() -> CommandSpec {
         let mut spec = CommandSpec::new(
             "heapdump",
@@ -37,13 +40,16 @@ impl HeapdumpCommand {
     }
 }
 
+/// Represents ant trace command
 pub struct AntTraceCommand;
 
 impl AntTraceCommand {
+    /// Constant fn
     pub const fn new() -> Self {
         Self
     }
 
+    /// Handles command spec
     pub fn command_spec() -> CommandSpec {
         let mut spec = CommandSpec::new(
             "ant-trace",
@@ -55,13 +61,16 @@ impl AntTraceCommand {
     }
 }
 
+/// Represents ctx viz command
 pub struct CtxVizCommand;
 
 impl CtxVizCommand {
+    /// Constant fn
     pub const fn new() -> Self {
         Self
     }
 
+    /// Handles command spec
     pub fn command_spec() -> CommandSpec {
         let mut spec = CommandSpec::new(
             "ctx-viz",
@@ -74,13 +83,16 @@ impl CtxVizCommand {
     }
 }
 
+/// Represents debug tool call command
 pub struct DebugToolCallCommand;
 
 impl DebugToolCallCommand {
+    /// Constant fn
     pub const fn new() -> Self {
         Self
     }
 
+    /// Handles command spec
     pub fn command_spec() -> CommandSpec {
         let mut spec = CommandSpec::new(
             "debug-tool-call",
@@ -92,13 +104,16 @@ impl DebugToolCallCommand {
     }
 }
 
+/// Represents good claude command
 pub struct GoodClaudeCommand;
 
 impl GoodClaudeCommand {
+    /// Constant fn
     pub const fn new() -> Self {
         Self
     }
 
+    /// Handles command spec
     pub fn command_spec() -> CommandSpec {
         let mut spec = CommandSpec::new(
             "good-claude",
@@ -110,13 +125,16 @@ impl GoodClaudeCommand {
     }
 }
 
+/// Represents break cache command
 pub struct BreakCacheCommand;
 
 impl BreakCacheCommand {
+    /// Constant fn
     pub const fn new() -> Self {
         Self
     }
 
+    /// Handles command spec
     pub fn command_spec() -> CommandSpec {
         let mut spec = CommandSpec::new(
             "break-cache",
@@ -128,15 +146,18 @@ impl BreakCacheCommand {
     }
 }
 
+/// Represents backfill sessions command
 pub struct BackfillSessionsCommand {
     storage_dir: Option<PathBuf>,
 }
 
 impl BackfillSessionsCommand {
+    /// Constant fn
     pub const fn new(storage_dir: Option<PathBuf>) -> Self {
         Self { storage_dir }
     }
 
+    /// Handles command spec
     pub fn command_spec() -> CommandSpec {
         let mut spec = CommandSpec::new(
             "backfill-sessions",
@@ -148,13 +169,16 @@ impl BackfillSessionsCommand {
     }
 }
 
+/// Represents perf issue command
 pub struct PerfIssueCommand;
 
 impl PerfIssueCommand {
+    /// Constant fn
     pub const fn new() -> Self {
         Self
     }
 
+    /// Handles command spec
     pub fn command_spec() -> CommandSpec {
         let mut spec = CommandSpec::new(
             "perf-issue",
@@ -166,13 +190,16 @@ impl PerfIssueCommand {
     }
 }
 
+/// Represents bughunter command
 pub struct BughunterCommand;
 
 impl BughunterCommand {
+    /// Constant fn
     pub const fn new() -> Self {
         Self
     }
 
+    /// Handles command spec
     pub fn command_spec() -> CommandSpec {
         let mut spec = CommandSpec::new(
             "bughunter",
@@ -184,13 +211,16 @@ impl BughunterCommand {
     }
 }
 
+/// Represents btw command
 pub struct BtwCommand;
 
 impl BtwCommand {
+    /// Constant fn
     pub const fn new() -> Self {
         Self
     }
 
+    /// Handles command spec
     pub fn command_spec() -> CommandSpec {
         CommandSpec::new(
             "btw",
@@ -200,15 +230,18 @@ impl BtwCommand {
     }
 }
 
+/// Represents advisor command
 pub struct AdvisorCommand {
     storage_dir: Option<PathBuf>,
 }
 
 impl AdvisorCommand {
+    /// Constant fn
     pub const fn new(storage_dir: Option<PathBuf>) -> Self {
         Self { storage_dir }
     }
 
+    /// Handles command spec
     pub fn command_spec() -> CommandSpec {
         CommandSpec::new(
             "advisor",
@@ -218,27 +251,33 @@ impl AdvisorCommand {
     }
 }
 
+/// Represents stickers command
 pub struct StickersCommand;
 
 impl StickersCommand {
+    /// Constant fn
     pub const fn new() -> Self {
         Self
     }
 
+    /// Handles command spec
     pub fn command_spec() -> CommandSpec {
         CommandSpec::new("stickers", "Order Claude Code stickers", CommandKind::Local)
     }
 }
 
+/// Represents rewind command
 pub struct RewindCommand {
     storage_dir: Option<PathBuf>,
 }
 
 impl RewindCommand {
+    /// Constant fn
     pub const fn new(storage_dir: Option<PathBuf>) -> Self {
         Self { storage_dir }
     }
 
+    /// Handles command spec
     pub fn command_spec() -> CommandSpec {
         let mut spec = CommandSpec::new(
             "rewind",
@@ -250,15 +289,18 @@ impl RewindCommand {
     }
 }
 
+/// Represents init verifiers command
 pub struct InitVerifiersCommand {
     tool_specs: Arc<[ToolSpec]>,
 }
 
 impl InitVerifiersCommand {
+    /// Creates a new value
     pub fn new(tool_specs: Arc<[ToolSpec]>) -> Self {
         Self { tool_specs }
     }
 
+    /// Handles command spec
     pub fn command_spec() -> CommandSpec {
         let mut spec = CommandSpec::new(
             "init-verifiers",
@@ -270,13 +312,16 @@ impl InitVerifiersCommand {
     }
 }
 
+/// Represents extra usage command
 pub struct ExtraUsageCommand;
 
 impl ExtraUsageCommand {
+    /// Constant fn
     pub const fn new() -> Self {
         Self
     }
 
+    /// Handles command spec
     pub fn command_spec() -> CommandSpec {
         CommandSpec::new(
             "extra-usage",
@@ -286,13 +331,16 @@ impl ExtraUsageCommand {
     }
 }
 
+/// Represents passes command
 pub struct PassesCommand;
 
 impl PassesCommand {
+    /// Constant fn
     pub const fn new() -> Self {
         Self
     }
 
+    /// Handles command spec
     pub fn command_spec() -> CommandSpec {
         CommandSpec::new(
             "passes",
@@ -302,13 +350,16 @@ impl PassesCommand {
     }
 }
 
+/// Represents rate limit options command
 pub struct RateLimitOptionsCommand;
 
 impl RateLimitOptionsCommand {
+    /// Constant fn
     pub const fn new() -> Self {
         Self
     }
 
+    /// Handles command spec
     pub fn command_spec() -> CommandSpec {
         let mut spec = CommandSpec::new(
             "rate-limit-options",
@@ -320,13 +371,16 @@ impl RateLimitOptionsCommand {
     }
 }
 
+/// Represents mock limits command
 pub struct MockLimitsCommand;
 
 impl MockLimitsCommand {
+    /// Constant fn
     pub const fn new() -> Self {
         Self
     }
 
+    /// Handles command spec
     pub fn command_spec() -> CommandSpec {
         let mut spec = CommandSpec::new(
             "mock-limits",
@@ -338,13 +392,16 @@ impl MockLimitsCommand {
     }
 }
 
+/// Represents reset limits command
 pub struct ResetLimitsCommand;
 
 impl ResetLimitsCommand {
+    /// Constant fn
     pub const fn new() -> Self {
         Self
     }
 
+    /// Handles command spec
     pub fn command_spec() -> CommandSpec {
         let mut spec = CommandSpec::new(
             "reset-limits",
@@ -356,13 +413,16 @@ impl ResetLimitsCommand {
     }
 }
 
+/// Represents onboarding command
 pub struct OnboardingCommand;
 
 impl OnboardingCommand {
+    /// Constant fn
     pub const fn new() -> Self {
         Self
     }
 
+    /// Handles command spec
     pub fn command_spec() -> CommandSpec {
         let mut spec = CommandSpec::new(
             "onboarding",
@@ -374,13 +434,16 @@ impl OnboardingCommand {
     }
 }
 
+/// Represents teleport command
 pub struct TeleportCommand;
 
 impl TeleportCommand {
+    /// Constant fn
     pub const fn new() -> Self {
         Self
     }
 
+    /// Handles command spec
     pub fn command_spec() -> CommandSpec {
         CommandSpec::new(
             "teleport",
@@ -390,13 +453,16 @@ impl TeleportCommand {
     }
 }
 
+/// Represents remote env command
 pub struct RemoteEnvCommand;
 
 impl RemoteEnvCommand {
+    /// Constant fn
     pub const fn new() -> Self {
         Self
     }
 
+    /// Handles command spec
     pub fn command_spec() -> CommandSpec {
         CommandSpec::new(
             "remote-env",
@@ -406,13 +472,16 @@ impl RemoteEnvCommand {
     }
 }
 
+/// Represents remote setup command
 pub struct RemoteSetupCommand;
 
 impl RemoteSetupCommand {
+    /// Constant fn
     pub const fn new() -> Self {
         Self
     }
 
+    /// Handles command spec
     pub fn command_spec() -> CommandSpec {
         let mut spec = CommandSpec::new(
             "web-setup",
@@ -424,13 +493,16 @@ impl RemoteSetupCommand {
     }
 }
 
+/// Represents bridge kick command
 pub struct BridgeKickCommand;
 
 impl BridgeKickCommand {
+    /// Constant fn
     pub const fn new() -> Self {
         Self
     }
 
+    /// Handles command spec
     pub fn command_spec() -> CommandSpec {
         let mut spec = CommandSpec::new(
             "bridge-kick",
@@ -442,13 +514,16 @@ impl BridgeKickCommand {
     }
 }
 
+/// Represents sandbox toggle command
 pub struct SandboxToggleCommand;
 
 impl SandboxToggleCommand {
+    /// Constant fn
     pub const fn new() -> Self {
         Self
     }
 
+    /// Handles command spec
     pub fn command_spec() -> CommandSpec {
         let mut spec = CommandSpec::new(
             "sandbox",
@@ -460,13 +535,16 @@ impl SandboxToggleCommand {
     }
 }
 
+/// Represents ultraplan command
 pub struct UltraplanCommand;
 
 impl UltraplanCommand {
+    /// Constant fn
     pub const fn new() -> Self {
         Self
     }
 
+    /// Handles command spec
     pub fn command_spec() -> CommandSpec {
         CommandSpec::new(
             "ultraplan",
@@ -476,13 +554,16 @@ impl UltraplanCommand {
     }
 }
 
+/// Represents thinkback command
 pub struct ThinkbackCommand;
 
 impl ThinkbackCommand {
+    /// Constant fn
     pub const fn new() -> Self {
         Self
     }
 
+    /// Handles command spec
     pub fn command_spec() -> CommandSpec {
         let mut spec = CommandSpec::new(
             "think-back",
@@ -495,13 +576,16 @@ impl ThinkbackCommand {
     }
 }
 
+/// Represents thinkback play command
 pub struct ThinkbackPlayCommand;
 
 impl ThinkbackPlayCommand {
+    /// Constant fn
     pub const fn new() -> Self {
         Self
     }
 
+    /// Handles command spec
     pub fn command_spec() -> CommandSpec {
         let mut spec = CommandSpec::new(
             "thinkback-play",
@@ -513,13 +597,16 @@ impl ThinkbackPlayCommand {
     }
 }
 
+/// Represents autofix pr command
 pub struct AutofixPrCommand;
 
 impl AutofixPrCommand {
+    /// Constant fn
     pub const fn new() -> Self {
         Self
     }
 
+    /// Handles command spec
     pub fn command_spec() -> CommandSpec {
         let mut spec = CommandSpec::new(
             "autofix-pr",
@@ -531,13 +618,16 @@ impl AutofixPrCommand {
     }
 }
 
+/// Represents pr comments command
 pub struct PrCommentsCommand;
 
 impl PrCommentsCommand {
+    /// Constant fn
     pub const fn new() -> Self {
         Self
     }
 
+    /// Handles command spec
     pub fn command_spec() -> CommandSpec {
         let mut spec = CommandSpec::new(
             "pr-comments",
@@ -549,13 +639,16 @@ impl PrCommentsCommand {
     }
 }
 
+/// Represents summary command
 pub struct SummaryCommand;
 
 impl SummaryCommand {
+    /// Constant fn
     pub const fn new() -> Self {
         Self
     }
 
+    /// Handles command spec
     pub fn command_spec() -> CommandSpec {
         let mut spec = CommandSpec::new(
             "summary",
@@ -567,13 +660,16 @@ impl SummaryCommand {
     }
 }
 
+/// Represents env command
 pub struct EnvCommand;
 
 impl EnvCommand {
+    /// Constant fn
     pub const fn new() -> Self {
         Self
     }
 
+    /// Handles command spec
     pub fn command_spec() -> CommandSpec {
         let mut spec = CommandSpec::new(
             "env",
@@ -585,15 +681,18 @@ impl EnvCommand {
     }
 }
 
+/// Represents oauth refresh command
 pub struct OauthRefreshCommand {
     storage_dir: Option<PathBuf>,
 }
 
 impl OauthRefreshCommand {
+    /// Constant fn
     pub const fn new(storage_dir: Option<PathBuf>) -> Self {
         Self { storage_dir }
     }
 
+    /// Handles command spec
     pub fn command_spec() -> CommandSpec {
         let mut spec = CommandSpec::new(
             "oauth-refresh",
@@ -605,13 +704,16 @@ impl OauthRefreshCommand {
     }
 }
 
+/// Represents issue command
 pub struct IssueCommand;
 
 impl IssueCommand {
+    /// Constant fn
     pub const fn new() -> Self {
         Self
     }
 
+    /// Handles command spec
     pub fn command_spec() -> CommandSpec {
         let mut spec = CommandSpec::new(
             "issue",
@@ -623,13 +725,16 @@ impl IssueCommand {
     }
 }
 
+/// Represents share command
 pub struct ShareCommand;
 
 impl ShareCommand {
+    /// Constant fn
     pub const fn new() -> Self {
         Self
     }
 
+    /// Handles command spec
     pub fn command_spec() -> CommandSpec {
         let mut spec = CommandSpec::new(
             "share",
@@ -641,13 +746,16 @@ impl ShareCommand {
     }
 }
 
+/// Represents install command
 pub struct InstallCommand;
 
 impl InstallCommand {
+    /// Constant fn
     pub const fn new() -> Self {
         Self
     }
 
+    /// Handles command spec
     pub fn command_spec() -> CommandSpec {
         let mut spec = CommandSpec::new(
             "install",
@@ -659,13 +767,16 @@ impl InstallCommand {
     }
 }
 
+/// Represents install github app command
 pub struct InstallGithubAppCommand;
 
 impl InstallGithubAppCommand {
+    /// Constant fn
     pub const fn new() -> Self {
         Self
     }
 
+    /// Handles command spec
     pub fn command_spec() -> CommandSpec {
         let mut spec = CommandSpec::new(
             "install-github-app",
@@ -677,13 +788,16 @@ impl InstallGithubAppCommand {
     }
 }
 
+/// Represents install slack app command
 pub struct InstallSlackAppCommand;
 
 impl InstallSlackAppCommand {
+    /// Constant fn
     pub const fn new() -> Self {
         Self
     }
 
+    /// Handles command spec
     pub fn command_spec() -> CommandSpec {
         let mut spec = CommandSpec::new(
             "install-slack-app",
@@ -695,13 +809,16 @@ impl InstallSlackAppCommand {
     }
 }
 
+/// Represents create moved to plugin command
 pub struct CreateMovedToPluginCommand;
 
 impl CreateMovedToPluginCommand {
+    /// Constant fn
     pub const fn new() -> Self {
         Self
     }
 
+    /// Handles command spec
     pub fn command_spec() -> CommandSpec {
         let mut spec = CommandSpec::new(
             "plugin-migrate",

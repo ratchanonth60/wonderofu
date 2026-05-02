@@ -6,17 +6,25 @@ use crate::CoordinatorMode;
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum QueryPhase {
+    /// Represents idle
     #[default]
     Idle,
+    /// Represents running
     Running,
+    /// Represents tool calling
     ToolCalling,
+    /// Represents awaiting tool approval
     AwaitingToolApproval,
+    /// Represents completed
     Completed,
+    /// Represents failed
     Failed,
+    /// Represents aborted
     Aborted,
 }
 
 impl QueryPhase {
+    /// Constant fn
     #[must_use]
     pub const fn label(self) -> &'static str {
         match self {
@@ -30,21 +38,29 @@ impl QueryPhase {
         }
     }
 }
-
+/// Represents query state
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct QueryState {
+    /// Stores the phase
     pub phase: QueryPhase,
+    /// Stores the coordinator mode
     pub coordinator_mode: CoordinatorMode,
+    /// Stores the prompt preview
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prompt_preview: Option<String>,
+    /// Stores the tool roundtrips
     #[serde(default)]
     pub tool_roundtrips: usize,
+    /// Stores the tool calls
     #[serde(default)]
     pub tool_calls: usize,
+    /// Stores the tools used
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tools_used: Vec<String>,
+    /// Stores the pending tool name
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pending_tool_name: Option<String>,
+    /// Stores the failure reason
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub failure_reason: Option<String>,
 }
@@ -65,6 +81,7 @@ impl Default for QueryState {
 }
 
 impl QueryState {
+    /// Handles start
     #[must_use]
     pub fn start(prompt: &str, coordinator_mode: CoordinatorMode) -> Self {
         Self {
@@ -75,6 +92,7 @@ impl QueryState {
         }
     }
 
+    /// Records tool batch
     pub fn record_tool_batch<I, S>(&mut self, tools: I)
     where
         I: IntoIterator<Item = S>,
@@ -91,26 +109,31 @@ impl QueryState {
         self.tools_used.extend(tool_names);
     }
 
+    /// Handles await tool approval
     pub fn await_tool_approval(&mut self, tool_name: impl Into<String>) {
         self.phase = QueryPhase::AwaitingToolApproval;
         self.pending_tool_name = Some(tool_name.into());
     }
 
+    /// Handles resume after tool approval
     pub fn resume_after_tool_approval(&mut self) {
         self.phase = QueryPhase::ToolCalling;
     }
 
+    /// Handles complete
     pub fn complete(&mut self) {
         self.phase = QueryPhase::Completed;
         self.pending_tool_name = None;
         self.failure_reason = None;
     }
 
+    /// Handles fail
     pub fn fail(&mut self, reason: impl Into<String>) {
         self.phase = QueryPhase::Failed;
         self.failure_reason = Some(reason.into());
     }
 
+    /// Handles abort
     pub fn abort(&mut self) {
         self.phase = QueryPhase::Aborted;
         self.pending_tool_name = None;

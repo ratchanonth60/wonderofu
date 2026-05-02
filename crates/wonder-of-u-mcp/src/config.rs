@@ -12,7 +12,9 @@ use wonder_of_u_storage::StoragePaths;
 
 use crate::normalize_mcp_name;
 
+/// Schema version for mcp config
 pub const MCP_CONFIG_SCHEMA_VERSION: u16 = 1;
+/// Default mcp protocol version value
 pub const DEFAULT_MCP_PROTOCOL_VERSION: &str = "2024-11-05";
 
 fn default_schema_version() -> u16 {
@@ -51,11 +53,13 @@ fn write_json_atomically<T: Serialize>(path: &Path, value: &T) -> Result<()> {
     fs::rename(pending_path, path)?;
     Ok(())
 }
-
+/// Represents mcp client identity
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct McpClientIdentity {
+    /// Stores the name
     #[serde(default = "default_client_name")]
     pub name: String,
+    /// Stores the version
     #[serde(default = "default_client_version")]
     pub version: String,
 }
@@ -68,24 +72,32 @@ impl Default for McpClientIdentity {
         }
     }
 }
-
+/// Represents mcp server config
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct McpServerConfig {
+    /// Stores the name
     pub name: String,
+    /// Stores the command
     pub command: String,
+    /// Stores the args
     #[serde(default)]
     pub args: Vec<String>,
+    /// Stores the env
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub env: BTreeMap<String, String>,
+    /// Stores the enabled
     #[serde(default = "default_enabled")]
     pub enabled: bool,
+    /// Stores the cwd
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cwd: Option<PathBuf>,
+    /// Stores the protocol version
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub protocol_version: Option<String>,
 }
 
 impl McpServerConfig {
+    /// Validates the value
     pub fn validate(&self) -> Result<()> {
         if self.name.trim().is_empty() {
             return Err(WonderError::validation("mcp server name cannot be empty"));
@@ -98,7 +110,7 @@ impl McpServerConfig {
         }
         Ok(())
     }
-
+    /// Handles command line
     #[must_use]
     pub fn command_line(&self) -> String {
         if self.args.is_empty() {
@@ -108,15 +120,19 @@ impl McpServerConfig {
         }
     }
 }
-
+/// Represents mcp config
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct McpConfig {
+    /// Stores the schema version
     #[serde(default = "default_schema_version")]
     pub schema_version: u16,
+    /// Stores the client
     #[serde(default)]
     pub client: McpClientIdentity,
+    /// Stores the protocol version
     #[serde(default = "default_protocol_version")]
     pub protocol_version: String,
+    /// Stores the servers
     #[serde(default)]
     pub servers: Vec<McpServerConfig>,
 }
@@ -133,6 +149,7 @@ impl Default for McpConfig {
 }
 
 impl McpConfig {
+    /// Validates the value
     pub fn validate(&self) -> Result<()> {
         if self.schema_version != MCP_CONFIG_SCHEMA_VERSION {
             return Err(WonderError::validation(format!(
@@ -159,31 +176,33 @@ impl McpConfig {
         }
         Ok(())
     }
-
+    /// Handles server
     #[must_use]
     pub fn server(&self, name: &str) -> Option<&McpServerConfig> {
         self.servers.iter().find(|server| server.name == name)
     }
 }
-
+/// Stores mcp config store
 #[derive(Clone, Debug)]
 pub struct McpConfigStore {
     paths: StoragePaths,
 }
 
 impl McpConfigStore {
+    /// Creates a new value
     #[must_use]
     pub fn new(base_dir: impl Into<PathBuf>) -> Self {
         Self {
             paths: StoragePaths::new(base_dir),
         }
     }
-
+    /// Handles paths
     #[must_use]
     pub fn paths(&self) -> &StoragePaths {
         &self.paths
     }
 
+    /// Handles read
     pub fn read(&self) -> Result<McpConfig> {
         let path = self.paths.mcp_servers_path();
         if !path.exists() {
@@ -195,12 +214,14 @@ impl McpConfigStore {
         Ok(config)
     }
 
+    /// Handles write
     pub fn write(&self, config: &McpConfig) -> Result<()> {
         config.validate()?;
         fs::create_dir_all(self.paths.mcp_config_dir())?;
         write_json_atomically(&self.paths.mcp_servers_path(), config)
     }
 
+    /// Handles set enabled
     pub fn set_enabled(&self, name: &str, enabled: bool) -> Result<McpServerConfig> {
         let mut config = self.read()?;
         let server = config

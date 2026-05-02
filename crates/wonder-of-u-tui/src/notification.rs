@@ -1,14 +1,20 @@
 //! Notification queue and view models for shell overlay toasts.
 
+/// Enumerates notification severity
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum NotificationSeverity {
+    /// Represents info
     Info,
+    /// Represents success
     Success,
+    /// Represents warning
     Warning,
+    /// Represents error
     Error,
 }
 
 impl NotificationSeverity {
+    /// Constant fn
     #[must_use]
     pub const fn label(self) -> &'static str {
         match self {
@@ -19,24 +25,33 @@ impl NotificationSeverity {
         }
     }
 }
-
+/// Enumerates notification lifetime
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum NotificationLifetime {
+    /// Represents persistent
     Persistent,
+    /// Represents ticks
     Ticks(u32),
 }
-
+/// Represents notification input
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct NotificationInput {
+    /// Stores the key
     pub key: String,
+    /// Stores the title
     pub title: String,
+    /// Stores the lines
     pub lines: Vec<String>,
+    /// Stores the severity
     pub severity: NotificationSeverity,
+    /// Stores the lifetime
     pub lifetime: NotificationLifetime,
+    /// Stores the focus
     pub focus: bool,
 }
 
 impl NotificationInput {
+    /// Creates a new value
     #[must_use]
     pub fn new(
         key: impl Into<String>,
@@ -52,32 +67,37 @@ impl NotificationInput {
             focus: false,
         }
     }
-
+    /// Handles severity
     #[must_use]
     pub fn severity(mut self, severity: NotificationSeverity) -> Self {
         self.severity = severity;
         self
     }
-
+    /// Handles lifetime
     #[must_use]
     pub fn lifetime(mut self, lifetime: NotificationLifetime) -> Self {
         self.lifetime = lifetime;
         self
     }
-
+    /// Handles focused
     #[must_use]
     pub fn focused(mut self, focus: bool) -> Self {
         self.focus = focus;
         self
     }
 }
-
+/// Represents notification view
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct NotificationView {
+    /// Stores the key
     pub key: String,
+    /// Stores the title
     pub title: String,
+    /// Stores the lines
     pub lines: Vec<String>,
+    /// Stores the severity
     pub severity: NotificationSeverity,
+    /// Stores the focused
     pub focused: bool,
 }
 
@@ -118,7 +138,7 @@ impl NotificationEntry {
         }
     }
 }
-
+/// Stores notification queue
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct NotificationQueue {
     entries: Vec<NotificationEntry>,
@@ -132,6 +152,7 @@ impl Default for NotificationQueue {
 }
 
 impl NotificationQueue {
+    /// Constant fn
     #[must_use]
     pub const fn new() -> Self {
         Self {
@@ -139,17 +160,18 @@ impl NotificationQueue {
             window_focused: true,
         }
     }
-
+    /// Returns whether empty
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty()
     }
-
+    /// Handles len
     #[must_use]
     pub fn len(&self) -> usize {
         self.entries.len()
     }
 
+    /// Handles push
     pub fn push(&mut self, input: NotificationInput) {
         let previous = self
             .entries
@@ -168,6 +190,7 @@ impl NotificationQueue {
         self.entries.push(entry);
     }
 
+    /// Handles tick
     pub fn tick(&mut self) -> bool {
         if !self.window_focused || self.entries.is_empty() {
             return false;
@@ -193,12 +216,14 @@ impl NotificationQueue {
         changed
     }
 
+    /// Handles set window focused
     pub fn set_window_focused(&mut self, focused: bool) -> bool {
         let changed = self.window_focused != focused;
         self.window_focused = focused;
         changed
     }
 
+    /// Handles focus latest
     pub fn focus_latest(&mut self) -> bool {
         let Some(last) = self.entries.len().checked_sub(1) else {
             return false;
@@ -206,6 +231,7 @@ impl NotificationQueue {
         self.focus_index(last)
     }
 
+    /// Handles focus next
     pub fn focus_next(&mut self) -> bool {
         if self.entries.is_empty() {
             return false;
@@ -216,6 +242,7 @@ impl NotificationQueue {
         self.focus_index((current + 1) % self.entries.len())
     }
 
+    /// Handles focus previous
     pub fn focus_previous(&mut self) -> bool {
         if self.entries.is_empty() {
             return false;
@@ -228,16 +255,18 @@ impl NotificationQueue {
         })
     }
 
+    /// Handles dismiss focused
     pub fn dismiss_focused(&mut self) -> Option<NotificationView> {
         let index = self.focused_index()?;
         self.dismiss_at(index)
     }
 
+    /// Handles dismiss
     pub fn dismiss(&mut self, key: &str) -> Option<NotificationView> {
         let index = self.entries.iter().position(|entry| entry.key == key)?;
         self.dismiss_at(index)
     }
-
+    /// Handles view
     #[must_use]
     pub fn view(&self, limit: usize) -> Vec<NotificationView> {
         self.entries
@@ -302,13 +331,16 @@ impl NotificationQueue {
 /// Options for sending an OS-level desktop notification.
 #[derive(Clone, Debug)]
 pub struct OsNotificationOptions {
+    /// Stores the title
     pub title: String,
+    /// Stores the message
     pub message: String,
     /// Optional application icon name (e.g. "dialog-information").
     pub icon: Option<String>,
 }
 
 impl OsNotificationOptions {
+    /// Creates a new value
     #[must_use]
     pub fn new(title: impl Into<String>, message: impl Into<String>) -> Self {
         Self {
@@ -317,7 +349,7 @@ impl OsNotificationOptions {
             icon: None,
         }
     }
-
+    /// Handles icon
     #[must_use]
     pub fn icon(mut self, icon: impl Into<String>) -> Self {
         self.icon = Some(icon.into());
@@ -328,8 +360,11 @@ impl OsNotificationOptions {
 /// Result of an OS notification attempt.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum OsNotificationResult {
+    /// Represents sent
     Sent,
+    /// Represents unsupported
     Unsupported,
+    /// Represents failed
     Failed,
 }
 
@@ -379,8 +414,11 @@ pub fn send_terminal_bell() {
 /// A tip to display to the user during idle/spinner periods.
 #[derive(Clone, Debug)]
 pub struct Tip {
+    /// Stores the id
     pub id: &'static str,
+    /// Stores the text
     pub text: &'static str,
+    /// Stores the cooldown sessions
     pub cooldown_sessions: u32,
 }
 

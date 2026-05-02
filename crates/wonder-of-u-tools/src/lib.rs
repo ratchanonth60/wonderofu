@@ -1,3 +1,8 @@
+//! Provides wonder of u tools support
+//!
+
+#![warn(missing_docs)]
+
 mod agent_tool;
 mod ask_user_tool;
 mod bash;
@@ -26,25 +31,33 @@ use serde::de::DeserializeOwned;
 use serde_json::Value;
 use wonder_of_u_core::{FeatureFlag, Result, Tool, ToolKind, ToolRegistry, ToolSpec, WonderError};
 
+/// Re-exports items from `agent_tool`
 pub use agent_tool::{AgentInput, AgentTool};
+/// Re-exports items from `ask_user_tool`
 pub use ask_user_tool::{AskUserInput, AskUserTool};
+/// Re-exports items from `bash`
 pub use bash::{BashInput, BashTool};
+/// Re-exports items from `communication_tools`
 pub use communication_tools::{
     ListPeersInput, ListPeersTool, SendMessageInput, SendMessageTool, TeamCreateInput,
     TeamCreateTool, TeamDeleteInput, TeamDeleteTool,
 };
+/// Re-exports items from `cron_remote`
 pub use cron_remote::{
     CronCreateInput, CronCreateTool, CronDeleteInput, CronDeleteTool, RemoteTriggerAction,
     RemoteTriggerInput, RemoteTriggerTool,
 };
+/// Re-exports items from `extended`
 pub use extended::{
     CronListTool, NotebookEditInput, NotebookEditTool, PowerShellInput, PowerShellTool,
     TerminalCaptureTool, WorktreeListTool,
 };
+/// Re-exports items from `files`
 pub use files::{
     FileEditInput, FileEditTool, FileReadInput, FileReadTool, FileWriteInput, FileWriteMode,
     FileWriteTool,
 };
+/// Re-exports items from `orchestration`
 pub use orchestration::{
     BYTES_PER_TOKEN, DEFAULT_MAX_CONCURRENT_TOOL_USES, DEFAULT_MAX_RESULT_SIZE_CHARS,
     MAX_TOOL_RESULT_BYTES, MAX_TOOL_RESULT_TOKENS, MAX_TOOL_RESULTS_PER_MESSAGE_CHARS,
@@ -54,15 +67,19 @@ pub use orchestration::{
     ToolProgressState, ToolRuntimeLimits, filter_tool_specs, merge_tool_specs, provider_tool_specs,
     statically_denied_by_rule, tool_is_allowed,
 };
+/// Re-exports items from `plan_tool`
 pub use plan_tool::{
     EnterPlanModeInput, EnterPlanModeTool, ExitPlanModeInput, ExitPlanModeTool, PlanReadInput,
     PlanReadTool, PlanWriteInput, PlanWriteTool,
 };
+/// Re-exports items from `search`
 pub use search::{GlobEntryType, GlobInput, GlobTool, GrepInput, GrepTool};
+/// Re-exports items from `source_compat`
 pub use source_compat::{
     BriefInput, BriefTool, ConfigInput, ConfigTool, LspInput, LspTool, SkillInput, SkillTool,
     ToolSearchInput, ToolSearchTool,
 };
+/// Re-exports items from `special_tools`
 pub use special_tools::{
     CtxInspectTool, McpAuthInput, McpAuthTool, McpTool, McpToolInput, MonitorTool,
     OverflowTestInput, OverflowTestTool, PushNotificationInput, PushNotificationTool, ReplInput,
@@ -71,21 +88,26 @@ pub use special_tools::{
     TestingPermissionTool, TungstenInput, TungstenTool, VerifyPlanExecutionInput,
     VerifyPlanExecutionTool, WebBrowserInput, WebBrowserTool, WorkflowInput, WorkflowTool,
 };
+/// Re-exports items from `task_tools`
 pub use task_tools::{
     TaskCreateInput, TaskCreateTool, TaskGetInput, TaskGetTool, TaskListInput, TaskListTool,
     TaskOutputInput, TaskOutputTool, TaskStopInput, TaskStopTool, TaskUpdateInput,
     TaskUpdateStatus, TaskUpdateTool,
 };
+/// Re-exports items from `todo_tool`
 pub use todo_tool::{TodoAction, TodoInput, TodoTool};
+/// Re-exports items from `web`
 pub use web::{WebFetchInput, WebFetchTool, WebSearchInput, WebSearchTool};
+/// Re-exports items from `wonder_of_u_mcp`
 pub use wonder_of_u_mcp::{
     McpResourceListInput, McpResourceListTool, McpResourceReadInput, McpResourceReadTool,
 };
+/// Re-exports items from `worktree_tools`
 pub use worktree_tools::{
     EnterWorktreeInput, EnterWorktreeTool, ExitWorktreeAction, ExitWorktreeInput, ExitWorktreeTool,
     WorktreeSessionState,
 };
-
+/// Handles builtin tools
 #[must_use]
 pub fn builtin_tools() -> Vec<Arc<dyn Tool>> {
     vec![
@@ -152,6 +174,7 @@ pub fn builtin_tools() -> Vec<Arc<dyn Tool>> {
     ]
 }
 
+/// Handles builtin registry
 pub fn builtin_registry() -> Result<ToolRegistry> {
     let mut registry = ToolRegistry::new();
     for tool in builtin_tools() {

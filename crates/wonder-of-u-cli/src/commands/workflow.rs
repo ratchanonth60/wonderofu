@@ -32,15 +32,18 @@ use super::{
     },
 };
 
+/// Represents permissions command
 pub struct PermissionsCommand {
     tool_specs: Arc<[ToolSpec]>,
 }
 
 impl PermissionsCommand {
+    /// Creates a new value
     pub fn new(tool_specs: Arc<[ToolSpec]>) -> Self {
         Self { tool_specs }
     }
 
+    /// Handles command spec
     pub fn command_spec() -> CommandSpec {
         let mut spec = CommandSpec::new(
             "permissions",
@@ -52,13 +55,16 @@ impl PermissionsCommand {
     }
 }
 
+/// Represents vim command
 pub struct VimCommand;
 
 impl VimCommand {
+    /// Constant fn
     pub const fn new() -> Self {
         Self
     }
 
+    /// Handles command spec
     pub fn command_spec() -> CommandSpec {
         CommandSpec::new(
             "vim",
@@ -68,15 +74,18 @@ impl VimCommand {
     }
 }
 
+/// Represents keybindings command
 pub struct KeybindingsCommand {
     storage_dir: Option<PathBuf>,
 }
 
 impl KeybindingsCommand {
+    /// Constant fn
     pub const fn new(storage_dir: Option<PathBuf>) -> Self {
         Self { storage_dir }
     }
 
+    /// Handles command spec
     pub fn command_spec() -> CommandSpec {
         CommandSpec::new(
             "keybindings",
@@ -86,15 +95,18 @@ impl KeybindingsCommand {
     }
 }
 
+/// Represents terminal setup command
 pub struct TerminalSetupCommand {
     storage_dir: Option<PathBuf>,
 }
 
 impl TerminalSetupCommand {
+    /// Constant fn
     pub const fn new(storage_dir: Option<PathBuf>) -> Self {
         Self { storage_dir }
     }
 
+    /// Handles command spec
     pub fn command_spec() -> CommandSpec {
         let mut spec = CommandSpec::new(
             "terminal-setup",
@@ -106,13 +118,16 @@ impl TerminalSetupCommand {
     }
 }
 
+/// Represents theme command
 pub struct ThemeCommand;
 
 impl ThemeCommand {
+    /// Constant fn
     pub const fn new() -> Self {
         Self
     }
 
+    /// Handles command spec
     pub fn command_spec() -> CommandSpec {
         CommandSpec::new(
             "theme",
@@ -122,13 +137,16 @@ impl ThemeCommand {
     }
 }
 
+/// Represents color command
 pub struct ColorCommand;
 
 impl ColorCommand {
+    /// Constant fn
     pub const fn new() -> Self {
         Self
     }
 
+    /// Handles command spec
     pub fn command_spec() -> CommandSpec {
         CommandSpec::new(
             "color",
@@ -138,13 +156,16 @@ impl ColorCommand {
     }
 }
 
+/// Represents brief command
 pub struct BriefCommand;
 
 impl BriefCommand {
+    /// Constant fn
     pub const fn new() -> Self {
         Self
     }
 
+    /// Handles command spec
     pub fn command_spec() -> CommandSpec {
         let mut spec = CommandSpec::new(
             "brief",
@@ -156,15 +177,18 @@ impl BriefCommand {
     }
 }
 
+/// Represents fast command
 pub struct FastCommand {
     storage_dir: Option<PathBuf>,
 }
 
 impl FastCommand {
+    /// Constant fn
     pub const fn new(storage_dir: Option<PathBuf>) -> Self {
         Self { storage_dir }
     }
 
+    /// Handles command spec
     pub fn command_spec() -> CommandSpec {
         CommandSpec::new(
             "fast",
@@ -174,13 +198,16 @@ impl FastCommand {
     }
 }
 
+/// Represents commit command
 pub struct CommitCommand;
 
 impl CommitCommand {
+    /// Constant fn
     pub const fn new() -> Self {
         Self
     }
 
+    /// Handles command spec
     pub fn command_spec() -> CommandSpec {
         CommandSpec::new(
             "commit",
@@ -190,13 +217,16 @@ impl CommitCommand {
     }
 }
 
+/// Represents commit push pr command
 pub struct CommitPushPrCommand;
 
 impl CommitPushPrCommand {
+    /// Constant fn
     pub const fn new() -> Self {
         Self
     }
 
+    /// Handles command spec
     pub fn command_spec() -> CommandSpec {
         CommandSpec::new(
             "commit-push-pr",
@@ -206,13 +236,16 @@ impl CommitPushPrCommand {
     }
 }
 
+/// Represents review command
 pub struct ReviewCommand;
 
 impl ReviewCommand {
+    /// Constant fn
     pub const fn new() -> Self {
         Self
     }
 
+    /// Handles command spec
     pub fn command_spec() -> CommandSpec {
         let mut spec = CommandSpec::new(
             "review",
@@ -224,13 +257,16 @@ impl ReviewCommand {
     }
 }
 
+/// Represents security review command
 pub struct SecurityReviewCommand;
 
 impl SecurityReviewCommand {
+    /// Constant fn
     pub const fn new() -> Self {
         Self
     }
 
+    /// Handles command spec
     pub fn command_spec() -> CommandSpec {
         let mut spec = CommandSpec::new(
             "security-review",
@@ -242,13 +278,16 @@ impl SecurityReviewCommand {
     }
 }
 
+/// Represents statusline command
 pub struct StatuslineCommand;
 
 impl StatuslineCommand {
+    /// Constant fn
     pub const fn new() -> Self {
         Self
     }
 
+    /// Handles command spec
     pub fn command_spec() -> CommandSpec {
         let mut spec = CommandSpec::new(
             "statusline",
@@ -260,15 +299,18 @@ impl StatuslineCommand {
     }
 }
 
+/// Represents effort command
 pub struct EffortCommand {
     storage_dir: Option<PathBuf>,
 }
 
 impl EffortCommand {
+    /// Constant fn
     pub const fn new(storage_dir: Option<PathBuf>) -> Self {
         Self { storage_dir }
     }
 
+    /// Handles command spec
     pub fn command_spec() -> CommandSpec {
         CommandSpec::new(
             "effort",
@@ -278,12 +320,14 @@ impl EffortCommand {
     }
 }
 
+/// Represents hooks command
 pub struct HooksCommand {
     storage_dir: Option<PathBuf>,
     tool_specs: Arc<[ToolSpec]>,
 }
 
 impl HooksCommand {
+    /// Creates a new value
     pub fn new(storage_dir: Option<PathBuf>, tool_specs: Arc<[ToolSpec]>) -> Self {
         Self {
             storage_dir,
@@ -291,6 +335,7 @@ impl HooksCommand {
         }
     }
 
+    /// Handles command spec
     pub fn command_spec() -> CommandSpec {
         CommandSpec::new(
             "hooks",
@@ -300,13 +345,16 @@ impl HooksCommand {
     }
 }
 
+/// Represents privacy settings command
 pub struct PrivacySettingsCommand;
 
 impl PrivacySettingsCommand {
+    /// Constant fn
     pub const fn new() -> Self {
         Self
     }
 
+    /// Handles command spec
     pub fn command_spec() -> CommandSpec {
         CommandSpec::new(
             "privacy-settings",
@@ -917,13 +965,16 @@ impl PermissionsCommand {
     }
 }
 
+/// Represents plan command
 pub struct PlanCommand;
 
 impl PlanCommand {
+    /// Constant fn
     pub const fn new() -> Self {
         Self
     }
 
+    /// Handles command spec
     pub fn command_spec() -> CommandSpec {
         let mut spec = CommandSpec::new(
             "plan",
@@ -974,15 +1025,18 @@ impl Command for PlanCommand {
     }
 }
 
+/// Represents agents command
 pub struct AgentsCommand {
     storage_dir: Option<PathBuf>,
 }
 
 impl AgentsCommand {
+    /// Constant fn
     pub const fn new(storage_dir: Option<PathBuf>) -> Self {
         Self { storage_dir }
     }
 
+    /// Handles command spec
     pub fn command_spec() -> CommandSpec {
         let mut spec = CommandSpec::new(
             "agents",
@@ -1173,15 +1227,18 @@ impl AgentsCommand {
     }
 }
 
+/// Represents tasks command
 pub struct TasksCommand {
     storage_dir: Option<PathBuf>,
 }
 
 impl TasksCommand {
+    /// Constant fn
     pub const fn new(storage_dir: Option<PathBuf>) -> Self {
         Self { storage_dir }
     }
 
+    /// Handles command spec
     pub fn command_spec() -> CommandSpec {
         let mut spec = CommandSpec::new(
             "tasks",
@@ -1376,13 +1433,16 @@ impl TasksCommand {
     }
 }
 
+/// Represents exit command
 pub struct ExitCommand;
 
 impl ExitCommand {
+    /// Constant fn
     pub const fn new() -> Self {
         Self
     }
 
+    /// Handles command spec
     pub fn command_spec() -> CommandSpec {
         CommandSpec::new("exit", "Request CLI exit", CommandKind::Local)
     }

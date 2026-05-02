@@ -3,14 +3,17 @@
 /// Orientation of a divider line.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Default)]
 pub enum DividerOrientation {
+    /// Represents horizontal
     #[default]
     Horizontal,
+    /// Represents vertical
     Vertical,
 }
 
 /// View model for a divider / separator widget.
 #[derive(Clone, Debug)]
 pub struct DividerView {
+    /// Stores the orientation
     pub orientation: DividerOrientation,
     /// Fill character. Defaults to `'─'` (horizontal) or `'│'` (vertical).
     pub fill_char: Option<char>,
@@ -23,6 +26,7 @@ pub struct DividerView {
 }
 
 impl DividerView {
+    /// Handles horizontal
     #[must_use]
     pub fn horizontal() -> Self {
         Self {
@@ -33,7 +37,7 @@ impl DividerView {
             label: None,
         }
     }
-
+    /// Handles vertical
     #[must_use]
     pub fn vertical() -> Self {
         Self {
@@ -44,13 +48,13 @@ impl DividerView {
             label: None,
         }
     }
-
+    /// Handles label
     #[must_use]
     pub fn label(mut self, label: impl Into<String>) -> Self {
         self.label = Some(label.into());
         self
     }
-
+    /// Handles color
     #[must_use]
     pub fn color(mut self, color: impl Into<String>) -> Self {
         self.color = Some(color.into());

@@ -14,39 +14,55 @@ pub const SPINNER_FRAMES: &[char] = &['·', '✢', '✳', '✶', '✻', '✽', '
 /// High-level animation mode for the spinner row.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SpinnerMode {
+    /// Represents idle
     Idle,
+    /// Represents requesting
     Requesting,
+    /// Represents thinking
     Thinking,
+    /// Represents tool use
     ToolUse,
+    /// Represents stalled
     Stalled,
 }
 
 /// Visual emphasis applied to a character in the message row.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SpinnerCharStyle {
+    /// Represents base
     Base,
+    /// Represents near highlight
     NearHighlight,
+    /// Represents highlight
     Highlight,
+    /// Represents flash
     Flash,
 }
 
 /// A single visible character in the animated message.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SpinnerCharView {
+    /// Stores the ch
     pub ch: char,
+    /// Stores the style
     pub style: SpinnerCharStyle,
 }
 
 /// A single rendered spinner frame.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SpinnerFrameView {
+    /// Stores the glyph
     pub glyph: char,
+    /// Stores the message
     pub message: Vec<SpinnerCharView>,
+    /// Stores the metadata
     pub metadata: Vec<String>,
+    /// Stores whether stalled
     pub is_stalled: bool,
 }
 
 impl SpinnerFrameView {
+    /// Handles message text
     #[must_use]
     pub fn message_text(&self) -> String {
         self.message.iter().map(|part| part.ch).collect()
@@ -56,16 +72,24 @@ impl SpinnerFrameView {
 /// Renderer-neutral spinner state for frame-driven animation.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SpinnerView {
+    /// Stores the mode
     pub mode: SpinnerMode,
+    /// Stores the message
     pub message: String,
+    /// Stores the frame
     pub frame: u64,
+    /// Stores the suffix
     pub suffix: Option<String>,
+    /// Stores the elapsed ms
     pub elapsed_ms: Option<u64>,
+    /// Stores the token count
     pub token_count: Option<usize>,
+    /// Stores the reduced motion
     pub reduced_motion: bool,
 }
 
 impl SpinnerView {
+    /// Creates a new value
     #[must_use]
     pub fn new(mode: SpinnerMode, message: impl Into<String>) -> Self {
         Self {
@@ -78,37 +102,37 @@ impl SpinnerView {
             reduced_motion: false,
         }
     }
-
+    /// Constant fn
     #[must_use]
     pub const fn frame(mut self, frame: u64) -> Self {
         self.frame = frame;
         self
     }
-
+    /// Handles suffix
     #[must_use]
     pub fn suffix(mut self, suffix: impl Into<String>) -> Self {
         self.suffix = Some(suffix.into());
         self
     }
-
+    /// Constant fn
     #[must_use]
     pub const fn elapsed_ms(mut self, elapsed_ms: u64) -> Self {
         self.elapsed_ms = Some(elapsed_ms);
         self
     }
-
+    /// Constant fn
     #[must_use]
     pub const fn token_count(mut self, token_count: usize) -> Self {
         self.token_count = Some(token_count);
         self
     }
-
+    /// Constant fn
     #[must_use]
     pub const fn reduced_motion(mut self, reduced_motion: bool) -> Self {
         self.reduced_motion = reduced_motion;
         self
     }
-
+    /// Renders frame
     #[must_use]
     pub fn render_frame(&self) -> SpinnerFrameView {
         let glyph = match self.mode {
@@ -146,7 +170,7 @@ impl SpinnerView {
             is_stalled: self.mode == SpinnerMode::Stalled,
         }
     }
-
+    /// Renders line
     #[must_use]
     pub fn render_line(&self) -> String {
         let frame = self.render_frame();

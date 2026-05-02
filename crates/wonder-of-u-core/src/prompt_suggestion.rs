@@ -6,14 +6,20 @@ use crate::{AppState, MessagePayload, QueryPhase, QueryState, TaskStatus};
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PromptSuggestionKind {
+    /// Represents confirm
     Confirm,
+    /// Represents verify
     Verify,
+    /// Represents review
     Review,
+    /// Represents commit
     Commit,
+    /// Represents try
     Try,
 }
 
 impl PromptSuggestionKind {
+    /// Constant fn
     #[must_use]
     pub const fn label(self) -> &'static str {
         match self {
@@ -25,16 +31,21 @@ impl PromptSuggestionKind {
         }
     }
 }
-
+/// Represents prompt suggestion
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct PromptSuggestion {
+    /// Stores the text
     pub text: String,
+    /// Stores the kind
     pub kind: PromptSuggestionKind,
+    /// Stores the score
     pub score: u16,
+    /// Stores the rationale
     pub rationale: String,
 }
 
 impl PromptSuggestion {
+    /// Creates a new value
     #[must_use]
     pub fn new(
         text: impl Into<String>,
@@ -50,12 +61,12 @@ impl PromptSuggestion {
         }
     }
 }
-
+/// Returns the best prompt suggestion
 #[must_use]
 pub fn best_prompt_suggestion(app: &AppState, query: &QueryState) -> Option<PromptSuggestion> {
     rank_prompt_suggestions(app, query).into_iter().next()
 }
-
+/// Ranks prompt suggestions
 #[must_use]
 pub fn rank_prompt_suggestions(app: &AppState, query: &QueryState) -> Vec<PromptSuggestion> {
     if query.phase != QueryPhase::Completed
@@ -178,7 +189,7 @@ pub fn rank_prompt_suggestions(app: &AppState, query: &QueryState) -> Vec<Prompt
     candidates.dedup_by(|left, right| left.text == right.text);
     candidates
 }
-
+/// Handles suggestion filter reason
 #[must_use]
 pub fn suggestion_filter_reason(text: &str) -> Option<&'static str> {
     let trimmed = text.trim();

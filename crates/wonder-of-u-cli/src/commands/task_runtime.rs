@@ -110,6 +110,7 @@ struct TaskReconcileOutcome {
 }
 
 impl TaskSummary {
+    /// Handles from tasks
     #[must_use]
     pub fn from_tasks(tasks: &[TaskState]) -> Self {
         let mut summary = Self::default();
@@ -139,23 +140,25 @@ impl TaskSummary {
 }
 
 impl TaskManager {
+    /// Creates a new value
     #[must_use]
     pub fn new(base_dir: impl Into<PathBuf>) -> Self {
         Self {
             store: TaskStore::new(base_dir),
         }
     }
-
+    /// Handles storage dir
     #[must_use]
     pub fn storage_dir(&self) -> &Path {
         self.store.paths().base_dir()
     }
-
+    /// Handles logs dir
     #[must_use]
     pub fn logs_dir(&self) -> PathBuf {
         self.store.paths().task_logs_dir()
     }
 
+    /// Handles reconcile tasks
     pub fn reconcile_tasks(&self, kind: Option<TaskKind>) -> Result<TaskReconcileReport> {
         let reconciled_at = OffsetDateTime::now_utc();
         let mut report = TaskReconcileReport::new(reconciled_at);
@@ -181,15 +184,18 @@ impl TaskManager {
         Ok(report)
     }
 
+    /// Returns the task
     pub fn get_task(&self, task_id: TaskId) -> Result<TaskState> {
         let task = self.store.read_task(task_id)?;
         Ok(self.reconcile_task(task, OffsetDateTime::now_utc())?.0)
     }
 
+    /// Reads log tail
     pub fn read_log_tail(&self, task_id: TaskId, tail_lines: usize) -> Result<Vec<String>> {
         self.store.read_log_tail(task_id, tail_lines)
     }
 
+    /// Handles start shell task
     pub fn start_shell_task(
         &self,
         context: &CommandContext,
@@ -240,6 +246,7 @@ impl TaskManager {
         Ok(task)
     }
 
+    /// Handles start agent task
     pub fn start_agent_task(&self, launch: AgentTaskLaunch) -> Result<TaskState> {
         ensure_directory(&launch.cwd)?;
         let command = agent_prompt_command(self.storage_dir(), &launch)?;
@@ -285,7 +292,7 @@ impl TaskManager {
         self.store.write_task(&task)?;
         Ok(task)
     }
-
+    /// Handles start remote task
     #[cfg_attr(not(test), allow(dead_code))]
     pub fn start_remote_task(&self, launch: RemoteTaskLaunch) -> Result<TaskState> {
         let remote = RemoteTaskState::deferred(launch.task_type, launch.metadata);
@@ -296,6 +303,7 @@ impl TaskManager {
         )))
     }
 
+    /// Handles stop task
     pub fn stop_task(&self, task_id: TaskId, force: bool) -> Result<TaskState> {
         let task = self.get_task(task_id)?;
         if task.status.is_terminal() {

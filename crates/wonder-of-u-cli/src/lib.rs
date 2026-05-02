@@ -1,3 +1,8 @@
+//! Provides wonder of u cli support
+//!
+
+#![warn(missing_docs)]
+
 use std::{
     ffi::OsString,
     io::{IsTerminal, Write},
@@ -15,6 +20,7 @@ use wonder_of_u_core::{
 mod commands;
 mod tui_runtime;
 
+/// Re-exports items from `commands`
 pub use commands::registry as build_command_registry;
 
 #[derive(Debug, Parser)]
@@ -24,21 +30,23 @@ pub use commands::registry as build_command_registry;
     about = "Rust workspace foundation for the wonder-of-u agent CLI",
     disable_help_subcommand = true
 )]
+/// Represents cli
 pub struct Cli {
     /// Override the wonder-of-u data directory used by storage-backed commands.
     #[arg(long, global = true)]
     pub storage_dir: Option<PathBuf>,
-
+    /// Stores the command
     #[command(subcommand)]
     pub command: Option<Commands>,
 }
-
+/// Enumerates commands
 #[derive(Debug, Clone, Subcommand)]
 pub enum Commands {
     /// Show built-in command help.
     #[command(visible_alias = "h")]
     Help {
         #[arg()]
+        /// Stores the command
         command: Option<String>,
     },
     /// Run lightweight startup diagnostics.
@@ -48,49 +56,64 @@ pub enum Commands {
     /// Inspect persisted provider settings and overrides.
     Config {
         #[command(subcommand)]
+        /// Stores the command
         command: Option<ConfigCommand>,
     },
     /// Store provider credentials or run interactive provider login.
     Login {
         #[arg(long)]
+        /// Stores the provider
         provider: String,
         #[arg(long)]
+        /// Stores the api key
         api_key: Option<String>,
         #[arg(long, default_value_t = false)]
+        /// Stores the no browser
         no_browser: bool,
     },
     /// Remove stored provider credentials.
     Logout {
         #[arg(long)]
+        /// Stores the provider
         provider: Option<String>,
     },
     /// Inspect or change the active provider/model selection.
     Model {
         #[command(subcommand)]
+        /// Stores the command
         command: Option<ModelCommand>,
     },
     /// Execute a non-interactive model prompt.
     Prompt {
         #[arg(long)]
+        /// Stores the provider
         provider: Option<String>,
         #[arg(long)]
+        /// Stores the model
         model: Option<String>,
         #[arg(long)]
+        /// Stores the system
         system: Option<String>,
         #[arg(long)]
+        /// Stores the session id
         session_id: Option<String>,
         #[arg(long)]
+        /// Stores the max output tokens
         max_output_tokens: Option<u32>,
         #[arg(long)]
+        /// Stores the temperature
         temperature: Option<f32>,
         #[arg(long, default_value_t = false)]
+        /// Stores the tools
         tools: bool,
         #[arg(trailing_var_arg = true, allow_hyphen_values = true, num_args = 1..)]
+        /// Stores the prompt
         prompt: Vec<String>,
     },
     /// Launch the live interactive terminal shell (default when no subcommand is given in a TTY).
     Tui {
         #[arg(long)]
+        /// Stores the session id
         session_id: Option<String>,
     },
     /// Print enabled first-release feature gates.
@@ -98,11 +121,13 @@ pub enum Commands {
     /// Inspect MCP server config and stdio discovery status.
     Mcp {
         #[command(subcommand)]
+        /// Stores the command
         command: Option<McpCommand>,
     },
     /// Inspect discovered plugin manifests and trust state.
     Plugin {
         #[command(subcommand)]
+        /// Stores the command
         command: Option<PluginCommand>,
     },
     /// Reload plugin and skill metadata catalogs.
@@ -110,51 +135,64 @@ pub enum Commands {
     /// Inspect and run bundled, local, and plugin-provided skills.
     Skills {
         #[command(subcommand)]
+        /// Stores the command
         command: Option<SkillsCommand>,
     },
     /// Session persistence helpers.
     Session {
         #[command(subcommand)]
+        /// Stores the command
         command: Option<SessionCommand>,
     },
     /// Resume a persisted session in the live shell when interactive, or print a summary.
     Resume {
         #[arg()]
+        /// Stores the session id
         session_id: String,
     },
     /// Rename a persisted session.
     Rename {
         #[arg()]
+        /// Stores the session id
         session_id: String,
         #[arg()]
+        /// Stores the title
         title: String,
     },
     /// Export a persisted session transcript.
     Export {
         #[arg()]
+        /// Stores the session id
         session_id: String,
         #[arg(long, default_value = "text")]
+        /// Stores the format
         format: String,
     },
     /// Persist a cleared resume view for the latest or specified session.
     Clear {
         #[arg()]
+        /// Stores the session id
         session_id: Option<String>,
     },
     /// Persist a compacted resume view for the latest or specified session.
     Compact {
         #[arg()]
+        /// Stores the session id
         session_id: Option<String>,
         #[arg(long, default_value_t = 8)]
+        /// Stores the keep last
         keep_last: usize,
     },
     /// List files beneath the current working directory.
     Files {
         #[arg()]
+        /// Stores the path
         path: Option<PathBuf>,
         #[arg(long, default_value_t = 100)]
+        /// Stores the limit
         limit: usize,
         #[arg(long)]
+        /// Stores the hidden
         hidden: bool,
     },
     /// Show the current git branch.
@@ -162,13 +200,16 @@ pub enum Commands {
     /// Show a git diff summary.
     Diff {
         #[arg(long)]
+        /// Stores the staged
         staged: bool,
         #[arg(long)]
+        /// Stores the name only
         name_only: bool,
     },
     /// Inspect permission defaults or evaluate a tool request.
     Permissions {
         #[command(subcommand)]
+        /// Stores the command
         command: Option<PermissionsCommand>,
     },
     /// Show plan-mode readiness.
@@ -176,11 +217,13 @@ pub enum Commands {
     /// Manage persisted local agent tasks.
     Agents {
         #[command(subcommand)]
+        /// Stores the command
         command: Option<AgentsCliCommand>,
     },
     /// Manage persisted local background tasks.
     Tasks {
         #[command(subcommand)]
+        /// Stores the command
         command: Option<TasksCliCommand>,
     },
     /// Request CLI exit.
@@ -188,10 +231,11 @@ pub enum Commands {
     /// Execute a slash command through the shared command registry.
     Slash {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true, num_args = 1..)]
+        /// Stores the command
         command: Vec<String>,
     },
 }
-
+/// Enumerates model command
 #[derive(Debug, Clone, Subcommand)]
 pub enum ModelCommand {
     /// Show current provider/model selection and built-in options.
@@ -199,12 +243,14 @@ pub enum ModelCommand {
     /// Persist a provider/model selection.
     Set {
         #[arg(long)]
+        /// Stores the provider
         provider: String,
         #[arg(long)]
+        /// Stores the model
         model: String,
     },
 }
-
+/// Enumerates config command
 #[derive(Debug, Clone, Subcommand)]
 pub enum ConfigCommand {
     /// Show stored settings and provider overrides.
@@ -212,17 +258,20 @@ pub enum ConfigCommand {
     /// Persist a provider-specific API base override.
     SetApiBase {
         #[arg(long)]
+        /// Stores the provider
         provider: String,
         #[arg(long)]
+        /// Stores the api base
         api_base: String,
     },
     /// Clear a provider-specific API base override.
     ClearApiBase {
         #[arg(long)]
+        /// Stores the provider
         provider: String,
     },
 }
-
+/// Enumerates mcp command
 #[derive(Debug, Clone, Subcommand)]
 pub enum McpCommand {
     /// Show configured MCP servers.
@@ -232,15 +281,17 @@ pub enum McpCommand {
     /// Enable a configured MCP server.
     Enable {
         #[arg()]
+        /// Stores the server
         server: String,
     },
     /// Disable a configured MCP server.
     Disable {
         #[arg()]
+        /// Stores the server
         server: String,
     },
 }
-
+/// Enumerates plugin command
 #[derive(Debug, Clone, Subcommand)]
 pub enum PluginCommand {
     /// List discovered plugins.
@@ -250,21 +301,26 @@ pub enum PluginCommand {
     /// Persist a trust decision for a plugin id.
     Trust {
         #[arg()]
+        /// Stores the plugin
         plugin: String,
         #[arg(long)]
+        /// Stores the state
         state: String,
     },
     /// Execute a trusted plugin command entry as a one-shot local subprocess.
     Run {
         #[arg()]
+        /// Stores the plugin
         plugin: String,
         #[arg()]
+        /// Stores the command
         command: String,
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        /// Stores the args
         args: Vec<String>,
     },
 }
-
+/// Enumerates skills command
 #[derive(Debug, Clone, Subcommand)]
 pub enum SkillsCommand {
     /// List discovered skills.
@@ -272,47 +328,60 @@ pub enum SkillsCommand {
     /// Show details for a specific skill.
     Show {
         #[arg()]
+        /// Stores the skill
         skill: String,
     },
     /// Execute a skill as a prompt-based provider run.
     Run {
         #[arg()]
+        /// Stores the skill
         skill: String,
         #[arg(long)]
+        /// Stores the provider
         provider: Option<String>,
         #[arg(long)]
+        /// Stores the model
         model: Option<String>,
         #[arg(long)]
+        /// Stores the system
         system: Option<String>,
         #[arg(long)]
+        /// Stores the session id
         session_id: Option<String>,
         #[arg(long)]
+        /// Stores the max output tokens
         max_output_tokens: Option<u32>,
         #[arg(long)]
+        /// Stores the temperature
         temperature: Option<f32>,
         #[arg(long, default_value_t = false)]
+        /// Stores the tools
         tools: bool,
         #[arg(trailing_var_arg = true, allow_hyphen_values = true, num_args = 1..)]
+        /// Stores the request
         request: Vec<String>,
     },
 }
-
+/// Enumerates session command
 #[derive(Debug, Clone, Subcommand)]
 pub enum SessionCommand {
     /// Create a new session metadata record and seed transcript.
     New {
         #[arg(long)]
+        /// Stores the title
         title: Option<String>,
         #[arg(long)]
+        /// Stores the cwd
         cwd: Option<PathBuf>,
     },
     /// List persisted sessions.
     List {
         #[arg(long, default_value_t = 20)]
+        /// Stores the limit
         limit: usize,
     },
 }
-
+/// Enumerates permissions command
 #[derive(Debug, Clone, Subcommand)]
 pub enum PermissionsCommand {
     /// Show current permission defaults.
@@ -320,95 +389,120 @@ pub enum PermissionsCommand {
     /// Evaluate a concrete tool request.
     Check {
         #[arg(long)]
+        /// Stores the tool
         tool: String,
         #[arg(long = "alias")]
+        /// Stores the aliases
         aliases: Vec<String>,
         #[arg(long)]
+        /// Stores the read only
         read_only: bool,
         #[arg(long)]
+        /// Stores the destructive
         destructive: bool,
         #[arg(long = "path")]
+        /// Stores the paths
         paths: Vec<PathBuf>,
         #[arg(long = "shell")]
+        /// Stores the shell command
         shell_command: Option<String>,
         #[arg(long = "mode")]
+        /// Stores the mode
         mode: Option<String>,
         #[arg(long = "add-dir")]
+        /// Stores the add dirs
         add_dirs: Vec<PathBuf>,
     },
 }
-
+/// Enumerates agents cli command
 #[derive(Debug, Clone, Subcommand)]
 pub enum AgentsCliCommand {
     /// List persisted local agent entries.
     List {
         #[arg(long, default_value_t = 20)]
+        /// Stores the limit
         limit: usize,
     },
     /// Show a persisted local agent entry.
     Show {
         #[arg()]
+        /// Stores the task id
         task_id: String,
         #[arg(long = "tail", default_value_t = 20)]
+        /// Stores the tail lines
         tail_lines: usize,
     },
     /// Start a persisted local agent task.
     Start {
         #[command(subcommand)]
+        /// Stores the command
         command: AgentStartCliCommand,
     },
     /// Stop a persisted local agent task.
     Stop {
         #[arg()]
+        /// Stores the task id
         task_id: String,
         #[arg(long)]
+        /// Stores the force
         force: bool,
     },
     /// Show local agent runtime status.
     Status,
 }
-
+/// Enumerates agent start cli command
 #[derive(Debug, Clone, Subcommand)]
 pub enum AgentStartCliCommand {
     /// Run a local agent as a single provider-backed prompt subprocess.
     Local {
         #[arg(long)]
+        /// Stores the name
         name: String,
         #[arg(long)]
+        /// Stores the prompt
         prompt: String,
         #[arg(long)]
+        /// Stores the description
         description: Option<String>,
         #[arg(long)]
+        /// Stores the provider
         provider: Option<String>,
         #[arg(long)]
+        /// Stores the model
         model: Option<String>,
     },
 }
-
+/// Enumerates tasks cli command
 #[derive(Debug, Clone, Subcommand)]
 pub enum TasksCliCommand {
     /// List persisted tasks.
     List {
         #[arg(long, default_value_t = 20)]
+        /// Stores the limit
         limit: usize,
     },
     /// Show a persisted task and recent log lines.
     Show {
         #[arg()]
+        /// Stores the task id
         task_id: String,
         #[arg(long = "tail", default_value_t = 20)]
+        /// Stores the tail lines
         tail_lines: usize,
     },
     /// Start a new persisted task.
     Start {
         #[command(subcommand)]
+        /// Stores the command
         command: TaskStartCliCommand,
     },
     /// Stop a persisted task.
     Stop {
         #[arg()]
+        /// Stores the task id
         task_id: String,
         #[arg(long)]
+        /// Stores the force
         force: bool,
     },
     /// Reconcile persisted task state against runtime artifacts.
@@ -416,26 +510,33 @@ pub enum TasksCliCommand {
     /// Show task runtime status.
     Status,
 }
-
+/// Enumerates task start cli command
 #[derive(Debug, Clone, Subcommand)]
 pub enum TaskStartCliCommand {
     /// Start a local background shell task.
     Shell {
         #[arg(long)]
+        /// Stores the description
         description: String,
         #[arg(long)]
+        /// Stores the command
         command: String,
         #[arg(long)]
+        /// Stores the cwd
         cwd: Option<PathBuf>,
         #[arg(long)]
+        /// Stores the read only
         read_only: bool,
         #[arg(long)]
+        /// Stores the destructive
         destructive: bool,
         #[arg(long)]
+        /// Stores the permission mode
         permission_mode: Option<String>,
     },
 }
 
+/// Handles run from
 pub fn run_from<I, T, W>(args: I, writer: &mut W) -> Result<()>
 where
     I: IntoIterator<Item = T>,
@@ -446,6 +547,7 @@ where
     run_with_terminal_mode(cli, writer, default_terminal_mode_for_run_from())
 }
 
+/// Handles run
 pub fn run<W: Write>(cli: Cli, writer: &mut W) -> Result<()> {
     run_with_terminal_mode(cli, writer, terminal_is_interactive())
 }

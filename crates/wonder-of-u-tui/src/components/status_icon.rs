@@ -3,12 +3,18 @@
 /// Visual state of a status icon (spinner, success, error, etc.).
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Default)]
 pub enum StatusIconKind {
+    /// Represents idle
     #[default]
     Idle,
+    /// Represents running
     Running,
+    /// Represents success
     Success,
+    /// Represents warning
     Warning,
+    /// Represents error
     Error,
+    /// Represents paused
     Paused,
 }
 
@@ -46,12 +52,14 @@ pub const SPINNER_FRAMES: &[char] = &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', 
 /// View model for a status icon / spinner.
 #[derive(Clone, Debug, Default)]
 pub struct StatusIconView {
+    /// Stores the kind
     pub kind: StatusIconKind,
     /// Current spinner frame index (used only when `kind == Running`).
     pub spinner_frame: usize,
 }
 
 impl StatusIconView {
+    /// Creates a new value
     #[must_use]
     pub fn new(kind: StatusIconKind) -> Self {
         Self {

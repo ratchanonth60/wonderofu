@@ -16,15 +16,18 @@ use wonder_of_u_storage::{
 
 use super::{detect_git_branch, parse_command_args, parse_session_id};
 
+/// Represents session command
 pub struct SessionCommand {
     storage_dir: Option<PathBuf>,
 }
 
 impl SessionCommand {
+    /// Constant fn
     pub const fn new(storage_dir: Option<PathBuf>) -> Self {
         Self { storage_dir }
     }
 
+    /// Handles command spec
     pub fn command_spec() -> CommandSpec {
         let mut spec = CommandSpec::new(
             "session",
@@ -174,15 +177,18 @@ impl SessionCommand {
     }
 }
 
+/// Represents resume command
 pub struct ResumeCommand {
     storage_dir: Option<PathBuf>,
 }
 
 impl ResumeCommand {
+    /// Constant fn
     pub const fn new(storage_dir: Option<PathBuf>) -> Self {
         Self { storage_dir }
     }
 
+    /// Handles command spec
     pub fn command_spec() -> CommandSpec {
         let mut spec = CommandSpec::new(
             "resume",
@@ -224,15 +230,18 @@ impl Command for ResumeCommand {
     }
 }
 
+/// Represents tag command
 pub struct TagCommand {
     storage_dir: Option<PathBuf>,
 }
 
 impl TagCommand {
+    /// Constant fn
     pub const fn new(storage_dir: Option<PathBuf>) -> Self {
         Self { storage_dir }
     }
 
+    /// Handles command spec
     pub fn command_spec() -> CommandSpec {
         let mut spec = CommandSpec::new(
             "tag",
@@ -317,15 +326,18 @@ impl Command for TagCommand {
     }
 }
 
+/// Represents rename command
 pub struct RenameCommand {
     storage_dir: Option<PathBuf>,
 }
 
 impl RenameCommand {
+    /// Constant fn
     pub const fn new(storage_dir: Option<PathBuf>) -> Self {
         Self { storage_dir }
     }
 
+    /// Handles command spec
     pub fn command_spec() -> CommandSpec {
         let mut spec = CommandSpec::new(
             "rename",
@@ -398,15 +410,18 @@ impl Command for RenameCommand {
     }
 }
 
+/// Represents export command
 pub struct ExportCommand {
     storage_dir: Option<PathBuf>,
 }
 
 impl ExportCommand {
+    /// Constant fn
     pub const fn new(storage_dir: Option<PathBuf>) -> Self {
         Self { storage_dir }
     }
 
+    /// Handles command spec
     pub fn command_spec() -> CommandSpec {
         let mut spec = CommandSpec::new(
             "export",
@@ -453,15 +468,18 @@ impl Command for ExportCommand {
     }
 }
 
+/// Represents clear command
 pub struct ClearCommand {
     storage_dir: Option<PathBuf>,
 }
 
 impl ClearCommand {
+    /// Constant fn
     pub const fn new(storage_dir: Option<PathBuf>) -> Self {
         Self { storage_dir }
     }
 
+    /// Handles command spec
     pub fn command_spec() -> CommandSpec {
         let mut spec = CommandSpec::new(
             "clear",
@@ -495,15 +513,18 @@ impl Command for ClearCommand {
     }
 }
 
+/// Represents compact command
 pub struct CompactCommand {
     storage_dir: Option<PathBuf>,
 }
 
 impl CompactCommand {
+    /// Constant fn
     pub const fn new(storage_dir: Option<PathBuf>) -> Self {
         Self { storage_dir }
     }
 
+    /// Handles command spec
     pub fn command_spec() -> CommandSpec {
         let mut spec = CommandSpec::new(
             "compact",

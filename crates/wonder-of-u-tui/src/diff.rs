@@ -7,11 +7,14 @@ use crate::measure::{line_width, strip_ansi};
 /// A width-limited line ready for renderer-specific styling.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct VisualLine {
+    /// Stores the kind
     pub kind: VisualLineKind,
+    /// Stores the text
     pub text: String,
 }
 
 impl VisualLine {
+    /// Creates a new value
     #[must_use]
     pub fn new(kind: VisualLineKind, text: impl Into<String>) -> Self {
         Self {
@@ -24,31 +27,44 @@ impl VisualLine {
 /// Categorizes renderer-agnostic diff and code lines.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum VisualLineKind {
+    /// Represents path
     Path,
+    /// Represents meta
     Meta,
+    /// Represents context
     Context,
+    /// Represents addition
     Addition,
+    /// Represents removal
     Removal,
+    /// Represents code
     Code,
+    /// Represents placeholder
     Placeholder,
+    /// Represents no diff
     NoDiff,
 }
 
 /// The rendered text together with a truncation marker.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct TruncatedText {
+    /// Stores the text
     pub text: String,
+    /// Stores the truncated
     pub truncated: bool,
 }
 
 /// Displays a file path or path-like label with an optional link target.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct PathLinkView {
+    /// Stores the label
     pub label: String,
+    /// Stores the target
     pub target: Option<String>,
 }
 
 impl PathLinkView {
+    /// Creates a new value
     #[must_use]
     pub fn new(label: impl Into<String>) -> Self {
         Self {
@@ -56,7 +72,7 @@ impl PathLinkView {
             target: None,
         }
     }
-
+    /// Handles with target
     #[must_use]
     pub fn with_target(label: impl Into<String>, target: impl Into<String>) -> Self {
         Self {
@@ -64,7 +80,7 @@ impl PathLinkView {
             target: Some(target.into()),
         }
     }
-
+    /// Handles display text
     #[must_use]
     pub fn display_text(&self, max_width: usize) -> TruncatedText {
         truncate_path_like(&self.label, max_width)
@@ -74,17 +90,21 @@ impl PathLinkView {
 /// Summarizes a single file-edit hunk.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct FileEditHunkSummary {
+    /// Stores the additions
     pub additions: usize,
+    /// Stores the removals
     pub removals: usize,
+    /// Stores the context
     pub context: usize,
 }
 
 impl FileEditHunkSummary {
+    /// Returns whether empty
     #[must_use]
     pub fn is_empty(self) -> bool {
         self.additions == 0 && self.removals == 0 && self.context == 0
     }
-
+    /// Handles label
     #[must_use]
     pub fn label(self) -> String {
         format!("+{} -{} ~{}", self.additions, self.removals, self.context)
@@ -94,13 +114,18 @@ impl FileEditHunkSummary {
 /// A single structured diff line.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct StructuredDiffLine {
+    /// Stores the kind
     pub kind: StructuredDiffLineKind,
+    /// Stores the old line number
     pub old_line_number: Option<usize>,
+    /// Stores the new line number
     pub new_line_number: Option<usize>,
+    /// Stores the text
     pub text: String,
 }
 
 impl StructuredDiffLine {
+    /// Handles context
     #[must_use]
     pub fn context(
         old_line_number: Option<usize>,
@@ -114,7 +139,7 @@ impl StructuredDiffLine {
             text: text.into(),
         }
     }
-
+    /// Handles added
     #[must_use]
     pub fn added(new_line_number: Option<usize>, text: impl Into<String>) -> Self {
         Self {
@@ -124,7 +149,7 @@ impl StructuredDiffLine {
             text: text.into(),
         }
     }
-
+    /// Handles removed
     #[must_use]
     pub fn removed(old_line_number: Option<usize>, text: impl Into<String>) -> Self {
         Self {
@@ -134,7 +159,7 @@ impl StructuredDiffLine {
             text: text.into(),
         }
     }
-
+    /// Handles prefix
     #[must_use]
     pub fn prefix(&self) -> char {
         match self.kind {
@@ -148,19 +173,25 @@ impl StructuredDiffLine {
 /// The semantic role of a diff line.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum StructuredDiffLineKind {
+    /// Represents context
     Context,
+    /// Represents addition
     Addition,
+    /// Represents removal
     Removal,
 }
 
 /// A single diff hunk with renderer-agnostic summary data.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct StructuredDiffHunk {
+    /// Stores the header
     pub header: String,
+    /// Stores the lines
     pub lines: Vec<StructuredDiffLine>,
 }
 
 impl StructuredDiffHunk {
+    /// Handles summary
     #[must_use]
     pub fn summary(&self) -> FileEditHunkSummary {
         let mut summary = FileEditHunkSummary::default();
@@ -178,13 +209,18 @@ impl StructuredDiffHunk {
 /// A structured diff for a single file.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct StructuredDiffView {
+    /// Stores the old path
     pub old_path: Option<PathLinkView>,
+    /// Stores the path
     pub path: Option<PathLinkView>,
+    /// Stores the hunks
     pub hunks: Vec<StructuredDiffHunk>,
+    /// Stores the truncated
     pub truncated: bool,
 }
 
 impl StructuredDiffView {
+    /// Handles display lines
     #[must_use]
     pub fn display_lines(&self, max_width: usize) -> Vec<VisualLine> {
         let mut lines = Vec::new();
@@ -277,14 +313,20 @@ impl StructuredDiffView {
 /// A plain-text fallback for syntax-highlighted code.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct HighlightedCodeView {
+    /// Stores the path
     pub path: Option<PathLinkView>,
+    /// Stores the language
     pub language: Option<String>,
+    /// Stores the code
     pub code: String,
+    /// Stores the first line number
     pub first_line_number: usize,
+    /// Stores the truncated
     pub truncated: bool,
 }
 
 impl HighlightedCodeView {
+    /// Handles display lines
     #[must_use]
     pub fn display_lines(&self, max_width: usize) -> Vec<VisualLine> {
         let mut lines = Vec::new();
@@ -337,11 +379,14 @@ impl HighlightedCodeView {
 /// Explains why file contents are not rendered inline.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct FilePlaceholderView {
+    /// Stores the path
     pub path: Option<PathLinkView>,
+    /// Stores the kind
     pub kind: FilePlaceholderKind,
 }
 
 impl FilePlaceholderView {
+    /// Handles display lines
     #[must_use]
     pub fn display_lines(&self, max_width: usize) -> Vec<VisualLine> {
         let mut lines = Vec::new();
@@ -383,9 +428,13 @@ impl FilePlaceholderView {
 /// A file placeholder state.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum FilePlaceholderKind {
+    /// Represents binary
     Binary,
+    /// Represents large file
     LargeFile {
+        /// Stores the size bytes
         size_bytes: usize,
+        /// Stores the limit bytes
         limit_bytes: Option<usize>,
     },
 }
@@ -393,12 +442,16 @@ pub enum FilePlaceholderKind {
 /// Explains why there is no diff output.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct NoDiffView {
+    /// Stores the path
     pub path: Option<PathLinkView>,
+    /// Stores the state
     pub state: NoDiffState,
+    /// Stores the detail
     pub detail: Option<String>,
 }
 
 impl NoDiffView {
+    /// Handles unchanged
     #[must_use]
     pub fn unchanged() -> Self {
         Self {
@@ -407,7 +460,7 @@ impl NoDiffView {
             detail: None,
         }
     }
-
+    /// Handles empty
     #[must_use]
     pub fn empty() -> Self {
         Self {
@@ -416,7 +469,7 @@ impl NoDiffView {
             detail: None,
         }
     }
-
+    /// Handles unavailable
     #[must_use]
     pub fn unavailable() -> Self {
         Self {
@@ -425,7 +478,7 @@ impl NoDiffView {
             detail: None,
         }
     }
-
+    /// Handles display lines
     #[must_use]
     pub fn display_lines(&self, max_width: usize) -> Vec<VisualLine> {
         let mut lines = Vec::new();
@@ -453,9 +506,12 @@ impl NoDiffView {
 /// Describes the absence of diff output.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum NoDiffState {
+    /// Represents unchanged
     #[default]
     Unchanged,
+    /// Represents empty
     Empty,
+    /// Represents unavailable
     Unavailable,
 }
 
@@ -472,13 +528,18 @@ impl NoDiffState {
 /// A single file-oriented visual block.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum FileVisualView {
+    /// Represents diff
     Diff(StructuredDiffView),
+    /// Represents code
     Code(HighlightedCodeView),
+    /// Represents placeholder
     Placeholder(FilePlaceholderView),
+    /// Represents no diff
     NoDiff(NoDiffView),
 }
 
 impl FileVisualView {
+    /// Handles display lines
     #[must_use]
     pub fn display_lines(&self, max_width: usize) -> Vec<VisualLine> {
         match self {

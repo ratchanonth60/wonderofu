@@ -6,6 +6,7 @@ use wonder_of_u_core::{
     Command, CommandContext, CommandInvocation, CommandKind, CommandOutput, CommandSpec, Result,
 };
 
+/// Represents doctor command
 pub struct DoctorCommand {
     total_commands: usize,
     public_commands: usize,
@@ -13,6 +14,7 @@ pub struct DoctorCommand {
 }
 
 impl DoctorCommand {
+    /// Creates a new value
     pub fn new(
         total_commands: usize,
         public_commands: usize,
@@ -25,6 +27,7 @@ impl DoctorCommand {
         }
     }
 
+    /// Handles command spec
     pub fn command_spec() -> CommandSpec {
         CommandSpec::new(
             "doctor",

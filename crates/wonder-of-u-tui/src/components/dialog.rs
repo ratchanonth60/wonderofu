@@ -18,6 +18,7 @@ pub struct DialogView {
 }
 
 impl DialogView {
+    /// Creates a new value
     #[must_use]
     pub fn new(title: impl Into<String>) -> Self {
         Self {
@@ -29,25 +30,25 @@ impl DialogView {
             color: None,
         }
     }
-
+    /// Handles subtitle
     #[must_use]
     pub fn subtitle(mut self, subtitle: impl Into<String>) -> Self {
         self.subtitle = Some(subtitle.into());
         self
     }
-
+    /// Handles color
     #[must_use]
     pub fn color(mut self, color: impl Into<String>) -> Self {
         self.color = Some(color.into());
         self
     }
-
+    /// Handles hide border
     #[must_use]
     pub fn hide_border(mut self) -> Self {
         self.show_border = false;
         self
     }
-
+    /// Handles disable cancel
     #[must_use]
     pub fn disable_cancel(mut self) -> Self {
         self.is_cancel_active = false;

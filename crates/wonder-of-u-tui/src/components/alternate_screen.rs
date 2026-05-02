@@ -6,11 +6,14 @@ use crate::frame::Rect;
 /// View-model state for an alternate-screen surface.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct AlternateScreenView {
+    /// Stores the size
     pub size: TerminalSize,
+    /// Stores the mouse tracking
     pub mouse_tracking: bool,
 }
 
 impl AlternateScreenView {
+    /// Constant fn
     #[must_use]
     pub const fn new(size: TerminalSize) -> Self {
         Self {
@@ -18,13 +21,13 @@ impl AlternateScreenView {
             mouse_tracking: true,
         }
     }
-
+    /// Constant fn
     #[must_use]
     pub const fn with_mouse_tracking(mut self, mouse_tracking: bool) -> Self {
         self.mouse_tracking = mouse_tracking;
         self
     }
-
+    /// Constant fn
     #[must_use]
     pub const fn viewport(self) -> Rect {
         self.size.area()

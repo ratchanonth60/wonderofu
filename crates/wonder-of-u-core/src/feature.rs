@@ -8,18 +8,31 @@ use crate::{Result, WonderError};
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum FeatureFlag {
+    /// Represents tui
     Tui,
+    /// Represents model provider
     ModelProvider,
+    /// Represents tools
     Tools,
+    /// Represents test tools
     TestTools,
+    /// Represents web tools
     WebTools,
+    /// Represents remote triggers
     RemoteTriggers,
+    /// Represents permissions
     Permissions,
+    /// Represents session persistence
     SessionPersistence,
+    /// Represents mcp
     Mcp,
+    /// Represents plugins
     Plugins,
+    /// Represents skills
     Skills,
+    /// Represents agents
     Agents,
+    /// Represents background tasks
     BackgroundTasks,
 }
 
@@ -29,11 +42,12 @@ pub enum FeatureFlag {
 pub struct FeatureSet(BTreeSet<FeatureFlag>);
 
 impl FeatureSet {
+    /// Handles empty
     #[must_use]
     pub fn empty() -> Self {
         Self::default()
     }
-
+    /// Handles first release
     #[must_use]
     pub fn first_release() -> Self {
         Self(BTreeSet::from([
@@ -51,24 +65,27 @@ impl FeatureSet {
         ]))
     }
 
+    /// Handles enable
     pub fn enable(&mut self, flag: FeatureFlag) -> bool {
         self.0.insert(flag)
     }
 
+    /// Handles disable
     pub fn disable(&mut self, flag: FeatureFlag) -> bool {
         self.0.remove(&flag)
     }
-
+    /// Handles contains
     #[must_use]
     pub fn contains(&self, flag: FeatureFlag) -> bool {
         self.0.contains(&flag)
     }
-
+    /// Handles contains all
     #[must_use]
     pub fn contains_all<'a>(&self, flags: impl IntoIterator<Item = &'a FeatureFlag>) -> bool {
         flags.into_iter().all(|flag| self.contains(*flag))
     }
 
+    /// Handles require
     pub fn require(&self, flag: FeatureFlag) -> Result<()> {
         if self.contains(flag) {
             Ok(())
@@ -79,6 +96,7 @@ impl FeatureSet {
         }
     }
 
+    /// Handles iter
     pub fn iter(&self) -> impl Iterator<Item = FeatureFlag> + '_ {
         self.0.iter().copied()
     }

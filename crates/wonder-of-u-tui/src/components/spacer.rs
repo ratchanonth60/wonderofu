@@ -3,6 +3,7 @@
 /// A flex item that absorbs remaining space on the major axis.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct SpacerView {
+    /// Stores the flex grow
     pub flex_grow: u16,
 }
 

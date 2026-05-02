@@ -3,8 +3,10 @@
 /// Direction that a progress bar fills.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Default)]
 pub enum ProgressDirection {
+    /// Represents left to right
     #[default]
     LeftToRight,
+    /// Represents right to left
     RightToLeft,
 }
 
@@ -38,19 +40,19 @@ impl ProgressBarView {
             show_label: false,
         }
     }
-
+    /// Handles width
     #[must_use]
     pub fn width(mut self, width: u16) -> Self {
         self.width = Some(width);
         self
     }
-
+    /// Handles color
     #[must_use]
     pub fn color(mut self, color: impl Into<String>) -> Self {
         self.color = Some(color.into());
         self
     }
-
+    /// Handles show label
     #[must_use]
     pub fn show_label(mut self) -> Self {
         self.show_label = true;

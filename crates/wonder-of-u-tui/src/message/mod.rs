@@ -1,3 +1,5 @@
+//! Provides message support
+//!
 use wonder_of_u_core::{
     AppState, MessageEnvelope, MessagePayload, TaskKind, TaskState, TaskStatus,
     session_footer_text, session_status_text,
@@ -8,12 +10,14 @@ mod tool_activity;
 
 use crate::prompt::PromptQueueView;
 
+/// Re-exports items from `rich`
 pub use rich::{
     AttachmentKind, AttachmentSummaryView, FileEditReferenceView, GroupedToolCallView,
     MarkdownBlockView, MarkdownCodeBlockView, MarkdownSummaryView, RejectedToolMessageKind,
     RejectedToolMessageView, RichMessageView, SystemErrorKind, SystemErrorView, ThinkingBlockView,
     ToolCallView, ToolResultStatus, TranscriptBoundaryView, rich_message_views,
 };
+/// Re-exports items from `tool_activity`
 pub use tool_activity::{
     McpCatalogItemView, McpCatalogKind, McpCatalogSummaryView, NotebookEditMode,
     NotebookRejectionSummaryView, RejectedPermissionSummaryView, TaskActivityKind,
@@ -21,24 +25,33 @@ pub use tool_activity::{
 };
 
 const DEFAULT_MESSAGE_SUMMARY_WIDTH: usize = 80;
-
+/// Enumerates message role
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum MessageRole {
+    /// Represents user
     User,
+    /// Represents assistant
     Assistant,
+    /// Represents system
     System,
+    /// Represents tool
     Tool,
+    /// Represents progress
     Progress,
+    /// Represents error
     Error,
 }
-
+/// Represents message line view
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct MessageLineView {
+    /// Stores the text
     pub text: String,
+    /// Stores the role
     pub role: MessageRole,
 }
 
 impl MessageLineView {
+    /// Creates a new value
     #[must_use]
     pub fn new(text: impl Into<String>, role: MessageRole) -> Self {
         Self {
@@ -47,19 +60,25 @@ impl MessageLineView {
         }
     }
 }
-
+/// Represents task panel view
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TaskPanelView {
+    /// Stores the title
     pub title: String,
+    /// Stores the lines
     pub lines: Vec<MessageLineView>,
 }
 
 /// Describes the incremental prompt history search overlay.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct HistorySearchView {
+    /// Stores the query
     pub query: String,
+    /// Stores the match text
     pub match_text: Option<String>,
+    /// Stores the match index
     pub match_index: usize,
+    /// Stores the match total
     pub match_total: usize,
 }
 
@@ -69,42 +88,52 @@ pub struct HistorySearchView {
 /// renderer can simply skip the preview block rather than show empty content.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct PickerView {
+    /// Stores the preview
     pub preview: Option<String>,
 }
-
+/// Represents picker list entry
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct PickerListEntry {
+    /// Stores the label
     pub label: String,
+    /// Stores the description
     pub description: String,
+    /// Stores the tag
     pub tag: Option<String>,
+    /// Stores the selected
     pub selected: bool,
 }
-
+/// Represents picker list view
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct PickerListView {
+    /// Stores the title
     pub title: String,
+    /// Stores the query
     pub query: String,
+    /// Stores the entries
     pub entries: Vec<PickerListEntry>,
+    /// Stores the hint
     pub hint: String,
 }
 
+/// Handles message lines
 pub fn message_lines(messages: &[MessageEnvelope]) -> Vec<MessageLineView> {
     rich_message_views(messages)
         .into_iter()
         .flat_map(|view| view.display_lines(DEFAULT_MESSAGE_SUMMARY_WIDTH))
         .collect()
 }
-
+/// Handles status text
 #[must_use]
 pub fn status_text(app: &AppState) -> String {
     session_status_text(app)
 }
-
+/// Handles footer text
 #[must_use]
 pub fn footer_text(app: &AppState) -> String {
     session_footer_text(app)
 }
-
+/// Returns the task panel view
 #[must_use]
 pub fn task_panel_view(app: &AppState) -> Option<TaskPanelView> {
     if app.background_tasks.is_empty() {
@@ -159,7 +188,7 @@ pub fn task_panel_view(app: &AppState) -> Option<TaskPanelView> {
         lines,
     })
 }
-
+/// Handles queued panel view
 #[must_use]
 pub fn queued_panel_view(app: &AppState) -> Option<TaskPanelView> {
     let queued_commands = app.queued_commands.iter().cloned().collect::<Vec<_>>();

@@ -2,50 +2,73 @@ use crate::{
     event::{KeyCode, KeyEvent, KeyModifiers},
     input::{EditAction, Motion},
 };
-
+/// Enumerates key binding context
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum KeyBindingContext {
+    /// Represents any
     Any,
+    /// Represents prompt
     Prompt,
+    /// Represents vim insert
     VimInsert,
+    /// Represents vim normal
     VimNormal,
 }
-
+/// Enumerates system action
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SystemAction {
+    /// Represents interrupt
     Interrupt,
+    /// Represents redraw
     Redraw,
+    /// Represents history search
     HistorySearch,
 }
-
+/// Enumerates vim command
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum VimCommand {
+    /// Represents enter insert mode
     EnterInsertMode,
+    /// Represents enter normal mode
     EnterNormalMode,
+    /// Represents append after cursor
     AppendAfterCursor,
+    /// Represents append line end
     AppendLineEnd,
+    /// Represents insert line start
     InsertLineStart,
+    /// Represents delete char
     DeleteChar,
+    /// Represents start delete
     StartDelete,
+    /// Represents start change
     StartChange,
+    /// Represents cancel pending
     CancelPending,
 }
-
+/// Enumerates resolved key
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ResolvedKey {
+    /// Represents edit
     Edit(EditAction),
+    /// Represents insert char
     InsertChar(char),
+    /// Represents system
     System(SystemAction),
+    /// Represents vim
     Vim(VimCommand),
 }
-
+/// Represents key binding
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct KeyBinding {
+    /// Stores the context
     pub context: KeyBindingContext,
+    /// Stores the event
     pub event: KeyEvent,
+    /// Stores the result
     pub result: ResolvedKey,
 }
-
+/// Describes key binding error
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct KeyBindingError {
     message: String,
@@ -58,7 +81,7 @@ impl std::fmt::Display for KeyBindingError {
 }
 
 impl std::error::Error for KeyBindingError {}
-
+/// Represents key binding resolver
 #[derive(Clone, Debug)]
 pub struct KeyBindingResolver {
     bindings: Vec<KeyBinding>,
@@ -71,6 +94,7 @@ impl Default for KeyBindingResolver {
 }
 
 impl KeyBindingResolver {
+    /// Creates a new value
     #[must_use]
     pub fn new() -> Self {
         Self {
@@ -78,6 +102,7 @@ impl KeyBindingResolver {
         }
     }
 
+    /// Handles with overrides
     pub fn with_overrides(
         overrides: impl IntoIterator<Item = KeyBinding>,
     ) -> Result<Self, KeyBindingError> {
@@ -88,7 +113,7 @@ impl KeyBindingResolver {
         bindings.extend(overrides);
         Ok(Self { bindings })
     }
-
+    /// Handles resolve
     #[must_use]
     pub fn resolve(&self, context: KeyBindingContext, event: KeyEvent) -> Option<ResolvedKey> {
         for binding in self.bindings.iter().rev() {
@@ -103,7 +128,7 @@ impl KeyBindingResolver {
 
         None
     }
-
+    /// Handles bindings
     #[must_use]
     pub fn bindings(&self) -> &[KeyBinding] {
         &self.bindings

@@ -22,17 +22,23 @@ use crate::{
 const DEFAULT_ANTHROPIC_API_VERSION: &str = "2023-06-01";
 const DEFAULT_ANTHROPIC_MAX_OUTPUT_TOKENS: u32 = 1024;
 const COPILOT_OAUTH_REFRESH_SKEW_SECONDS: i64 = 60;
-
+/// Represents completion request
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct CompletionRequest {
+    /// Stores the prompt
     pub prompt: String,
+    /// Stores the system prompt
     pub system_prompt: Option<String>,
+    /// Stores the max output tokens
     pub max_output_tokens: Option<u32>,
+    /// Stores the temperature
     pub temperature: Option<f32>,
+    /// Stores the effort level
     pub effort_level: Option<String>,
 }
 
 impl CompletionRequest {
+    /// Creates a new value
     #[must_use]
     pub fn new(prompt: impl Into<String>) -> Self {
         Self {
@@ -44,65 +50,94 @@ impl CompletionRequest {
         }
     }
 }
-
+/// Represents completion response
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct CompletionResponse {
+    /// Stores the provider
     pub provider: String,
+    /// Stores the model
     pub model: String,
+    /// Stores the output text
     pub output_text: String,
+    /// Stores the stop reason
     pub stop_reason: Option<String>,
+    /// Stores the usage
     pub usage: TokenUsage,
 }
-
+/// Represents provider tool spec
 #[derive(Clone, Debug, PartialEq)]
 pub struct ProviderToolSpec {
+    /// Stores the name
     pub name: String,
+    /// Stores the description
     pub description: String,
+    /// Stores the input schema
     pub input_schema: Value,
 }
-
+/// Represents provider tool call
 #[derive(Clone, Debug, PartialEq)]
 pub struct ProviderToolCall {
+    /// Stores the call identifier
     pub call_id: String,
+    /// Stores the tool name
     pub tool_name: String,
+    /// Stores the arguments
     pub arguments: Value,
 }
-
+/// Represents provider tool result message
 #[derive(Clone, Debug, PartialEq)]
 pub struct ProviderToolResultMessage {
+    /// Stores the call identifier
     pub call_id: String,
+    /// Stores the content
     pub content: String,
 }
-
+/// Represents tool conversation round
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct ToolConversationRound {
+    /// Stores the assistant text
     pub assistant_text: Option<String>,
+    /// Stores the calls
     pub calls: Vec<ProviderToolCall>,
+    /// Stores the results
     pub results: Vec<ProviderToolResultMessage>,
 }
-
+/// Represents tool use request
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct ToolUseRequest {
+    /// Stores the prompt
     pub prompt: String,
+    /// Stores the system prompt
     pub system_prompt: Option<String>,
+    /// Stores the max output tokens
     pub max_output_tokens: Option<u32>,
+    /// Stores the temperature
     pub temperature: Option<f32>,
+    /// Stores the tools
     pub tools: Vec<ProviderToolSpec>,
+    /// Stores the rounds
     pub rounds: Vec<ToolConversationRound>,
+    /// Stores the effort level
     pub effort_level: Option<String>,
 }
-
+/// Represents tool call batch response
 #[derive(Clone, Debug, PartialEq)]
 pub struct ToolCallBatchResponse {
+    /// Stores the assistant text
     pub assistant_text: Option<String>,
+    /// Stores the calls
     pub calls: Vec<ProviderToolCall>,
+    /// Stores the stop reason
     pub stop_reason: Option<String>,
+    /// Stores the usage
     pub usage: TokenUsage,
 }
-
+/// Enumerates tool use response
 #[derive(Clone, Debug, PartialEq)]
 pub enum ToolUseResponse {
+    /// Represents final
     Final(CompletionResponse),
+    /// Represents tool calls
     ToolCalls(ToolCallBatchResponse),
 }
 
@@ -233,6 +268,7 @@ fn provider_error_message(body: &str) -> String {
     }
 }
 
+/// Represents provider runtime
 pub struct ProviderRuntime {
     resolver: ProviderResolver,
     transport: Arc<dyn HttpTransport>,
@@ -245,6 +281,7 @@ impl Default for ProviderRuntime {
 }
 
 impl ProviderRuntime {
+    /// Creates a new value
     #[must_use]
     pub fn new() -> Self {
         Self {
@@ -253,6 +290,7 @@ impl ProviderRuntime {
         }
     }
 
+    /// Resolves execution
     pub fn resolve_execution(
         &self,
         storage_dir: Option<&Path>,
@@ -264,6 +302,7 @@ impl ProviderRuntime {
         self.refresh_copilot_oauth_if_needed(storage_dir, &selection, resolved)
     }
 
+    /// Handles complete with storage
     pub fn complete_with_storage(
         &self,
         storage_dir: Option<&Path>,
@@ -275,6 +314,7 @@ impl ProviderRuntime {
         Ok((resolved, response))
     }
 
+    /// Handles complete
     pub fn complete(
         &self,
         resolved: &ResolvedProviderExecution,
@@ -293,22 +333,23 @@ impl ProviderRuntime {
             ))),
         }
     }
-
+    /// Returns whether streaming
     #[must_use]
     pub fn supports_streaming(&self, provider_id: &str) -> bool {
         matches!(provider_id, "openai" | "anthropic" | "copilot")
     }
-
+    /// Returns whether tool use
     #[must_use]
     pub fn supports_tool_use(&self, provider_id: &str) -> bool {
         provider_id == "openai"
     }
-
+    /// Returns whether tool use for
     #[must_use]
     pub fn supports_tool_use_for(&self, resolved: &ResolvedProviderExecution) -> bool {
         matches!(resolved.provider_id(), "openai" | "anthropic" | "copilot")
     }
 
+    /// Handles complete streaming
     pub fn complete_streaming<F>(
         &self,
         resolved: &ResolvedProviderExecution,
@@ -332,6 +373,7 @@ impl ProviderRuntime {
         }
     }
 
+    /// Handles complete with tool use
     pub fn complete_with_tool_use(
         &self,
         resolved: &ResolvedProviderExecution,

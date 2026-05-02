@@ -11,11 +11,13 @@ use wonder_of_u_core::{
 };
 
 use crate::{base_spec, parse_input, require_non_empty_text};
-
+/// Represents ask user input
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AskUserInput {
+    /// Stores the question
     pub question: String,
+    /// Stores the options
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub options: Option<Vec<String>>,
 }
@@ -153,7 +155,7 @@ enum ParsedAskUserInput {
     Basic(AskUserInput),
     Compat(AskUserCompatInput),
 }
-
+/// Represents ask user tool
 #[derive(Debug, Default)]
 pub struct AskUserTool;
 

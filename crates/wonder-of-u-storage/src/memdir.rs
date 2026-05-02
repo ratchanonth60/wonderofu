@@ -26,18 +26,26 @@ const MAX_COMPONENT_LEN: usize = 120;
 /// Memory storage scope.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum MemoryKind {
+    /// Represents user
     User,
+    /// Represents project
     Project,
+    /// Represents team
     Team,
 }
 
 /// A memory file loaded from disk.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct MemoryEntry {
+    /// Stores the id
     pub id: String,
+    /// Stores the content
     pub content: String,
+    /// Stores the kind
     pub kind: MemoryKind,
+    /// Stores the path
     pub path: PathBuf,
+    /// Stores the modified
     pub modified: SystemTime,
 }
 

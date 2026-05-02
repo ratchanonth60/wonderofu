@@ -17,17 +17,22 @@ use wonder_of_u_core::{
 use crate::{base_spec, display_path, parse_input, require_non_empty_path, require_non_empty_text};
 
 const DEFAULT_TIMEOUT_SECS: u64 = 30;
-
+/// Represents power shell input
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PowerShellInput {
+    /// Stores the command
     pub command: String,
+    /// Stores the cwd
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cwd: Option<PathBuf>,
+    /// Stores the timeout secs
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub timeout_secs: Option<u64>,
+    /// Stores the timeout
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub timeout: Option<u64>,
+    /// Stores the description
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
     #[serde(
@@ -35,6 +40,7 @@ pub struct PowerShellInput {
         rename = "run_in_background",
         skip_serializing_if = "Option::is_none"
     )]
+    /// Stores the run in background
     pub run_in_background: Option<bool>,
     #[serde(
         default,
@@ -42,9 +48,10 @@ pub struct PowerShellInput {
         alias = "dangerously_disable_sandbox",
         skip_serializing_if = "Option::is_none"
     )]
+    /// Stores the dangerously disable sandbox
     pub dangerously_disable_sandbox: Option<bool>,
 }
-
+/// Represents power shell tool
 #[derive(Debug, Default)]
 pub struct PowerShellTool;
 
@@ -189,17 +196,20 @@ impl Tool for PowerShellTool {
         Ok(result)
     }
 }
-
+/// Represents notebook edit input
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct NotebookEditInput {
+    /// Stores the path
     pub path: PathBuf,
+    /// Stores the cell index
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cell_index: Option<usize>,
+    /// Stores the source
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<String>,
 }
-
+/// Represents notebook edit tool
 #[derive(Debug, Default)]
 pub struct NotebookEditTool;
 
@@ -278,7 +288,7 @@ impl Tool for NotebookEditTool {
         ))
     }
 }
-
+/// Represents worktree list tool
 #[derive(Debug, Default)]
 pub struct WorktreeListTool;
 
@@ -315,7 +325,7 @@ impl Tool for WorktreeListTool {
         })
     }
 }
-
+/// Represents terminal capture tool
 #[derive(Debug, Default)]
 pub struct TerminalCaptureTool;
 
@@ -347,7 +357,7 @@ impl Tool for TerminalCaptureTool {
         Ok(ToolResult::success(use_id, content.to_string()))
     }
 }
-
+/// Represents cron list tool
 #[derive(Debug, Default)]
 pub struct CronListTool;
 

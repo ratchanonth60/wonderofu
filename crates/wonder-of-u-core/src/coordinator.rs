@@ -4,14 +4,19 @@ use serde::{Deserialize, Serialize};
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CoordinatorMode {
+    /// Represents direct
     #[default]
     Direct,
+    /// Represents local
     Local,
+    /// Represents cloud
     Cloud,
+    /// Represents external
     External,
 }
 
 impl CoordinatorMode {
+    /// Constant fn
     #[must_use]
     pub const fn label(self) -> &'static str {
         match self {
@@ -27,12 +32,16 @@ impl CoordinatorMode {
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CoordinatorSupport {
+    /// Represents local only
     LocalOnly,
+    /// Represents unsupported
     Unsupported,
+    /// Represents deferred
     Deferred,
 }
 
 impl CoordinatorSupport {
+    /// Constant fn
     #[must_use]
     pub const fn label(self) -> &'static str {
         match self {
@@ -42,15 +51,19 @@ impl CoordinatorSupport {
         }
     }
 }
-
+/// Represents coordinator surface status
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct CoordinatorSurfaceStatus {
+    /// Stores the surface
     pub surface: String,
+    /// Stores the support
     pub support: CoordinatorSupport,
+    /// Stores the reason
     pub reason: String,
 }
 
 impl CoordinatorSurfaceStatus {
+    /// Handles local only
     #[must_use]
     pub fn local_only(surface: impl Into<String>, reason: impl Into<String>) -> Self {
         Self {
@@ -59,7 +72,7 @@ impl CoordinatorSurfaceStatus {
             reason: reason.into(),
         }
     }
-
+    /// Handles unsupported
     #[must_use]
     pub fn unsupported(surface: impl Into<String>, reason: impl Into<String>) -> Self {
         Self {
@@ -68,7 +81,7 @@ impl CoordinatorSurfaceStatus {
             reason: reason.into(),
         }
     }
-
+    /// Handles deferred
     #[must_use]
     pub fn deferred(surface: impl Into<String>, reason: impl Into<String>) -> Self {
         Self {
@@ -78,16 +91,21 @@ impl CoordinatorSurfaceStatus {
         }
     }
 }
-
+/// Represents coordinator state
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct CoordinatorState {
+    /// Stores the mode
     pub mode: CoordinatorMode,
+    /// Stores the task dispatch
     pub task_dispatch: CoordinatorSurfaceStatus,
+    /// Stores the cloud queries
     pub cloud_queries: CoordinatorSurfaceStatus,
+    /// Stores the external backend
     pub external_backend: CoordinatorSurfaceStatus,
 }
 
 impl CoordinatorState {
+    /// Handles for mode
     #[must_use]
     pub fn for_mode(mode: CoordinatorMode) -> Self {
         Self {

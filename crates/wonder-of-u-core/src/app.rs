@@ -12,26 +12,32 @@ use crate::{
     AdditionalWorkingDirectory, AuthState, FeatureSet, MessageEnvelope, PermissionMode,
     ProviderReadiness, Result, SessionId, TaskId, ToolUseId, WonderError,
 };
-
+/// Represents token usage
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub struct TokenUsage {
+    /// Stores the input tokens
     pub input_tokens: u64,
+    /// Stores the output tokens
     pub output_tokens: u64,
+    /// Stores the cache creation tokens
     pub cache_creation_tokens: u64,
+    /// Stores the cache read tokens
     pub cache_read_tokens: u64,
 }
 
 impl TokenUsage {
+    /// Constant fn
     #[must_use]
     pub const fn total_tokens(self) -> u64 {
         self.input_tokens + self.output_tokens + self.cache_creation_tokens + self.cache_read_tokens
     }
-
+    /// Constant fn
     #[must_use]
     pub const fn is_zero(self) -> bool {
         self.total_tokens() == 0
     }
 
+    /// Adds a value
     pub fn add(&mut self, other: Self) {
         self.input_tokens += other.input_tokens;
         self.output_tokens += other.output_tokens;
@@ -39,17 +45,21 @@ impl TokenUsage {
         self.cache_read_tokens += other.cache_read_tokens;
     }
 }
-
+/// Represents cost state
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct CostState {
+    /// Stores the usage
     pub usage: TokenUsage,
+    /// Stores the estimated cost usd
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub estimated_cost_usd: Option<f64>,
+    /// Stores the updated at
     #[serde(with = "time::serde::rfc3339")]
     pub updated_at: OffsetDateTime,
 }
 
 impl CostState {
+    /// Creates a new value
     #[must_use]
     pub fn new() -> Self {
         Self {
@@ -58,12 +68,13 @@ impl CostState {
             updated_at: OffsetDateTime::now_utc(),
         }
     }
-
+    /// Returns whether empty
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.usage.is_zero() && self.estimated_cost_usd.is_none()
     }
 
+    /// Records usage
     pub fn record_usage(&mut self, usage: TokenUsage, estimated_cost_usd: Option<f64>) {
         self.usage.add(usage);
         if let Some(cost) = estimated_cost_usd {
@@ -78,27 +89,37 @@ impl Default for CostState {
         Self::new()
     }
 }
-
+/// Represents session state
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct SessionState {
+    /// Stores the id
     pub id: SessionId,
+    /// Stores the title
     pub title: String,
+    /// Stores the cwd
     pub cwd: PathBuf,
+    /// Stores the git branch
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub git_branch: Option<String>,
+    /// Stores the entrypoint
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub entrypoint: Option<String>,
+    /// Stores the app version
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub app_version: Option<String>,
+    /// Stores the tags
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tags: Vec<String>,
+    /// Stores the created at
     #[serde(with = "time::serde::rfc3339")]
     pub created_at: OffsetDateTime,
+    /// Stores the updated at
     #[serde(with = "time::serde::rfc3339")]
     pub updated_at: OffsetDateTime,
 }
 
 impl SessionState {
+    /// Creates a new value
     #[must_use]
     pub fn new(cwd: PathBuf) -> Self {
         let now = OffsetDateTime::now_utc();
@@ -115,93 +136,128 @@ impl SessionState {
         }
     }
 }
-
+/// Enumerates input mode
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum InputMode {
+    /// Represents prompt
     #[default]
     Prompt,
+    /// Represents bash
     Bash,
+    /// Represents permission pending
     PermissionPending,
+    /// Represents task notification
     TaskNotification,
 }
-
+/// Enumerates queue placement
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum QueuePlacement {
+    /// Represents now
     Now,
+    /// Represents next
     Next,
+    /// Represents later
     Later,
 }
-
+/// Represents queued command
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct QueuedCommand {
+    /// Stores the command
     pub command: String,
+    /// Stores the placement
     pub placement: QueuePlacement,
 }
-
+/// Represents pending provider tool call
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct PendingProviderToolCall {
+    /// Stores the call identifier
     pub call_id: String,
+    /// Stores the tool name
     pub tool_name: String,
+    /// Stores the arguments
     pub arguments: Value,
 }
-
+/// Represents pending provider tool result
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct PendingProviderToolResult {
+    /// Stores the call identifier
     pub call_id: String,
+    /// Stores the content
     pub content: String,
 }
-
+/// Represents pending tool conversation round
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct PendingToolConversationRound {
+    /// Stores the assistant text
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub assistant_text: Option<String>,
+    /// Stores the calls
     #[serde(default)]
     pub calls: Vec<PendingProviderToolCall>,
+    /// Stores the results
     #[serde(default)]
     pub results: Vec<PendingProviderToolResult>,
 }
-
+/// Represents pending local tool call
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct PendingLocalToolCall {
+    /// Stores the provider call
     pub provider_call: PendingProviderToolCall,
+    /// Stores the use identifier
     pub use_id: ToolUseId,
 }
-
+/// Represents pending tool approval state
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct PendingToolApprovalState {
+    /// Stores the request prompt
     pub request_prompt: String,
+    /// Stores the rounds
     #[serde(default)]
     pub rounds: Vec<PendingToolConversationRound>,
+    /// Stores the current round
     pub current_round: PendingToolConversationRound,
+    /// Stores the pending call
     pub pending_call: PendingLocalToolCall,
+    /// Stores the remaining calls
     #[serde(default)]
     pub remaining_calls: Vec<PendingLocalToolCall>,
+    /// Stores the reason
     pub reason: String,
 }
-
+/// Enumerates task kind
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TaskKind {
+    /// Represents local shell
     #[default]
     LocalShell,
+    /// Represents local agent
     LocalAgent,
+    /// Represents remote agent
     RemoteAgent,
 }
-
+/// Enumerates task status
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TaskStatus {
+    /// Represents pending
     Pending,
+    /// Represents running
     Running,
+    /// Represents completed
     Completed,
+    /// Represents failed
     Failed,
+    /// Represents killed
     Killed,
+    /// Represents cancelled
     Cancelled,
 }
 
 impl TaskStatus {
+    /// Constant fn
     #[must_use]
     pub const fn is_terminal(self) -> bool {
         matches!(
@@ -210,24 +266,31 @@ impl TaskStatus {
         )
     }
 }
-
+/// Enumerates agent runtime
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AgentRuntime {
+    /// Represents metadata only
     MetadataOnly,
+    /// Represents prompt subprocess
     PromptSubprocess,
+    /// Represents deferred
     Deferred,
 }
-
+/// Enumerates task backend support
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TaskBackendSupport {
+    /// Represents supported
     Supported,
+    /// Represents unsupported
     Unsupported,
+    /// Represents deferred
     Deferred,
 }
 
 impl TaskBackendSupport {
+    /// Constant fn
     #[must_use]
     pub const fn label(self) -> &'static str {
         match self {
@@ -237,16 +300,20 @@ impl TaskBackendSupport {
         }
     }
 }
-
+/// Enumerates task backend flow
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TaskBackendFlow {
+    /// Represents transport
     Transport,
+    /// Represents monitor
     Monitor,
+    /// Represents checker
     Checker,
 }
 
 impl TaskBackendFlow {
+    /// Constant fn
     #[must_use]
     pub const fn label(self) -> &'static str {
         match self {
@@ -256,15 +323,19 @@ impl TaskBackendFlow {
         }
     }
 }
-
+/// Represents task backend state
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct TaskBackendState {
+    /// Stores the flow
     pub flow: TaskBackendFlow,
+    /// Stores the support
     pub support: TaskBackendSupport,
+    /// Stores the reason
     pub reason: String,
 }
 
 impl TaskBackendState {
+    /// Handles supported
     #[must_use]
     pub fn supported(flow: TaskBackendFlow, reason: impl Into<String>) -> Self {
         Self {
@@ -273,7 +344,7 @@ impl TaskBackendState {
             reason: reason.into(),
         }
     }
-
+    /// Handles unsupported
     #[must_use]
     pub fn unsupported(flow: TaskBackendFlow, reason: impl Into<String>) -> Self {
         Self {
@@ -282,7 +353,7 @@ impl TaskBackendState {
             reason: reason.into(),
         }
     }
-
+    /// Handles deferred
     #[must_use]
     pub fn deferred(flow: TaskBackendFlow, reason: impl Into<String>) -> Self {
         Self {
@@ -291,7 +362,7 @@ impl TaskBackendState {
             reason: reason.into(),
         }
     }
-
+    /// Handles summary
     #[must_use]
     pub fn summary(&self) -> String {
         format!(
@@ -302,18 +373,24 @@ impl TaskBackendState {
         )
     }
 }
-
+/// Enumerates remote task type
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum RemoteTaskType {
+    /// Represents remote agent
     RemoteAgent,
+    /// Represents background pr
     BackgroundPr,
+    /// Represents autofix pr
     AutofixPr,
+    /// Represents ultraplan
     Ultraplan,
+    /// Represents ultrareview
     Ultrareview,
 }
 
 impl RemoteTaskType {
+    /// Constant fn
     #[must_use]
     pub const fn label(self) -> &'static str {
         match self {
@@ -325,34 +402,46 @@ impl RemoteTaskType {
         }
     }
 }
-
+/// Enumerates remote task metadata
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum RemoteTaskMetadata {
+    /// Represents pull request
     PullRequest {
+        /// Stores the owner
         owner: String,
+        /// Stores the repo
         repo: String,
+        /// Stores the pr number
         pr_number: u64,
     },
 }
-
+/// Represents remote task state
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct RemoteTaskState {
+    /// Stores the task type
     pub task_type: RemoteTaskType,
+    /// Stores the transport
     pub transport: TaskBackendState,
+    /// Stores the monitor
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub monitor: Option<TaskBackendState>,
+    /// Stores the checker
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub checker: Option<TaskBackendState>,
+    /// Stores the session identifier
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_id: Option<String>,
+    /// Stores the metadata
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub metadata: Option<RemoteTaskMetadata>,
+    /// Stores the long running
     #[serde(default)]
     pub long_running: bool,
 }
 
 impl RemoteTaskState {
+    /// Handles deferred
     #[must_use]
     pub fn deferred(task_type: RemoteTaskType, metadata: Option<RemoteTaskMetadata>) -> Self {
         let task_label = task_type.label();
@@ -394,7 +483,7 @@ impl RemoteTaskState {
             long_running: matches!(task_type, RemoteTaskType::AutofixPr),
         }
     }
-
+    /// Handles status summary
     #[must_use]
     pub fn status_summary(&self) -> String {
         let mut parts = vec![self.transport.summary()];
@@ -406,7 +495,7 @@ impl RemoteTaskState {
         }
         format!("{} backend: {}", self.task_type.label(), parts.join("; "))
     }
-
+    /// Handles start error message
     #[must_use]
     pub fn start_error_message(&self) -> String {
         format!(
@@ -415,7 +504,7 @@ impl RemoteTaskState {
             self.status_summary()
         )
     }
-
+    /// Handles stop error message
     #[must_use]
     pub fn stop_error_message(&self) -> String {
         format!(
@@ -425,20 +514,26 @@ impl RemoteTaskState {
         )
     }
 }
-
+/// Represents agent task state
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct AgentTaskState {
+    /// Stores the name
     pub name: String,
+    /// Stores the prompt
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prompt: Option<String>,
+    /// Stores the provider
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider: Option<String>,
+    /// Stores the model
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
+    /// Stores the runtime
     pub runtime: AgentRuntime,
 }
 
 impl AgentTaskState {
+    /// Handles metadata only
     #[must_use]
     pub fn metadata_only(
         name: impl Into<String>,
@@ -454,7 +549,7 @@ impl AgentTaskState {
             runtime: AgentRuntime::MetadataOnly,
         }
     }
-
+    /// Handles prompt subprocess
     #[must_use]
     pub fn prompt_subprocess(
         name: impl Into<String>,
@@ -471,42 +566,60 @@ impl AgentTaskState {
         }
     }
 }
-
+/// Represents task state
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct TaskState {
+    /// Stores the id
     pub id: TaskId,
+    /// Stores the kind
     pub kind: TaskKind,
+    /// Stores the description
     pub description: String,
+    /// Stores the status
     pub status: TaskStatus,
+    /// Stores the parent identifier
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent_id: Option<TaskId>,
+    /// Stores the cwd
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cwd: Option<PathBuf>,
+    /// Stores the command
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub command: Option<String>,
+    /// Stores the status message
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub status_message: Option<String>,
+    /// Stores the pid
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pid: Option<u32>,
+    /// Stores the process identity
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub process_identity: Option<String>,
+    /// Stores the last heartbeat at
     #[serde(default, with = "time::serde::rfc3339::option")]
     pub last_heartbeat_at: Option<OffsetDateTime>,
+    /// Stores the exit code
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub exit_code: Option<i32>,
+    /// Stores the agent
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent: Option<AgentTaskState>,
+    /// Stores the remote
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub remote: Option<RemoteTaskState>,
+    /// Stores the output log
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub output_log: Option<PathBuf>,
+    /// Stores the started at
     #[serde(with = "time::serde::rfc3339")]
     pub started_at: OffsetDateTime,
+    /// Stores the finished at
     #[serde(default, with = "time::serde::rfc3339::option")]
     pub finished_at: Option<OffsetDateTime>,
 }
 
 impl TaskState {
+    /// Handles pending
     #[must_use]
     pub fn pending(description: impl Into<String>) -> Self {
         Self {
@@ -529,7 +642,7 @@ impl TaskState {
             finished_at: None,
         }
     }
-
+    /// Handles pending shell
     #[must_use]
     pub fn pending_shell(
         description: impl Into<String>,
@@ -542,7 +655,7 @@ impl TaskState {
         task.cwd = Some(cwd.into());
         task
     }
-
+    /// Handles pending agent
     #[must_use]
     pub fn pending_agent(description: impl Into<String>, agent: AgentTaskState) -> Self {
         let mut task = Self::pending(description);
@@ -562,7 +675,7 @@ impl TaskState {
         task.agent = Some(agent);
         task
     }
-
+    /// Handles recorded remote
     #[must_use]
     pub fn recorded_remote(description: impl Into<String>, remote: RemoteTaskState) -> Self {
         let mut task = Self::pending(description);
@@ -572,6 +685,7 @@ impl TaskState {
         task
     }
 
+    /// Handles mark running
     pub fn mark_running(
         &mut self,
         pid: Option<u32>,
@@ -588,6 +702,7 @@ impl TaskState {
         self.finished_at = None;
     }
 
+    /// Handles mark finished
     pub fn mark_finished(
         &mut self,
         status: TaskStatus,
@@ -600,43 +715,62 @@ impl TaskState {
         self.finished_at = Some(OffsetDateTime::now_utc());
     }
 }
-
+/// Represents app state
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct AppState {
+    /// Stores the session
     pub session: SessionState,
+    /// Stores the features
     pub features: FeatureSet,
+    /// Stores the permission mode
     pub permission_mode: PermissionMode,
+    /// Stores the additional working directories
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub additional_working_directories: Vec<AdditionalWorkingDirectory>,
+    /// Stores the input mode
     pub input_mode: InputMode,
+    /// Stores the messages
     pub messages: Vec<MessageEnvelope>,
+    /// Stores the queued commands
     pub queued_commands: VecDeque<QueuedCommand>,
+    /// Stores the background tasks
     pub background_tasks: BTreeMap<TaskId, TaskState>,
+    /// Stores the provider
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider: Option<String>,
+    /// Stores the model
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
+    /// Stores the theme
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub theme: Option<String>,
+    /// Stores the session color
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_color: Option<String>,
+    /// Stores the effort level
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub effort_level: Option<String>,
+    /// Stores the brief mode
     #[serde(default)]
     pub brief_mode: bool,
+    /// Stores the fast mode
     #[serde(default)]
     pub fast_mode: bool,
     /// Optional advisor/secondary model for multi-model reasoning.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub advisor_model: Option<String>,
+    /// Stores the auth
     #[serde(default)]
     pub auth: AuthState,
+    /// Stores the pending tool approval
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pending_tool_approval: Option<PendingToolApprovalState>,
+    /// Stores the costs
     pub costs: CostState,
 }
 
 impl AppState {
+    /// Creates a new value
     #[must_use]
     pub fn new(cwd: PathBuf) -> Self {
         Self {
@@ -662,6 +796,7 @@ impl AppState {
         }
     }
 
+    /// Handles push message
     pub fn push_message(&mut self, message: MessageEnvelope) -> Result<()> {
         if message.session_id != self.session.id {
             return Err(WonderError::validation(
@@ -673,6 +808,7 @@ impl AppState {
         Ok(())
     }
 
+    /// Handles queue command
     pub fn queue_command(&mut self, command: impl Into<String>, placement: QueuePlacement) {
         self.queued_commands.push_back(QueuedCommand {
             command: command.into(),
@@ -680,11 +816,13 @@ impl AppState {
         });
     }
 
+    /// Records cost usage
     pub fn record_cost_usage(&mut self, usage: TokenUsage, estimated_cost_usd: Option<f64>) {
         self.costs.record_usage(usage, estimated_cost_usd);
         self.session.updated_at = self.costs.updated_at;
     }
 
+    /// Handles set provider context
     pub fn set_provider_context(
         &mut self,
         provider: Option<String>,
@@ -697,36 +835,42 @@ impl AppState {
         self.session.updated_at = OffsetDateTime::now_utc();
     }
 
+    /// Handles set theme
     pub fn set_theme(&mut self, theme: Option<String>) {
         self.theme = theme;
         self.session.updated_at = OffsetDateTime::now_utc();
     }
 
+    /// Handles set session color
     pub fn set_session_color(&mut self, session_color: Option<String>) {
         self.session_color = session_color;
         self.session.updated_at = OffsetDateTime::now_utc();
     }
 
+    /// Handles set effort level
     pub fn set_effort_level(&mut self, effort_level: Option<String>) {
         self.effort_level = effort_level;
         self.session.updated_at = OffsetDateTime::now_utc();
     }
 
+    /// Handles set brief mode
     pub fn set_brief_mode(&mut self, brief_mode: bool) {
         self.brief_mode = brief_mode;
         self.session.updated_at = OffsetDateTime::now_utc();
     }
 
+    /// Handles set fast mode
     pub fn set_fast_mode(&mut self, fast_mode: bool) {
         self.fast_mode = fast_mode;
         self.session.updated_at = OffsetDateTime::now_utc();
     }
 
+    /// Handles set advisor model
     pub fn set_advisor_model(&mut self, model: Option<String>) {
         self.advisor_model = model;
         self.session.updated_at = OffsetDateTime::now_utc();
     }
-
+    /// Handles effective system prompt
     #[must_use]
     pub fn effective_system_prompt(&self, explicit: Option<String>) -> Option<String> {
         const BRIEF_MODE_PROMPT: &str =
@@ -744,6 +888,7 @@ impl AppState {
         }
     }
 
+    /// Handles set session tags
     pub fn set_session_tags(&mut self, tags: Vec<String>) {
         if self.session.tags != tags {
             self.session.tags = tags;
@@ -751,6 +896,7 @@ impl AppState {
         }
     }
 
+    /// Handles add additional working directory
     pub fn add_additional_working_directory(&mut self, directory: AdditionalWorkingDirectory) {
         if !self
             .additional_working_directories
@@ -762,11 +908,12 @@ impl AppState {
         }
     }
 
+    /// Handles upsert task
     pub fn upsert_task(&mut self, task: TaskState) {
         self.background_tasks.insert(task.id, task);
         self.session.updated_at = OffsetDateTime::now_utc();
     }
-
+    /// Handles provider readiness
     #[must_use]
     pub fn provider_readiness(&self) -> ProviderReadiness {
         if self.provider.is_none() || self.model.is_none() {
@@ -779,13 +926,13 @@ impl AppState {
             ProviderReadiness::MissingAuth
         }
     }
-
+    /// Returns whether authenticated
     #[must_use]
     pub fn is_authenticated(&self) -> bool {
         matches!(self.provider_readiness(), ProviderReadiness::Ready)
     }
 }
-
+/// Constant fn
 #[must_use]
 pub const fn input_mode_label(mode: InputMode) -> &'static str {
     match mode {
@@ -795,7 +942,7 @@ pub const fn input_mode_label(mode: InputMode) -> &'static str {
         InputMode::TaskNotification => "tasks",
     }
 }
-
+/// Constant fn
 #[must_use]
 pub const fn permission_mode_label(mode: PermissionMode) -> &'static str {
     match mode {
@@ -806,7 +953,7 @@ pub const fn permission_mode_label(mode: PermissionMode) -> &'static str {
         PermissionMode::Plan => "plan",
     }
 }
-
+/// Returns the session status text
 #[must_use]
 pub fn session_status_text(app: &AppState) -> String {
     let running = app
@@ -857,7 +1004,7 @@ pub fn session_status_text(app: &AppState) -> String {
 
     parts.join(" | ")
 }
-
+/// Returns the session footer text
 #[must_use]
 pub fn session_footer_text(app: &AppState) -> String {
     let mut parts = vec![
@@ -902,6 +1049,7 @@ pub struct StateStore {
 }
 
 impl StateStore {
+    /// Creates a new value
     #[must_use]
     pub fn new(state: AppState) -> Self {
         Self {
@@ -909,6 +1057,7 @@ impl StateStore {
         }
     }
 
+    /// Handles get
     pub fn get(&self) -> Result<AppState> {
         self.inner
             .read()
@@ -916,6 +1065,7 @@ impl StateStore {
             .map_err(|_| WonderError::internal("app state lock poisoned"))
     }
 
+    /// Handles update
     pub fn update<R>(&self, update: impl FnOnce(&mut AppState) -> Result<R>) -> Result<R> {
         let mut guard = self
             .inner

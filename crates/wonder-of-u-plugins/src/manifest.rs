@@ -7,6 +7,7 @@ use std::{
 use serde::{Deserialize, Serialize};
 use wonder_of_u_core::{CommandKind, CommandSource, CommandSpec, FeatureFlag, Result, WonderError};
 
+/// Schema version for plugin manifest
 pub const PLUGIN_MANIFEST_SCHEMA_VERSION: u16 = 1;
 
 fn default_schema_version() -> u16 {
@@ -16,27 +17,35 @@ fn default_schema_version() -> u16 {
 const fn default_command_kind() -> CommandKind {
     CommandKind::Local
 }
-
+/// Represents plugin manifest
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct PluginManifest {
+    /// Stores the schema version
     #[serde(default = "default_schema_version")]
     pub schema_version: u16,
+    /// Stores the name
     pub name: String,
+    /// Stores the version
     pub version: String,
+    /// Stores the description
     pub description: String,
+    /// Stores the commands
     #[serde(default)]
     pub commands: Vec<PluginCommandDefinition>,
+    /// Stores the skills
     #[serde(default)]
     pub skills: Vec<PluginSkillDefinition>,
 }
 
 impl PluginManifest {
+    /// Reads from path
     pub fn read_from_path(path: &Path) -> Result<Self> {
         let manifest: Self = serde_json::from_str(&fs::read_to_string(path)?)?;
         manifest.validate()?;
         Ok(manifest)
     }
 
+    /// Validates the value
     pub fn validate(&self) -> Result<()> {
         if self.schema_version != PLUGIN_MANIFEST_SCHEMA_VERSION {
             return Err(WonderError::validation(format!(
@@ -99,10 +108,12 @@ impl PluginManifest {
         Ok(())
     }
 
+    /// Handles plugin id
     pub fn plugin_id(&self) -> Result<String> {
         normalize_plugin_id(&self.name)
     }
 
+    /// Handles command registrations
     pub fn command_registrations(
         &self,
         plugin_id: &str,
@@ -114,6 +125,7 @@ impl PluginManifest {
             .collect()
     }
 
+    /// Handles skill sources
     pub fn skill_sources(
         &self,
         plugin_id: &str,
@@ -125,22 +137,31 @@ impl PluginManifest {
             .collect()
     }
 }
-
+/// Represents plugin command definition
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct PluginCommandDefinition {
+    /// Stores the name
     pub name: String,
+    /// Stores the aliases
     #[serde(default)]
     pub aliases: Vec<String>,
+    /// Stores the description
     pub description: String,
+    /// Stores the kind
     #[serde(default = "default_command_kind")]
     pub kind: CommandKind,
+    /// Stores the path
     pub path: PathBuf,
+    /// Stores the allowed tools
     #[serde(default)]
     pub allowed_tools: Vec<String>,
+    /// Stores the hidden
     #[serde(default)]
     pub hidden: bool,
+    /// Stores the requires auth
     #[serde(default)]
     pub requires_auth: bool,
+    /// Stores the interactive only
     #[serde(default)]
     pub interactive_only: bool,
 }
@@ -169,7 +190,7 @@ impl PluginCommandDefinition {
         )?;
         self.command_spec().validate()
     }
-
+    /// Handles command spec
     #[must_use]
     pub fn command_spec(&self) -> CommandSpec {
         let mut spec = CommandSpec::new(&self.name, &self.description, self.kind);
@@ -196,9 +217,10 @@ impl PluginCommandDefinition {
         })
     }
 }
-
+/// Represents plugin skill definition
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct PluginSkillDefinition {
+    /// Stores the path
     pub path: PathBuf,
 }
 
@@ -215,12 +237,16 @@ impl PluginSkillDefinition {
         })
     }
 }
-
+/// Represents plugin command registration
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PluginCommandRegistration {
+    /// Stores the plugin identifier
     pub plugin_id: String,
+    /// Stores the entry path
     pub entry_path: PathBuf,
+    /// Stores the allowed tools
     pub allowed_tools: BTreeSet<String>,
+    /// Stores the spec
     pub spec: CommandSpec,
 }
 
@@ -233,13 +259,16 @@ impl PluginCommandRegistration {
             .unwrap_or(false)
     }
 }
-
+/// Represents plugin skill source
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PluginSkillSource {
+    /// Stores the plugin identifier
     pub plugin_id: String,
+    /// Stores the path
     pub path: PathBuf,
 }
 
+/// Normalizes plugin id
 pub fn normalize_plugin_id(name: &str) -> Result<String> {
     let mut normalized = String::new();
     let mut last_dash = false;

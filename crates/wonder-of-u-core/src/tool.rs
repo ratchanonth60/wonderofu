@@ -13,54 +13,81 @@ use crate::{
     PermissionRequest, PermissionRule, Result, SessionId, ToolPermissionContext, ToolUseId,
     WonderError, evaluate_permission,
 };
-
+/// Enumerates tool kind
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ToolKind {
+    /// Represents shell
     Shell,
+    /// Represents file read
     FileRead,
+    /// Represents file write
     FileWrite,
+    /// Represents search
     Search,
+    /// Represents web
     Web,
+    /// Represents planning
     Planning,
+    /// Represents task
     Task,
+    /// Represents agent
     Agent,
+    /// Represents interaction
     Interaction,
+    /// Represents skill
     Skill,
+    /// Represents mcp
     Mcp,
 }
-
+/// Enumerates tool source
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ToolSource {
+    /// Represents native
     Native,
+    /// Represents mcp
     Mcp,
+    /// Represents plugin
     Plugin,
+    /// Represents skill
     Skill,
+    /// Represents agent generated
     AgentGenerated,
 }
-
+/// Represents tool spec
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ToolSpec {
+    /// Stores the name
     pub name: String,
+    /// Stores the aliases
     #[serde(default)]
     pub aliases: Vec<String>,
+    /// Stores the description
     pub description: String,
+    /// Stores the kind
     pub kind: ToolKind,
+    /// Stores the source
     pub source: ToolSource,
+    /// Stores the required features
     #[serde(default)]
     pub required_features: BTreeSet<FeatureFlag>,
+    /// Stores the input schema
     #[serde(default)]
     pub input_schema: Value,
+    /// Stores the read only
     #[serde(default)]
     pub read_only: bool,
+    /// Stores the destructive
     #[serde(default)]
     pub destructive: bool,
+    /// Stores the concurrency safe
     #[serde(default)]
     pub concurrency_safe: bool,
 }
 
 impl ToolSpec {
+    /// Creates a new value
     #[must_use]
     pub fn new(name: impl Into<String>, description: impl Into<String>, kind: ToolKind) -> Self {
         Self {
@@ -77,6 +104,7 @@ impl ToolSpec {
         }
     }
 
+    /// Validates the value
     pub fn validate(&self) -> Result<()> {
         let canonical = normalize_name(&self.name)?;
         let mut seen = BTreeSet::from([canonical]);
@@ -90,19 +118,19 @@ impl ToolSpec {
         }
         Ok(())
     }
-
+    /// Handles with input schema
     #[must_use]
     pub fn with_input_schema(mut self, schema: ToolSchema) -> Self {
         self.input_schema = schema.into();
         self
     }
-
+    /// Returns whether enabled
     #[must_use]
     pub fn is_enabled(&self, features: &FeatureSet) -> bool {
         features.contains_all(&self.required_features)
     }
 }
-
+/// Represents tool schema
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct ToolSchema {
@@ -110,11 +138,12 @@ pub struct ToolSchema {
 }
 
 impl ToolSchema {
+    /// Handles any
     #[must_use]
     pub fn any() -> Self {
         Self { value: Value::Null }
     }
-
+    /// Handles object
     #[must_use]
     pub fn object() -> Self {
         Self {
@@ -126,7 +155,7 @@ impl ToolSchema {
             }),
         }
     }
-
+    /// Handles property
     #[must_use]
     pub fn property(mut self, name: impl Into<String>, schema: Value) -> Self {
         if let Some(properties) = self.properties_mut() {
@@ -134,7 +163,7 @@ impl ToolSchema {
         }
         self
     }
-
+    /// Handles required
     #[must_use]
     pub fn required(mut self, name: impl Into<String>) -> Self {
         let name = name.into();
@@ -148,7 +177,7 @@ impl ToolSchema {
         }
         self
     }
-
+    /// Handles additional properties
     #[must_use]
     pub fn additional_properties(mut self, allowed: bool) -> Self {
         if let Some(object) = self.value.as_object_mut() {
@@ -156,7 +185,7 @@ impl ToolSchema {
         }
         self
     }
-
+    /// Handles string
     #[must_use]
     pub fn string(description: impl Into<String>) -> Value {
         json!({
@@ -164,7 +193,7 @@ impl ToolSchema {
             "description": description.into(),
         })
     }
-
+    /// Handles boolean
     #[must_use]
     pub fn boolean(description: impl Into<String>) -> Value {
         json!({
@@ -172,7 +201,7 @@ impl ToolSchema {
             "description": description.into(),
         })
     }
-
+    /// Handles integer
     #[must_use]
     pub fn integer(description: impl Into<String>) -> Value {
         json!({
@@ -180,7 +209,7 @@ impl ToolSchema {
             "description": description.into(),
         })
     }
-
+    /// Handles enumeration
     #[must_use]
     pub fn enumeration(
         description: impl Into<String>,
@@ -192,12 +221,12 @@ impl ToolSchema {
             "enum": values.into_iter().map(Into::into).collect::<Vec<_>>(),
         })
     }
-
+    /// Handles into value
     #[must_use]
     pub fn into_value(self) -> Value {
         self.value
     }
-
+    /// Handles as value
     #[must_use]
     pub fn as_value(&self) -> &Value {
         &self.value
@@ -223,18 +252,20 @@ impl From<ToolSchema> for Value {
         schema.into_value()
     }
 }
-
+/// Represents tool query
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ToolQuery {
+    /// Stores the features
     pub features: FeatureSet,
 }
 
 impl ToolQuery {
+    /// Creates a new value
     #[must_use]
     pub fn new(features: FeatureSet) -> Self {
         Self { features }
     }
-
+    /// Returns whether the query allows the item
     #[must_use]
     pub fn allows(&self, spec: &ToolSpec) -> bool {
         spec.is_enabled(&self.features)
@@ -248,18 +279,25 @@ impl From<&ToolContext> for ToolQuery {
         }
     }
 }
-
+/// Represents tool context
 #[derive(Clone, Debug)]
 pub struct ToolContext {
+    /// Stores the session identifier
     pub session_id: SessionId,
+    /// Stores the cwd
     pub cwd: PathBuf,
+    /// Stores the permission mode
     pub permission_mode: PermissionMode,
+    /// Stores the additional working directories
     pub additional_working_directories: Vec<AdditionalWorkingDirectory>,
+    /// Stores the permission rules
     pub permission_rules: Vec<PermissionRule>,
+    /// Stores the features
     pub features: FeatureSet,
 }
 
 impl ToolContext {
+    /// Handles permission context
     #[must_use]
     pub fn permission_context(&self) -> ToolPermissionContext {
         ToolPermissionContext {
@@ -270,17 +308,22 @@ impl ToolContext {
         }
     }
 }
-
+/// Represents tool result
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ToolResult {
+    /// Stores the use identifier
     pub use_id: ToolUseId,
+    /// Stores the success
     pub success: bool,
+    /// Stores the content
     pub content: String,
+    /// Stores the metadata
     #[serde(default)]
     pub metadata: Value,
 }
 
 impl ToolResult {
+    /// Handles success
     #[must_use]
     pub fn success(use_id: ToolUseId, content: impl Into<String>) -> Self {
         Self {
@@ -290,7 +333,7 @@ impl ToolResult {
             metadata: Value::Null,
         }
     }
-
+    /// Handles failure
     #[must_use]
     pub fn failure(use_id: ToolUseId, content: impl Into<String>) -> Self {
         Self {
@@ -308,29 +351,36 @@ impl ToolResult {
         self
     }
 }
-
+/// Represents tool progress
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ToolProgress {
+    /// Stores the use identifier
     pub use_id: ToolUseId,
+    /// Stores the message
     pub message: String,
+    /// Stores the percent
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub percent: Option<f32>,
 }
-
+/// Defines tool behavior
 #[async_trait]
 pub trait Tool: Send + Sync {
+    /// Returns the item specification
     fn spec(&self) -> ToolSpec;
 
+    /// Validates the tool input
     fn validate_input(&self, _input: &Value) -> Result<()> {
         Ok(())
     }
 
+    /// Handles permission decision
     fn permission_decision(&self, context: &ToolContext, input: &Value) -> PermissionDecision {
         let spec = self.spec();
         let request = permission_request_for_spec(&spec, input);
         evaluate_permission(&context.permission_context(), &request)
     }
 
+    /// Executes the operation
     async fn execute(
         &self,
         context: ToolContext,
@@ -344,7 +394,7 @@ struct ToolEntry {
     spec: ToolSpec,
     tool: Arc<dyn Tool>,
 }
-
+/// Stores tool registry
 #[derive(Default)]
 pub struct ToolRegistry {
     tools: BTreeMap<String, ToolEntry>,
@@ -353,11 +403,13 @@ pub struct ToolRegistry {
 }
 
 impl ToolRegistry {
+    /// Creates a new value
     #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
 
+    /// Handles register
     pub fn register(&mut self, tool: Arc<dyn Tool>) -> Result<()> {
         let spec = tool.spec();
         spec.validate()?;
@@ -385,19 +437,20 @@ impl ToolRegistry {
         self.tools.insert(canonical, ToolEntry { spec, tool });
         Ok(())
     }
-
+    /// Handles resolve
     #[must_use]
     pub fn resolve(&self, name: &str) -> Option<Arc<dyn Tool>> {
         self.resolve_entry(name)
             .map(|entry| Arc::clone(&entry.tool))
     }
-
+    /// Resolves enabled
     #[must_use]
     pub fn resolve_enabled(&self, name: &str, query: &ToolQuery) -> Option<Arc<dyn Tool>> {
         let entry = self.resolve_entry(name)?;
         query.allows(&entry.spec).then(|| Arc::clone(&entry.tool))
     }
 
+    /// Handles all specs
     pub fn all_specs(&self) -> Vec<ToolSpec> {
         self.order
             .iter()
@@ -406,10 +459,12 @@ impl ToolRegistry {
             .collect()
     }
 
+    /// Handles enabled specs
     pub fn enabled_specs(&self, features: &FeatureSet) -> Vec<ToolSpec> {
         self.enabled_specs_for(&ToolQuery::new(features.clone()))
     }
 
+    /// Handles enabled specs for
     pub fn enabled_specs_for(&self, query: &ToolQuery) -> Vec<ToolSpec> {
         self.all_specs()
             .into_iter()

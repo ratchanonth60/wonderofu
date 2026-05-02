@@ -1,3 +1,4 @@
+/// Normalizes mcp name
 pub fn normalize_mcp_name(value: &str) -> String {
     let mut normalized = String::new();
     let mut previous_was_separator = false;
@@ -24,6 +25,7 @@ pub fn normalize_mcp_name(value: &str) -> String {
     }
 }
 
+/// Builds mcp tool name
 pub fn build_mcp_tool_name(server_name: &str, tool_name: &str) -> String {
     format!(
         "mcp__{}__{}",
@@ -32,6 +34,7 @@ pub fn build_mcp_tool_name(server_name: &str, tool_name: &str) -> String {
     )
 }
 
+/// Builds mcp resource name
 pub fn build_mcp_resource_name(server_name: &str, resource_name: &str) -> String {
     format!(
         "mcp__{}__resource__{}",

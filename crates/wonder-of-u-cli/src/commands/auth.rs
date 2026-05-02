@@ -20,15 +20,18 @@ use wonder_of_u_storage::{StoragePaths, SyncStatusReport};
 
 use super::parse_command_args;
 
+/// Represents login command
 pub struct LoginCommand {
     storage_dir: Option<PathBuf>,
 }
 
 impl LoginCommand {
+    /// Constant fn
     pub const fn new(storage_dir: Option<PathBuf>) -> Self {
         Self { storage_dir }
     }
 
+    /// Handles command spec
     pub fn command_spec() -> CommandSpec {
         let mut spec = CommandSpec::new(
             "login",
@@ -155,15 +158,18 @@ fn open_browser(url: &str) {
     }
 }
 
+/// Represents logout command
 pub struct LogoutCommand {
     storage_dir: Option<PathBuf>,
 }
 
 impl LogoutCommand {
+    /// Constant fn
     pub const fn new(storage_dir: Option<PathBuf>) -> Self {
         Self { storage_dir }
     }
 
+    /// Handles command spec
     pub fn command_spec() -> CommandSpec {
         let mut spec = CommandSpec::new(
             "logout",
@@ -209,15 +215,18 @@ impl Command for LogoutCommand {
     }
 }
 
+/// Represents model command
 pub struct ModelCommand {
     storage_dir: Option<PathBuf>,
 }
 
 impl ModelCommand {
+    /// Constant fn
     pub const fn new(storage_dir: Option<PathBuf>) -> Self {
         Self { storage_dir }
     }
 
+    /// Handles command spec
     pub fn command_spec() -> CommandSpec {
         let mut spec = CommandSpec::new(
             "model",
@@ -401,15 +410,18 @@ fn render_model_picker_output(report: &wonder_of_u_agent::ProviderStatusReport) 
     lines.join("\n")
 }
 
+/// Represents config command
 pub struct ConfigCommand {
     storage_dir: Option<PathBuf>,
 }
 
 impl ConfigCommand {
+    /// Constant fn
     pub const fn new(storage_dir: Option<PathBuf>) -> Self {
         Self { storage_dir }
     }
 
+    /// Handles command spec
     pub fn command_spec() -> CommandSpec {
         let mut spec = CommandSpec::new(
             "config",

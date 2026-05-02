@@ -1,18 +1,26 @@
 use crate::frame::Rect;
 
+/// Constant chrome height
 pub const CHROME_HEIGHT: u16 = 2;
-
+/// Represents shell layout
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ShellLayout {
+    /// Stores the area
     pub area: Rect,
+    /// Stores the messages
     pub messages: Rect,
+    /// Stores the prompt
     pub prompt: Rect,
+    /// Stores the chrome
     pub chrome: Rect,
+    /// Stores the status
     pub status: Rect,
+    /// Stores the footer
     pub footer: Rect,
 }
 
 impl ShellLayout {
+    /// Handles split
     #[must_use]
     pub fn split(area: Rect, requested_prompt_height: u16) -> Self {
         let chrome_height = area.height.min(CHROME_HEIGHT);

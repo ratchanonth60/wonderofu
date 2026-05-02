@@ -22,8 +22,11 @@ pub enum GitError {
     /// Git returned a non-success status.
     #[error("git {args:?} failed with status {status:?}: {stderr}")]
     CommandFailed {
+        /// Stores the args
         args: Vec<String>,
+        /// Stores the status
         status: Option<i32>,
+        /// Stores the stderr
         stderr: String,
     },
 }

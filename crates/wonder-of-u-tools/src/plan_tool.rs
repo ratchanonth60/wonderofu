@@ -11,10 +11,11 @@ use wonder_of_u_core::{
 };
 
 use crate::{base_spec, parse_input, require_non_empty_path};
-
+/// Represents plan read input
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PlanReadInput {
+    /// Stores the path
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub path: Option<PathBuf>,
 }
@@ -27,12 +28,14 @@ impl PlanReadInput {
         Ok(())
     }
 }
-
+/// Represents plan write input
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PlanWriteInput {
+    /// Stores the path
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub path: Option<PathBuf>,
+    /// Stores the content
     pub content: String,
 }
 
@@ -44,23 +47,27 @@ impl PlanWriteInput {
         Ok(())
     }
 }
-
+/// Represents enter plan mode input
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct EnterPlanModeInput {}
-
+/// Represents exit plan mode allowed prompt
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ExitPlanModeAllowedPrompt {
+    /// Stores the tool
     pub tool: String,
+    /// Stores the prompt
     pub prompt: String,
 }
-
+/// Represents exit plan mode input
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ExitPlanModeInput {
+    /// Stores the allowed prompts
     #[serde(default, rename = "allowedPrompts", alias = "allowed_prompts")]
     pub allowed_prompts: Option<Vec<ExitPlanModeAllowedPrompt>>,
+    /// Stores the plan
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub plan: Option<String>,
     #[serde(
@@ -69,6 +76,7 @@ pub struct ExitPlanModeInput {
         alias = "plan_file_path",
         skip_serializing_if = "Option::is_none"
     )]
+    /// Stores the plan file path
     pub plan_file_path: Option<PathBuf>,
 }
 
@@ -92,16 +100,16 @@ impl ExitPlanModeInput {
         Ok(())
     }
 }
-
+/// Represents plan read tool
 #[derive(Debug, Default)]
 pub struct PlanReadTool;
-
+/// Represents plan write tool
 #[derive(Debug, Default)]
 pub struct PlanWriteTool;
-
+/// Represents enter plan mode tool
 #[derive(Debug, Default)]
 pub struct EnterPlanModeTool;
-
+/// Represents exit plan mode tool
 #[derive(Debug, Default)]
 pub struct ExitPlanModeTool;
 

@@ -18,22 +18,29 @@ use crate::{
 };
 
 const DEFAULT_FILE_READ_MAX_BYTES: usize = 256 * 1024;
-
+/// Represents file read input
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct FileReadInput {
+    /// Stores the path
     #[serde(alias = "file_path")]
     pub path: PathBuf,
+    /// Stores the start line
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub start_line: Option<usize>,
+    /// Stores the end line
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub end_line: Option<usize>,
+    /// Stores the max bytes
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_bytes: Option<usize>,
+    /// Stores the offset
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub offset: Option<usize>,
+    /// Stores the limit
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub limit: Option<usize>,
+    /// Stores the pages
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pages: Option<String>,
 }
@@ -105,13 +112,16 @@ impl FileReadInput {
         })
     }
 }
-
+/// Enumerates file write mode
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum FileWriteMode {
+    /// Represents create
     #[default]
     Create,
+    /// Represents overwrite
     Overwrite,
+    /// Represents append
     Append,
 }
 
@@ -124,13 +134,16 @@ impl FileWriteMode {
         }
     }
 }
-
+/// Represents file write input
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct FileWriteInput {
+    /// Stores the path
     #[serde(alias = "file_path")]
     pub path: PathBuf,
+    /// Stores the content
     pub content: String,
+    /// Stores the mode
     #[serde(default)]
     pub mode: FileWriteMode,
 }
@@ -140,16 +153,20 @@ impl FileWriteInput {
         require_non_empty_path("file_write", "path", &self.path)
     }
 }
-
+/// Represents file edit input
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct FileEditInput {
+    /// Stores the path
     #[serde(alias = "file_path")]
     pub path: PathBuf,
+    /// Stores the old text
     #[serde(alias = "old_string")]
     pub old_text: String,
+    /// Stores the new text
     #[serde(alias = "new_string")]
     pub new_text: String,
+    /// Stores the replace all
     #[serde(default)]
     pub replace_all: bool,
 }
@@ -160,13 +177,13 @@ impl FileEditInput {
         require_non_empty_text("file_edit", "old_text", &self.old_text)
     }
 }
-
+/// Represents file read tool
 #[derive(Debug, Default)]
 pub struct FileReadTool;
-
+/// Represents file write tool
 #[derive(Debug, Default)]
 pub struct FileWriteTool;
-
+/// Represents file edit tool
 #[derive(Debug, Default)]
 pub struct FileEditTool;
 

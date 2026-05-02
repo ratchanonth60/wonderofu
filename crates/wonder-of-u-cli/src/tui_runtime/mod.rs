@@ -1,3 +1,5 @@
+//! Provides tui runtime support
+//!
 use std::{
     collections::BTreeMap,
     fs::OpenOptions,

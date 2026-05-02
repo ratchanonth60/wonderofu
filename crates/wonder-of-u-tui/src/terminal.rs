@@ -9,24 +9,36 @@ use crossterm::{
     execute,
     terminal::{self, EnterAlternateScreen, LeaveAlternateScreen},
 };
-
+/// Enumerates terminal command
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum TerminalCommand {
+    /// Represents enter alternate screen
     EnterAlternateScreen,
+    /// Represents leave alternate screen
     LeaveAlternateScreen,
+    /// Represents hide cursor
     HideCursor,
+    /// Represents show cursor
     ShowCursor,
+    /// Represents enable bracketed paste
     EnableBracketedPaste,
+    /// Represents disable bracketed paste
     DisableBracketedPaste,
+    /// Represents enable mouse capture
     EnableMouseCapture,
+    /// Represents disable mouse capture
     DisableMouseCapture,
 }
-
+/// Represents terminal config
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct TerminalConfig {
+    /// Stores the raw mode
     pub raw_mode: bool,
+    /// Stores the alternate screen
     pub alternate_screen: bool,
+    /// Stores the bracketed paste
     pub bracketed_paste: bool,
+    /// Stores the mouse capture
     pub mouse_capture: bool,
 }
 
@@ -41,28 +53,34 @@ impl Default for TerminalConfig {
     }
 }
 
+/// Defines terminal control behavior
 pub trait TerminalControl {
+    /// Handles enable raw mode
     fn enable_raw_mode(&mut self) -> io::Result<()>;
+    /// Handles disable raw mode
     fn disable_raw_mode(&mut self) -> io::Result<()>;
+    /// Handles apply
     fn apply(&mut self, command: TerminalCommand) -> io::Result<()>;
 }
-
+/// Represents crossterm control
 #[derive(Debug)]
 pub struct CrosstermControl<W> {
     writer: W,
 }
 
 impl<W> CrosstermControl<W> {
+    /// Creates a new value
     #[must_use]
     pub fn new(writer: W) -> Self {
         Self { writer }
     }
-
+    /// Returns the writer
     #[must_use]
     pub fn writer(&self) -> &W {
         &self.writer
     }
 
+    /// Returns the mutable writer
     pub fn writer_mut(&mut self) -> &mut W {
         &mut self.writer
     }
@@ -90,16 +108,21 @@ impl<W: Write> TerminalControl for CrosstermControl<W> {
         }
     }
 }
-
+/// Represents terminal state
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct TerminalState {
+    /// Stores the raw mode
     pub raw_mode: bool,
+    /// Stores the alternate screen
     pub alternate_screen: bool,
+    /// Stores the cursor hidden
     pub cursor_hidden: bool,
+    /// Stores the bracketed paste
     pub bracketed_paste: bool,
+    /// Stores the mouse capture
     pub mouse_capture: bool,
 }
-
+/// Represents terminal lifecycle
 #[derive(Debug)]
 pub struct TerminalLifecycle<C: TerminalControl> {
     control: C,
@@ -107,6 +130,7 @@ pub struct TerminalLifecycle<C: TerminalControl> {
 }
 
 impl<C: TerminalControl> TerminalLifecycle<C> {
+    /// Handles enter
     pub fn enter(control: C, config: TerminalConfig) -> io::Result<Self> {
         let mut lifecycle = Self {
             control,
@@ -121,24 +145,27 @@ impl<C: TerminalControl> TerminalLifecycle<C> {
         Ok(lifecycle)
     }
 
+    /// Handles reenter
     pub fn reenter(&mut self, config: TerminalConfig) -> io::Result<()> {
         self.enter_inner(config)
     }
-
+    /// Constant fn
     #[must_use]
     pub const fn state(&self) -> TerminalState {
         self.state
     }
-
+    /// Handles control
     #[must_use]
     pub fn control(&self) -> &C {
         &self.control
     }
 
+    /// Handles control mut
     pub fn control_mut(&mut self) -> &mut C {
         &mut self.control
     }
 
+    /// Handles restore
     pub fn restore(&mut self) -> io::Result<()> {
         let mut first_error = None;
 
@@ -238,19 +265,24 @@ const ADDITIONAL_HYPERLINK_TERMINALS: &[&str] = &[
 /// The host platform used for terminal capability modeling.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum TerminalPlatform {
+    /// Represents unix
     Unix,
+    /// Represents windows
     Windows,
 }
 
 /// Serializable terminal environment input for capability detection.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TerminalEnv {
+    /// Stores the platform
     pub platform: TerminalPlatform,
+    /// Stores whether tty
     pub is_tty: bool,
     vars: BTreeMap<String, String>,
 }
 
 impl TerminalEnv {
+    /// Creates a new value
     #[must_use]
     pub fn new(platform: TerminalPlatform, is_tty: bool) -> Self {
         Self {
@@ -259,7 +291,7 @@ impl TerminalEnv {
             vars: BTreeMap::new(),
         }
     }
-
+    /// Handles capture stdout
     #[must_use]
     pub fn capture_stdout() -> Self {
         let platform = if cfg!(windows) {
@@ -274,7 +306,7 @@ impl TerminalEnv {
             vars: std::env::vars().collect(),
         }
     }
-
+    /// Handles from iter
     #[must_use]
     pub fn from_iter<K, V, I>(platform: TerminalPlatform, is_tty: bool, vars: I) -> Self
     where
@@ -288,18 +320,18 @@ impl TerminalEnv {
         }
         env
     }
-
+    /// Handles with var
     #[must_use]
     pub fn with_var(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
         self.vars.insert(key.into(), value.into());
         self
     }
-
+    /// Handles var
     #[must_use]
     pub fn var(&self, key: &str) -> Option<&str> {
         self.vars.get(key).map(String::as_str)
     }
-
+    /// Returns whether var
     #[must_use]
     pub fn has_var(&self, key: &str) -> bool {
         self.vars.contains_key(key)
@@ -316,6 +348,7 @@ pub enum CursorHomeCommand {
 }
 
 impl CursorHomeCommand {
+    /// Constant fn
     #[must_use]
     pub const fn ansi(self) -> &'static str {
         match self {
@@ -328,11 +361,14 @@ impl CursorHomeCommand {
 /// Renderer-independent clear-screen intent and emission details.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ClearTerminalCommand {
+    /// Stores the include scrollback
     pub include_scrollback: bool,
+    /// Stores the cursor home
     pub cursor_home: CursorHomeCommand,
 }
 
 impl ClearTerminalCommand {
+    /// Handles detect
     #[must_use]
     pub fn detect(env: &TerminalEnv) -> Self {
         if env.platform != TerminalPlatform::Windows {
@@ -354,7 +390,7 @@ impl ClearTerminalCommand {
             }
         }
     }
-
+    /// Handles ansi sequence
     #[must_use]
     pub fn ansi_sequence(self) -> String {
         let mut sequence = String::from("\u{1b}[2J");
@@ -369,13 +405,18 @@ impl ClearTerminalCommand {
 /// Bundled terminal capability decisions for the current renderer/runtime.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TerminalCapabilities {
+    /// Stores the hyperlinks
     pub hyperlinks: bool,
+    /// Stores the synchronized output
     pub synchronized_output: bool,
+    /// Stores the clear terminal
     pub clear_terminal: ClearTerminalCommand,
+    /// Stores the cursor up viewport yank bug
     pub cursor_up_viewport_yank_bug: bool,
 }
 
 impl TerminalCapabilities {
+    /// Handles detect
     #[must_use]
     pub fn detect(env: &TerminalEnv, hyperlink_baseline: bool) -> Self {
         Self {

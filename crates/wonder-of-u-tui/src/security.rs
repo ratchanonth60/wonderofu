@@ -113,12 +113,16 @@ const SAFE_ENV_VARS: &[&str] = &[
 /// User-facing trust state labels for workspace review.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum WorkspaceTrustState {
+    /// Represents trusted
     Trusted,
+    /// Represents untrusted
     Untrusted,
+    /// Represents review required
     ReviewRequired,
 }
 
 impl WorkspaceTrustState {
+    /// Constant fn
     #[must_use]
     pub const fn label(self) -> &'static str {
         match self {
@@ -132,20 +136,27 @@ impl WorkspaceTrustState {
 /// The semantic action a security dialog can expose.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SecurityActionKind {
+    /// Represents allow
     Allow,
+    /// Represents deny
     Deny,
+    /// Represents defer
     Defer,
 }
 
 /// A renderer-neutral action option for trust and security dialogs.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SecurityActionView {
+    /// Stores the kind
     pub kind: SecurityActionKind,
+    /// Stores the label
     pub label: String,
+    /// Stores the primary
     pub primary: bool,
 }
 
 impl SecurityActionView {
+    /// Creates a new value
     #[must_use]
     pub fn new(kind: SecurityActionKind, label: impl Into<String>, primary: bool) -> Self {
         Self {
@@ -154,22 +165,22 @@ impl SecurityActionView {
             primary,
         }
     }
-
+    /// Handles allow
     #[must_use]
     pub fn allow(label: impl Into<String>, primary: bool) -> Self {
         Self::new(SecurityActionKind::Allow, label, primary)
     }
-
+    /// Handles deny
     #[must_use]
     pub fn deny(label: impl Into<String>, primary: bool) -> Self {
         Self::new(SecurityActionKind::Deny, label, primary)
     }
-
+    /// Handles defer
     #[must_use]
     pub fn defer(label: impl Into<String>, primary: bool) -> Self {
         Self::new(SecurityActionKind::Defer, label, primary)
     }
-
+    /// Handles to dialog action
     #[must_use]
     pub fn to_dialog_action(&self) -> DialogActionView {
         DialogActionView::new(self.label.clone(), self.primary)
@@ -195,20 +206,32 @@ pub fn security_action_hint(actions: &[SecurityActionView]) -> String {
 /// High-level risky workspace capabilities shown during trust review.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum WorkspaceRiskKind {
+    /// Represents mcp servers
     McpServers,
+    /// Represents hooks
     Hooks,
+    /// Represents bash permissions
     BashPermissions,
+    /// Represents slash commands
     SlashCommands,
+    /// Represents skills
     Skills,
+    /// Represents api key helper
     ApiKeyHelper,
+    /// Represents aws commands
     AwsCommands,
+    /// Represents gcp commands
     GcpCommands,
+    /// Represents otel headers helper
     OtelHeadersHelper,
+    /// Represents dangerous env vars
     DangerousEnvVars,
+    /// Represents managed settings
     ManagedSettings,
 }
 
 impl WorkspaceRiskKind {
+    /// Constant fn
     #[must_use]
     pub const fn label(self) -> &'static str {
         match self {
@@ -225,7 +248,7 @@ impl WorkspaceRiskKind {
             Self::ManagedSettings => "Managed settings",
         }
     }
-
+    /// Constant fn
     #[must_use]
     pub const fn summary(self) -> &'static str {
         match self {
@@ -247,13 +270,18 @@ impl WorkspaceRiskKind {
 /// A safe workspace warning with sanitized source names.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct WorkspaceRiskView {
+    /// Stores the kind
     pub kind: WorkspaceRiskKind,
+    /// Stores the label
     pub label: String,
+    /// Stores the summary
     pub summary: String,
+    /// Stores the sources
     pub sources: Vec<String>,
 }
 
 impl WorkspaceRiskView {
+    /// Creates a new value
     #[must_use]
     pub fn new(
         kind: WorkspaceRiskKind,
@@ -266,7 +294,7 @@ impl WorkspaceRiskView {
             sources: sanitize_sources(sources),
         }
     }
-
+    /// Handles source hint
     #[must_use]
     pub fn source_hint(&self) -> Option<String> {
         (!self.sources.is_empty())
@@ -277,15 +305,22 @@ impl WorkspaceRiskView {
 /// A structured trust review for an untrusted or newly opened workspace.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TrustDialogView {
+    /// Stores the title
     pub title: String,
+    /// Stores the workspace
     pub workspace: String,
+    /// Stores the trust
     pub trust: WorkspaceTrustState,
+    /// Stores the warnings
     pub warnings: Vec<WorkspaceRiskView>,
+    /// Stores the guide url
     pub guide_url: Option<String>,
+    /// Stores the actions
     pub actions: Vec<SecurityActionView>,
 }
 
 impl TrustDialogView {
+    /// Creates a new value
     #[must_use]
     pub fn new(workspace: impl AsRef<Path>, warnings: Vec<WorkspaceRiskView>) -> Self {
         Self {
@@ -301,12 +336,12 @@ impl TrustDialogView {
             ],
         }
     }
-
+    /// Handles action hint
     #[must_use]
     pub fn action_hint(&self) -> String {
         security_action_hint(&self.actions)
     }
-
+    /// Handles to dialog view
     #[must_use]
     pub fn to_dialog_view(&self) -> DialogView {
         let mut body = vec![
@@ -345,11 +380,14 @@ impl TrustDialogView {
 /// Indicates whether remote-managed settings are enforced or only surfaced.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ManagedSettingsEnforcement {
+    /// Represents enforced
     Enforced,
+    /// Represents informational only
     InformationalOnly,
 }
 
 impl ManagedSettingsEnforcement {
+    /// Constant fn
     #[must_use]
     pub const fn note(self) -> Option<&'static str> {
         match self {
@@ -364,13 +402,18 @@ impl ManagedSettingsEnforcement {
 /// A safe summary of one managed setting that needs review.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ManagedSettingRiskView {
+    /// Stores the key
     pub key: String,
+    /// Stores the label
     pub label: String,
+    /// Stores the summary
     pub summary: String,
+    /// Stores the sources
     pub sources: Vec<String>,
 }
 
 impl ManagedSettingRiskView {
+    /// Handles from key
     #[must_use]
     pub fn from_key(
         key: impl AsRef<str>,
@@ -401,7 +444,7 @@ impl ManagedSettingRiskView {
             sources: sanitize_sources(sources),
         }
     }
-
+    /// Handles source hint
     #[must_use]
     pub fn source_hint(&self) -> Option<String> {
         (!self.sources.is_empty())
@@ -412,13 +455,18 @@ impl ManagedSettingRiskView {
 /// A structured security review for centrally managed settings.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ManagedSettingsSecurityDialogView {
+    /// Stores the title
     pub title: String,
+    /// Stores the risks
     pub risks: Vec<ManagedSettingRiskView>,
+    /// Stores the enforcement
     pub enforcement: ManagedSettingsEnforcement,
+    /// Stores the actions
     pub actions: Vec<SecurityActionView>,
 }
 
 impl ManagedSettingsSecurityDialogView {
+    /// Handles from settings
     #[must_use]
     pub fn from_settings(
         settings: &Value,
@@ -437,12 +485,12 @@ impl ManagedSettingsSecurityDialogView {
             ],
         }
     }
-
+    /// Handles action hint
     #[must_use]
     pub fn action_hint(&self) -> String {
         security_action_hint(&self.actions)
     }
-
+    /// Handles to dialog view
     #[must_use]
     pub fn to_dialog_view(&self) -> DialogView {
         let mut body = vec![

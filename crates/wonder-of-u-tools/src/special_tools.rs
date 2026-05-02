@@ -47,9 +47,10 @@ const REPL_PRIMITIVE_TOOLS: &[&str] = &[
     "notebook_edit",
     "agent",
 ];
-
+/// Represents repl input
 #[derive(Clone, Debug, Default, Eq, PartialEq, Deserialize)]
 pub struct ReplInput {
+    /// Stores the command
     #[serde(default)]
     pub command: Option<String>,
 }
@@ -62,11 +63,13 @@ impl ReplInput {
         Ok(())
     }
 }
-
+/// Represents web browser input
 #[derive(Clone, Debug, Default, Eq, PartialEq, Deserialize)]
 pub struct WebBrowserInput {
+    /// Stores the url
     #[serde(default)]
     pub url: Option<String>,
+    /// Stores the prompt
     #[serde(default)]
     pub prompt: Option<String>,
 }
@@ -82,9 +85,10 @@ impl WebBrowserInput {
         Ok(())
     }
 }
-
+/// Represents mcp auth input
 #[derive(Clone, Debug, Eq, PartialEq, Deserialize)]
 pub struct McpAuthInput {
+    /// Stores the server
     pub server: String,
 }
 
@@ -93,9 +97,10 @@ impl McpAuthInput {
         require_non_empty_text("mcp_auth", "server", &self.server)
     }
 }
-
+/// Represents verify plan execution input
 #[derive(Clone, Debug, Default, Eq, PartialEq, Deserialize)]
 pub struct VerifyPlanExecutionInput {
+    /// Stores the prompt
     #[serde(default)]
     pub prompt: Option<String>,
 }
@@ -108,9 +113,10 @@ impl VerifyPlanExecutionInput {
         Ok(())
     }
 }
-
+/// Represents send user file input
 #[derive(Clone, Debug, Eq, PartialEq, Deserialize)]
 pub struct SendUserFileInput {
+    /// Stores the files
     pub files: Vec<PathBuf>,
 }
 
@@ -127,9 +133,10 @@ impl SendUserFileInput {
         Ok(())
     }
 }
-
+/// Represents suggest background pr input
 #[derive(Clone, Debug, Default, Eq, PartialEq, Deserialize)]
 pub struct SuggestBackgroundPrInput {
+    /// Stores the prompt
     #[serde(default)]
     pub prompt: Option<String>,
 }
@@ -142,11 +149,13 @@ impl SuggestBackgroundPrInput {
         Ok(())
     }
 }
-
+/// Represents sleep input
 #[derive(Clone, Debug, Default, Eq, PartialEq, Deserialize)]
 pub struct SleepInput {
+    /// Stores the duration ms
     #[serde(default, alias = "durationMs", alias = "milliseconds")]
     pub duration_ms: Option<u64>,
+    /// Stores the seconds
     #[serde(default)]
     pub seconds: Option<u64>,
 }
@@ -179,13 +188,16 @@ impl SleepInput {
         Ok(millis)
     }
 }
-
+/// Represents mcp tool input
 #[derive(Clone, Debug, Default, PartialEq, Deserialize)]
 pub struct McpToolInput {
+    /// Stores the server
     #[serde(default, alias = "serverName")]
     pub server: Option<String>,
+    /// Stores the tool
     #[serde(default, alias = "toolName")]
     pub tool: Option<String>,
+    /// Stores the arguments
     #[serde(default)]
     pub arguments: Value,
 }
@@ -201,15 +213,19 @@ impl McpToolInput {
         Ok(())
     }
 }
-
+/// Represents workflow input
 #[derive(Clone, Debug, Default, PartialEq, Deserialize)]
 pub struct WorkflowInput {
+    /// Stores the workflow
     #[serde(default)]
     pub workflow: Option<String>,
+    /// Stores the command
     #[serde(default)]
     pub command: Option<String>,
+    /// Stores the prompt
     #[serde(default)]
     pub prompt: Option<String>,
+    /// Stores the args
     #[serde(default)]
     pub args: Value,
 }
@@ -228,11 +244,13 @@ impl WorkflowInput {
         Ok(())
     }
 }
-
+/// Represents push notification input
 #[derive(Clone, Debug, Default, Eq, PartialEq, Deserialize)]
 pub struct PushNotificationInput {
+    /// Stores the title
     #[serde(default)]
     pub title: Option<String>,
+    /// Stores the message
     #[serde(default, alias = "body")]
     pub message: Option<String>,
 }
@@ -248,9 +266,10 @@ impl PushNotificationInput {
         Ok(())
     }
 }
-
+/// Represents overflow test input
 #[derive(Clone, Debug, Default, Eq, PartialEq, Deserialize)]
 pub struct OverflowTestInput {
+    /// Stores the chars
     #[serde(default = "default_overflow_chars")]
     pub chars: usize,
 }
@@ -265,9 +284,10 @@ impl OverflowTestInput {
         Ok(())
     }
 }
-
+/// Represents tungsten input
 #[derive(Clone, Debug, Default, Eq, PartialEq, Deserialize)]
 pub struct TungstenInput {
+    /// Stores the args
     #[serde(default)]
     pub args: Vec<String>,
 }
@@ -280,58 +300,58 @@ impl TungstenInput {
         Ok(())
     }
 }
-
+/// Represents repl tool
 #[derive(Debug, Default)]
 pub struct ReplTool;
-
+/// Represents web browser tool
 #[derive(Debug, Default)]
 pub struct WebBrowserTool;
-
+/// Represents mcp auth tool
 #[derive(Debug, Default)]
 pub struct McpAuthTool;
-
+/// Represents structured output tool
 #[derive(Debug, Default)]
 pub struct StructuredOutputTool;
-
+/// Represents verify plan execution tool
 #[derive(Debug, Default)]
 pub struct VerifyPlanExecutionTool;
-
+/// Represents send user file tool
 #[derive(Debug, Default)]
 pub struct SendUserFileTool;
-
+/// Represents suggest background pr tool
 #[derive(Debug, Default)]
 pub struct SuggestBackgroundPrTool;
-
+/// Represents sleep tool
 #[derive(Debug, Default)]
 pub struct SleepTool;
-
+/// Represents mcp tool
 #[derive(Debug, Default)]
 pub struct McpTool;
-
+/// Represents workflow tool
 #[derive(Debug, Default)]
 pub struct WorkflowTool;
-
+/// Represents push notification tool
 #[derive(Debug, Default)]
 pub struct PushNotificationTool;
-
+/// Represents testing permission tool
 #[derive(Debug, Default)]
 pub struct TestingPermissionTool;
-
+/// Represents overflow test tool
 #[derive(Debug, Default)]
 pub struct OverflowTestTool;
-
+/// Represents ctx inspect tool
 #[derive(Debug, Default)]
 pub struct CtxInspectTool;
-
+/// Represents monitor tool
 #[derive(Debug, Default)]
 pub struct MonitorTool;
-
+/// Represents subscribe pr tool
 #[derive(Debug, Default)]
 pub struct SubscribePrTool;
-
+/// Represents snip tool
 #[derive(Debug, Default)]
 pub struct SnipTool;
-
+/// Represents tungsten tool
 #[derive(Debug, Default)]
 pub struct TungstenTool;
 
