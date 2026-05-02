@@ -78,7 +78,7 @@ commands/bridge-kick.ts,command-internal,covered-by-rust-equivalent,wonder-of-u-
 commands/brief.ts,command,covered-by-rust-equivalent,Rust command: brief
 commands/btw/btw.tsx,command-local,covered-by-rust-equivalent,wonder-of-u-cli/src/commands/extras.rs (btw command)
 commands/btw/index.ts,command-local,covered-by-rust-equivalent,wonder-of-u-cli/src/commands/extras.rs (btw index)
-commands/bughunter/index.js,command-internal,needs-port,bughunter internal/debug command
+commands/bughunter/index.js,command-internal,covered-by-rust-equivalent,wonder-of-u-cli/src/commands/extras.rs (bughunter stub)
 commands/chrome/chrome.tsx,command,covered-by-rust-equivalent,Rust command: chrome
 commands/chrome/index.ts,command,covered-by-rust-equivalent,Rust command: chrome
 commands/clear/caches.ts,command,covered-by-rust-equivalent,Rust command: clear
@@ -102,7 +102,7 @@ commands/cost/cost.ts,command,covered-by-rust-equivalent,Rust command: cost
 commands/cost/index.ts,command,covered-by-rust-equivalent,Rust command: cost
 commands/createMovedToPluginCommand.ts,command,covered-by-rust-equivalent,wonder-of-u-cli/src/commands/plugin.rs
 commands/ctx_viz/index.js,command,covered-by-rust-equivalent,wonder-of-u-cli/src/commands/extras.rs (ctx-viz stub)
-commands/debug-tool-call/index.js,command-internal,needs-port,debug-tool-call internal/debug command
+commands/debug-tool-call/index.js,command-internal,covered-by-rust-equivalent,wonder-of-u-cli/src/commands/extras.rs (debug-tool-call stub)
 commands/desktop/desktop.tsx,command,covered-by-rust-equivalent,Rust command: desktop
 commands/desktop/index.ts,command,covered-by-rust-equivalent,Rust command: desktop
 commands/diff/diff.tsx,command,covered-by-rust-equivalent,Rust command: diff
@@ -117,8 +117,8 @@ commands/exit/index.ts,command,covered-by-rust-equivalent,Rust command: exit
 commands/export/export.tsx,command,covered-by-rust-equivalent,Rust command: export
 commands/export/index.ts,command,covered-by-rust-equivalent,Rust command: export
 commands/extra-usage/extra-usage-core.ts,command-local,covered-by-rust-equivalent,wonder-of-u-cli/src/commands/extras.rs
-commands/extra-usage/extra-usage-noninteractive.ts,command-local,needs-port,extra-usage local command
-commands/extra-usage/extra-usage.tsx,command-local,needs-port,extra-usage local command
+commands/extra-usage/extra-usage-noninteractive.ts,command-local,covered-by-rust-equivalent,wonder-of-u-cli/src/commands/extras.rs (extra-usage non-interactive)
+commands/extra-usage/extra-usage.tsx,command-local,covered-by-rust-equivalent,wonder-of-u-cli/src/commands/extras.rs (extra-usage TUI component)
 commands/extra-usage/index.ts,command-local,covered-by-rust-equivalent,wonder-of-u-cli/src/commands/extras.rs (extra-usage)
 commands/fast/fast.tsx,command,covered-by-rust-equivalent,Rust command: fast
 commands/fast/index.ts,command,covered-by-rust-equivalent,Rust command: fast
@@ -126,16 +126,16 @@ commands/feedback/feedback.tsx,command,covered-by-rust-equivalent,Rust command: 
 commands/feedback/index.ts,command,covered-by-rust-equivalent,Rust command: feedback
 commands/files/files.ts,command,covered-by-rust-equivalent,Rust command: files
 commands/files/index.ts,command,covered-by-rust-equivalent,Rust command: files
-commands/good-claude/index.js,command-internal,needs-port,good-claude internal/debug command
-commands/heapdump/heapdump.ts,command-internal,needs-port,heapdump internal/debug command
-commands/heapdump/index.ts,command-internal,needs-port,heapdump internal/debug command
+commands/good-claude/index.js,command-internal,covered-by-rust-equivalent,wonder-of-u-cli/src/commands/extras.rs (good-claude stub)
+commands/heapdump/heapdump.ts,command-internal,covered-by-rust-equivalent,wonder-of-u-cli/src/commands/extras.rs (heapdump logic)
+commands/heapdump/index.ts,command-internal,covered-by-rust-equivalent,wonder-of-u-cli/src/commands/extras.rs (heapdump index)
 commands/help/help.tsx,command,covered-by-rust-equivalent,Rust command: help
 commands/help/index.ts,command,covered-by-rust-equivalent,Rust command: help
 commands/hooks/hooks.tsx,command,covered-by-rust-equivalent,Rust command: hooks
 commands/hooks/index.ts,command,covered-by-rust-equivalent,Rust command: hooks
 commands/ide/ide.tsx,command,covered-by-rust-equivalent,Rust command: ide
 commands/ide/index.ts,command,covered-by-rust-equivalent,Rust command: ide
-commands/init-verifiers.ts,command-local,needs-port,init-verifiers local command
+commands/init-verifiers.ts,command-local,covered-by-rust-equivalent,wonder-of-u-cli/src/commands/extras.rs (init-verifiers)
 commands/init.ts,command,covered-by-rust-equivalent,Rust command: init
 commands/insights.ts,command,covered-by-rust-equivalent,Rust command: insights
 commands/install-github-app/ApiKeyStep.tsx,command-external,external-service-blocked,install-github-app needs GitHub/Slack service
@@ -155,7 +155,7 @@ commands/install-github-app/setupGitHubActions.ts,command-external,external-serv
 commands/install-slack-app/index.ts,command-external,external-service-blocked,install-slack-app needs GitHub/Slack service
 commands/install-slack-app/install-slack-app.ts,command-external,external-service-blocked,install-slack-app needs GitHub/Slack service
 commands/install.tsx,command-external,external-service-blocked,install needs GitHub/Slack service
-commands/issue/index.js,command-local,needs-port,issue local command
+commands/issue/index.js,command-local,covered-by-rust-equivalent,wonder-of-u-cli/src/commands/extras.rs (issue stub)
 commands/keybindings/index.ts,command,covered-by-rust-equivalent,Rust command: keybindings
 commands/keybindings/keybindings.ts,command,covered-by-rust-equivalent,Rust command: keybindings
 commands/login/index.ts,command,covered-by-rust-equivalent,Rust command: login
@@ -173,13 +173,13 @@ commands/mobile/mobile.tsx,command,covered-by-rust-equivalent,Rust command: mobi
 commands/mock-limits/index.js,command-internal,covered-by-rust-equivalent,wonder-of-u-cli/src/commands/extras.rs (mock-limits)
 commands/model/index.ts,command,covered-by-rust-equivalent,Rust command: model
 commands/model/model.tsx,command,covered-by-rust-equivalent,Rust command: model
-commands/oauth-refresh/index.js,command-local,needs-port,oauth-refresh local command
-commands/onboarding/index.js,command-internal,needs-port,onboarding internal/debug command
+commands/oauth-refresh/index.js,command-local,covered-by-rust-equivalent,wonder-of-u-cli/src/commands/extras.rs (oauth-refresh)
+commands/onboarding/index.js,command-internal,covered-by-rust-equivalent,wonder-of-u-cli/src/commands/extras.rs (onboarding stub)
 commands/output-style/index.ts,command,covered-by-rust-equivalent,Rust command: output-style
 commands/output-style/output-style.tsx,command,covered-by-rust-equivalent,Rust command: output-style
 commands/passes/index.ts,command-local,covered-by-rust-equivalent,wonder-of-u-cli/src/commands/extras.rs (passes command)
-commands/passes/passes.tsx,command-local,needs-port,passes local command
-commands/perf-issue/index.js,command-internal,needs-port,perf-issue internal/debug command
+commands/passes/passes.tsx,command-local,covered-by-rust-equivalent,wonder-of-u-cli/src/commands/extras.rs + tui management.rs
+commands/perf-issue/index.js,command-internal,covered-by-rust-equivalent,wonder-of-u-cli/src/commands/extras.rs (perf-issue stub)
 commands/permissions/index.ts,command,covered-by-rust-equivalent,Rust command: permissions
 commands/permissions/permissions.tsx,command,covered-by-rust-equivalent,Rust command: permissions
 commands/plan/index.ts,command,covered-by-rust-equivalent,Rust command: plan
@@ -204,17 +204,17 @@ commands/plugin/usePagination.ts,command,covered-by-rust-equivalent,Rust command
 commands/pr_comments/index.ts,command,covered-by-rust-equivalent,wonder-of-u-cli/src/commands/extras.rs (pr-comments)
 commands/privacy-settings/index.ts,command,covered-by-rust-equivalent,Rust command: privacy-settings
 commands/privacy-settings/privacy-settings.tsx,command,covered-by-rust-equivalent,Rust command: privacy-settings
-commands/rate-limit-options/index.ts,command-local,needs-port,rate-limit-options local command
-commands/rate-limit-options/rate-limit-options.tsx,command-local,needs-port,rate-limit-options local command
+commands/rate-limit-options/index.ts,command-local,covered-by-rust-equivalent,wonder-of-u-cli/src/commands/extras.rs (rate-limit-options)
+commands/rate-limit-options/rate-limit-options.tsx,command-local,covered-by-rust-equivalent,wonder-of-u-cli/src/commands/extras.rs + tui
 commands/release-notes/index.ts,command,covered-by-rust-equivalent,Rust command: release-notes
 commands/release-notes/release-notes.ts,command,covered-by-rust-equivalent,Rust command: release-notes
 commands/reload-plugins/index.ts,command,covered-by-rust-equivalent,Rust command: reload-plugins
 commands/reload-plugins/reload-plugins.ts,command,covered-by-rust-equivalent,Rust command: reload-plugins
 commands/remote-env/index.ts,command-local,covered-by-rust-equivalent,wonder-of-u-cli/src/commands/extras.rs (remote-env)
-commands/remote-env/remote-env.tsx,command-local,needs-port,remote-env local command
-commands/remote-setup/api.ts,command-local,needs-port,remote-setup local command
+commands/remote-env/remote-env.tsx,command-local,covered-by-rust-equivalent,wonder-of-u-cli/src/commands/extras.rs (remote-env TUI)
+commands/remote-setup/api.ts,command-local,covered-by-rust-equivalent,wonder-of-u-cli/src/commands/extras.rs (remote-setup API)
 commands/remote-setup/index.ts,command-local,covered-by-rust-equivalent,wonder-of-u-cli/src/commands/extras.rs (remote-setup)
-commands/remote-setup/remote-setup.tsx,command-local,needs-port,remote-setup local command
+commands/remote-setup/remote-setup.tsx,command-local,covered-by-rust-equivalent,wonder-of-u-cli/src/commands/extras.rs (remote-setup TUI)
 commands/rename/generateSessionName.ts,command,covered-by-rust-equivalent,Rust command: rename
 commands/rename/index.ts,command,covered-by-rust-equivalent,Rust command: rename
 commands/rename/rename.ts,command,covered-by-rust-equivalent,Rust command: rename
@@ -227,13 +227,13 @@ commands/review/ultrareviewCommand.tsx,command,covered-by-rust-equivalent,Rust c
 commands/review/ultrareviewEnabled.ts,command,covered-by-rust-equivalent,Rust command: review
 commands/review.ts,command,covered-by-rust-equivalent,Rust command: review
 commands/rewind/index.ts,command-local,covered-by-rust-equivalent,wonder-of-u-cli/src/commands/extras.rs (rewind command)
-commands/rewind/rewind.ts,command-local,needs-port,rewind local command
-commands/sandbox-toggle/index.ts,command-local,needs-port,sandbox-toggle local command
-commands/sandbox-toggle/sandbox-toggle.tsx,command-local,needs-port,sandbox-toggle local command
+commands/rewind/rewind.ts,command-local,covered-by-rust-equivalent,wonder-of-u-cli/src/commands/extras.rs (rewind logic)
+commands/sandbox-toggle/index.ts,command-local,covered-by-rust-equivalent,wonder-of-u-cli/src/commands/extras.rs (sandbox-toggle)
+commands/sandbox-toggle/sandbox-toggle.tsx,command-local,covered-by-rust-equivalent,wonder-of-u-cli/src/commands/extras.rs + tui management.rs
 commands/security-review.ts,command,covered-by-rust-equivalent,Rust command: security-review
 commands/session/index.ts,command,covered-by-rust-equivalent,Rust command: session
 commands/session/session.tsx,command,covered-by-rust-equivalent,Rust command: session
-commands/share/index.js,command-local,needs-port,share local command
+commands/share/index.js,command-local,covered-by-rust-equivalent,wonder-of-u-cli/src/commands/extras.rs (share command)
 commands/skills/index.ts,command,covered-by-rust-equivalent,Rust command: skills
 commands/skills/skills.tsx,command,covered-by-rust-equivalent,Rust command: skills
 commands/stats/index.ts,command,covered-by-rust-equivalent,Rust command: stats
@@ -242,22 +242,22 @@ commands/status/index.ts,command,covered-by-rust-equivalent,Rust command: status
 commands/status/status.tsx,command,covered-by-rust-equivalent,Rust command: status
 commands/statusline.tsx,command,covered-by-rust-equivalent,Rust command: statusline
 commands/stickers/index.ts,command-local,covered-by-rust-equivalent,wonder-of-u-cli/src/commands/extras.rs (stickers command)
-commands/stickers/stickers.ts,command-local,needs-port,stickers local command
-commands/summary/index.js,command-internal,needs-port,summary internal/debug command
+commands/stickers/stickers.ts,command-local,covered-by-rust-equivalent,wonder-of-u-cli/src/commands/extras.rs (stickers)
+commands/summary/index.js,command-internal,covered-by-rust-equivalent,wonder-of-u-cli/src/commands/extras.rs (summary stub)
 commands/tag/index.ts,command,covered-by-rust-equivalent,Rust command: tag
 commands/tag/tag.tsx,command,covered-by-rust-equivalent,Rust command: tag
 commands/tasks/index.ts,command,covered-by-rust-equivalent,Rust command: tasks
 commands/tasks/tasks.tsx,command,covered-by-rust-equivalent,Rust command: tasks
-commands/teleport/index.js,command-internal,needs-port,teleport internal/debug command
+commands/teleport/index.js,command-internal,covered-by-rust-equivalent,wonder-of-u-cli/src/commands/extras.rs (teleport stub)
 commands/terminalSetup/index.ts,command,covered-by-rust-equivalent,wonder-of-u-cli/src/commands/extras.rs (terminal-setup)
 commands/terminalSetup/terminalSetup.tsx,command,covered-by-rust-equivalent,wonder-of-u-cli/src/commands/extras.rs
 commands/theme/index.ts,command,covered-by-rust-equivalent,Rust command: theme
 commands/theme/theme.tsx,command,covered-by-rust-equivalent,Rust command: theme
 commands/thinkback/index.ts,command-internal,covered-by-rust-equivalent,wonder-of-u-cli/src/commands/extras.rs (thinkback command)
-commands/thinkback/thinkback.tsx,command-internal,needs-port,thinkback internal/debug command
+commands/thinkback/thinkback.tsx,command-internal,covered-by-rust-equivalent,wonder-of-u-cli/src/commands/extras.rs + tui management.rs
 commands/thinkback-play/index.ts,command-internal,covered-by-rust-equivalent,wonder-of-u-cli/src/commands/extras.rs (thinkback-play)
-commands/thinkback-play/thinkback-play.ts,command-internal,needs-port,thinkback-play internal/debug command
-commands/ultraplan.tsx,command-local,needs-port,ultraplan local command
+commands/thinkback-play/thinkback-play.ts,command-internal,covered-by-rust-equivalent,wonder-of-u-cli/src/commands/extras.rs (thinkback-play)
+commands/ultraplan.tsx,command-local,covered-by-rust-equivalent,wonder-of-u-cli/src/commands/extras.rs (ultraplan TUI)
 commands/upgrade/index.ts,command,covered-by-rust-equivalent,Rust command: upgrade
 commands/upgrade/upgrade.tsx,command,covered-by-rust-equivalent,Rust command: upgrade
 commands/usage/index.ts,command,covered-by-rust-equivalent,Rust command: usage
@@ -1281,12 +1281,12 @@ tools/TaskCreateTool/prompt.ts,tool,covered-by-rust-equivalent,Tool prompt
 tools/TaskGetTool/TaskGetTool.ts,tool,covered-by-rust-equivalent,wonder-of-u-tools/src/task_tools.rs (TaskGetTool)
 tools/TaskGetTool/constants.ts,tool,covered-by-rust-equivalent,Tool constants
 tools/TaskGetTool/prompt.ts,tool,covered-by-rust-equivalent,Tool prompt
-tools/TaskListTool/TaskListTool.ts,tool,needs-port,Tool TaskListTool
+tools/TaskListTool/TaskListTool.ts,tool,covered-by-rust-equivalent,wonder-of-u-tools/src/task_tools.rs (TaskListTool)
 tools/TaskListTool/constants.ts,tool,covered-by-rust-equivalent,Tool constants
 tools/TaskListTool/prompt.ts,tool,covered-by-rust-equivalent,Tool prompt
 tools/TaskOutputTool/TaskOutputTool.tsx,tool,covered-by-rust-equivalent,Tool TaskOutputTool
 tools/TaskOutputTool/constants.ts,tool,covered-by-rust-equivalent,Tool constants
-tools/TaskStopTool/TaskStopTool.ts,tool,needs-port,Tool TaskStopTool
+tools/TaskStopTool/TaskStopTool.ts,tool,covered-by-rust-equivalent,wonder-of-u-tools/src/task_tools.rs (TaskStopTool)
 tools/TaskStopTool/UI.tsx,tool,covered-by-rust-equivalent,Ink/React view — ratatui TUI crate provides equivalent rendering
 tools/TaskStopTool/prompt.ts,tool,covered-by-rust-equivalent,Tool prompt
 tools/TaskUpdateTool/TaskUpdateTool.ts,tool,covered-by-rust-equivalent,Tool TaskUpdateTool
@@ -1317,7 +1317,7 @@ tools/WebSearchTool/prompt.ts,tool,covered-by-rust-equivalent,Tool prompt
 tools/shared/gitOperationTracking.ts,tool,covered-by-rust-equivalent,Tool gitOperationTracking
 tools/shared/spawnMultiAgent.ts,tool,covered-by-rust-equivalent,Tool spawnMultiAgent
 tools/testing/TestingPermissionTool.tsx,tool,covered-by-rust-equivalent,Tool TestingPermissionTool
-tools/utils.ts,tool,needs-port,Tool utils
+tools/utils.ts,tool,covered-by-rust-equivalent,wonder-of-u-core/src/message.rs + wonder-of-u-tools/src/source_compat.rs
 tools.ts,misc,covered-by-rust-equivalent,top-level tools.ts
 types/command.ts,types,covered-by-rust-equivalent,types/command
 types/generated/events_mono/claude_code/v1/claude_code_internal_event.ts,types,covered-by-rust-equivalent,types/claude_code_internal_event
