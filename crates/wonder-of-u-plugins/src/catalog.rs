@@ -13,16 +13,21 @@ use crate::{
 };
 
 const MANIFEST_FILE_NAMES: [&str; 2] = ["plugin.json", "wonder-plugin.json"];
-
+/// Enumerates plugin source
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PluginSource {
+    /// Represents project
     Project,
+    /// Represents user
     User,
+    /// Represents configured
     Configured,
+    /// Represents bundled
     Bundled,
 }
 
 impl PluginSource {
+    /// Constant fn
     #[must_use]
     pub const fn label(self) -> &'static str {
         match self {
@@ -33,16 +38,21 @@ impl PluginSource {
         }
     }
 }
-
+/// Enumerates plugin trust level
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PluginTrustLevel {
+    /// Represents bundled
     Bundled,
+    /// Represents trusted
     Trusted,
+    /// Represents untrusted
     Untrusted,
+    /// Represents blocked
     Blocked,
 }
 
 impl PluginTrustLevel {
+    /// Constant fn
     #[must_use]
     pub const fn label(self) -> &'static str {
         match self {
@@ -53,16 +63,21 @@ impl PluginTrustLevel {
         }
     }
 }
-
+/// Enumerates plugin readiness
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PluginReadiness {
+    /// Represents ready
     Ready,
+    /// Represents needs trust
     NeedsTrust,
+    /// Represents blocked
     Blocked,
+    /// Represents invalid
     Invalid,
 }
 
 impl PluginReadiness {
+    /// Constant fn
     #[must_use]
     pub const fn label(self) -> &'static str {
         match self {
@@ -73,35 +88,51 @@ impl PluginReadiness {
         }
     }
 }
-
+/// Represents plugin discovery root
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PluginDiscoveryRoot {
+    /// Stores the source
     pub source: PluginSource,
+    /// Stores the path
     pub path: PathBuf,
 }
-
+/// Represents plugin catalog entry
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PluginCatalogEntry {
+    /// Stores the id
     pub id: String,
+    /// Stores the source
     pub source: PluginSource,
+    /// Stores the root directory
     pub root_dir: PathBuf,
+    /// Stores the manifest path
     pub manifest_path: PathBuf,
+    /// Stores the trust
     pub trust: PluginTrustLevel,
+    /// Stores the readiness
     pub readiness: PluginReadiness,
+    /// Stores the manifest
     pub manifest: Option<PluginManifest>,
+    /// Stores the command registrations
     pub command_registrations: Vec<PluginCommandRegistration>,
+    /// Stores the skill sources
     pub skill_sources: Vec<PluginSkillSource>,
+    /// Stores the notes
     pub notes: Vec<String>,
 }
-
+/// Describes plugin catalog error
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PluginCatalogError {
+    /// Stores the source
     pub source: PluginSource,
+    /// Stores the path
     pub path: PathBuf,
+    /// Stores the plugin identifier
     pub plugin_id: Option<String>,
+    /// Stores the message
     pub message: String,
 }
-
+/// Stores plugin catalog
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct PluginCatalog {
     roots: Vec<PluginDiscoveryRoot>,
@@ -110,6 +141,7 @@ pub struct PluginCatalog {
 }
 
 impl PluginCatalog {
+    /// Handles load
     #[must_use]
     pub fn load(cwd: &Path, storage_dir: Option<&Path>, config: &PluginConfig) -> Self {
         let roots = discovery_roots(cwd, storage_dir, config);
@@ -169,33 +201,34 @@ impl PluginCatalog {
             errors,
         }
     }
-
+    /// Handles roots
     #[must_use]
     pub fn roots(&self) -> &[PluginDiscoveryRoot] {
         &self.roots
     }
-
+    /// Handles entries
     #[must_use]
     pub fn entries(&self) -> &[PluginCatalogEntry] {
         &self.entries
     }
-
+    /// Handles errors
     #[must_use]
     pub fn errors(&self) -> &[PluginCatalogError] {
         &self.errors
     }
 
+    /// Handles ready entries
     pub fn ready_entries(&self) -> impl Iterator<Item = &PluginCatalogEntry> {
         self.entries
             .iter()
             .filter(|entry| entry.readiness == PluginReadiness::Ready)
     }
-
+    /// Handles ready count
     #[must_use]
     pub fn ready_count(&self) -> usize {
         self.ready_entries().count()
     }
-
+    /// Handles needs trust count
     #[must_use]
     pub fn needs_trust_count(&self) -> usize {
         self.entries
@@ -203,7 +236,7 @@ impl PluginCatalog {
             .filter(|entry| entry.readiness == PluginReadiness::NeedsTrust)
             .count()
     }
-
+    /// Handles invalid count
     #[must_use]
     pub fn invalid_count(&self) -> usize {
         self.entries
@@ -211,7 +244,7 @@ impl PluginCatalog {
             .filter(|entry| entry.readiness == PluginReadiness::Invalid)
             .count()
     }
-
+    /// Handles blocked count
     #[must_use]
     pub fn blocked_count(&self) -> usize {
         self.entries
@@ -219,7 +252,7 @@ impl PluginCatalog {
             .filter(|entry| entry.readiness == PluginReadiness::Blocked)
             .count()
     }
-
+    /// Handles find
     #[must_use]
     pub fn find(&self, plugin_id: &str) -> Option<&PluginCatalogEntry> {
         let normalized = normalize_plugin_id(plugin_id).ok()?;

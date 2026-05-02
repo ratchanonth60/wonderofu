@@ -20,14 +20,18 @@ use crate::{app_root, base_spec, parse_input, require_non_empty_text};
 const DEFAULT_TASK_OUTPUT_LINES: u32 = 50;
 const SOURCE_TASK_RUNTIME_UNAVAILABLE: &str =
     "the Rust port does not implement the source task-list runtime in wonder-of-u-tools yet";
-
+/// Represents task create input
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TaskCreateInput {
+    /// Stores the subject
     pub subject: String,
+    /// Stores the description
     pub description: String,
+    /// Stores the active form
     #[serde(default, rename = "activeForm", alias = "active_form")]
     pub active_form: Option<String>,
+    /// Stores the metadata
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub metadata: Option<Map<String, Value>>,
 }
@@ -42,10 +46,11 @@ impl TaskCreateInput {
         Ok(())
     }
 }
-
+/// Represents task get input
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TaskGetInput {
+    /// Stores the task identifier
     #[serde(rename = "taskId", alias = "task_id")]
     pub task_id: String,
 }
@@ -55,39 +60,52 @@ impl TaskGetInput {
         require_non_empty_text("task_get", "taskId", &self.task_id)
     }
 }
-
+/// Represents task list input
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TaskListInput {}
-
+/// Enumerates task update status
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TaskUpdateStatus {
+    /// Represents pending
     Pending,
+    /// Represents in progress
     InProgress,
+    /// Represents completed
     Completed,
+    /// Represents deleted
     Deleted,
 }
-
+/// Represents task update input
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TaskUpdateInput {
+    /// Stores the task identifier
     #[serde(rename = "taskId", alias = "task_id")]
     pub task_id: String,
+    /// Stores the subject
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub subject: Option<String>,
+    /// Stores the description
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
+    /// Stores the active form
     #[serde(default, rename = "activeForm", alias = "active_form")]
     pub active_form: Option<String>,
+    /// Stores the status
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub status: Option<TaskUpdateStatus>,
+    /// Stores the add blocks
     #[serde(default, rename = "addBlocks", alias = "add_blocks")]
     pub add_blocks: Option<Vec<String>>,
+    /// Stores the add blocked by
     #[serde(default, rename = "addBlockedBy", alias = "add_blocked_by")]
     pub add_blocked_by: Option<Vec<String>>,
+    /// Stores the owner
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub owner: Option<String>,
+    /// Stores the metadata
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub metadata: Option<Map<String, Value>>,
 }
@@ -137,15 +155,19 @@ impl TaskUpdateInput {
         Ok(())
     }
 }
-
+/// Represents task output input
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TaskOutputInput {
+    /// Stores the task identifier
     pub task_id: String,
+    /// Stores the lines
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lines: Option<u32>,
+    /// Stores the block
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub block: Option<bool>,
+    /// Stores the timeout
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub timeout: Option<u64>,
 }
@@ -170,10 +192,11 @@ impl TaskOutputInput {
         self.lines.unwrap_or(DEFAULT_TASK_OUTPUT_LINES) as usize
     }
 }
-
+/// Represents task stop input
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TaskStopInput {
+    /// Stores the task identifier
     #[serde(alias = "shell_id")]
     pub task_id: String,
 }
@@ -183,22 +206,22 @@ impl TaskStopInput {
         require_non_empty_text("task_stop", "task_id", &self.task_id)
     }
 }
-
+/// Represents task create tool
 #[derive(Debug, Default)]
 pub struct TaskCreateTool;
-
+/// Represents task get tool
 #[derive(Debug, Default)]
 pub struct TaskGetTool;
-
+/// Represents task list tool
 #[derive(Debug, Default)]
 pub struct TaskListTool;
-
+/// Represents task update tool
 #[derive(Debug, Default)]
 pub struct TaskUpdateTool;
-
+/// Represents task output tool
 #[derive(Debug, Default)]
 pub struct TaskOutputTool;
-
+/// Represents task stop tool
 #[derive(Debug, Default)]
 pub struct TaskStopTool;
 

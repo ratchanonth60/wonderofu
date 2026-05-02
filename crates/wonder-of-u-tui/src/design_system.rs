@@ -5,15 +5,22 @@ use crate::components::TextWrap;
 /// Shared themed text fragment metadata.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ThemedTextView {
+    /// Stores the content
     pub content: String,
+    /// Stores the color key
     pub color_key: Option<String>,
+    /// Stores the background color key
     pub background_color_key: Option<String>,
+    /// Stores the dim
     pub dim: bool,
+    /// Stores the bold
     pub bold: bool,
+    /// Stores the wrap
     pub wrap: TextWrap,
 }
 
 impl ThemedTextView {
+    /// Creates a new value
     #[must_use]
     pub fn new(content: impl Into<String>) -> Self {
         Self {
@@ -25,37 +32,37 @@ impl ThemedTextView {
             wrap: TextWrap::Wrap,
         }
     }
-
+    /// Handles color key
     #[must_use]
     pub fn color_key(mut self, color_key: impl Into<String>) -> Self {
         self.color_key = Some(color_key.into());
         self
     }
-
+    /// Handles background color key
     #[must_use]
     pub fn background_color_key(mut self, background_color_key: impl Into<String>) -> Self {
         self.background_color_key = Some(background_color_key.into());
         self
     }
-
+    /// Constant fn
     #[must_use]
     pub const fn dim(mut self, dim: bool) -> Self {
         self.dim = dim;
         self
     }
-
+    /// Constant fn
     #[must_use]
     pub const fn bold(mut self, bold: bool) -> Self {
         self.bold = bold;
         self
     }
-
+    /// Constant fn
     #[must_use]
     pub const fn wrap(mut self, wrap: TextWrap) -> Self {
         self.wrap = wrap;
         self
     }
-
+    /// Handles resolved color key
     #[must_use]
     pub fn resolved_color_key<'a>(&'a self, hover_color_key: Option<&'a str>) -> Option<&'a str> {
         self.color_key
@@ -68,17 +75,19 @@ impl ThemedTextView {
 /// Inline metadata joined with a middot separator.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct BylineView {
+    /// Stores the items
     pub items: Vec<String>,
 }
 
 impl BylineView {
+    /// Handles from items
     #[must_use]
     pub fn from_items(items: impl IntoIterator<Item = impl Into<String>>) -> Self {
         Self {
             items: items.into_iter().map(Into::into).collect(),
         }
     }
-
+    /// Renders line
     #[must_use]
     pub fn render_line(&self) -> Option<String> {
         (!self.items.is_empty()).then(|| self.items.join(" · "))
@@ -88,17 +97,26 @@ impl BylineView {
 /// Row metadata for selection lists.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ListItemView {
+    /// Stores the label
     pub label: String,
+    /// Stores the description
     pub description: Option<String>,
+    /// Stores whether focused
     pub is_focused: bool,
+    /// Stores whether selected
     pub is_selected: bool,
+    /// Stores the show scroll down
     pub show_scroll_down: bool,
+    /// Stores the show scroll up
     pub show_scroll_up: bool,
+    /// Stores the styled
     pub styled: bool,
+    /// Stores the disabled
     pub disabled: bool,
 }
 
 impl ListItemView {
+    /// Creates a new value
     #[must_use]
     pub fn new(label: impl Into<String>) -> Self {
         Self {
@@ -112,49 +130,49 @@ impl ListItemView {
             disabled: false,
         }
     }
-
+    /// Handles description
     #[must_use]
     pub fn description(mut self, description: impl Into<String>) -> Self {
         self.description = Some(description.into());
         self
     }
-
+    /// Constant fn
     #[must_use]
     pub const fn focused(mut self, is_focused: bool) -> Self {
         self.is_focused = is_focused;
         self
     }
-
+    /// Constant fn
     #[must_use]
     pub const fn selected(mut self, is_selected: bool) -> Self {
         self.is_selected = is_selected;
         self
     }
-
+    /// Constant fn
     #[must_use]
     pub const fn disabled(mut self, disabled: bool) -> Self {
         self.disabled = disabled;
         self
     }
-
+    /// Constant fn
     #[must_use]
     pub const fn styled(mut self, styled: bool) -> Self {
         self.styled = styled;
         self
     }
-
+    /// Constant fn
     #[must_use]
     pub const fn show_scroll_down(mut self, show_scroll_down: bool) -> Self {
         self.show_scroll_down = show_scroll_down;
         self
     }
-
+    /// Constant fn
     #[must_use]
     pub const fn show_scroll_up(mut self, show_scroll_up: bool) -> Self {
         self.show_scroll_up = show_scroll_up;
         self
     }
-
+    /// Constant fn
     #[must_use]
     pub const fn indicator(&self) -> char {
         if self.disabled {
@@ -169,7 +187,7 @@ impl ListItemView {
             ' '
         }
     }
-
+    /// Handles color key
     #[must_use]
     pub fn color_key(&self) -> Option<&'static str> {
         if self.disabled {
@@ -184,7 +202,7 @@ impl ListItemView {
             None
         }
     }
-
+    /// Renders lines
     #[must_use]
     pub fn render_lines(&self) -> Vec<String> {
         let mut lines = vec![format!(
@@ -207,13 +225,18 @@ impl ListItemView {
 /// Minimal bordered pane summary.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PaneView {
+    /// Stores the title
     pub title: Option<String>,
+    /// Stores the color key
     pub color_key: Option<String>,
+    /// Stores the body
     pub body: Vec<String>,
+    /// Stores the padding x
     pub padding_x: usize,
 }
 
 impl PaneView {
+    /// Creates a new value
     #[must_use]
     pub fn new(body: impl IntoIterator<Item = impl Into<String>>) -> Self {
         Self {
@@ -223,25 +246,25 @@ impl PaneView {
             padding_x: 2,
         }
     }
-
+    /// Handles title
     #[must_use]
     pub fn title(mut self, title: impl Into<String>) -> Self {
         self.title = Some(title.into());
         self
     }
-
+    /// Handles color key
     #[must_use]
     pub fn color_key(mut self, color_key: impl Into<String>) -> Self {
         self.color_key = Some(color_key.into());
         self
     }
-
+    /// Constant fn
     #[must_use]
     pub const fn padding_x(mut self, padding_x: usize) -> Self {
         self.padding_x = padding_x;
         self
     }
-
+    /// Renders lines
     #[must_use]
     pub fn render_lines(&self, width: usize) -> Vec<String> {
         let border = if let Some(title) = &self.title {
@@ -265,17 +288,21 @@ impl PaneView {
 /// Ratchet lock behavior for growing content.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum RatchetLock {
+    /// Represents always
     Always,
+    /// Represents offscreen
     Offscreen,
 }
 
 /// Tracks the tallest observed height for stable off-screen rendering.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct RatchetView {
+    /// Stores the max height
     pub max_height: usize,
 }
 
 impl RatchetView {
+    /// Handles observe height
     #[must_use]
     pub fn observe_height(
         &mut self,
@@ -299,13 +326,18 @@ impl RatchetView {
 /// Theme-aware bordered box summary.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct ThemedBoxView {
+    /// Stores the title
     pub title: Option<String>,
+    /// Stores the border color key
     pub border_color_key: Option<String>,
+    /// Stores the background color key
     pub background_color_key: Option<String>,
+    /// Stores the body
     pub body: Vec<ThemedTextView>,
 }
 
 impl ThemedBoxView {
+    /// Creates a new value
     #[must_use]
     pub fn new(body: impl IntoIterator<Item = ThemedTextView>) -> Self {
         Self {
@@ -315,25 +347,25 @@ impl ThemedBoxView {
             body: body.into_iter().collect(),
         }
     }
-
+    /// Handles title
     #[must_use]
     pub fn title(mut self, title: impl Into<String>) -> Self {
         self.title = Some(title.into());
         self
     }
-
+    /// Handles border color key
     #[must_use]
     pub fn border_color_key(mut self, border_color_key: impl Into<String>) -> Self {
         self.border_color_key = Some(border_color_key.into());
         self
     }
-
+    /// Handles background color key
     #[must_use]
     pub fn background_color_key(mut self, background_color_key: impl Into<String>) -> Self {
         self.background_color_key = Some(background_color_key.into());
         self
     }
-
+    /// Renders lines
     #[must_use]
     pub fn render_lines(&self, width: usize) -> Vec<String> {
         let mut lines = Vec::with_capacity(self.body.len() + 2);

@@ -23,10 +23,15 @@ const MAX_ACTIVITY_PREVIEW_LINES: usize = 3;
 /// Counts grouped tool-call outcomes by terminal transcript status.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct ToolResultCounts {
+    /// Stores the pending
     pub pending: usize,
+    /// Stores the success
     pub success: usize,
+    /// Stores the error
     pub error: usize,
+    /// Stores the rejected
     pub rejected: usize,
+    /// Stores the cancelled
     pub cancelled: usize,
 }
 
@@ -40,12 +45,12 @@ impl ToolResultCounts {
             ToolResultStatus::Cancelled => self.cancelled += 1,
         }
     }
-
+    /// Handles total
     #[must_use]
     pub fn total(self) -> usize {
         self.pending + self.success + self.error + self.rejected + self.cancelled
     }
-
+    /// Handles summary text
     #[must_use]
     pub fn summary_text(self) -> String {
         let mut parts = vec![format!(
@@ -73,6 +78,7 @@ impl ToolResultCounts {
 }
 
 impl GroupedToolCallView {
+    /// Handles result counts
     #[must_use]
     pub fn result_counts(&self) -> ToolResultCounts {
         let mut counts = ToolResultCounts::default();
@@ -85,7 +91,7 @@ impl GroupedToolCallView {
         }
         counts
     }
-
+    /// Handles summary text
     #[must_use]
     pub fn summary_text(&self) -> String {
         self.result_counts().summary_text()
@@ -114,8 +120,11 @@ impl FileEditReferenceView {
 /// Describes how a notebook cell edit was rejected.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum NotebookEditMode {
+    /// Represents replace
     Replace,
+    /// Represents insert
     Insert,
+    /// Represents delete
     Delete,
 }
 
@@ -132,14 +141,20 @@ impl NotebookEditMode {
 /// Summarizes a rejected notebook edit without tying the model to a renderer.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct NotebookRejectionSummaryView {
+    /// Stores the notebook
     pub notebook: PathLinkView,
+    /// Stores the cell identifier
     pub cell_id: Option<String>,
+    /// Stores the cell type
     pub cell_type: Option<String>,
+    /// Stores the edit mode
     pub edit_mode: NotebookEditMode,
+    /// Stores the preview
     pub preview: Option<HighlightedCodeView>,
 }
 
 impl NotebookRejectionSummaryView {
+    /// Creates a new value
     #[must_use]
     pub fn new(notebook: PathLinkView, edit_mode: NotebookEditMode) -> Self {
         Self {
@@ -150,19 +165,19 @@ impl NotebookRejectionSummaryView {
             preview: None,
         }
     }
-
+    /// Handles with cell id
     #[must_use]
     pub fn with_cell_id(mut self, cell_id: impl Into<String>) -> Self {
         self.cell_id = Some(cell_id.into());
         self
     }
-
+    /// Handles with cell type
     #[must_use]
     pub fn with_cell_type(mut self, cell_type: impl Into<String>) -> Self {
         self.cell_type = Some(cell_type.into());
         self
     }
-
+    /// Handles with preview
     #[must_use]
     pub fn with_preview(mut self, code: impl Into<String>) -> Self {
         let language = match self.cell_type.as_deref() {
@@ -185,7 +200,7 @@ impl NotebookRejectionSummaryView {
         });
         self
     }
-
+    /// Handles display lines
     #[must_use]
     pub fn display_lines(&self, max_width: usize) -> Vec<MessageLineView> {
         let mut header = format!(
@@ -234,7 +249,9 @@ impl NotebookRejectionSummaryView {
 /// The type of MCP list/detail surface represented by a catalog summary.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum McpCatalogKind {
+    /// Represents resources
     Resources,
+    /// Represents tools
     Tools,
 }
 
@@ -257,17 +274,26 @@ impl McpCatalogKind {
 /// A single MCP resource or tool entry summarized for list/detail rendering.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct McpCatalogItemView {
+    /// Stores the id
     pub id: String,
+    /// Stores the label
     pub label: String,
+    /// Stores the description
     pub description: Option<String>,
+    /// Stores the badges
     pub badges: Vec<StatusBadge>,
+    /// Stores the detail lines
     pub detail_lines: Vec<String>,
+    /// Stores the keywords
     pub keywords: Vec<String>,
+    /// Stores the disabled reason
     pub disabled_reason: Option<String>,
+    /// Stores the actions
     pub actions: Vec<CatalogAction>,
 }
 
 impl McpCatalogItemView {
+    /// Creates a new value
     #[must_use]
     pub fn new(id: impl Into<String>, label: impl Into<String>) -> Self {
         Self {
@@ -281,31 +307,31 @@ impl McpCatalogItemView {
             actions: Vec::new(),
         }
     }
-
+    /// Handles with description
     #[must_use]
     pub fn with_description(mut self, description: impl Into<String>) -> Self {
         self.description = Some(description.into());
         self
     }
-
+    /// Handles with badge
     #[must_use]
     pub fn with_badge(mut self, badge: StatusBadge) -> Self {
         self.badges.push(badge);
         self
     }
-
+    /// Handles with detail line
     #[must_use]
     pub fn with_detail_line(mut self, line: impl Into<String>) -> Self {
         self.detail_lines.push(line.into());
         self
     }
-
+    /// Handles with keyword
     #[must_use]
     pub fn with_keyword(mut self, keyword: impl Into<String>) -> Self {
         self.keywords.push(keyword.into());
         self
     }
-
+    /// Handles disabled
     #[must_use]
     pub fn disabled(mut self, reason: impl Into<String>) -> Self {
         self.disabled_reason = Some(reason.into());
@@ -344,17 +370,21 @@ impl McpCatalogItemView {
 /// A catalog-backed MCP list/detail summary.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct McpCatalogSummaryView {
+    /// Stores the server name
     pub server_name: String,
+    /// Stores the kind
     pub kind: McpCatalogKind,
+    /// Stores the catalog
     pub catalog: CatalogModel,
 }
 
 impl McpCatalogSummaryView {
+    /// Handles resources
     #[must_use]
     pub fn resources(server_name: impl Into<String>, entries: Vec<McpCatalogItemView>) -> Self {
         Self::new(server_name.into(), McpCatalogKind::Resources, entries)
     }
-
+    /// Handles tools
     #[must_use]
     pub fn tools(server_name: impl Into<String>, entries: Vec<McpCatalogItemView>) -> Self {
         Self::new(server_name.into(), McpCatalogKind::Tools, entries)
@@ -387,7 +417,7 @@ impl McpCatalogSummaryView {
             catalog,
         }
     }
-
+    /// Handles display lines
     #[must_use]
     pub fn display_lines(&self, max_width: usize) -> Vec<MessageLineView> {
         let count = self.catalog.visible_count();
@@ -438,8 +468,11 @@ impl McpCatalogSummaryView {
 /// The task action represented by a task activity summary.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum TaskActivityKind {
+    /// Represents create
     Create,
+    /// Represents output
     Output,
+    /// Represents stop
     Stop,
 }
 
@@ -456,14 +489,20 @@ impl TaskActivityKind {
 /// Summarizes task tool create/output/stop activity.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TaskActivitySummaryView {
+    /// Stores the kind
     pub kind: TaskActivityKind,
+    /// Stores the task identifier
     pub task_id: String,
+    /// Stores the status
     pub status: TaskStatus,
+    /// Stores the summary
     pub summary: String,
+    /// Stores the detail
     pub detail: Option<String>,
 }
 
 impl TaskActivitySummaryView {
+    /// Handles created
     #[must_use]
     pub fn created(task_id: impl Into<String>, summary: impl Into<String>) -> Self {
         Self {
@@ -474,7 +513,7 @@ impl TaskActivitySummaryView {
             detail: None,
         }
     }
-
+    /// Handles output
     #[must_use]
     pub fn output(
         task_id: impl Into<String>,
@@ -490,7 +529,7 @@ impl TaskActivitySummaryView {
             detail: Some(detail.into()),
         }
     }
-
+    /// Handles stopped
     #[must_use]
     pub fn stopped(
         task_id: impl Into<String>,
@@ -505,7 +544,7 @@ impl TaskActivitySummaryView {
             detail: None,
         }
     }
-
+    /// Handles display lines
     #[must_use]
     pub fn display_lines(&self, max_width: usize) -> Vec<MessageLineView> {
         let mut lines = push_line(
@@ -530,13 +569,18 @@ impl TaskActivitySummaryView {
 /// A fallback surface for unknown or unsupported tool output.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct UnknownToolOutputView {
+    /// Stores the tool
     pub tool: String,
+    /// Stores the status
     pub status: ToolResultStatus,
+    /// Stores the headline
     pub headline: String,
+    /// Stores the detail lines
     pub detail_lines: Vec<String>,
 }
 
 impl UnknownToolOutputView {
+    /// Handles from result
     #[must_use]
     pub fn from_result(tool: impl Into<String>, content: impl AsRef<str>, success: bool) -> Self {
         let tool = tool.into();
@@ -567,7 +611,7 @@ impl UnknownToolOutputView {
             detail_lines,
         }
     }
-
+    /// Handles display lines
     #[must_use]
     pub fn display_lines(&self, max_width: usize) -> Vec<MessageLineView> {
         let mut lines = push_line(
@@ -596,14 +640,20 @@ impl UnknownToolOutputView {
 /// Summarizes a permission request that was explicitly denied.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RejectedPermissionSummaryView {
+    /// Stores the tool
     pub tool: String,
+    /// Stores the title
     pub title: String,
+    /// Stores the access
     pub access: Option<PermissionAccessKind>,
+    /// Stores the details
     pub details: Vec<PermissionDetailView>,
+    /// Stores the reason
     pub reason: String,
 }
 
 impl RejectedPermissionSummaryView {
+    /// Handles from summary
     #[must_use]
     pub fn from_summary(
         tool: impl Into<String>,
@@ -618,7 +668,7 @@ impl RejectedPermissionSummaryView {
             reason: reason.into(),
         }
     }
-
+    /// Handles from decision
     #[must_use]
     pub fn from_decision(tool: impl Into<String>, reason: impl Into<String>) -> Self {
         let tool = tool.into();
@@ -630,7 +680,7 @@ impl RejectedPermissionSummaryView {
             reason: reason.into(),
         }
     }
-
+    /// Handles display lines
     #[must_use]
     pub fn display_lines(&self, max_width: usize) -> Vec<MessageLineView> {
         let mut header = format!("permission[{}]> denied", self.tool);

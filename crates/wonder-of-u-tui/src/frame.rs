@@ -1,14 +1,19 @@
 use crate::style::TextStyle;
-
+/// Represents rect
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct Rect {
+    /// Stores the x
     pub x: u16,
+    /// Stores the y
     pub y: u16,
+    /// Stores the width
     pub width: u16,
+    /// Stores the height
     pub height: u16,
 }
 
 impl Rect {
+    /// Constant fn
     #[must_use]
     pub const fn new(x: u16, y: u16, width: u16, height: u16) -> Self {
         Self {
@@ -18,22 +23,22 @@ impl Rect {
             height,
         }
     }
-
+    /// Constant fn
     #[must_use]
     pub const fn right(self) -> u16 {
         self.x.saturating_add(self.width)
     }
-
+    /// Constant fn
     #[must_use]
     pub const fn bottom(self) -> u16 {
         self.y.saturating_add(self.height)
     }
-
+    /// Constant fn
     #[must_use]
     pub const fn is_empty(self) -> bool {
         self.width == 0 || self.height == 0
     }
-
+    /// Constant fn
     #[must_use]
     pub const fn inset(self, margin: u16) -> Self {
         let offset = margin.saturating_mul(2);
@@ -45,10 +50,12 @@ impl Rect {
         }
     }
 }
-
+/// Represents cell
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Cell {
+    /// Stores the symbol
     pub symbol: char,
+    /// Stores the style
     pub style: TextStyle,
 }
 
@@ -60,7 +67,7 @@ impl Default for Cell {
         }
     }
 }
-
+/// Represents frame buffer
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct FrameBuffer {
     width: u16,
@@ -69,6 +76,7 @@ pub struct FrameBuffer {
 }
 
 impl FrameBuffer {
+    /// Creates a new value
     #[must_use]
     pub fn new(width: u16, height: u16) -> Self {
         let size = usize::from(width) * usize::from(height);
@@ -78,33 +86,35 @@ impl FrameBuffer {
             cells: vec![Cell::default(); size],
         }
     }
-
+    /// Constant fn
     #[must_use]
     pub const fn width(&self) -> u16 {
         self.width
     }
-
+    /// Constant fn
     #[must_use]
     pub const fn height(&self) -> u16 {
         self.height
     }
-
+    /// Constant fn
     #[must_use]
     pub const fn area(&self) -> Rect {
         Rect::new(0, 0, self.width, self.height)
     }
-
+    /// Handles cell
     #[must_use]
     pub fn cell(&self, x: u16, y: u16) -> Option<&Cell> {
         self.index(x, y).map(|index| &self.cells[index])
     }
 
+    /// Handles put
     pub fn put(&mut self, x: u16, y: u16, symbol: char, style: TextStyle) {
         if let Some(index) = self.index(x, y) {
             self.cells[index] = Cell { symbol, style };
         }
     }
 
+    /// Handles fill rect
     pub fn fill_rect(&mut self, area: Rect, symbol: char, style: TextStyle) {
         for y in area.y..area.bottom() {
             for x in area.x..area.right() {
@@ -113,6 +123,7 @@ impl FrameBuffer {
         }
     }
 
+    /// Writes str
     pub fn write_str(&mut self, x: u16, y: u16, text: &str, style: TextStyle, max_width: u16) {
         if y >= self.height || x >= self.width || max_width == 0 {
             return;
@@ -128,6 +139,7 @@ impl FrameBuffer {
         }
     }
 
+    /// Handles draw border
     pub fn draw_border(&mut self, area: Rect, style: TextStyle) {
         if area.is_empty() {
             return;
@@ -170,7 +182,7 @@ impl FrameBuffer {
             self.put(right, y, '|', style);
         }
     }
-
+    /// Handles lines
     #[must_use]
     pub fn lines(&self) -> Vec<String> {
         let mut lines = Vec::with_capacity(usize::from(self.height));
@@ -185,7 +197,7 @@ impl FrameBuffer {
         }
         lines
     }
-
+    /// Handles to plain text
     #[must_use]
     pub fn to_plain_text(&self) -> String {
         self.lines().join("\n")

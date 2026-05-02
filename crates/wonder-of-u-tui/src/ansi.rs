@@ -36,39 +36,63 @@ pub enum RawAnsiPolicy {
 /// Named ANSI colors from the 16-color palette.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum AnsiNamedColor {
+    /// Represents black
     Black,
+    /// Represents red
     Red,
+    /// Represents green
     Green,
+    /// Represents yellow
     Yellow,
+    /// Represents blue
     Blue,
+    /// Represents magenta
     Magenta,
+    /// Represents cyan
     Cyan,
+    /// Represents white
     White,
+    /// Represents bright black
     BrightBlack,
+    /// Represents bright red
     BrightRed,
+    /// Represents bright green
     BrightGreen,
+    /// Represents bright yellow
     BrightYellow,
+    /// Represents bright blue
     BrightBlue,
+    /// Represents bright magenta
     BrightMagenta,
+    /// Represents bright cyan
     BrightCyan,
+    /// Represents bright white
     BrightWhite,
 }
 
 /// A semantic ANSI color value.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum AnsiColor {
+    /// Represents named
     Named(AnsiNamedColor),
+    /// Represents indexed
     Indexed(u8),
+    /// Represents rgb
     Rgb {
+        /// Stores the r
         r: u8,
+        /// Stores the g
         g: u8,
+        /// Stores the b
         b: u8,
     },
+    /// Represents default
     #[default]
     Default,
 }
 
 impl AnsiColor {
+    /// Handles to text color
     #[must_use]
     pub fn to_text_color(self) -> Option<Color> {
         match self {
@@ -124,29 +148,47 @@ impl From<Color> for AnsiColor {
 /// ANSI underline variants carried by SGR state.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum UnderlineStyle {
+    /// Represents none
     #[default]
     None,
+    /// Represents single
     Single,
+    /// Represents double
     Double,
+    /// Represents curly
     Curly,
+    /// Represents dotted
     Dotted,
+    /// Represents dashed
     Dashed,
 }
 
 /// Structured ANSI style state.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct AnsiStyle {
+    /// Stores the bold
     pub bold: bool,
+    /// Stores the dim
     pub dim: bool,
+    /// Stores the italic
     pub italic: bool,
+    /// Stores the underline
     pub underline: UnderlineStyle,
+    /// Stores the blink
     pub blink: bool,
+    /// Stores the inverse
     pub inverse: bool,
+    /// Stores the hidden
     pub hidden: bool,
+    /// Stores the strikethrough
     pub strikethrough: bool,
+    /// Stores the overline
     pub overline: bool,
+    /// Stores the fg
     pub fg: AnsiColor,
+    /// Stores the bg
     pub bg: AnsiColor,
+    /// Stores the underline color
     pub underline_color: AnsiColor,
 }
 
@@ -228,7 +270,7 @@ impl AnsiStyle {
 
         self
     }
-
+    /// Handles to text style
     #[must_use]
     pub fn to_text_style(self) -> TextStyle {
         let mut style = TextStyle::default();

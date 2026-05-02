@@ -1,17 +1,24 @@
+/// Enumerates dialog kind
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum DialogKind {
+    /// Represents confirm
     Confirm,
+    /// Represents permission
     Permission,
+    /// Represents notice
     Notice,
 }
-
+/// Represents dialog action view
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DialogActionView {
+    /// Stores the label
     pub label: String,
+    /// Stores the primary
     pub primary: bool,
 }
 
 impl DialogActionView {
+    /// Creates a new value
     #[must_use]
     pub fn new(label: impl Into<String>, primary: bool) -> Self {
         Self {
@@ -20,15 +27,19 @@ impl DialogActionView {
         }
     }
 }
-
+/// Represents dialog view
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct DialogView {
+    /// Stores the title
     pub title: String,
+    /// Stores the body
     pub body: Vec<String>,
+    /// Stores the actions
     pub actions: Vec<DialogActionView>,
 }
 
 impl DialogView {
+    /// Handles confirm
     #[must_use]
     pub fn confirm(
         title: impl Into<String>,
@@ -43,7 +54,7 @@ impl DialogView {
             ],
         }
     }
-
+    /// Handles permission
     #[must_use]
     pub fn permission(tool: impl Into<String>, reason: impl Into<String>) -> Self {
         let tool = tool.into();
@@ -61,7 +72,7 @@ impl DialogView {
             ],
         }
     }
-
+    /// Handles notice
     #[must_use]
     pub fn notice(
         title: impl Into<String>,
@@ -73,7 +84,7 @@ impl DialogView {
             actions: vec![DialogActionView::new("Close", true)],
         }
     }
-
+    /// Handles kind
     #[must_use]
     pub fn kind(&self) -> DialogKind {
         if self.actions.len() == 1 && self.actions[0].label == "Close" {
@@ -84,7 +95,7 @@ impl DialogView {
             DialogKind::Confirm
         }
     }
-
+    /// Handles action hint
     #[must_use]
     pub fn action_hint(&self) -> String {
         self.actions

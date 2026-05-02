@@ -10,23 +10,31 @@ use wonder_of_u_core::{
 };
 
 use crate::{base_spec, parse_input, require_non_empty_text};
-
+/// Enumerates todo action
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TodoAction {
+    /// Represents add
     Add,
+    /// Represents remove
     Remove,
+    /// Represents list
     List,
+    /// Represents check
     Check,
+    /// Represents uncheck
     Uncheck,
 }
-
+/// Represents todo input
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TodoInput {
+    /// Stores the action
     pub action: TodoAction,
+    /// Stores the text
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub text: Option<String>,
+    /// Stores the index
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub index: Option<u32>,
 }
@@ -113,7 +121,7 @@ struct TodoItem {
     checked: bool,
     text: String,
 }
-
+/// Represents todo tool
 #[derive(Debug, Default)]
 pub struct TodoTool;
 

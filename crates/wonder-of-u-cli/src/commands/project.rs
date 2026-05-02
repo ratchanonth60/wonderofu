@@ -20,13 +20,16 @@ use wonder_of_u_storage::TranscriptStore;
 
 use super::{detect_git_branch, git_command_output, is_hidden_path, parse_command_args};
 
+/// Represents add dir command
 pub struct AddDirCommand;
 
 impl AddDirCommand {
+    /// Constant fn
     pub const fn new() -> Self {
         Self
     }
 
+    /// Handles command spec
     pub fn command_spec() -> CommandSpec {
         let mut spec = CommandSpec::new(
             "add-dir",
@@ -38,13 +41,16 @@ impl AddDirCommand {
     }
 }
 
+/// Represents init command
 pub struct InitCommand;
 
 impl InitCommand {
+    /// Constant fn
     pub const fn new() -> Self {
         Self
     }
 
+    /// Handles command spec
     pub fn command_spec() -> CommandSpec {
         CommandSpec::new(
             "init",
@@ -54,15 +60,18 @@ impl InitCommand {
     }
 }
 
+/// Represents context command
 pub struct ContextCommand {
     storage_dir: Option<PathBuf>,
 }
 
 impl ContextCommand {
+    /// Creates a new value
     pub fn new(storage_dir: Option<PathBuf>) -> Self {
         Self { storage_dir }
     }
 
+    /// Handles command spec
     pub fn command_spec() -> CommandSpec {
         let mut spec = CommandSpec::new(
             "context",
@@ -91,15 +100,18 @@ impl Command for ContextCommand {
     }
 }
 
+/// Represents memory command
 pub struct MemoryCommand {
     storage_dir: Option<PathBuf>,
 }
 
 impl MemoryCommand {
+    /// Creates a new value
     pub fn new(storage_dir: Option<PathBuf>) -> Self {
         Self { storage_dir }
     }
 
+    /// Handles command spec
     pub fn command_spec() -> CommandSpec {
         let mut spec = CommandSpec::new(
             "memory",
@@ -111,15 +123,18 @@ impl MemoryCommand {
     }
 }
 
+/// Represents copy command
 pub struct CopyCommand {
     storage_dir: Option<PathBuf>,
 }
 
 impl CopyCommand {
+    /// Creates a new value
     pub fn new(storage_dir: Option<PathBuf>) -> Self {
         Self { storage_dir }
     }
 
+    /// Handles command spec
     pub fn command_spec() -> CommandSpec {
         let mut spec = CommandSpec::new(
             "copy",
@@ -345,13 +360,16 @@ impl Command for AddDirCommand {
     }
 }
 
+/// Represents files command
 pub struct FilesCommand;
 
 impl FilesCommand {
+    /// Constant fn
     pub const fn new() -> Self {
         Self
     }
 
+    /// Handles command spec
     pub fn command_spec() -> CommandSpec {
         let mut spec = CommandSpec::new(
             "files",
@@ -923,13 +941,16 @@ fn sanitize_single_line(value: &str) -> String {
     value.lines().collect::<Vec<_>>().join("\\n")
 }
 
+/// Represents branch command
 pub struct BranchCommand;
 
 impl BranchCommand {
+    /// Constant fn
     pub const fn new() -> Self {
         Self
     }
 
+    /// Handles command spec
     pub fn command_spec() -> CommandSpec {
         let mut spec = CommandSpec::new(
             "branch",
@@ -963,13 +984,16 @@ impl Command for BranchCommand {
     }
 }
 
+/// Represents diff command
 pub struct DiffCommand;
 
 impl DiffCommand {
+    /// Constant fn
     pub const fn new() -> Self {
         Self
     }
 
+    /// Handles command spec
     pub fn command_spec() -> CommandSpec {
         let mut spec = CommandSpec::new(
             "diff",

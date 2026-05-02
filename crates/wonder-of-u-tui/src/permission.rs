@@ -19,12 +19,16 @@ const MAX_TEXT_CHARS: usize = 72;
 /// Describes the overall risk level of a permission request.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PermissionAccessKind {
+    /// Represents read only
     ReadOnly,
+    /// Represents standard
     Standard,
+    /// Represents destructive
     Destructive,
 }
 
 impl PermissionAccessKind {
+    /// Constant fn
     #[must_use]
     pub const fn label(self) -> &'static str {
         match self {
@@ -38,11 +42,14 @@ impl PermissionAccessKind {
 /// A single safe detail extracted from a permission request.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PermissionDetailView {
+    /// Stores the label
     pub label: String,
+    /// Stores the value
     pub value: String,
 }
 
 impl PermissionDetailView {
+    /// Creates a new value
     #[must_use]
     pub fn new(label: impl Into<String>, value: impl Into<String>) -> Self {
         Self {
@@ -55,10 +62,15 @@ impl PermissionDetailView {
 /// A structured, renderer-neutral permission request summary.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PermissionSummaryView {
+    /// Stores the title
     pub title: String,
+    /// Stores the prompt
     pub prompt: String,
+    /// Stores the access
     pub access: PermissionAccessKind,
+    /// Stores the details
     pub details: Vec<PermissionDetailView>,
+    /// Stores the actions
     pub actions: Vec<DialogActionView>,
 }
 
@@ -83,7 +95,7 @@ impl PermissionSummaryView {
             ],
         }
     }
-
+    /// Handles action hint
     #[must_use]
     pub fn action_hint(&self) -> String {
         self.actions
@@ -98,7 +110,7 @@ impl PermissionSummaryView {
             .collect::<Vec<_>>()
             .join("  ")
     }
-
+    /// Handles to dialog view
     #[must_use]
     pub fn to_dialog_view(&self) -> DialogView {
         let mut body = Vec::with_capacity(self.details.len() + 3);

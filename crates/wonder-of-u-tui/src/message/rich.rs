@@ -17,17 +17,26 @@ const MAX_DETAIL_LINES: usize = 3;
 /// Rich, renderer-agnostic message summaries for the TUI transcript.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum RichMessageView {
+    /// Represents markdown
     Markdown(MarkdownSummaryView),
+    /// Represents thinking
     Thinking(ThinkingBlockView),
+    /// Represents tool group
     ToolGroup(GroupedToolCallView),
+    /// Represents file edit reference
     FileEditReference(FileEditReferenceView),
+    /// Represents attachment
     Attachment(AttachmentSummaryView),
+    /// Represents system error
     SystemError(SystemErrorView),
+    /// Represents boundary
     Boundary(TranscriptBoundaryView),
+    /// Represents fallback
     Fallback(Vec<MessageLineView>),
 }
 
 impl RichMessageView {
+    /// Handles display lines
     #[must_use]
     pub fn display_lines(&self, max_width: usize) -> Vec<MessageLineView> {
         match self {
@@ -137,11 +146,14 @@ fn grouped_tool_call_view(messages: &[MessageEnvelope]) -> Option<(GroupedToolCa
 /// A markdown-like assistant or system message summarized for terminal rendering.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct MarkdownSummaryView {
+    /// Stores the role
     pub role: MessageRole,
+    /// Stores the blocks
     pub blocks: Vec<MarkdownBlockView>,
 }
 
 impl MarkdownSummaryView {
+    /// Creates a new value
     #[must_use]
     pub fn new(role: MessageRole, text: &str) -> Self {
         Self {
@@ -149,7 +161,7 @@ impl MarkdownSummaryView {
             blocks: parse_markdown_blocks(text),
         }
     }
-
+    /// Handles display lines
     #[must_use]
     pub fn display_lines(&self, max_width: usize) -> Vec<MessageLineView> {
         let prefix = role_prefix(self.role);
@@ -196,15 +208,20 @@ impl MarkdownSummaryView {
 /// A parsed markdown summary block.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum MarkdownBlockView {
+    /// Represents paragraph
     Paragraph(String),
+    /// Represents code
     Code(MarkdownCodeBlockView),
 }
 
 /// A summarized fenced code block.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct MarkdownCodeBlockView {
+    /// Stores the language
     pub language: Option<String>,
+    /// Stores the code
     pub code: String,
+    /// Stores the line count
     pub line_count: usize,
 }
 
@@ -228,11 +245,14 @@ impl MarkdownCodeBlockView {
 /// Summarizes assistant thinking blocks without rendering full markdown.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ThinkingBlockView {
+    /// Stores the content
     pub content: String,
+    /// Stores the collapsed
     pub collapsed: bool,
 }
 
 impl ThinkingBlockView {
+    /// Creates a new value
     #[must_use]
     pub fn new(content: impl Into<String>, collapsed: bool) -> Self {
         Self {
@@ -240,7 +260,7 @@ impl ThinkingBlockView {
             collapsed,
         }
     }
-
+    /// Handles display lines
     #[must_use]
     pub fn display_lines(&self, max_width: usize) -> Vec<MessageLineView> {
         let line_count = self.content.lines().count().max(1);
@@ -262,11 +282,14 @@ impl ThinkingBlockView {
 /// Groups contiguous tool calls and their results.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct GroupedToolCallView {
+    /// Stores the tool
     pub tool: String,
+    /// Stores the calls
     pub calls: Vec<ToolCallView>,
 }
 
 impl GroupedToolCallView {
+    /// Creates a new value
     #[must_use]
     pub fn new(tool: impl Into<String>) -> Self {
         Self {
@@ -300,7 +323,7 @@ impl GroupedToolCallView {
             result: Some(ToolCallView::result_for(success, content)),
         });
     }
-
+    /// Handles display lines
     #[must_use]
     pub fn display_lines(&self, max_width: usize) -> Vec<MessageLineView> {
         let count = self.calls.len();
@@ -320,8 +343,11 @@ impl GroupedToolCallView {
 /// A summarized tool invocation and optional result.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ToolCallView {
+    /// Stores the use identifier
     pub use_id: ToolUseId,
+    /// Stores the input
     pub input: Option<Value>,
+    /// Stores the result
     pub result: Option<RejectedToolMessageView>,
 }
 
@@ -363,12 +389,16 @@ impl ToolCallView {
 /// Summarizes a file edit reference using diff summaries.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct FileEditReferenceView {
+    /// Stores the path
     pub path: PathLinkView,
+    /// Stores the summary
     pub summary: FileEditHunkSummary,
+    /// Stores the note
     pub note: Option<String>,
 }
 
 impl FileEditReferenceView {
+    /// Creates a new value
     #[must_use]
     pub fn new(path: PathLinkView, summary: FileEditHunkSummary) -> Self {
         Self {
@@ -377,13 +407,13 @@ impl FileEditReferenceView {
             note: None,
         }
     }
-
+    /// Handles with note
     #[must_use]
     pub fn with_note(mut self, note: impl Into<String>) -> Self {
         self.note = Some(note.into());
         self
     }
-
+    /// Handles display lines
     #[must_use]
     pub fn display_lines(&self, max_width: usize) -> Vec<MessageLineView> {
         let path = self.path.display_text(max_width).text;
@@ -408,12 +438,16 @@ impl FileEditReferenceView {
 /// Summarizes a user attachment reference.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AttachmentSummaryView {
+    /// Stores the label
     pub label: String,
+    /// Stores the uri
     pub uri: String,
+    /// Stores the kind
     pub kind: AttachmentKind,
 }
 
 impl AttachmentSummaryView {
+    /// Creates a new value
     #[must_use]
     pub fn new(label: impl Into<String>, uri: impl Into<String>) -> Self {
         let label = label.into();
@@ -424,7 +458,7 @@ impl AttachmentSummaryView {
             uri,
         }
     }
-
+    /// Handles display lines
     #[must_use]
     pub fn display_lines(&self, max_width: usize) -> Vec<MessageLineView> {
         let mut lines = push_line(
@@ -448,11 +482,17 @@ impl AttachmentSummaryView {
 /// Categorizes attachment references for compact transcript summaries.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum AttachmentKind {
+    /// Represents file
     File,
+    /// Represents image
     Image,
+    /// Represents pdf
     Pdf,
+    /// Represents link
     Link,
+    /// Represents directory
     Directory,
+    /// Represents generic
     Generic,
 }
 
@@ -489,12 +529,16 @@ impl AttachmentKind {
 /// Summarizes system, API, and rate-limit failures.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SystemErrorView {
+    /// Stores the role
     pub role: MessageRole,
+    /// Stores the kind
     pub kind: SystemErrorKind,
+    /// Stores the detail
     pub detail: String,
 }
 
 impl SystemErrorView {
+    /// Handles detect
     #[must_use]
     pub fn detect(role: MessageRole, text: &str) -> Option<Self> {
         let kind = SystemErrorKind::detect(text)?;
@@ -504,7 +548,7 @@ impl SystemErrorView {
             detail: text.trim().to_string(),
         })
     }
-
+    /// Handles display lines
     #[must_use]
     pub fn display_lines(&self, max_width: usize) -> Vec<MessageLineView> {
         let summary = wrap_summary_lines(&self.detail, max_width, MAX_DETAIL_LINES, true);
@@ -527,10 +571,15 @@ impl SystemErrorView {
 /// Coarse system error categories that match the current transcript surfaces.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SystemErrorKind {
+    /// Represents rate limit
     RateLimit,
+    /// Represents timeout
     Timeout,
+    /// Represents authentication
     Authentication,
+    /// Represents api
     Api,
+    /// Represents system
     System,
 }
 
@@ -579,17 +628,19 @@ impl SystemErrorKind {
 /// Summarizes compact transcript boundaries.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TranscriptBoundaryView {
+    /// Stores the summary
     pub summary: String,
 }
 
 impl TranscriptBoundaryView {
+    /// Creates a new value
     #[must_use]
     pub fn new(summary: impl Into<String>) -> Self {
         Self {
             summary: summary.into(),
         }
     }
-
+    /// Handles display lines
     #[must_use]
     pub fn display_lines(&self, max_width: usize) -> Vec<MessageLineView> {
         let summary = self.summary.trim();
@@ -605,12 +656,16 @@ impl TranscriptBoundaryView {
 /// A summarized tool result or rejection state.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RejectedToolMessageView {
+    /// Stores the kind
     pub kind: RejectedToolMessageKind,
+    /// Stores the status
     pub status: ToolResultStatus,
+    /// Stores the detail
     pub detail: String,
 }
 
 impl RejectedToolMessageView {
+    /// Handles from result
     #[must_use]
     pub fn from_result(detail: impl Into<String>, success: bool) -> Self {
         let detail = detail.into();
@@ -658,10 +713,15 @@ impl RejectedToolMessageView {
 /// Tool result classification used by grouped tool summaries.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ToolResultStatus {
+    /// Represents pending
     Pending,
+    /// Represents success
     Success,
+    /// Represents error
     Error,
+    /// Represents rejected
     Rejected,
+    /// Represents cancelled
     Cancelled,
 }
 
@@ -680,10 +740,15 @@ impl ToolResultStatus {
 /// Tool-specific rejection states rendered as compact transcript summaries.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum RejectedToolMessageKind {
+    /// Represents success
     Success,
+    /// Represents rejected
     Rejected,
+    /// Represents plan rejected
     PlanRejected,
+    /// Represents cancelled
     Cancelled,
+    /// Represents error
     Error,
 }
 

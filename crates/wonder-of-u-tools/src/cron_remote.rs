@@ -14,14 +14,18 @@ const SOURCE_CRON_RUNTIME_UNAVAILABLE: &str =
     "the Rust port does not implement source-compatible cron scheduling yet";
 const REMOTE_TRIGGER_RUNTIME_UNAVAILABLE: &str =
     "the Rust port does not implement the claude.ai remote trigger service yet";
-
+/// Represents cron create input
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CronCreateInput {
+    /// Stores the cron
     pub cron: String,
+    /// Stores the prompt
     pub prompt: String,
+    /// Stores the recurring
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub recurring: Option<bool>,
+    /// Stores the durable
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub durable: Option<bool>,
 }
@@ -33,10 +37,11 @@ impl CronCreateInput {
         validate_cron_expression("cron_create", "cron", &self.cron)
     }
 }
-
+/// Represents cron delete input
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CronDeleteInput {
+    /// Stores the id
     pub id: String,
 }
 
@@ -45,14 +50,19 @@ impl CronDeleteInput {
         require_non_empty_text("cron_delete", "id", &self.id)
     }
 }
-
+/// Enumerates remote trigger action
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RemoteTriggerAction {
+    /// Represents list
     List,
+    /// Represents get
     Get,
+    /// Represents create
     Create,
+    /// Represents update
     Update,
+    /// Represents run
     Run,
 }
 
@@ -61,13 +71,16 @@ impl RemoteTriggerAction {
         matches!(self, Self::List | Self::Get)
     }
 }
-
+/// Represents remote trigger input
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RemoteTriggerInput {
+    /// Stores the action
     pub action: RemoteTriggerAction,
+    /// Stores the trigger identifier
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub trigger_id: Option<String>,
+    /// Stores the body
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub body: Option<Map<String, Value>>,
 }
@@ -96,13 +109,13 @@ impl RemoteTriggerInput {
         Ok(())
     }
 }
-
+/// Represents cron create tool
 #[derive(Debug, Default)]
 pub struct CronCreateTool;
-
+/// Represents cron delete tool
 #[derive(Debug, Default)]
 pub struct CronDeleteTool;
-
+/// Represents remote trigger tool
 #[derive(Debug, Default)]
 pub struct RemoteTriggerTool;
 

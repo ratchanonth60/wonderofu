@@ -3,6 +3,7 @@
 /// One or more line breaks emitted inside a text flow.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct NewlineView {
+    /// Stores the count
     pub count: u16,
 }
 
@@ -13,11 +14,12 @@ impl Default for NewlineView {
 }
 
 impl NewlineView {
+    /// Constant fn
     #[must_use]
     pub const fn new(count: u16) -> Self {
         Self { count }
     }
-
+    /// Handles as text
     #[must_use]
     pub fn as_text(self) -> String {
         "\n".repeat(usize::from(self.count))

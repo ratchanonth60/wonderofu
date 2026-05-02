@@ -12,17 +12,26 @@ use wonder_of_u_storage::StoragePaths;
 use crate::{BundledSkill, SkillManifest, bundled_skills};
 
 const SKILL_MANIFEST_FILE: &str = "skill.json";
-
+/// Enumerates skill source
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum SkillSource {
+    /// Represents bundled
     Bundled,
+    /// Represents project
     Project,
+    /// Represents user
     User,
+    /// Represents configured
     Configured,
-    Plugin { plugin_id: String },
+    /// Represents plugin
+    Plugin {
+        /// Stores the plugin id
+        plugin_id: String,
+    },
 }
 
 impl SkillSource {
+    /// Handles label
     #[must_use]
     pub fn label(&self) -> String {
         match self {
@@ -34,15 +43,19 @@ impl SkillSource {
         }
     }
 }
-
+/// Enumerates skill trust
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SkillTrust {
+    /// Represents bundled
     Bundled,
+    /// Represents local
     Local,
+    /// Represents plugin trusted
     PluginTrusted,
 }
 
 impl SkillTrust {
+    /// Constant fn
     #[must_use]
     pub const fn label(self) -> &'static str {
         match self {
@@ -52,27 +65,39 @@ impl SkillTrust {
         }
     }
 }
-
+/// Represents skill registration
 #[derive(Clone, Debug, PartialEq)]
 pub struct SkillRegistration {
+    /// Stores the source
     pub source: SkillSource,
+    /// Stores the trust
     pub trust: SkillTrust,
+    /// Stores the root directory
     pub root_dir: PathBuf,
+    /// Stores the manifest path
     pub manifest_path: Option<PathBuf>,
+    /// Stores the manifest
     pub manifest: SkillManifest,
+    /// Stores the prompt
     pub prompt: String,
+    /// Stores the tool spec
     pub tool_spec: ToolSpec,
+    /// Stores the command spec
     pub command_spec: Option<CommandSpec>,
 }
-
+/// Describes skill catalog error
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SkillCatalogError {
+    /// Stores the source
     pub source: SkillSource,
+    /// Stores the path
     pub path: PathBuf,
+    /// Stores the skill name
     pub skill_name: Option<String>,
+    /// Stores the message
     pub message: String,
 }
-
+/// Stores skill catalog
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct SkillCatalog {
     skills: Vec<SkillRegistration>,
@@ -80,6 +105,7 @@ pub struct SkillCatalog {
 }
 
 impl SkillCatalog {
+    /// Handles load
     #[must_use]
     pub fn load(
         cwd: &Path,
@@ -141,27 +167,27 @@ impl SkillCatalog {
 
         catalog
     }
-
+    /// Handles skills
     #[must_use]
     pub fn skills(&self) -> &[SkillRegistration] {
         &self.skills
     }
-
+    /// Handles errors
     #[must_use]
     pub fn errors(&self) -> &[SkillCatalogError] {
         &self.errors
     }
-
+    /// Handles len
     #[must_use]
     pub fn len(&self) -> usize {
         self.skills.len()
     }
-
+    /// Returns whether empty
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.skills.is_empty()
     }
-
+    /// Handles command count
     #[must_use]
     pub fn command_count(&self) -> usize {
         self.skills
@@ -169,7 +195,7 @@ impl SkillCatalog {
             .filter(|skill| skill.command_spec.is_some())
             .count()
     }
-
+    /// Handles bundled count
     #[must_use]
     pub fn bundled_count(&self) -> usize {
         self.skills
@@ -177,7 +203,7 @@ impl SkillCatalog {
             .filter(|skill| skill.source == SkillSource::Bundled)
             .count()
     }
-
+    /// Handles plugin count
     #[must_use]
     pub fn plugin_count(&self) -> usize {
         self.skills
@@ -185,7 +211,7 @@ impl SkillCatalog {
             .filter(|skill| matches!(skill.source, SkillSource::Plugin { .. }))
             .count()
     }
-
+    /// Handles find
     #[must_use]
     pub fn find(&self, name: &str) -> Option<&SkillRegistration> {
         let normalized = normalize_lookup(name)?;

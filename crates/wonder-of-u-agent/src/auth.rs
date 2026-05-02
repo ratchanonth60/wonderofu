@@ -4,57 +4,84 @@ use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
 use wonder_of_u_core::{Result, WonderError};
 
+/// Default copilot api base value
 pub const DEFAULT_COPILOT_API_BASE: &str = "https://api.githubcopilot.com";
+/// Default copilot device client id value
 pub const DEFAULT_COPILOT_DEVICE_CLIENT_ID: &str = "Iv1.b507a08c87ecfe98";
+/// Default copilot device scope value
 pub const DEFAULT_COPILOT_DEVICE_SCOPE: &str = "read:user";
+/// Default copilot token url value
 pub const DEFAULT_COPILOT_TOKEN_URL: &str = "https://api.github.com/copilot_internal/v2/token";
+/// Default github device access token url value
 pub const DEFAULT_GITHUB_DEVICE_ACCESS_TOKEN_URL: &str =
     "https://github.com/login/oauth/access_token";
+/// Default github device code url value
 pub const DEFAULT_GITHUB_DEVICE_CODE_URL: &str = "https://github.com/login/device/code";
+/// Version string for copilot editor plugin
 pub const COPILOT_EDITOR_PLUGIN_VERSION: &str = "copilot-chat/0.26.7";
+/// Version string for copilot editor
 pub const COPILOT_EDITOR_VERSION: &str = "vscode/1.99.3";
+/// Constant copilot integration id
 pub const COPILOT_INTEGRATION_ID: &str = "vscode-chat";
+/// Constant copilot user agent
 pub const COPILOT_USER_AGENT: &str = "GitHubCopilotChat/0.26.7";
-
+/// Enumerates auth material
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum AuthMaterial {
+    /// Represents none
     None,
+    /// Represents api key
     ApiKey {
+        /// Stores the key
         key: String,
     },
+    /// Represents o auth
     OAuth {
         #[serde(default, skip_serializing_if = "Option::is_none")]
+        /// Stores the access token
         access_token: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
+        /// Stores the refresh token
         refresh_token: Option<String>,
         #[serde(default, with = "time::serde::rfc3339::option")]
+        /// Stores the expires at
         expires_at: Option<OffsetDateTime>,
     },
 }
-
+/// Represents stored credentials
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct StoredCredentials {
+    /// Stores the providers
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub providers: BTreeMap<String, AuthMaterial>,
 }
-
+/// Represents copilot device code
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CopilotDeviceCode {
+    /// Stores the device code
     pub device_code: String,
+    /// Stores the user code
     pub user_code: String,
+    /// Stores the verification uri
     pub verification_uri: String,
+    /// Stores the expires in
     pub expires_in: u64,
+    /// Stores the interval
     pub interval: u64,
 }
-
+/// Represents copilot o auth token
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CopilotOAuthToken {
+    /// Stores the access token
     pub access_token: String,
+    /// Stores the refresh token
     pub refresh_token: Option<String>,
+    /// Stores the expires at
     pub expires_at: Option<OffsetDateTime>,
 }
 
+/// Handles copilot device flow client id
 pub fn copilot_device_flow_client_id() -> String {
     env::var("GITHUB_DEVICE_FLOW_CLIENT_ID")
         .ok()
@@ -62,6 +89,7 @@ pub fn copilot_device_flow_client_id() -> String {
         .unwrap_or_else(|| DEFAULT_COPILOT_DEVICE_CLIENT_ID.to_string())
 }
 
+/// Handles github device code url
 pub fn github_device_code_url() -> String {
     env::var("WONDER_OF_U_GITHUB_DEVICE_CODE_URL")
         .ok()
@@ -69,6 +97,7 @@ pub fn github_device_code_url() -> String {
         .unwrap_or_else(|| DEFAULT_GITHUB_DEVICE_CODE_URL.to_string())
 }
 
+/// Handles github device access token url
 pub fn github_device_access_token_url() -> String {
     env::var("WONDER_OF_U_GITHUB_DEVICE_ACCESS_TOKEN_URL")
         .ok()
@@ -76,6 +105,7 @@ pub fn github_device_access_token_url() -> String {
         .unwrap_or_else(|| DEFAULT_GITHUB_DEVICE_ACCESS_TOKEN_URL.to_string())
 }
 
+/// Handles copilot token url
 pub fn copilot_token_url() -> String {
     env::var("WONDER_OF_U_COPILOT_TOKEN_URL")
         .ok()
@@ -83,6 +113,7 @@ pub fn copilot_token_url() -> String {
         .unwrap_or_else(|| DEFAULT_COPILOT_TOKEN_URL.to_string())
 }
 
+/// Handles copilot standard headers
 pub fn copilot_standard_headers() -> BTreeMap<String, String> {
     BTreeMap::from([
         (
@@ -98,6 +129,7 @@ pub fn copilot_standard_headers() -> BTreeMap<String, String> {
     ])
 }
 
+/// Requests copilot device code
 pub fn request_copilot_device_code() -> Result<CopilotDeviceCode> {
     let client_id = copilot_device_flow_client_id();
     let response = match ureq::post(github_device_code_url().as_str())
@@ -142,6 +174,7 @@ pub fn request_copilot_device_code() -> Result<CopilotDeviceCode> {
     })
 }
 
+/// Polls copilot access token
 pub fn poll_copilot_access_token(
     device_code: &str,
     initial_interval: u64,
@@ -225,6 +258,7 @@ pub fn poll_copilot_access_token(
     ))
 }
 
+/// Refreshes copilot access token
 pub fn refresh_copilot_access_token(refresh_token: &str) -> Result<CopilotOAuthToken> {
     if refresh_token.trim().is_empty() {
         return Err(WonderError::validation(

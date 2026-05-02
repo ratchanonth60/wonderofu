@@ -5,14 +5,20 @@ use crate::{SpinnerMode, SpinnerView};
 /// High-level task state shown in task lists.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum TaskStatusView {
+    /// Represents pending
     Pending,
+    /// Represents running
     Running,
+    /// Represents completed
     Completed,
+    /// Represents blocked
     Blocked,
+    /// Represents failed
     Failed,
 }
 
 impl TaskStatusView {
+    /// Constant fn
     #[must_use]
     pub const fn icon(self) -> char {
         match self {
@@ -28,13 +34,18 @@ impl TaskStatusView {
 /// A single task row.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TaskEntryView {
+    /// Stores the title
     pub title: String,
+    /// Stores the detail
     pub detail: Option<String>,
+    /// Stores the status
     pub status: TaskStatusView,
+    /// Stores the active
     pub active: bool,
 }
 
 impl TaskEntryView {
+    /// Creates a new value
     #[must_use]
     pub fn new(title: impl Into<String>, status: TaskStatusView) -> Self {
         Self {
@@ -44,13 +55,13 @@ impl TaskEntryView {
             active: false,
         }
     }
-
+    /// Handles detail
     #[must_use]
     pub fn detail(mut self, detail: impl Into<String>) -> Self {
         self.detail = Some(detail.into());
         self
     }
-
+    /// Constant fn
     #[must_use]
     pub const fn active(mut self, active: bool) -> Self {
         self.active = active;
@@ -61,10 +72,12 @@ impl TaskEntryView {
 /// Task list summary.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct TaskListView {
+    /// Stores the tasks
     pub tasks: Vec<TaskEntryView>,
 }
 
 impl TaskListView {
+    /// Renders lines
     #[must_use]
     pub fn render_lines(&self) -> Vec<String> {
         self.tasks
@@ -88,11 +101,14 @@ impl TaskListView {
 /// Loading indicator for a tool invocation.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ToolUseLoaderView {
+    /// Stores the spinner
     pub spinner: SpinnerView,
+    /// Stores the label
     pub label: String,
 }
 
 impl ToolUseLoaderView {
+    /// Creates a new value
     #[must_use]
     pub fn new(label: impl Into<String>) -> Self {
         Self {
@@ -100,7 +116,7 @@ impl ToolUseLoaderView {
             label: label.into(),
         }
     }
-
+    /// Renders line
     #[must_use]
     pub fn render_line(&self) -> String {
         format!("{} — {}", self.spinner.render_line(), self.label)
@@ -110,12 +126,16 @@ impl ToolUseLoaderView {
 /// Saved teleport/session entries shown in stash views.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TeleportStashEntryView {
+    /// Stores the session
     pub session: String,
+    /// Stores the target
     pub target: String,
+    /// Stores the summary
     pub summary: Option<String>,
 }
 
 impl TeleportStashEntryView {
+    /// Creates a new value
     #[must_use]
     pub fn new(session: impl Into<String>, target: impl Into<String>) -> Self {
         Self {
@@ -124,7 +144,7 @@ impl TeleportStashEntryView {
             summary: None,
         }
     }
-
+    /// Handles summary
     #[must_use]
     pub fn summary(mut self, summary: impl Into<String>) -> Self {
         self.summary = Some(summary.into());
@@ -135,10 +155,12 @@ impl TeleportStashEntryView {
 /// Teleport stash overview.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct TeleportStashView {
+    /// Stores the entries
     pub entries: Vec<TeleportStashEntryView>,
 }
 
 impl TeleportStashView {
+    /// Renders lines
     #[must_use]
     pub fn render_lines(&self) -> Vec<String> {
         self.entries
@@ -154,11 +176,14 @@ impl TeleportStashView {
 /// Caches the last visible content while off-screen.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct OffscreenFreezeView {
+    /// Stores the cached lines
     pub cached_lines: Vec<String>,
+    /// Stores the frozen
     pub frozen: bool,
 }
 
 impl OffscreenFreezeView {
+    /// Handles update
     pub fn update<I>(&mut self, lines: I)
     where
         I: IntoIterator<Item = String>,
@@ -167,7 +192,7 @@ impl OffscreenFreezeView {
             self.cached_lines = lines.into_iter().collect();
         }
     }
-
+    /// Handles render
     #[must_use]
     pub fn render<'a>(&'a self, live_lines: &'a [String]) -> &'a [String] {
         if self.frozen {
@@ -181,10 +206,12 @@ impl OffscreenFreezeView {
 /// Compact fast-mode badge.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct FastIconView {
+    /// Stores the enabled
     pub enabled: bool,
 }
 
 impl FastIconView {
+    /// Constant fn
     #[must_use]
     pub const fn symbol(self) -> &'static str {
         if self.enabled { "⚡" } else { "" }
@@ -194,12 +221,16 @@ impl FastIconView {
 /// Hook mode label.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum HookModeView {
+    /// Represents disabled
     Disabled,
+    /// Represents enabled
     Enabled,
+    /// Represents passthrough
     Passthrough,
 }
 
 impl HookModeView {
+    /// Constant fn
     #[must_use]
     pub const fn label(self) -> &'static str {
         match self {
@@ -213,11 +244,14 @@ impl HookModeView {
 /// A single MCP tool row.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct McpToolEntryView {
+    /// Stores the name
     pub name: String,
+    /// Stores the server
     pub server: String,
 }
 
 impl McpToolEntryView {
+    /// Creates a new value
     #[must_use]
     pub fn new(name: impl Into<String>, server: impl Into<String>) -> Self {
         Self {
@@ -230,10 +264,12 @@ impl McpToolEntryView {
 /// MCP tool list summary.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct McpToolListView {
+    /// Stores the tools
     pub tools: Vec<McpToolEntryView>,
 }
 
 impl McpToolListView {
+    /// Renders lines
     #[must_use]
     pub fn render_lines(&self) -> Vec<String> {
         self.tools
@@ -246,11 +282,14 @@ impl McpToolListView {
 /// Referral/pass summary.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PassesView {
+    /// Stores the available
     pub available: usize,
+    /// Stores the note
     pub note: Option<String>,
 }
 
 impl PassesView {
+    /// Renders lines
     #[must_use]
     pub fn render_lines(&self) -> Vec<String> {
         let mut lines = vec![format!(
@@ -268,11 +307,14 @@ impl PassesView {
 /// Agent type wizard option.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AgentTypeOptionView {
+    /// Stores the label
     pub label: String,
+    /// Stores the selected
     pub selected: bool,
 }
 
 impl AgentTypeOptionView {
+    /// Creates a new value
     #[must_use]
     pub fn new(label: impl Into<String>) -> Self {
         Self {
@@ -280,7 +322,7 @@ impl AgentTypeOptionView {
             selected: false,
         }
     }
-
+    /// Constant fn
     #[must_use]
     pub const fn selected(mut self, selected: bool) -> Self {
         self.selected = selected;
@@ -291,10 +333,12 @@ impl AgentTypeOptionView {
 /// Agent type selection step.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct AgentTypeStepView {
+    /// Stores the options
     pub options: Vec<AgentTypeOptionView>,
 }
 
 impl AgentTypeStepView {
+    /// Renders lines
     #[must_use]
     pub fn render_lines(&self) -> Vec<String> {
         self.options

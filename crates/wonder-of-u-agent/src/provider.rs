@@ -10,14 +10,17 @@ use crate::{
     auth::{AuthMaterial, DEFAULT_COPILOT_API_BASE, StoredCredentials},
     config::{AgentSettings, CredentialStore, SettingsStore},
 };
-
+/// Represents model descriptor
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct ModelDescriptor {
+    /// Stores the id
     pub id: String,
+    /// Stores the display name
     pub display_name: String,
 }
 
 impl ModelDescriptor {
+    /// Creates a new value
     #[must_use]
     pub fn new(id: impl Into<String>, display_name: impl Into<String>) -> Self {
         Self {
@@ -26,31 +29,39 @@ impl ModelDescriptor {
         }
     }
 }
-
+/// Represents provider descriptor
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct ProviderDescriptor {
+    /// Stores the id
     pub id: String,
+    /// Stores the display name
     pub display_name: String,
+    /// Stores the auth kind
     pub auth_kind: AuthMaterialKind,
+    /// Stores the default model
     pub default_model: String,
+    /// Stores the models
     pub models: Vec<ModelDescriptor>,
+    /// Stores the api base
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub api_base: Option<String>,
+    /// Stores the api key env
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub api_key_env: Option<String>,
 }
 
 impl ProviderDescriptor {
+    /// Handles model
     #[must_use]
     pub fn model(&self, model_id: &str) -> Option<&ModelDescriptor> {
         self.models.iter().find(|model| model.id == model_id)
     }
-
+    /// Handles preferred fast model
     #[must_use]
     pub fn preferred_fast_model(&self) -> Option<&ModelDescriptor> {
         self.models.iter().find(|model| is_fast_model_id(&model.id))
     }
-
+    /// Returns whether fast mode
     #[must_use]
     pub fn supports_fast_mode(&self) -> bool {
         self.preferred_fast_model().is_some()
@@ -64,14 +75,17 @@ fn auth_material_label(material: &AuthMaterial) -> &'static str {
         AuthMaterial::OAuth { .. } => "oauth",
     }
 }
-
+/// Represents provider selection
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct ProviderSelection {
+    /// Stores the provider
     pub provider: Option<String>,
+    /// Stores the model
     pub model: Option<String>,
 }
 
 impl ProviderSelection {
+    /// Creates a new value
     #[must_use]
     pub fn new(provider: Option<String>, model: Option<String>) -> Self {
         Self { provider, model }
@@ -162,7 +176,7 @@ impl ResolvedAuthMaterial {
         }
     }
 }
-
+/// Represents resolved provider execution
 #[derive(Clone, Eq, PartialEq)]
 pub struct ResolvedProviderExecution {
     provider: ProviderDescriptor,
@@ -184,31 +198,32 @@ impl fmt::Debug for ResolvedProviderExecution {
 }
 
 impl ResolvedProviderExecution {
+    /// Handles provider
     #[must_use]
     pub fn provider(&self) -> &ProviderDescriptor {
         &self.provider
     }
-
+    /// Handles provider id
     #[must_use]
     pub fn provider_id(&self) -> &str {
         &self.provider.id
     }
-
+    /// Handles model
     #[must_use]
     pub fn model(&self) -> &str {
         &self.model
     }
-
+    /// Handles api base
     #[must_use]
     pub fn api_base(&self) -> &str {
         &self.api_base
     }
-
+    /// Handles auth state
     #[must_use]
     pub fn auth_state(&self) -> AuthState {
         self.auth.auth_state()
     }
-
+    /// Handles auth source
     #[must_use]
     pub fn auth_source(&self) -> Option<AuthSource> {
         self.auth.source()
@@ -240,13 +255,14 @@ impl ResolvedProviderExecution {
         self.auth.oauth_expires_at()
     }
 }
-
+/// Stores provider registry
 #[derive(Clone, Debug, Default)]
 pub struct ProviderRegistry {
     providers: BTreeMap<String, ProviderDescriptor>,
 }
 
 impl ProviderRegistry {
+    /// Handles builtin
     #[must_use]
     pub fn builtin() -> Self {
         let mut registry = Self::default();
@@ -295,6 +311,7 @@ impl ProviderRegistry {
         registry
     }
 
+    /// Handles register
     pub fn register(&mut self, provider: ProviderDescriptor) -> Result<()> {
         if self.providers.contains_key(&provider.id) {
             return Err(WonderError::validation(format!(
@@ -305,27 +322,34 @@ impl ProviderRegistry {
         self.providers.insert(provider.id.clone(), provider);
         Ok(())
     }
-
+    /// Handles get
     #[must_use]
     pub fn get(&self, provider: &str) -> Option<&ProviderDescriptor> {
         self.providers.get(provider)
     }
 
+    /// Handles providers
     pub fn providers(&self) -> impl Iterator<Item = &ProviderDescriptor> {
         self.providers.values()
     }
 }
-
+/// Represents provider status report
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ProviderStatusReport {
+    /// Stores the provider
     pub provider: Option<String>,
+    /// Stores the model
     pub model: Option<String>,
+    /// Stores the auth
     pub auth: AuthState,
+    /// Stores the readiness
     pub readiness: ProviderReadiness,
+    /// Stores the available providers
     pub available_providers: Vec<ProviderDescriptor>,
 }
 
 impl ProviderStatusReport {
+    /// Handles selection label
     #[must_use]
     pub fn selection_label(&self) -> Option<String> {
         match (&self.provider, &self.model) {
@@ -334,7 +358,7 @@ impl ProviderStatusReport {
         }
     }
 }
-
+/// Represents provider resolver
 #[derive(Clone, Debug)]
 pub struct ProviderResolver {
     registry: ProviderRegistry,
@@ -347,18 +371,20 @@ impl Default for ProviderResolver {
 }
 
 impl ProviderResolver {
+    /// Handles builtin
     #[must_use]
     pub fn builtin() -> Self {
         Self {
             registry: ProviderRegistry::builtin(),
         }
     }
-
+    /// Builds the registry
     #[must_use]
     pub fn registry(&self) -> &ProviderRegistry {
         &self.registry
     }
 
+    /// Loads report
     pub fn load_report(&self, storage_dir: Option<&Path>) -> Result<ProviderStatusReport> {
         let settings = match storage_dir {
             Some(path) => SettingsStore::new(path).read()?,
@@ -372,6 +398,7 @@ impl ProviderResolver {
         self.resolve_with_env(&settings, &credentials, std::env::vars())
     }
 
+    /// Loads report for selection
     pub fn load_report_for_selection(
         &self,
         storage_dir: Option<&Path>,
@@ -394,6 +421,7 @@ impl ProviderResolver {
         )
     }
 
+    /// Loads execution
     pub fn load_execution(
         &self,
         storage_dir: Option<&Path>,
@@ -411,6 +439,7 @@ impl ProviderResolver {
         self.resolve_execution_with_env(&settings, &credentials, std::env::vars(), &selection)
     }
 
+    /// Resolves with env
     pub fn resolve_with_env<I, K, V>(
         &self,
         settings: &AgentSettings,
@@ -460,6 +489,7 @@ impl ProviderResolver {
         })
     }
 
+    /// Resolves report for selection with env
     pub fn resolve_report_for_selection_with_env<I, K, V>(
         &self,
         settings: &AgentSettings,
@@ -516,6 +546,7 @@ impl ProviderResolver {
         })
     }
 
+    /// Resolves execution with env
     pub fn resolve_execution_with_env<I, K, V>(
         &self,
         settings: &AgentSettings,

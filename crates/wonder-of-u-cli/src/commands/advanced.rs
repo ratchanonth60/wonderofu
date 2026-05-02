@@ -10,20 +10,26 @@ use wonder_of_u_core::{
 };
 use wonder_of_u_storage::StoragePaths;
 
+/// Represents diagnostics command
 pub struct DiagnosticsCommand;
+/// Represents bridge command
 pub struct BridgeCommand {
     storage_dir: Option<PathBuf>,
 }
+/// Represents voice command
 pub struct VoiceCommand;
+/// Represents debug command
 pub struct DebugCommand {
     storage_dir: Option<PathBuf>,
 }
 
 impl DiagnosticsCommand {
+    /// Constant fn
     pub const fn new() -> Self {
         Self
     }
 
+    /// Handles command spec
     pub fn command_spec() -> CommandSpec {
         CommandSpec::new(
             "diagnostics",
@@ -34,10 +40,12 @@ impl DiagnosticsCommand {
 }
 
 impl BridgeCommand {
+    /// Constant fn
     pub const fn new(storage_dir: Option<PathBuf>) -> Self {
         Self { storage_dir }
     }
 
+    /// Handles command spec
     pub fn command_spec() -> CommandSpec {
         let mut spec = CommandSpec::new(
             "bridge",
@@ -50,10 +58,12 @@ impl BridgeCommand {
 }
 
 impl VoiceCommand {
+    /// Constant fn
     pub const fn new() -> Self {
         Self
     }
 
+    /// Handles command spec
     pub fn command_spec() -> CommandSpec {
         CommandSpec::new(
             "voice",
@@ -64,10 +74,12 @@ impl VoiceCommand {
 }
 
 impl DebugCommand {
+    /// Constant fn
     pub const fn new(storage_dir: Option<PathBuf>) -> Self {
         Self { storage_dir }
     }
 
+    /// Handles command spec
     pub fn command_spec() -> CommandSpec {
         let mut spec = CommandSpec::new(
             "debug",

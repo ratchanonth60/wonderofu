@@ -1,4 +1,5 @@
 //! MCP configuration, transport, discovery, and status foundations.
+#![warn(missing_docs)]
 
 mod catalog;
 mod client;
@@ -8,17 +9,24 @@ mod status;
 mod tools;
 mod types;
 
+/// Re-exports items from `catalog`
 pub use catalog::{McpCatalog, McpResourceRegistration, McpToolRegistration};
+/// Re-exports items from `client`
 pub use client::McpClient;
+/// Re-exports items from `config`
 pub use config::{
     DEFAULT_MCP_PROTOCOL_VERSION, MCP_CONFIG_SCHEMA_VERSION, McpClientIdentity, McpConfig,
     McpConfigStore, McpServerConfig,
 };
+/// Re-exports items from `names`
 pub use names::{build_mcp_resource_name, build_mcp_tool_name, normalize_mcp_name};
+/// Re-exports items from `status`
 pub use status::{McpServerState, McpServerStatus, McpStatusReport};
+/// Re-exports items from `tools`
 pub use tools::{
     McpResourceListInput, McpResourceListTool, McpResourceReadInput, McpResourceReadTool,
 };
+/// Re-exports items from `types`
 pub use types::{
     CallToolParams, CallToolResult, ClientCapabilities, ClientInfo, InitializeParams,
     InitializeResult, JsonRpcError, JsonRpcNotification, JsonRpcRequest, JsonRpcResponse,

@@ -22,10 +22,12 @@ use wonder_of_u_skills::SkillCatalog;
 
 use super::parse_command_args;
 
+/// Represents plugin command
 pub struct PluginCommand {
     storage_dir: Option<PathBuf>,
 }
 
+/// Represents reload plugins command
 pub struct ReloadPluginsCommand {
     storage_dir: Option<PathBuf>,
 }
@@ -38,10 +40,12 @@ struct PluginManifestCommand {
 }
 
 impl PluginCommand {
+    /// Constant fn
     pub const fn new(storage_dir: Option<PathBuf>) -> Self {
         Self { storage_dir }
     }
 
+    /// Handles command spec
     pub fn command_spec() -> CommandSpec {
         let mut spec = CommandSpec::new(
             "plugin",
@@ -70,10 +74,12 @@ impl PluginManifestCommand {
 }
 
 impl ReloadPluginsCommand {
+    /// Constant fn
     pub const fn new(storage_dir: Option<PathBuf>) -> Self {
         Self { storage_dir }
     }
 
+    /// Handles command spec
     pub fn command_spec() -> CommandSpec {
         let mut spec = CommandSpec::new(
             "reload-plugins",

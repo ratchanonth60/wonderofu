@@ -3,11 +3,14 @@
 /// A named step in a multi-step loading sequence.
 #[derive(Clone, Debug)]
 pub struct LoadingStep {
+    /// Stores the label
     pub label: String,
+    /// Stores the done
     pub done: bool,
 }
 
 impl LoadingStep {
+    /// Creates a new value
     #[must_use]
     pub fn new(label: impl Into<String>) -> Self {
         Self {
@@ -15,7 +18,7 @@ impl LoadingStep {
             done: false,
         }
     }
-
+    /// Handles done
     #[must_use]
     pub fn done(mut self) -> Self {
         self.done = true;
@@ -37,6 +40,7 @@ pub struct LoadingStateView {
 }
 
 impl LoadingStateView {
+    /// Creates a new value
     #[must_use]
     pub fn new(steps: impl IntoIterator<Item = LoadingStep>) -> Self {
         Self {

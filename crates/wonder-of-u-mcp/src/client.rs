@@ -18,7 +18,7 @@ use crate::{
 };
 
 const PROCESS_EXIT_TIMEOUT: Duration = Duration::from_millis(250);
-
+/// Represents mcp client
 #[derive(Debug)]
 pub struct McpClient {
     config: McpServerConfig,
@@ -30,6 +30,7 @@ pub struct McpClient {
 }
 
 impl McpClient {
+    /// Handles connect
     pub fn connect(
         config: &McpServerConfig,
         client: &McpClientIdentity,
@@ -75,12 +76,13 @@ impl McpClient {
             client_instance.initialize(client, fallback_protocol)?;
         Ok(client_instance)
     }
-
+    /// Handles initialize result
     #[must_use]
     pub fn initialize_result(&self) -> &InitializeResult {
         &self.initialize_result
     }
 
+    /// Handles discover catalog
     pub fn discover_catalog(&mut self) -> Result<McpCatalog> {
         let tools = if self.initialize_result.capabilities.tools.is_some() {
             self.list_tools()?
@@ -95,6 +97,7 @@ impl McpClient {
         Ok(McpCatalog::from_server(&self.config.name, tools, resources))
     }
 
+    /// Handles discover server
     pub fn discover_server(
         config: &McpServerConfig,
         client: &McpClientIdentity,
@@ -107,6 +110,7 @@ impl McpClient {
         Ok((initialize_result, catalog))
     }
 
+    /// Handles list tools
     pub fn list_tools(&mut self) -> Result<Vec<McpTool>> {
         let mut tools = Vec::new();
         let mut cursor = None;
@@ -125,6 +129,7 @@ impl McpClient {
         }
     }
 
+    /// Handles list resources
     pub fn list_resources(&mut self) -> Result<Vec<McpResource>> {
         let mut resources = Vec::new();
         let mut cursor = None;
@@ -143,6 +148,7 @@ impl McpClient {
         }
     }
 
+    /// Handles call tool
     pub fn call_tool(&mut self, name: &str, arguments: Value) -> Result<CallToolResult> {
         self.request(
             "tools/call",
@@ -153,10 +159,12 @@ impl McpClient {
         )
     }
 
+    /// Reads resource
     pub fn read_resource(&mut self, uri: &str) -> Result<ReadResourceResult> {
         self.request("resources/read", &ReadResourceParams { uri: uri.into() })
     }
 
+    /// Handles shutdown
     pub fn shutdown(&mut self) -> Result<()> {
         self.reader.take();
         self.writer.take();

@@ -27,11 +27,14 @@ pub enum CatalogTone {
 /// A short status label attached to a header, list item, or preview.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct StatusBadge {
+    /// Stores the label
     pub label: String,
+    /// Stores the tone
     pub tone: CatalogTone,
 }
 
 impl StatusBadge {
+    /// Creates a new value
     #[must_use]
     pub fn new(label: impl Into<String>, tone: CatalogTone) -> Self {
         Self {
@@ -39,27 +42,27 @@ impl StatusBadge {
             tone,
         }
     }
-
+    /// Handles connected
     #[must_use]
     pub fn connected() -> Self {
         Self::new("connected", CatalogTone::Success)
     }
-
+    /// Handles pending
     #[must_use]
     pub fn pending() -> Self {
         Self::new("pending", CatalogTone::Info)
     }
-
+    /// Handles disabled
     #[must_use]
     pub fn disabled() -> Self {
         Self::new("disabled", CatalogTone::Muted)
     }
-
+    /// Handles needs auth
     #[must_use]
     pub fn needs_auth() -> Self {
         Self::new("needs auth", CatalogTone::Warning)
     }
-
+    /// Handles failed
     #[must_use]
     pub fn failed() -> Self {
         Self::new("failed", CatalogTone::Danger)
@@ -69,13 +72,18 @@ impl StatusBadge {
 /// An action shown in a screen header, panel, or empty state.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct CatalogAction {
+    /// Stores the label
     pub label: String,
+    /// Stores the shortcut
     pub shortcut: Option<String>,
+    /// Stores the enabled
     pub enabled: bool,
+    /// Stores the primary
     pub primary: bool,
 }
 
 impl CatalogAction {
+    /// Creates a new value
     #[must_use]
     pub fn new(label: impl Into<String>) -> Self {
         Self {
@@ -85,19 +93,19 @@ impl CatalogAction {
             primary: false,
         }
     }
-
+    /// Handles with shortcut
     #[must_use]
     pub fn with_shortcut(mut self, shortcut: impl Into<String>) -> Self {
         self.shortcut = Some(shortcut.into());
         self
     }
-
+    /// Constant fn
     #[must_use]
     pub const fn disabled(mut self) -> Self {
         self.enabled = false;
         self
     }
-
+    /// Constant fn
     #[must_use]
     pub const fn primary(mut self) -> Self {
         self.primary = true;
@@ -108,13 +116,18 @@ impl CatalogAction {
 /// Shared header metadata for a catalog-style screen.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct CatalogHeader {
+    /// Stores the title
     pub title: String,
+    /// Stores the subtitle
     pub subtitle: Option<String>,
+    /// Stores the badges
     pub badges: Vec<StatusBadge>,
+    /// Stores the actions
     pub actions: Vec<CatalogAction>,
 }
 
 impl CatalogHeader {
+    /// Creates a new value
     #[must_use]
     pub fn new(title: impl Into<String>) -> Self {
         Self {
@@ -124,7 +137,7 @@ impl CatalogHeader {
             actions: Vec::new(),
         }
     }
-
+    /// Handles with subtitle
     #[must_use]
     pub fn with_subtitle(mut self, subtitle: impl Into<String>) -> Self {
         self.subtitle = Some(subtitle.into());
@@ -135,13 +148,18 @@ impl CatalogHeader {
 /// Shared panel metadata for list and detail panes.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct PanelDescriptor {
+    /// Stores the title
     pub title: String,
+    /// Stores the subtitle
     pub subtitle: Option<String>,
+    /// Stores the footer
     pub footer: Option<String>,
+    /// Stores the actions
     pub actions: Vec<CatalogAction>,
 }
 
 impl PanelDescriptor {
+    /// Creates a new value
     #[must_use]
     pub fn new(title: impl Into<String>) -> Self {
         Self {
@@ -151,13 +169,13 @@ impl PanelDescriptor {
             actions: Vec::new(),
         }
     }
-
+    /// Handles with subtitle
     #[must_use]
     pub fn with_subtitle(mut self, subtitle: impl Into<String>) -> Self {
         self.subtitle = Some(subtitle.into());
         self
     }
-
+    /// Handles with footer
     #[must_use]
     pub fn with_footer(mut self, footer: impl Into<String>) -> Self {
         self.footer = Some(footer.into());
@@ -168,12 +186,16 @@ impl PanelDescriptor {
 /// Content to show when a catalog has no visible items.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct EmptyState {
+    /// Stores the title
     pub title: String,
+    /// Stores the body
     pub body: Vec<String>,
+    /// Stores the actions
     pub actions: Vec<CatalogAction>,
 }
 
 impl EmptyState {
+    /// Creates a new value
     #[must_use]
     pub fn new(title: impl Into<String>) -> Self {
         Self {
@@ -182,7 +204,7 @@ impl EmptyState {
             actions: Vec::new(),
         }
     }
-
+    /// Handles with body line
     #[must_use]
     pub fn with_body_line(mut self, line: impl Into<String>) -> Self {
         self.body.push(line.into());
@@ -193,12 +215,16 @@ impl EmptyState {
 /// Detail data shown for the currently selected item.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct DetailPreview {
+    /// Stores the panel
     pub panel: PanelDescriptor,
+    /// Stores the badges
     pub badges: Vec<StatusBadge>,
+    /// Stores the lines
     pub lines: Vec<String>,
 }
 
 impl DetailPreview {
+    /// Creates a new value
     #[must_use]
     pub fn new(panel: PanelDescriptor) -> Self {
         Self {
@@ -207,7 +233,7 @@ impl DetailPreview {
             lines: Vec::new(),
         }
     }
-
+    /// Handles with line
     #[must_use]
     pub fn with_line(mut self, line: impl Into<String>) -> Self {
         self.lines.push(line.into());
@@ -218,17 +244,26 @@ impl DetailPreview {
 /// A selectable list entry inside a catalog.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct CatalogEntry {
+    /// Stores the id
     pub id: String,
+    /// Stores the label
     pub label: String,
+    /// Stores the description
     pub description: Option<String>,
+    /// Stores the badges
     pub badges: Vec<StatusBadge>,
+    /// Stores the disabled reason
     pub disabled_reason: Option<String>,
+    /// Stores the preview
     pub preview: Option<DetailPreview>,
+    /// Stores the keywords
     pub keywords: Vec<String>,
+    /// Stores the actions
     pub actions: Vec<CatalogAction>,
 }
 
 impl CatalogEntry {
+    /// Creates a new value
     #[must_use]
     pub fn new(id: impl Into<String>, label: impl Into<String>) -> Self {
         Self {
@@ -242,37 +277,37 @@ impl CatalogEntry {
             actions: Vec::new(),
         }
     }
-
+    /// Handles with description
     #[must_use]
     pub fn with_description(mut self, description: impl Into<String>) -> Self {
         self.description = Some(description.into());
         self
     }
-
+    /// Handles with keyword
     #[must_use]
     pub fn with_keyword(mut self, keyword: impl Into<String>) -> Self {
         self.keywords.push(keyword.into());
         self
     }
-
+    /// Handles with badge
     #[must_use]
     pub fn with_badge(mut self, badge: StatusBadge) -> Self {
         self.badges.push(badge);
         self
     }
-
+    /// Handles with preview
     #[must_use]
     pub fn with_preview(mut self, preview: DetailPreview) -> Self {
         self.preview = Some(preview);
         self
     }
-
+    /// Handles disabled
     #[must_use]
     pub fn disabled(mut self, reason: impl Into<String>) -> Self {
         self.disabled_reason = Some(reason.into());
         self
     }
-
+    /// Returns whether disabled
     #[must_use]
     pub fn is_disabled(&self) -> bool {
         self.disabled_reason.is_some()
@@ -320,11 +355,14 @@ impl CatalogEntry {
 /// A logical list section within a catalog.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct CatalogSection {
+    /// Stores the panel
     pub panel: PanelDescriptor,
+    /// Stores the entries
     pub entries: Vec<CatalogEntry>,
 }
 
 impl CatalogSection {
+    /// Creates a new value
     #[must_use]
     pub fn new(panel: PanelDescriptor, entries: Vec<CatalogEntry>) -> Self {
         Self { panel, entries }
@@ -334,34 +372,45 @@ impl CatalogSection {
 /// A filtered section view with entry selection state attached.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CatalogSectionView<'a> {
+    /// Stores the panel
     pub panel: &'a PanelDescriptor,
+    /// Stores the entries
     pub entries: Vec<CatalogEntryView<'a>>,
 }
 
 /// A filtered list entry view.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CatalogEntryView<'a> {
+    /// Stores the entry
     pub entry: &'a CatalogEntry,
+    /// Stores the visible index
     pub visible_index: usize,
+    /// Stores the selected
     pub selected: bool,
 }
 
 /// The currently selected entry.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CatalogSelection<'a> {
+    /// Stores the entry
     pub entry: &'a CatalogEntry,
+    /// Stores the visible index
     pub visible_index: usize,
 }
 
 /// The list slice a renderer should keep in view.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct ScrollWindow {
+    /// Stores the offset
     pub offset: usize,
+    /// Stores the visible len
     pub visible_len: usize,
+    /// Stores the total len
     pub total_len: usize,
 }
 
 impl ScrollWindow {
+    /// Handles for selection
     #[must_use]
     pub fn for_selection(
         total_len: usize,
@@ -387,7 +436,7 @@ impl ScrollWindow {
             total_len,
         }
     }
-
+    /// Handles end
     #[must_use]
     pub fn end(self) -> usize {
         self.offset.saturating_add(self.visible_len)
@@ -397,17 +446,24 @@ impl ScrollWindow {
 /// Shared state for catalog/list screens with selection, filtering, and preview support.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CatalogModel {
+    /// Stores the header
     pub header: CatalogHeader,
+    /// Stores the list panel
     pub list_panel: PanelDescriptor,
+    /// Stores the detail panel
     pub detail_panel: PanelDescriptor,
+    /// Stores the empty state
     pub empty_state: EmptyState,
+    /// Stores the filtered empty state
     pub filtered_empty_state: EmptyState,
+    /// Stores the sections
     pub sections: Vec<CatalogSection>,
     filter_query: String,
     selected_index: usize,
 }
 
 impl CatalogModel {
+    /// Creates a new value
     #[must_use]
     pub fn new(
         header: CatalogHeader,
@@ -430,38 +486,40 @@ impl CatalogModel {
         model.clamp_selected_index();
         model
     }
-
+    /// Handles filter query
     #[must_use]
     pub fn filter_query(&self) -> &str {
         &self.filter_query
     }
 
+    /// Handles set filter query
     pub fn set_filter_query(&mut self, query: impl Into<String>) {
         self.filter_query = query.into();
         self.clamp_selected_index();
     }
 
+    /// Handles set selected index
     pub fn set_selected_index(&mut self, selected_index: usize) {
         self.selected_index = selected_index;
         self.clamp_selected_index();
     }
-
+    /// Handles selected index
     #[must_use]
     pub fn selected_index(&self) -> Option<usize> {
         let visible_count = self.visible_count();
         (visible_count > 0).then(|| self.selected_index.min(visible_count - 1))
     }
-
+    /// Handles visible count
     #[must_use]
     pub fn visible_count(&self) -> usize {
         self.visible_entries().len()
     }
-
+    /// Returns whether filter
     #[must_use]
     pub fn has_filter(&self) -> bool {
         !self.normalized_query().is_empty()
     }
-
+    /// Handles active empty state
     #[must_use]
     pub fn active_empty_state(&self) -> Option<&EmptyState> {
         if self.visible_count() > 0 {
@@ -472,28 +530,28 @@ impl CatalogModel {
             Some(&self.empty_state)
         }
     }
-
+    /// Handles selected entry
     #[must_use]
     pub fn selected_entry(&self) -> Option<&CatalogEntry> {
         self.selected_entry_with_index()
             .map(|selection| selection.entry)
     }
-
+    /// Handles selection
     #[must_use]
     pub fn selection(&self) -> Option<CatalogSelection<'_>> {
         self.selected_entry_with_index()
     }
-
+    /// Handles detail preview
     #[must_use]
     pub fn detail_preview(&self) -> Option<&DetailPreview> {
         self.selected_entry()?.preview.as_ref()
     }
-
+    /// Handles scroll window
     #[must_use]
     pub fn scroll_window(&self, viewport_len: usize) -> ScrollWindow {
         ScrollWindow::for_selection(self.visible_count(), self.selected_index(), viewport_len)
     }
-
+    /// Handles visible sections
     #[must_use]
     pub fn visible_sections(&self) -> Vec<CatalogSectionView<'_>> {
         let mut visible_index = 0;
@@ -527,7 +585,7 @@ impl CatalogModel {
 
         sections
     }
-
+    /// Handles visible entries
     #[must_use]
     pub fn visible_entries(&self) -> Vec<&CatalogEntry> {
         let query = self.normalized_query();

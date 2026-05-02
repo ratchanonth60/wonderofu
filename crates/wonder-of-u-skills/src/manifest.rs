@@ -9,37 +9,48 @@ use wonder_of_u_core::{
     WonderError,
 };
 
+/// Schema version for skill manifest
 pub const SKILL_MANIFEST_SCHEMA_VERSION: u16 = 1;
 
 fn default_schema_version() -> u16 {
     SKILL_MANIFEST_SCHEMA_VERSION
 }
-
+/// Represents skill manifest
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct SkillManifest {
+    /// Stores the schema version
     #[serde(default = "default_schema_version")]
     pub schema_version: u16,
+    /// Stores the name
     pub name: String,
+    /// Stores the description
     pub description: String,
+    /// Stores the prompt
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prompt: Option<String>,
+    /// Stores the prompt path
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prompt_path: Option<PathBuf>,
+    /// Stores the allowed tools
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub allowed_tools: Vec<String>,
+    /// Stores the slash command
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub slash_command: Option<String>,
+    /// Stores the slash aliases
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub slash_aliases: Vec<String>,
 }
 
 impl SkillManifest {
+    /// Reads from path
     pub fn read_from_path(path: &Path) -> Result<Self> {
         let manifest: Self = serde_json::from_str(&fs::read_to_string(path)?)?;
         manifest.validate()?;
         Ok(manifest)
     }
 
+    /// Validates the value
     pub fn validate(&self) -> Result<()> {
         if self.schema_version != SKILL_MANIFEST_SCHEMA_VERSION {
             return Err(WonderError::validation(format!(
@@ -74,6 +85,7 @@ impl SkillManifest {
         Ok(())
     }
 
+    /// Handles prompt body
     pub fn prompt_body(&self, root_dir: &Path) -> Result<String> {
         if let Some(prompt) = &self.prompt {
             return Ok(prompt.clone());
@@ -95,6 +107,7 @@ impl SkillManifest {
         Ok(prompt)
     }
 
+    /// Handles tool spec
     pub fn tool_spec(&self) -> ToolSpec {
         let mut spec = ToolSpec::new(&self.name, &self.description, ToolKind::Skill);
         spec.source = ToolSource::Skill;
@@ -104,6 +117,7 @@ impl SkillManifest {
         spec
     }
 
+    /// Handles command spec
     pub fn command_spec(&self) -> Result<Option<CommandSpec>> {
         let Some(name) = &self.slash_command else {
             return Ok(None);

@@ -11,15 +11,18 @@ use wonder_of_u_mcp::{McpConfigStore, McpServerState, McpStatusReport};
 
 use super::parse_command_args;
 
+/// Represents mcp command
 pub struct McpCommand {
     storage_dir: Option<PathBuf>,
 }
 
 impl McpCommand {
+    /// Constant fn
     pub const fn new(storage_dir: Option<PathBuf>) -> Self {
         Self { storage_dir }
     }
 
+    /// Handles command spec
     pub fn command_spec() -> CommandSpec {
         let mut spec = CommandSpec::new(
             "mcp",

@@ -3,11 +3,13 @@ use crate::{
     input::{EditAction, Motion, TextBuffer},
     keymap::{KeyBindingContext, KeyBindingResolver, ResolvedKey, SystemAction, VimCommand},
 };
-
+/// Enumerates vim mode
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum VimMode {
+    /// Represents insert
     #[default]
     Insert,
+    /// Represents normal
     Normal,
 }
 
@@ -16,13 +18,15 @@ enum PendingOperator {
     Delete,
     Change,
 }
-
+/// Represents vim handle result
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct VimHandleResult {
+    /// Stores the system
     pub system: Option<SystemAction>,
+    /// Stores the mode changed
     pub mode_changed: bool,
 }
-
+/// Represents vim state
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct VimState {
     mode: VimMode,
@@ -38,6 +42,7 @@ impl Default for VimState {
 }
 
 impl VimState {
+    /// Constant fn
     #[must_use]
     pub const fn new(mode: VimMode) -> Self {
         Self {
@@ -47,17 +52,18 @@ impl VimState {
             pending_operator: None,
         }
     }
-
+    /// Constant fn
     #[must_use]
     pub const fn mode(&self) -> VimMode {
         self.mode
     }
-
+    /// Constant fn
     #[must_use]
     pub const fn has_pending_operator(&self) -> bool {
         self.pending_operator.is_some()
     }
 
+    /// Handles handle key
     pub fn handle_key(
         &mut self,
         buffer: &mut TextBuffer,

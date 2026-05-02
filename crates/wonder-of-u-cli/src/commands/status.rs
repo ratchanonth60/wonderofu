@@ -21,49 +21,65 @@ use super::git_command_output;
 use super::plugin::load_catalogs;
 use super::task_runtime::TaskManager;
 
+/// Represents status command
 pub struct StatusCommand {
     storage_dir: Option<PathBuf>,
 }
 
+/// Represents cost command
 pub struct CostCommand {
     storage_dir: Option<PathBuf>,
 }
 
+/// Represents usage command
 pub struct UsageCommand {
     storage_dir: Option<PathBuf>,
 }
 
+/// Represents stats command
 pub struct StatsCommand {
     storage_dir: Option<PathBuf>,
 }
 
+/// Represents version command
 pub struct VersionCommand;
 
+/// Represents release notes command
 pub struct ReleaseNotesCommand;
 
+/// Represents feedback command
 pub struct FeedbackCommand;
 
+/// Represents upgrade command
 pub struct UpgradeCommand;
 
+/// Represents desktop command
 pub struct DesktopCommand;
 
+/// Represents mobile command
 pub struct MobileCommand;
 
+/// Represents chrome command
 pub struct ChromeCommand;
 
+/// Represents ide command
 pub struct IdeCommand;
 
+/// Represents insights command
 pub struct InsightsCommand {
     storage_dir: Option<PathBuf>,
 }
 
+/// Represents output style command
 pub struct OutputStyleCommand;
 
 impl StatusCommand {
+    /// Creates a new value
     pub fn new(storage_dir: Option<PathBuf>) -> Self {
         Self { storage_dir }
     }
 
+    /// Handles command spec
     pub fn command_spec() -> CommandSpec {
         CommandSpec::new(
             "status",
@@ -74,10 +90,12 @@ impl StatusCommand {
 }
 
 impl CostCommand {
+    /// Creates a new value
     pub fn new(storage_dir: Option<PathBuf>) -> Self {
         Self { storage_dir }
     }
 
+    /// Handles command spec
     pub fn command_spec() -> CommandSpec {
         CommandSpec::new(
             "cost",
@@ -88,20 +106,24 @@ impl CostCommand {
 }
 
 impl UsageCommand {
+    /// Creates a new value
     pub fn new(storage_dir: Option<PathBuf>) -> Self {
         Self { storage_dir }
     }
 
+    /// Handles command spec
     pub fn command_spec() -> CommandSpec {
         CommandSpec::new("usage", "Show plan usage limits", CommandKind::Local)
     }
 }
 
 impl StatsCommand {
+    /// Creates a new value
     pub fn new(storage_dir: Option<PathBuf>) -> Self {
         Self { storage_dir }
     }
 
+    /// Handles command spec
     pub fn command_spec() -> CommandSpec {
         CommandSpec::new(
             "stats",
@@ -112,10 +134,12 @@ impl StatsCommand {
 }
 
 impl VersionCommand {
+    /// Constant fn
     pub const fn new() -> Self {
         Self
     }
 
+    /// Handles command spec
     pub fn command_spec() -> CommandSpec {
         CommandSpec::new(
             "version",
@@ -126,10 +150,12 @@ impl VersionCommand {
 }
 
 impl ReleaseNotesCommand {
+    /// Constant fn
     pub const fn new() -> Self {
         Self
     }
 
+    /// Handles command spec
     pub fn command_spec() -> CommandSpec {
         CommandSpec::new(
             "release-notes",
@@ -140,10 +166,12 @@ impl ReleaseNotesCommand {
 }
 
 impl FeedbackCommand {
+    /// Constant fn
     pub const fn new() -> Self {
         Self
     }
 
+    /// Handles command spec
     pub fn command_spec() -> CommandSpec {
         let mut spec = CommandSpec::new(
             "feedback",
@@ -156,10 +184,12 @@ impl FeedbackCommand {
 }
 
 impl UpgradeCommand {
+    /// Constant fn
     pub const fn new() -> Self {
         Self
     }
 
+    /// Handles command spec
     pub fn command_spec() -> CommandSpec {
         CommandSpec::new(
             "upgrade",
@@ -170,10 +200,12 @@ impl UpgradeCommand {
 }
 
 impl DesktopCommand {
+    /// Constant fn
     pub const fn new() -> Self {
         Self
     }
 
+    /// Handles command spec
     pub fn command_spec() -> CommandSpec {
         CommandSpec::new(
             "desktop",
@@ -184,10 +216,12 @@ impl DesktopCommand {
 }
 
 impl MobileCommand {
+    /// Constant fn
     pub const fn new() -> Self {
         Self
     }
 
+    /// Handles command spec
     pub fn command_spec() -> CommandSpec {
         let mut spec = CommandSpec::new(
             "mobile",
@@ -200,10 +234,12 @@ impl MobileCommand {
 }
 
 impl ChromeCommand {
+    /// Constant fn
     pub const fn new() -> Self {
         Self
     }
 
+    /// Handles command spec
     pub fn command_spec() -> CommandSpec {
         CommandSpec::new(
             "chrome",
@@ -214,10 +250,12 @@ impl ChromeCommand {
 }
 
 impl IdeCommand {
+    /// Constant fn
     pub const fn new() -> Self {
         Self
     }
 
+    /// Handles command spec
     pub fn command_spec() -> CommandSpec {
         CommandSpec::new(
             "ide",
@@ -228,10 +266,12 @@ impl IdeCommand {
 }
 
 impl InsightsCommand {
+    /// Constant fn
     pub const fn new(storage_dir: Option<PathBuf>) -> Self {
         Self { storage_dir }
     }
 
+    /// Handles command spec
     pub fn command_spec() -> CommandSpec {
         let mut spec = CommandSpec::new(
             "insights",
@@ -244,10 +284,12 @@ impl InsightsCommand {
 }
 
 impl OutputStyleCommand {
+    /// Constant fn
     pub const fn new() -> Self {
         Self
     }
 
+    /// Handles command spec
     pub fn command_spec() -> CommandSpec {
         let mut spec = CommandSpec::new(
             "output-style",

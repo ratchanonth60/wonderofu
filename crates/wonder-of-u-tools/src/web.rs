@@ -46,13 +46,16 @@ const PREAPPROVED_HOSTS: &[&str] = &[
     "nginx.org",
 ];
 const PREAPPROVED_HOST_PATHS: &[(&str, &str)] = &[("github.com", "/anthropics")];
-
+/// Represents web fetch input
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct WebFetchInput {
+    /// Stores the url
     pub url: String,
+    /// Stores the max length
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_length: Option<u32>,
+    /// Stores the prompt
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prompt: Option<String>,
 }
@@ -73,15 +76,19 @@ impl WebFetchInput {
         Ok(())
     }
 }
-
+/// Represents web search input
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct WebSearchInput {
+    /// Stores the query
     pub query: String,
+    /// Stores the num results
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub num_results: Option<u8>,
+    /// Stores the allowed domains
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub allowed_domains: Option<Vec<String>>,
+    /// Stores the blocked domains
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub blocked_domains: Option<Vec<String>>,
 }
@@ -121,10 +128,10 @@ impl WebSearchInput {
         self.num_results.unwrap_or(DEFAULT_WEB_SEARCH_RESULTS)
     }
 }
-
+/// Represents web fetch tool
 #[derive(Debug, Default)]
 pub struct WebFetchTool;
-
+/// Represents web search tool
 #[derive(Debug, Default)]
 pub struct WebSearchTool;
 

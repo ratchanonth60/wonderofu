@@ -15,10 +15,11 @@ use wonder_of_u_core::{
 };
 
 use crate::{McpCatalog, McpClient, McpConfigStore, McpResourceContents, McpResourceRegistration};
-
+/// Represents mcp resource list input
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct McpResourceListInput {
+    /// Stores the server
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub server: Option<String>,
 }
@@ -37,10 +38,11 @@ impl McpResourceListInput {
         Ok(())
     }
 }
-
+/// Represents mcp resource read input
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct McpResourceReadInput {
+    /// Stores the resource name
     pub resource_name: String,
 }
 
@@ -54,10 +56,10 @@ impl McpResourceReadInput {
         Ok(())
     }
 }
-
+/// Represents mcp resource list tool
 #[derive(Debug, Default)]
 pub struct McpResourceListTool;
-
+/// Represents mcp resource read tool
 #[derive(Debug, Default)]
 pub struct McpResourceReadTool;
 

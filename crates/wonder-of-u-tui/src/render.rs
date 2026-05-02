@@ -27,30 +27,46 @@ pub struct SlashSuggestionEntry {
 /// State passed to the renderer when the slash-autocomplete overlay should be visible.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct SlashSuggestionsOverlay {
+    /// Stores the entries
     pub entries: Vec<SlashSuggestionEntry>,
 }
-
+/// Represents shell view
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct ShellView {
+    /// Stores the title
     pub title: String,
+    /// Stores the messages
     pub messages: Vec<MessageLineView>,
+    /// Stores the prompt
     pub prompt: String,
+    /// Stores the history search
     pub history_search: Option<HistorySearchView>,
+    /// Stores the status
     pub status: String,
+    /// Stores the loading
     pub loading: bool,
+    /// Stores the loading verb
     pub loading_verb: Option<String>,
+    /// Stores the footer
     pub footer: String,
+    /// Stores the queued panel
     pub queued_panel: Option<TaskPanelView>,
+    /// Stores the task panel
     pub task_panel: Option<TaskPanelView>,
+    /// Stores the dialog
     pub dialog: Option<DialogView>,
+    /// Stores the picker view
     pub picker_view: Option<PickerView>,
+    /// Stores the picker list
     pub picker_list: Option<PickerListView>,
+    /// Stores the notifications
     pub notifications: Vec<NotificationView>,
     /// When `Some`, display the slash-command autocomplete overlay.
     pub slash_suggestions: Option<SlashSuggestionsOverlay>,
 }
 
 impl ShellView {
+    /// Handles prompt height
     #[must_use]
     pub fn prompt_height(&self) -> u16 {
         let line_count = match &self.history_search {
@@ -61,7 +77,7 @@ impl ShellView {
             .unwrap_or(u16::MAX.saturating_sub(2))
             .saturating_add(2)
     }
-
+    /// Handles from app state
     #[must_use]
     pub fn from_app_state(app: &AppState, prompt: impl Into<String>) -> Self {
         Self {
@@ -90,6 +106,7 @@ struct StyledLine {
     style: TextStyle,
 }
 
+/// Renders shell
 pub fn render_shell(frame: &mut FrameBuffer, view: &ShellView, theme: &Theme) {
     let layout = ShellLayout::split(frame.area(), view.prompt_height());
     frame.fill_rect(frame.area(), ' ', theme.background);
@@ -120,7 +137,7 @@ pub fn render_shell(frame: &mut FrameBuffer, view: &ShellView, theme: &Theme) {
         }
     }
 }
-
+/// Renders snapshot
 #[must_use]
 pub fn render_snapshot(width: u16, height: u16, view: &ShellView, theme: &Theme) -> FrameBuffer {
     let mut frame = FrameBuffer::new(width, height);

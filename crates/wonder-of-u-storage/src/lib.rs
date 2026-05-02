@@ -1,5 +1,7 @@
 //! Append-only session storage primitives.
+#![warn(missing_docs)]
 
+/// Provides memdir support
 pub mod memdir;
 
 use std::{
@@ -19,7 +21,9 @@ use wonder_of_u_core::{
     Result, SessionId, TaskId, TaskState, WonderError,
 };
 
+/// Schema version for storage
 pub const STORAGE_SCHEMA_VERSION: u16 = 1;
+/// Default paste max bytes value
 pub const DEFAULT_PASTE_MAX_BYTES: usize = 1024 * 1024;
 
 fn default_storage_schema_version() -> u16 {
@@ -82,196 +86,199 @@ fn validate_paste_hash(sha256: &str) -> Result<()> {
         "invalid paste hash: {sha256}"
     )))
 }
-
+/// Represents storage paths
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct StoragePaths {
     base_dir: PathBuf,
 }
 
 impl StoragePaths {
+    /// Creates a new value
     #[must_use]
     pub fn new(base_dir: impl Into<PathBuf>) -> Self {
         Self {
             base_dir: base_dir.into(),
         }
     }
-
+    /// Returns the base directory
     #[must_use]
     pub fn base_dir(&self) -> &Path {
         &self.base_dir
     }
-
+    /// Handles sessions dir
     #[must_use]
     pub fn sessions_dir(&self) -> PathBuf {
         self.base_dir.join("sessions")
     }
-
+    /// Handles transcript path
     #[must_use]
     pub fn transcript_path(&self, session_id: SessionId) -> PathBuf {
         self.sessions_dir().join(format!("{session_id}.jsonl"))
     }
-
+    /// Handles metadata dir
     #[must_use]
     pub fn metadata_dir(&self) -> PathBuf {
         self.sessions_dir().join(".metadata")
     }
-
+    /// Handles metadata path
     #[must_use]
     pub fn metadata_path(&self, session_id: SessionId) -> PathBuf {
         self.metadata_dir().join(format!("{session_id}.json"))
     }
-
+    /// Handles snapshot dir
     #[must_use]
     pub fn snapshot_dir(&self) -> PathBuf {
         self.sessions_dir().join(".snapshots")
     }
-
+    /// Handles snapshot path
     #[must_use]
     pub fn snapshot_path(&self, session_id: SessionId) -> PathBuf {
         self.snapshot_dir().join(format!("{session_id}.json"))
     }
-
+    /// Returns the session memory index dir
     #[must_use]
     pub fn session_memory_index_dir(&self) -> PathBuf {
         self.sessions_dir().join(".memory-index")
     }
-
+    /// Returns the session memory index path
     #[must_use]
     pub fn session_memory_index_path(&self, session_id: SessionId) -> PathBuf {
         self.session_memory_index_dir()
             .join(format!("{session_id}.json"))
     }
-
+    /// Handles cost path
     #[must_use]
     pub fn cost_path(&self, session_id: SessionId) -> PathBuf {
         self.sessions_dir().join(format!("{session_id}.costs"))
     }
-
+    /// Handles pastes dir
     #[must_use]
     pub fn pastes_dir(&self) -> PathBuf {
         self.base_dir.join("pastes")
     }
-
+    /// Handles plugins dir
     #[must_use]
     pub fn plugins_dir(&self) -> PathBuf {
         self.base_dir.join("plugins")
     }
-
+    /// Handles skills dir
     #[must_use]
     pub fn skills_dir(&self) -> PathBuf {
         self.base_dir.join("skills")
     }
-
+    /// Handles config dir
     #[must_use]
     pub fn config_dir(&self) -> PathBuf {
         self.base_dir.join("config")
     }
-
+    /// Handles settings path
     #[must_use]
     pub fn settings_path(&self) -> PathBuf {
         self.config_dir().join("settings.json")
     }
-
+    /// Handles user memory path
     #[must_use]
     pub fn user_memory_path(&self) -> PathBuf {
         self.config_dir().join("CLAUDE.md")
     }
-
+    /// Handles credentials path
     #[must_use]
     pub fn credentials_path(&self) -> PathBuf {
         self.config_dir().join("credentials.json")
     }
-
+    /// Handles plugins config dir
     #[must_use]
     pub fn plugins_config_dir(&self) -> PathBuf {
         self.config_dir().join("plugins")
     }
-
+    /// Handles plugin settings path
     #[must_use]
     pub fn plugin_settings_path(&self) -> PathBuf {
         self.plugins_config_dir().join("settings.json")
     }
-
+    /// Handles mcp config dir
     #[must_use]
     pub fn mcp_config_dir(&self) -> PathBuf {
         self.config_dir().join("mcp")
     }
-
+    /// Handles mcp servers path
     #[must_use]
     pub fn mcp_servers_path(&self) -> PathBuf {
         self.mcp_config_dir().join("servers.json")
     }
-
+    /// Handles tasks dir
     #[must_use]
     pub fn tasks_dir(&self) -> PathBuf {
         self.base_dir.join("tasks")
     }
-
+    /// Returns the task metadata dir
     #[must_use]
     pub fn task_metadata_dir(&self) -> PathBuf {
         self.tasks_dir().join("metadata")
     }
-
+    /// Returns the task logs dir
     #[must_use]
     pub fn task_logs_dir(&self) -> PathBuf {
         self.tasks_dir().join("logs")
     }
-
+    /// Returns the task exit dir
     #[must_use]
     pub fn task_exit_dir(&self) -> PathBuf {
         self.tasks_dir().join("exit")
     }
-
+    /// Returns the task heartbeat dir
     #[must_use]
     pub fn task_heartbeat_dir(&self) -> PathBuf {
         self.tasks_dir().join("heartbeat")
     }
-
+    /// Returns the task state path
     #[must_use]
     pub fn task_state_path(&self, task_id: TaskId) -> PathBuf {
         self.task_metadata_dir().join(format!("{task_id}.json"))
     }
-
+    /// Returns the task log path
     #[must_use]
     pub fn task_log_path(&self, task_id: TaskId) -> PathBuf {
         self.task_logs_dir().join(format!("{task_id}.log"))
     }
-
+    /// Returns the task exit path
     #[must_use]
     pub fn task_exit_path(&self, task_id: TaskId) -> PathBuf {
         self.task_exit_dir().join(format!("{task_id}.exit"))
     }
-
+    /// Returns the task heartbeat path
     #[must_use]
     pub fn task_heartbeat_path(&self, task_id: TaskId) -> PathBuf {
         self.task_heartbeat_dir()
             .join(format!("{task_id}.heartbeat"))
     }
-
+    /// Handles paste path
     #[must_use]
     pub fn paste_path(&self, sha256: &str) -> PathBuf {
         self.pastes_dir().join(sha256)
     }
 }
-
+/// Stores transcript store
 #[derive(Clone, Debug)]
 pub struct TranscriptStore {
     paths: StoragePaths,
 }
 
 impl TranscriptStore {
+    /// Creates a new value
     #[must_use]
     pub fn new(base_dir: impl Into<PathBuf>) -> Self {
         Self {
             paths: StoragePaths::new(base_dir),
         }
     }
-
+    /// Handles paths
     #[must_use]
     pub fn paths(&self) -> &StoragePaths {
         &self.paths
     }
 
+    /// Handles ensure layout
     pub fn ensure_layout(&self) -> Result<()> {
         fs::create_dir_all(self.paths.sessions_dir())?;
         fs::create_dir_all(self.paths.metadata_dir())?;
@@ -279,6 +286,7 @@ impl TranscriptStore {
         Ok(())
     }
 
+    /// Handles append message
     pub fn append_message(&self, message: &MessageEnvelope) -> Result<()> {
         self.ensure_layout()?;
         let path = self.paths.transcript_path(message.session_id);
@@ -291,6 +299,7 @@ impl TranscriptStore {
         Ok(())
     }
 
+    /// Loads session
     pub fn load_session(&self, session_id: SessionId) -> Result<LoadedTranscript> {
         let path = self.paths.transcript_path(session_id);
         if !path.exists() {
@@ -339,12 +348,14 @@ impl TranscriptStore {
         Ok(message)
     }
 
+    /// Writes metadata
     pub fn write_metadata(&self, metadata: &SessionMetadata) -> Result<()> {
         self.ensure_layout()?;
         let path = self.paths.metadata_path(metadata.session_id);
         write_json_atomically(&path, metadata)
     }
 
+    /// Reads metadata
     pub fn read_metadata(&self, session_id: SessionId) -> Result<SessionMetadata> {
         let path = self.paths.metadata_path(session_id);
         if !path.exists() {
@@ -359,6 +370,7 @@ impl TranscriptStore {
         Ok(metadata)
     }
 
+    /// Handles list metadata
     pub fn list_metadata(&self) -> Result<Vec<SessionMetadata>> {
         let dir = self.paths.metadata_dir();
         match fs::read_dir(dir) {
@@ -393,12 +405,14 @@ impl TranscriptStore {
         }
     }
 
+    /// Writes snapshot
     pub fn write_snapshot(&self, snapshot: &SessionSnapshot) -> Result<()> {
         self.ensure_layout()?;
         let path = self.paths.snapshot_path(snapshot.session_id);
         write_json_atomically(&path, snapshot)
     }
 
+    /// Reads snapshot
     pub fn read_snapshot(&self, session_id: SessionId) -> Result<SessionSnapshot> {
         let path = self.paths.snapshot_path(session_id);
         if !path.exists() {
@@ -418,6 +432,7 @@ impl TranscriptStore {
         Ok(snapshot)
     }
 
+    /// Reads snapshot if exists
     pub fn read_snapshot_if_exists(
         &self,
         session_id: SessionId,
@@ -429,6 +444,7 @@ impl TranscriptStore {
         }
     }
 
+    /// Handles restore session
     pub fn restore_session(&self, session_id: SessionId) -> Result<RestoredSession> {
         let metadata = self.read_metadata(session_id)?;
         let transcript = self.load_session(session_id)?;
@@ -454,16 +470,20 @@ impl TranscriptStore {
         })
     }
 }
-
+/// Enumerates sync support
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SyncSupport {
+    /// Represents local only
     LocalOnly,
+    /// Represents unsupported
     Unsupported,
+    /// Represents deferred
     Deferred,
 }
 
 impl SyncSupport {
+    /// Constant fn
     #[must_use]
     pub const fn label(self) -> &'static str {
         match self {
@@ -473,22 +493,32 @@ impl SyncSupport {
         }
     }
 }
-
+/// Represents settings sync status
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct SettingsSyncStatus {
+    /// Stores the schema version
     #[serde(default = "default_storage_schema_version")]
     pub schema_version: u16,
+    /// Stores the status
     pub status: SyncSupport,
+    /// Stores the cloud status
     pub cloud_status: SyncSupport,
+    /// Stores the settings path
     pub settings_path: PathBuf,
+    /// Stores the settings exists
     pub settings_exists: bool,
+    /// Stores the user memory path
     pub user_memory_path: PathBuf,
+    /// Stores the user memory exists
     pub user_memory_exists: bool,
+    /// Stores the cloud attempted
     pub cloud_attempted: bool,
+    /// Stores the reason
     pub reason: String,
 }
 
 impl SettingsSyncStatus {
+    /// Handles inspect
     #[must_use]
     pub fn inspect(paths: &StoragePaths) -> Self {
         let settings_path = paths.settings_path();
@@ -506,18 +536,24 @@ impl SettingsSyncStatus {
         }
     }
 }
-
+/// Represents remote surface status
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct RemoteSurfaceStatus {
+    /// Stores the schema version
     #[serde(default = "default_storage_schema_version")]
     pub schema_version: u16,
+    /// Stores the service
     pub service: String,
+    /// Stores the status
     pub status: SyncSupport,
+    /// Stores the cloud attempted
     pub cloud_attempted: bool,
+    /// Stores the reason
     pub reason: String,
 }
 
 impl RemoteSurfaceStatus {
+    /// Handles unsupported
     #[must_use]
     pub fn unsupported(service: impl Into<String>, reason: impl Into<String>) -> Self {
         Self {
@@ -528,7 +564,7 @@ impl RemoteSurfaceStatus {
             reason: reason.into(),
         }
     }
-
+    /// Handles deferred
     #[must_use]
     pub fn deferred(service: impl Into<String>, reason: impl Into<String>) -> Self {
         Self {
@@ -540,15 +576,19 @@ impl RemoteSurfaceStatus {
         }
     }
 }
-
+/// Represents sync status report
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct SyncStatusReport {
+    /// Stores the settings sync
     pub settings_sync: SettingsSyncStatus,
+    /// Stores the remote managed settings
     pub remote_managed_settings: RemoteSurfaceStatus,
+    /// Stores the team memory sync
     pub team_memory_sync: RemoteSurfaceStatus,
 }
 
 impl SyncStatusReport {
+    /// Handles inspect
     #[must_use]
     pub fn inspect(paths: &StoragePaths) -> Self {
         Self {
@@ -564,17 +604,22 @@ impl SyncStatusReport {
         }
     }
 }
-
+/// Enumerates session memory source
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SessionMemorySource {
+    /// Represents user
     User,
+    /// Represents assistant
     Assistant,
+    /// Represents tool
     Tool,
+    /// Represents system
     System,
 }
 
 impl SessionMemorySource {
+    /// Constant fn
     #[must_use]
     pub const fn label(self) -> &'static str {
         match self {
@@ -585,35 +630,50 @@ impl SessionMemorySource {
         }
     }
 }
-
+/// Represents session memory entry
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct SessionMemoryEntry {
+    /// Stores the key
     pub key: String,
+    /// Stores the source
     pub source: SessionMemorySource,
+    /// Stores the summary
     pub summary: String,
+    /// Stores the occurrences
     pub occurrences: usize,
+    /// Stores the first message identifier
     pub first_message_id: MessageId,
+    /// Stores the last message identifier
     pub last_message_id: MessageId,
+    /// Stores the first seen at
     #[serde(with = "time::serde::rfc3339")]
     pub first_seen_at: OffsetDateTime,
+    /// Stores the last seen at
     #[serde(with = "time::serde::rfc3339")]
     pub last_seen_at: OffsetDateTime,
 }
-
+/// Represents session memory index
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct SessionMemoryIndex {
+    /// Stores the schema version
     #[serde(default = "default_storage_schema_version")]
     pub schema_version: u16,
+    /// Stores the session identifier
     pub session_id: SessionId,
+    /// Stores the transcript message count
     pub transcript_message_count: usize,
+    /// Stores the indexed message count
     pub indexed_message_count: usize,
+    /// Stores the indexed at
     #[serde(with = "time::serde::rfc3339")]
     pub indexed_at: OffsetDateTime,
+    /// Stores the entries
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub entries: Vec<SessionMemoryEntry>,
 }
 
 impl SessionMemoryIndex {
+    /// Handles extract
     #[must_use]
     pub fn extract(session_id: SessionId, messages: &[MessageEnvelope]) -> Self {
         let mut entries = BTreeMap::<String, SessionMemoryEntry>::new();
@@ -675,30 +735,33 @@ impl SessionMemoryIndex {
         }
     }
 }
-
+/// Stores session memory index store
 #[derive(Clone, Debug)]
 pub struct SessionMemoryIndexStore {
     paths: StoragePaths,
 }
 
 impl SessionMemoryIndexStore {
+    /// Creates a new value
     #[must_use]
     pub fn new(base_dir: impl Into<PathBuf>) -> Self {
         Self {
             paths: StoragePaths::new(base_dir),
         }
     }
-
+    /// Handles paths
     #[must_use]
     pub fn paths(&self) -> &StoragePaths {
         &self.paths
     }
 
+    /// Handles ensure layout
     pub fn ensure_layout(&self) -> Result<()> {
         fs::create_dir_all(self.paths.session_memory_index_dir())?;
         Ok(())
     }
 
+    /// Handles write
     pub fn write(&self, index: &SessionMemoryIndex) -> Result<()> {
         self.ensure_layout()?;
         write_json_atomically(
@@ -707,6 +770,7 @@ impl SessionMemoryIndexStore {
         )
     }
 
+    /// Handles read
     pub fn read(&self, session_id: SessionId) -> Result<SessionMemoryIndex> {
         let path = self.paths.session_memory_index_path(session_id);
         if !path.exists() {
@@ -726,6 +790,7 @@ impl SessionMemoryIndexStore {
         Ok(index)
     }
 
+    /// Reads if exists
     pub fn read_if_exists(&self, session_id: SessionId) -> Result<Option<SessionMemoryIndex>> {
         match self.read(session_id) {
             Ok(index) => Ok(Some(index)),
@@ -734,6 +799,7 @@ impl SessionMemoryIndexStore {
         }
     }
 
+    /// Handles list
     pub fn list(&self) -> Result<Vec<SessionMemoryIndex>> {
         let dir = self.paths.session_memory_index_dir();
         match fs::read_dir(dir) {
@@ -767,6 +833,7 @@ impl SessionMemoryIndexStore {
         }
     }
 
+    /// Handles rebuild from messages
     pub fn rebuild_from_messages(
         &self,
         session_id: SessionId,
@@ -777,6 +844,7 @@ impl SessionMemoryIndexStore {
         Ok(index)
     }
 
+    /// Handles rebuild from transcript
     pub fn rebuild_from_transcript(
         &self,
         store: &TranscriptStore,
@@ -882,36 +950,40 @@ fn truncate_memory_summary(text: &str, max_chars: usize) -> String {
     let truncated = text.chars().take(keep).collect::<String>();
     format!("{truncated}…")
 }
-
+/// Stores cost store
 #[derive(Clone, Debug)]
 pub struct CostStore {
     paths: StoragePaths,
 }
 
 impl CostStore {
+    /// Creates a new value
     #[must_use]
     pub fn new(base_dir: impl Into<PathBuf>) -> Self {
         Self {
             paths: StoragePaths::new(base_dir),
         }
     }
-
+    /// Handles paths
     #[must_use]
     pub fn paths(&self) -> &StoragePaths {
         &self.paths
     }
 
+    /// Handles ensure layout
     pub fn ensure_layout(&self) -> Result<()> {
         fs::create_dir_all(self.paths.sessions_dir())?;
         Ok(())
     }
 
+    /// Writes costs
     pub fn write_costs(&self, ledger: &SessionCostLedger) -> Result<()> {
         self.ensure_layout()?;
         let path = self.paths.cost_path(ledger.session_id);
         write_json_atomically(&path, ledger)
     }
 
+    /// Reads costs
     pub fn read_costs(&self, session_id: SessionId) -> Result<SessionCostLedger> {
         let path = self.paths.cost_path(session_id);
         if !path.exists() {
@@ -926,25 +998,27 @@ impl CostStore {
         Ok(ledger)
     }
 }
-
+/// Stores task store
 #[derive(Clone, Debug)]
 pub struct TaskStore {
     paths: StoragePaths,
 }
 
 impl TaskStore {
+    /// Creates a new value
     #[must_use]
     pub fn new(base_dir: impl Into<PathBuf>) -> Self {
         Self {
             paths: StoragePaths::new(base_dir),
         }
     }
-
+    /// Handles paths
     #[must_use]
     pub fn paths(&self) -> &StoragePaths {
         &self.paths
     }
 
+    /// Handles ensure layout
     pub fn ensure_layout(&self) -> Result<()> {
         fs::create_dir_all(self.paths.task_metadata_dir())?;
         fs::create_dir_all(self.paths.task_logs_dir())?;
@@ -953,11 +1027,13 @@ impl TaskStore {
         Ok(())
     }
 
+    /// Writes task
     pub fn write_task(&self, task: &TaskState) -> Result<()> {
         self.ensure_layout()?;
         write_json_atomically(&self.paths.task_state_path(task.id), task)
     }
 
+    /// Reads task
     pub fn read_task(&self, task_id: TaskId) -> Result<TaskState> {
         let path = self.paths.task_state_path(task_id);
         if !path.exists() {
@@ -966,6 +1042,7 @@ impl TaskStore {
         Ok(serde_json::from_str(&fs::read_to_string(path)?)?)
     }
 
+    /// Handles list tasks
     pub fn list_tasks(&self) -> Result<Vec<TaskState>> {
         let dir = self.paths.task_metadata_dir();
         match fs::read_dir(dir) {
@@ -997,6 +1074,7 @@ impl TaskStore {
         }
     }
 
+    /// Handles append log
     pub fn append_log(&self, task_id: TaskId, content: impl AsRef<str>) -> Result<()> {
         self.ensure_layout()?;
         let file = OpenOptions::new()
@@ -1010,6 +1088,7 @@ impl TaskStore {
         Ok(())
     }
 
+    /// Reads log
     pub fn read_log(&self, task_id: TaskId) -> Result<String> {
         let path = self.paths.task_log_path(task_id);
         if !path.exists() {
@@ -1018,6 +1097,7 @@ impl TaskStore {
         Ok(fs::read_to_string(path)?)
     }
 
+    /// Reads log tail
     pub fn read_log_tail(&self, task_id: TaskId, line_limit: usize) -> Result<Vec<String>> {
         let content = self.read_log(task_id)?;
         let line_limit = line_limit.max(1);
@@ -1028,6 +1108,7 @@ impl TaskStore {
         Ok(lines)
     }
 
+    /// Writes exit code
     pub fn write_exit_code(&self, task_id: TaskId, exit_code: i32) -> Result<()> {
         self.ensure_layout()?;
         let mut file = File::create(self.paths.task_exit_path(task_id))?;
@@ -1036,6 +1117,7 @@ impl TaskStore {
         Ok(())
     }
 
+    /// Writes heartbeat at
     pub fn write_heartbeat_at(&self, task_id: TaskId, heartbeat_at: OffsetDateTime) -> Result<()> {
         self.ensure_layout()?;
         let content = format!(
@@ -1049,6 +1131,7 @@ impl TaskStore {
         write_text_atomically(&self.paths.task_heartbeat_path(task_id), &content)
     }
 
+    /// Reads exit code
     pub fn read_exit_code(&self, task_id: TaskId) -> Result<Option<i32>> {
         let path = self.paths.task_exit_path(task_id);
         match fs::read_to_string(&path) {
@@ -1065,6 +1148,7 @@ impl TaskStore {
         }
     }
 
+    /// Reads heartbeat at
     pub fn read_heartbeat_at(&self, task_id: TaskId) -> Result<Option<OffsetDateTime>> {
         let path = self.paths.task_heartbeat_path(task_id);
         match fs::read_to_string(&path) {
@@ -1080,7 +1164,7 @@ impl TaskStore {
         }
     }
 }
-
+/// Stores paste store
 #[derive(Clone, Debug)]
 pub struct PasteStore {
     paths: StoragePaths,
@@ -1088,11 +1172,12 @@ pub struct PasteStore {
 }
 
 impl PasteStore {
+    /// Creates a new value
     #[must_use]
     pub fn new(base_dir: impl Into<PathBuf>) -> Self {
         Self::with_max_bytes(base_dir, DEFAULT_PASTE_MAX_BYTES)
     }
-
+    /// Handles with max bytes
     #[must_use]
     pub fn with_max_bytes(base_dir: impl Into<PathBuf>, max_bytes: usize) -> Self {
         Self {
@@ -1100,22 +1185,24 @@ impl PasteStore {
             max_bytes,
         }
     }
-
+    /// Handles paths
     #[must_use]
     pub fn paths(&self) -> &StoragePaths {
         &self.paths
     }
-
+    /// Constant fn
     #[must_use]
     pub const fn max_bytes(&self) -> usize {
         self.max_bytes
     }
 
+    /// Handles ensure layout
     pub fn ensure_layout(&self) -> Result<()> {
         fs::create_dir_all(self.paths.pastes_dir())?;
         Ok(())
     }
 
+    /// Handles store
     pub fn store(&self, content: impl AsRef<[u8]>) -> Result<StoredPaste> {
         let content = content.as_ref();
         if content.len() > self.max_bytes {
@@ -1140,6 +1227,7 @@ impl PasteStore {
         })
     }
 
+    /// Handles load
     pub fn load(&self, sha256: &str) -> Result<Vec<u8>> {
         validate_paste_hash(sha256)?;
         let path = self.paths.paste_path(sha256);
@@ -1149,26 +1237,32 @@ impl PasteStore {
         Ok(fs::read(path)?)
     }
 
+    /// Loads text
     pub fn load_text(&self, sha256: &str) -> Result<String> {
         String::from_utf8(self.load(sha256)?)
             .map_err(|error| WonderError::validation(format!("paste is not valid UTF-8: {error}")))
     }
 }
-
+/// Represents loaded transcript
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct LoadedTranscript {
+    /// Stores the messages
     pub messages: Vec<MessageEnvelope>,
+    /// Stores the warnings
     pub warnings: Vec<TranscriptWarning>,
 }
-
+/// Enumerates session resume source
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SessionResumeSource {
+    /// Represents snapshot
     Snapshot,
+    /// Represents transcript
     Transcript,
 }
 
 impl SessionResumeSource {
+    /// Constant fn
     #[must_use]
     pub const fn label(self) -> &'static str {
         match self {
@@ -1177,20 +1271,26 @@ impl SessionResumeSource {
         }
     }
 }
-
+/// Represents session snapshot
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct SessionSnapshot {
+    /// Stores the schema version
     #[serde(default = "default_storage_schema_version")]
     pub schema_version: u16,
+    /// Stores the session identifier
     pub session_id: SessionId,
+    /// Stores the state
     pub state: AppState,
+    /// Stores the transcript message count
     #[serde(default)]
     pub transcript_message_count: usize,
+    /// Stores the transcript warning count
     #[serde(default)]
     pub transcript_warning_count: usize,
 }
 
 impl SessionSnapshot {
+    /// Handles from app state
     #[must_use]
     pub fn from_app_state(
         state: &AppState,
@@ -1206,52 +1306,74 @@ impl SessionSnapshot {
         }
     }
 }
-
+/// Represents restored session
 #[derive(Clone, Debug, PartialEq)]
 pub struct RestoredSession {
+    /// Stores the metadata
     pub metadata: SessionMetadata,
+    /// Stores the transcript
     pub transcript: LoadedTranscript,
+    /// Stores the state
     pub state: AppState,
+    /// Stores the resume source
     pub resume_source: SessionResumeSource,
 }
-
+/// Represents transcript warning
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct TranscriptWarning {
+    /// Stores the line
     pub line: usize,
+    /// Stores the message
     pub message: String,
 }
-
+/// Represents session metadata
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct SessionMetadata {
+    /// Stores the schema version
     #[serde(default = "default_storage_schema_version")]
     pub schema_version: u16,
+    /// Stores the session identifier
     pub session_id: SessionId,
+    /// Stores the title
     pub title: String,
+    /// Stores the cwd
     pub cwd: PathBuf,
+    /// Stores the git branch
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub git_branch: Option<String>,
+    /// Stores the entrypoint
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub entrypoint: Option<String>,
+    /// Stores the app version
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub app_version: Option<String>,
+    /// Stores the created at
     #[serde(with = "time::serde::rfc3339")]
     pub created_at: OffsetDateTime,
+    /// Stores the updated at
     #[serde(with = "time::serde::rfc3339")]
     pub updated_at: OffsetDateTime,
+    /// Stores the message count
     pub message_count: usize,
+    /// Stores the tags
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tags: Vec<String>,
+    /// Stores the provider
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider: Option<String>,
+    /// Stores the model
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
+    /// Stores the auth
     #[serde(default)]
     pub auth: wonder_of_u_core::AuthState,
+    /// Stores the costs
     #[serde(default)]
     pub costs: CostState,
 }
 
 impl SessionMetadata {
+    /// Handles from app state
     #[must_use]
     pub fn from_app_state(state: &AppState) -> Self {
         Self {
@@ -1272,7 +1394,7 @@ impl SessionMetadata {
             costs: state.costs.clone(),
         }
     }
-
+    /// Handles from state with transcript
     #[must_use]
     pub fn from_state_with_transcript(state: &AppState, transcript_message_count: usize) -> Self {
         let mut metadata = Self::from_app_state(state);
@@ -1280,20 +1402,26 @@ impl SessionMetadata {
         metadata
     }
 }
-
+/// Represents session cost ledger
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct SessionCostLedger {
+    /// Stores the schema version
     #[serde(default = "default_storage_schema_version")]
     pub schema_version: u16,
+    /// Stores the session identifier
     pub session_id: SessionId,
+    /// Stores the provider
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider: Option<String>,
+    /// Stores the model
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
+    /// Stores the costs
     pub costs: CostState,
 }
 
 impl SessionCostLedger {
+    /// Handles from app state
     #[must_use]
     pub fn from_app_state(state: &AppState) -> Self {
         Self {
@@ -1305,10 +1433,12 @@ impl SessionCostLedger {
         }
     }
 }
-
+/// Represents stored paste
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct StoredPaste {
+    /// Stores the sha256
     pub sha256: String,
+    /// Stores the bytes
     pub bytes: usize,
 }
 
@@ -2030,9 +2160,13 @@ pub const ENTRYPOINT_NAME: &str = "MEMORY.md";
 pub struct EntrypointTruncation {
     /// The possibly-truncated content, with a warning appended if cut.
     pub content: String,
+    /// Stores the line count
     pub line_count: usize,
+    /// Stores the byte count
     pub byte_count: usize,
+    /// Stores the was line truncated
     pub was_line_truncated: bool,
+    /// Stores the was byte truncated
     pub was_byte_truncated: bool,
 }
 

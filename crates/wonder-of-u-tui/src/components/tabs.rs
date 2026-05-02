@@ -14,6 +14,7 @@ pub struct TabEntry {
 }
 
 impl TabEntry {
+    /// Creates a new value
     #[must_use]
     pub fn new(id: impl Into<String>) -> Self {
         Self {
@@ -23,19 +24,19 @@ impl TabEntry {
             disabled: false,
         }
     }
-
+    /// Handles label
     #[must_use]
     pub fn label(mut self, label: impl Into<String>) -> Self {
         self.label = Some(label.into());
         self
     }
-
+    /// Handles selected
     #[must_use]
     pub fn selected(mut self) -> Self {
         self.selected = true;
         self
     }
-
+    /// Handles disabled
     #[must_use]
     pub fn disabled(mut self) -> Self {
         self.disabled = true;
@@ -52,6 +53,7 @@ impl TabEntry {
 /// State for a tab-bar widget.
 #[derive(Clone, Debug, Default)]
 pub struct TabsView {
+    /// Stores the tabs
     pub tabs: Vec<TabEntry>,
     /// Optional header title shown left of the tab strip.
     pub title: Option<String>,
@@ -66,6 +68,7 @@ pub struct TabsView {
 }
 
 impl TabsView {
+    /// Creates a new value
     #[must_use]
     pub fn new(tabs: impl IntoIterator<Item = TabEntry>) -> Self {
         Self {

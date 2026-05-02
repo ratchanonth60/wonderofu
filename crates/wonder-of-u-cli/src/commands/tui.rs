@@ -3,13 +3,16 @@ use wonder_of_u_core::{
     Command, CommandContext, CommandInvocation, CommandKind, CommandOutput, CommandSpec, Result,
 };
 
+/// Represents tui command
 pub struct TuiCommand;
 
 impl TuiCommand {
+    /// Constant fn
     pub const fn new() -> Self {
         Self
     }
 
+    /// Handles command spec
     pub fn command_spec() -> CommandSpec {
         CommandSpec::new(
             "tui",

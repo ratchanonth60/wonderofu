@@ -8,14 +8,20 @@ use crate::{
 /// Developer/status bar shown near the prompt.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct DevBarView {
+    /// Stores the profile
     pub profile: Option<String>,
+    /// Stores the sandbox
     pub sandbox: Option<String>,
+    /// Stores the hook mode
     pub hook_mode: Option<String>,
+    /// Stores the fast mode
     pub fast_mode: bool,
+    /// Stores the mcp servers
     pub mcp_servers: usize,
 }
 
 impl DevBarView {
+    /// Renders line
     #[must_use]
     pub fn render_line(&self) -> Option<String> {
         let mut parts = Vec::new();
@@ -41,11 +47,14 @@ impl DevBarView {
 /// Exit confirmation state.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ExitFlowView {
+    /// Stores the running tasks
     pub running_tasks: usize,
+    /// Stores the unsaved buffers
     pub unsaved_buffers: usize,
 }
 
 impl ExitFlowView {
+    /// Handles to dialog view
     #[must_use]
     pub fn to_dialog_view(&self) -> DialogView {
         let mut body = vec!["Are you sure you want to leave Claude Code?".into()];
@@ -77,12 +86,16 @@ impl ExitFlowView {
 /// Device-code or console OAuth handoff details.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ConsoleOAuthFlowView {
+    /// Stores the url
     pub url: String,
+    /// Stores the code
     pub code: String,
+    /// Stores the expires in seconds
     pub expires_in_seconds: Option<u64>,
 }
 
 impl ConsoleOAuthFlowView {
+    /// Handles instructions
     #[must_use]
     pub fn instructions(&self) -> Vec<String> {
         let mut lines = vec![
@@ -99,12 +112,16 @@ impl ConsoleOAuthFlowView {
 /// A single onboarding checklist step.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct OnboardingStepView {
+    /// Stores the title
     pub title: String,
+    /// Stores the description
     pub description: String,
+    /// Stores the complete
     pub complete: bool,
 }
 
 impl OnboardingStepView {
+    /// Creates a new value
     #[must_use]
     pub fn new(title: impl Into<String>, description: impl Into<String>) -> Self {
         Self {
@@ -113,7 +130,7 @@ impl OnboardingStepView {
             complete: false,
         }
     }
-
+    /// Constant fn
     #[must_use]
     pub const fn complete(mut self, complete: bool) -> Self {
         self.complete = complete;
@@ -124,12 +141,16 @@ impl OnboardingStepView {
 /// Onboarding screen state.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct OnboardingView {
+    /// Stores the title
     pub title: String,
+    /// Stores the steps
     pub steps: Vec<OnboardingStepView>,
+    /// Stores the footer
     pub footer: Option<BylineView>,
 }
 
 impl OnboardingView {
+    /// Creates a new value
     #[must_use]
     pub fn new(title: impl Into<String>, steps: Vec<OnboardingStepView>) -> Self {
         Self {
@@ -138,13 +159,13 @@ impl OnboardingView {
             footer: None,
         }
     }
-
+    /// Handles footer
     #[must_use]
     pub fn footer(mut self, footer: BylineView) -> Self {
         self.footer = Some(footer);
         self
     }
-
+    /// Renders lines
     #[must_use]
     pub fn render_lines(&self) -> Vec<String> {
         let mut lines = vec![self.title.clone()];
@@ -169,12 +190,16 @@ impl OnboardingView {
 /// A tab label with an optional tag badge.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TagTabView {
+    /// Stores the label
     pub label: String,
+    /// Stores the tag
     pub tag: Option<String>,
+    /// Stores the active
     pub active: bool,
 }
 
 impl TagTabView {
+    /// Creates a new value
     #[must_use]
     pub fn new(label: impl Into<String>) -> Self {
         Self {
@@ -183,19 +208,19 @@ impl TagTabView {
             active: false,
         }
     }
-
+    /// Handles tag
     #[must_use]
     pub fn tag(mut self, tag: impl Into<String>) -> Self {
         self.tag = Some(tag.into());
         self
     }
-
+    /// Constant fn
     #[must_use]
     pub const fn active(mut self, active: bool) -> Self {
         self.active = active;
         self
     }
-
+    /// Handles display label
     #[must_use]
     pub fn display_label(&self) -> String {
         match &self.tag {
@@ -208,10 +233,12 @@ impl TagTabView {
 /// App shell tab row.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct TagTabsView {
+    /// Stores the tabs
     pub tabs: Vec<TagTabView>,
 }
 
 impl TagTabsView {
+    /// Renders line
     #[must_use]
     pub fn render_line(&self) -> String {
         self.tabs
@@ -231,13 +258,18 @@ impl TagTabsView {
 /// Top-level shell composition helpers.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct AppShellView {
+    /// Stores the title
     pub title: String,
+    /// Stores the dev bar
     pub dev_bar: Option<DevBarView>,
+    /// Stores the onboarding
     pub onboarding: Option<OnboardingView>,
+    /// Stores the footer
     pub footer: Option<BylineView>,
 }
 
 impl AppShellView {
+    /// Renders lines
     #[must_use]
     pub fn render_lines(&self) -> Vec<String> {
         let mut lines = vec![self.title.clone()];
