@@ -1,5 +1,7 @@
 //! Append-only session storage primitives.
 
+pub mod memdir;
+
 use std::{
     collections::BTreeMap,
     ffi::OsStr,
