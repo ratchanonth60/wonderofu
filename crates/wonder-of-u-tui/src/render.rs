@@ -222,7 +222,12 @@ fn draw_message_view(frame: &mut FrameBuffer, area: Rect, view: &ShellView, them
         .saturating_sub(docked_height.min(area.height.saturating_sub(title_height)));
     let transcript_area = Rect::new(area.x, transcript_y, area.width, transcript_height);
 
-    draw_lines_tail(frame, transcript_area, &message_panel_lines(view, theme));
+    let msg_lines = message_panel_lines(view, theme);
+    if view.messages.is_empty() {
+        draw_lines(frame, transcript_area, &msg_lines);
+    } else {
+        draw_lines_tail(frame, transcript_area, &msg_lines);
+    }
 
     if docked_height == 0 || docked_height > area.height.saturating_sub(title_height) {
         return;
@@ -817,13 +822,41 @@ fn shell_header_text(title: &str) -> String {
 
 fn message_panel_lines(view: &ShellView, theme: &Theme) -> Vec<StyledLine> {
     if view.messages.is_empty() {
-        return vec![StyledLine {
-            text: "No messages yet.".into(),
-            style: style_for_message(theme, MessageRole::System),
-        }];
+        return welcome_panel_lines(theme);
     }
-
     message_lines_to_styled(&view.messages, theme)
+}
+
+fn welcome_panel_lines(theme: &Theme) -> Vec<StyledLine> {
+    let art = theme.title;
+    let dim = theme.footer;
+    let body = theme.messages;
+    macro_rules! l {
+        ($s:expr, $st:expr) => {
+            StyledLine {
+                text: $s.into(),
+                style: $st,
+            }
+        };
+    }
+    vec![
+        l!("", body),
+        l!("   ██╗    ██╗  ██████╗  ██╗   ██╗", art),
+        l!("   ██║    ██║ ██╔═══██╗ ██║   ██║", art),
+        l!("   ██║ █╗ ██║ ██║   ██║ ██║   ██║", art),
+        l!("   ██║███╗██║ ██║   ██║ ╚██╗ ██╔╝", art),
+        l!("   ╚███╔███╔╝ ╚██████╔╝  ╚████╔╝ ", art),
+        l!("    ╚══╝╚══╝   ╚═════╝    ╚═══╝  ", art),
+        l!("", body),
+        l!("     wonder-of-u  ·  AI coding assistant", dim),
+        l!("", body),
+        l!("   ╭────────────────────────────────────╮", dim),
+        l!("   │  Type a message to get started     │", dim),
+        l!("   │  /  for slash commands             │", dim),
+        l!("   │  ?  for help                       │", dim),
+        l!("   ╰────────────────────────────────────╯", dim),
+        l!("", body),
+    ]
 }
 
 fn message_lines_to_styled(lines: &[MessageLineView], theme: &Theme) -> Vec<StyledLine> {
@@ -960,9 +993,9 @@ mod tests {
             frame.to_plain_text(),
             [
                 "▸ wonder-of-u  Empty",
-                "No messages yet.",
                 "",
-                "",
+                "   ██╗    ██╗  ██████╗  ██╗",
+                "   ██║    ██║ ██╔═══██╗ ██║",
                 "╭─ prompt ───────────────────╮",
                 "│ ›                          │",
                 "╰────────────────────────────╯",

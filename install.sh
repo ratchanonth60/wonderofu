@@ -77,6 +77,28 @@ need_command() {
   command -v "$1" >/dev/null 2>&1 || die "missing required command: $1"
 }
 
+print_success_banner() {
+  local path="$1"
+  local C=$'\033[1;36m'   # cyan bold (art)
+  local G=$'\033[1;32m'   # green bold (success lines)
+  local D=$'\033[2m'       # dim (tagline)
+  local R=$'\033[0m'       # reset
+
+  printf '\n'
+  printf "${C}   ██╗    ██╗  ██████╗  ██╗   ██╗${R}\n"
+  printf "${C}   ██║    ██║ ██╔═══██╗ ██║   ██║${R}\n"
+  printf "${C}   ██║ █╗ ██║ ██║   ██║ ██║   ██║${R}\n"
+  printf "${C}   ██║███╗██║ ██║   ██║ ╚██╗ ██╔╝${R}\n"
+  printf "${C}   ╚███╔███╔╝ ╚██████╔╝  ╚████╔╝ ${R}\n"
+  printf "${C}    ╚══╝╚══╝   ╚═════╝    ╚═══╝  ${R}\n"
+  printf '\n'
+  printf "${D}   wonder-of-u  ·  AI coding assistant for your terminal${R}\n"
+  printf '\n'
+  printf "${G}   ✓  installed  →  %s${R}\n" "$path"
+  printf "${G}   ✓  run with   →  wonder-of-u${R}\n"
+  printf '\n'
+}
+
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --prefix)
@@ -154,7 +176,7 @@ log "Installing $INSTALL_PATH"
 cp -- "$TARGET_BIN" "$INSTALL_PATH"
 chmod 0755 "$INSTALL_PATH"
 
-log "Installed $("$INSTALL_PATH" --version)"
+print_success_banner "$INSTALL_PATH"
 
 case ":${PATH:-}:" in
   *":$BIN_DIR:"*) ;;
