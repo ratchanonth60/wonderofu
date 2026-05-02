@@ -89,8 +89,9 @@ pub use message::{
     status_text, task_panel_view,
 };
 pub use notification::{
-    NotificationInput, NotificationLifetime, NotificationQueue, NotificationSeverity,
-    NotificationView,
+    BUILT_IN_TIPS, NotificationInput, NotificationLifetime, NotificationQueue,
+    NotificationSeverity, NotificationView, OsNotificationOptions, OsNotificationResult, Tip,
+    select_tip, send_os_notification, send_terminal_bell,
 };
 pub use permission::{PermissionAccessKind, PermissionDetailView, PermissionSummaryView};
 pub use prompt::{
