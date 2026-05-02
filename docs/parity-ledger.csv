@@ -1,0 +1,1904 @@
+file,category,status,note
+QueryEngine.ts,misc,covered-by-rust-equivalent,top-level QueryEngine.ts
+Task.ts,misc,needs-port,top-level Task.ts
+Tool.ts,misc,needs-port,top-level Tool.ts
+assistant/sessionHistory.ts,assistant,covered-by-rust-equivalent,assistant/sessionHistory
+bootstrap/state.ts,bootstrap,covered-by-rust-equivalent,bootstrap/state
+bridge/bridgeApi.ts,external-bridge,external-service-blocked,bridge requires external runtime
+bridge/bridgeConfig.ts,external-bridge,external-service-blocked,bridge requires external runtime
+bridge/bridgeDebug.ts,external-bridge,external-service-blocked,bridge requires external runtime
+bridge/bridgeEnabled.ts,external-bridge,external-service-blocked,bridge requires external runtime
+bridge/bridgeMain.ts,external-bridge,external-service-blocked,bridge requires external runtime
+bridge/bridgeMessaging.ts,external-bridge,external-service-blocked,bridge requires external runtime
+bridge/bridgePermissionCallbacks.ts,external-bridge,external-service-blocked,bridge requires external runtime
+bridge/bridgePointer.ts,external-bridge,external-service-blocked,bridge requires external runtime
+bridge/bridgeStatusUtil.ts,external-bridge,external-service-blocked,bridge requires external runtime
+bridge/bridgeUI.ts,external-bridge,external-service-blocked,bridge requires external runtime
+bridge/capacityWake.ts,external-bridge,external-service-blocked,bridge requires external runtime
+bridge/codeSessionApi.ts,external-bridge,external-service-blocked,bridge requires external runtime
+bridge/createSession.ts,external-bridge,external-service-blocked,bridge requires external runtime
+bridge/debugUtils.ts,external-bridge,external-service-blocked,bridge requires external runtime
+bridge/envLessBridgeConfig.ts,external-bridge,external-service-blocked,bridge requires external runtime
+bridge/flushGate.ts,external-bridge,external-service-blocked,bridge requires external runtime
+bridge/inboundAttachments.ts,external-bridge,external-service-blocked,bridge requires external runtime
+bridge/inboundMessages.ts,external-bridge,external-service-blocked,bridge requires external runtime
+bridge/initReplBridge.ts,external-bridge,external-service-blocked,bridge requires external runtime
+bridge/jwtUtils.ts,external-bridge,external-service-blocked,bridge requires external runtime
+bridge/pollConfig.ts,external-bridge,external-service-blocked,bridge requires external runtime
+bridge/pollConfigDefaults.ts,external-bridge,external-service-blocked,bridge requires external runtime
+bridge/remoteBridgeCore.ts,external-bridge,external-service-blocked,bridge requires external runtime
+bridge/replBridge.ts,external-bridge,external-service-blocked,bridge requires external runtime
+bridge/replBridgeHandle.ts,external-bridge,external-service-blocked,bridge requires external runtime
+bridge/replBridgeTransport.ts,external-bridge,external-service-blocked,bridge requires external runtime
+bridge/sessionIdCompat.ts,external-bridge,external-service-blocked,bridge requires external runtime
+bridge/sessionRunner.ts,external-bridge,external-service-blocked,bridge requires external runtime
+bridge/trustedDevice.ts,external-bridge,external-service-blocked,bridge requires external runtime
+bridge/types.ts,external-bridge,external-service-blocked,bridge requires external runtime
+bridge/workSecret.ts,external-bridge,external-service-blocked,bridge requires external runtime
+buddy/CompanionSprite.tsx,external-buddy,external-service-blocked,buddy requires external runtime
+buddy/companion.ts,external-buddy,external-service-blocked,buddy requires external runtime
+buddy/prompt.ts,external-buddy,external-service-blocked,buddy requires external runtime
+buddy/sprites.ts,external-buddy,external-service-blocked,buddy requires external runtime
+buddy/types.ts,external-buddy,external-service-blocked,buddy requires external runtime
+buddy/useBuddyNotification.tsx,external-buddy,external-service-blocked,buddy requires external runtime
+cli/exit.ts,cli,covered-by-rust-equivalent,cli/exit
+cli/handlers/agents.ts,cli,covered-by-rust-equivalent,cli/agents
+cli/handlers/auth.ts,cli,covered-by-rust-equivalent,cli/auth
+cli/handlers/autoMode.ts,cli,covered-by-rust-equivalent,cli/autoMode
+cli/handlers/mcp.tsx,cli,needs-port,cli/mcp
+cli/handlers/plugins.ts,cli,covered-by-rust-equivalent,cli/plugins
+cli/handlers/util.tsx,cli,needs-port,cli/util
+cli/ndjsonSafeStringify.ts,cli,covered-by-rust-equivalent,cli/ndjsonSafeStringify
+cli/print.ts,cli,covered-by-rust-equivalent,cli/print
+cli/remoteIO.ts,cli,covered-by-rust-equivalent,cli/remoteIO
+cli/structuredIO.ts,cli,covered-by-rust-equivalent,cli/structuredIO
+cli/transports/HybridTransport.ts,cli,covered-by-rust-equivalent,cli/HybridTransport
+cli/transports/SSETransport.ts,cli,covered-by-rust-equivalent,cli/SSETransport
+cli/transports/SerialBatchEventUploader.ts,cli,covered-by-rust-equivalent,cli/SerialBatchEventUploader
+cli/transports/WebSocketTransport.ts,cli,covered-by-rust-equivalent,cli/WebSocketTransport
+cli/transports/WorkerStateUploader.ts,cli,covered-by-rust-equivalent,cli/WorkerStateUploader
+cli/transports/ccrClient.ts,cli,covered-by-rust-equivalent,cli/ccrClient
+cli/transports/transportUtils.ts,cli,covered-by-rust-equivalent,cli/transportUtils
+cli/update.ts,cli,covered-by-rust-equivalent,cli/update
+commands/add-dir/add-dir.tsx,command,covered-by-rust-equivalent,Rust command: add-dir
+commands/add-dir/index.ts,command,covered-by-rust-equivalent,Rust command: add-dir
+commands/add-dir/validation.ts,command,covered-by-rust-equivalent,Rust command: add-dir
+commands/advisor.ts,command-local,needs-port,advisor local command
+commands/agents/agents.tsx,command,covered-by-rust-equivalent,Rust command: agents
+commands/agents/index.ts,command,covered-by-rust-equivalent,Rust command: agents
+commands/ant-trace/index.js,command-internal,needs-port,ant-trace internal/debug command
+commands/autofix-pr/index.js,command-internal,needs-port,autofix-pr internal/debug command
+commands/backfill-sessions/index.js,command-internal,needs-port,backfill-sessions internal/debug command
+commands/branch/branch.ts,command,covered-by-rust-equivalent,Rust command: branch
+commands/branch/index.ts,command,covered-by-rust-equivalent,Rust command: branch
+commands/break-cache/index.js,command-internal,needs-port,break-cache internal/debug command
+commands/bridge/bridge.tsx,command,covered-by-rust-equivalent,Rust command: bridge
+commands/bridge/index.ts,command,covered-by-rust-equivalent,Rust command: bridge
+commands/bridge-kick.ts,command-internal,needs-port,bridge-kick internal/debug command
+commands/brief.ts,command,covered-by-rust-equivalent,Rust command: brief
+commands/btw/btw.tsx,command-local,needs-port,btw local command
+commands/btw/index.ts,command-local,needs-port,btw local command
+commands/bughunter/index.js,command-internal,needs-port,bughunter internal/debug command
+commands/chrome/chrome.tsx,command,covered-by-rust-equivalent,Rust command: chrome
+commands/chrome/index.ts,command,covered-by-rust-equivalent,Rust command: chrome
+commands/clear/caches.ts,command,covered-by-rust-equivalent,Rust command: clear
+commands/clear/clear.ts,command,covered-by-rust-equivalent,Rust command: clear
+commands/clear/conversation.ts,command,covered-by-rust-equivalent,Rust command: clear
+commands/clear/index.ts,command,covered-by-rust-equivalent,Rust command: clear
+commands/color/color.ts,command,covered-by-rust-equivalent,Rust command: color
+commands/color/index.ts,command,covered-by-rust-equivalent,Rust command: color
+commands/commit-push-pr.ts,command,covered-by-rust-equivalent,Rust command: commit-push-pr
+commands/commit.ts,command,covered-by-rust-equivalent,Rust command: commit
+commands/compact/compact.ts,command,covered-by-rust-equivalent,Rust command: compact
+commands/compact/index.ts,command,covered-by-rust-equivalent,Rust command: compact
+commands/config/config.tsx,command,covered-by-rust-equivalent,Rust command: config
+commands/config/index.ts,command,covered-by-rust-equivalent,Rust command: config
+commands/context/context-noninteractive.ts,command,covered-by-rust-equivalent,Rust command: context
+commands/context/context.tsx,command,covered-by-rust-equivalent,Rust command: context
+commands/context/index.ts,command,covered-by-rust-equivalent,Rust command: context
+commands/copy/copy.tsx,command,covered-by-rust-equivalent,Rust command: copy
+commands/copy/index.ts,command,covered-by-rust-equivalent,Rust command: copy
+commands/cost/cost.ts,command,covered-by-rust-equivalent,Rust command: cost
+commands/cost/index.ts,command,covered-by-rust-equivalent,Rust command: cost
+commands/createMovedToPluginCommand.ts,command,needs-port,createMovedToPluginCommand not in Rust registry
+commands/ctx_viz/index.js,command,needs-port,ctx_viz not in Rust registry
+commands/debug-tool-call/index.js,command-internal,needs-port,debug-tool-call internal/debug command
+commands/desktop/desktop.tsx,command,covered-by-rust-equivalent,Rust command: desktop
+commands/desktop/index.ts,command,covered-by-rust-equivalent,Rust command: desktop
+commands/diff/diff.tsx,command,covered-by-rust-equivalent,Rust command: diff
+commands/diff/index.ts,command,covered-by-rust-equivalent,Rust command: diff
+commands/doctor/doctor.tsx,command,covered-by-rust-equivalent,Rust command: doctor
+commands/doctor/index.ts,command,covered-by-rust-equivalent,Rust command: doctor
+commands/effort/effort.tsx,command,covered-by-rust-equivalent,Rust command: effort
+commands/effort/index.ts,command,covered-by-rust-equivalent,Rust command: effort
+commands/env/index.js,command-local,needs-port,env local command
+commands/exit/exit.tsx,command,covered-by-rust-equivalent,Rust command: exit
+commands/exit/index.ts,command,covered-by-rust-equivalent,Rust command: exit
+commands/export/export.tsx,command,covered-by-rust-equivalent,Rust command: export
+commands/export/index.ts,command,covered-by-rust-equivalent,Rust command: export
+commands/extra-usage/extra-usage-core.ts,command-local,needs-port,extra-usage local command
+commands/extra-usage/extra-usage-noninteractive.ts,command-local,needs-port,extra-usage local command
+commands/extra-usage/extra-usage.tsx,command-local,needs-port,extra-usage local command
+commands/extra-usage/index.ts,command-local,needs-port,extra-usage local command
+commands/fast/fast.tsx,command,covered-by-rust-equivalent,Rust command: fast
+commands/fast/index.ts,command,covered-by-rust-equivalent,Rust command: fast
+commands/feedback/feedback.tsx,command,covered-by-rust-equivalent,Rust command: feedback
+commands/feedback/index.ts,command,covered-by-rust-equivalent,Rust command: feedback
+commands/files/files.ts,command,covered-by-rust-equivalent,Rust command: files
+commands/files/index.ts,command,covered-by-rust-equivalent,Rust command: files
+commands/good-claude/index.js,command-internal,needs-port,good-claude internal/debug command
+commands/heapdump/heapdump.ts,command-internal,needs-port,heapdump internal/debug command
+commands/heapdump/index.ts,command-internal,needs-port,heapdump internal/debug command
+commands/help/help.tsx,command,covered-by-rust-equivalent,Rust command: help
+commands/help/index.ts,command,covered-by-rust-equivalent,Rust command: help
+commands/hooks/hooks.tsx,command,covered-by-rust-equivalent,Rust command: hooks
+commands/hooks/index.ts,command,covered-by-rust-equivalent,Rust command: hooks
+commands/ide/ide.tsx,command,covered-by-rust-equivalent,Rust command: ide
+commands/ide/index.ts,command,covered-by-rust-equivalent,Rust command: ide
+commands/init-verifiers.ts,command-local,needs-port,init-verifiers local command
+commands/init.ts,command,covered-by-rust-equivalent,Rust command: init
+commands/insights.ts,command,covered-by-rust-equivalent,Rust command: insights
+commands/install-github-app/ApiKeyStep.tsx,command-external,external-service-blocked,install-github-app needs GitHub/Slack service
+commands/install-github-app/CheckExistingSecretStep.tsx,command-external,external-service-blocked,install-github-app needs GitHub/Slack service
+commands/install-github-app/CheckGitHubStep.tsx,command-external,external-service-blocked,install-github-app needs GitHub/Slack service
+commands/install-github-app/ChooseRepoStep.tsx,command-external,external-service-blocked,install-github-app needs GitHub/Slack service
+commands/install-github-app/CreatingStep.tsx,command-external,external-service-blocked,install-github-app needs GitHub/Slack service
+commands/install-github-app/ErrorStep.tsx,command-external,external-service-blocked,install-github-app needs GitHub/Slack service
+commands/install-github-app/ExistingWorkflowStep.tsx,command-external,external-service-blocked,install-github-app needs GitHub/Slack service
+commands/install-github-app/InstallAppStep.tsx,command-external,external-service-blocked,install-github-app needs GitHub/Slack service
+commands/install-github-app/OAuthFlowStep.tsx,command-external,external-service-blocked,install-github-app needs GitHub/Slack service
+commands/install-github-app/SuccessStep.tsx,command-external,external-service-blocked,install-github-app needs GitHub/Slack service
+commands/install-github-app/WarningsStep.tsx,command-external,external-service-blocked,install-github-app needs GitHub/Slack service
+commands/install-github-app/index.ts,command-external,external-service-blocked,install-github-app needs GitHub/Slack service
+commands/install-github-app/install-github-app.tsx,command-external,external-service-blocked,install-github-app needs GitHub/Slack service
+commands/install-github-app/setupGitHubActions.ts,command-external,external-service-blocked,install-github-app needs GitHub/Slack service
+commands/install-slack-app/index.ts,command-external,external-service-blocked,install-slack-app needs GitHub/Slack service
+commands/install-slack-app/install-slack-app.ts,command-external,external-service-blocked,install-slack-app needs GitHub/Slack service
+commands/install.tsx,command-external,external-service-blocked,install needs GitHub/Slack service
+commands/issue/index.js,command-local,needs-port,issue local command
+commands/keybindings/index.ts,command,covered-by-rust-equivalent,Rust command: keybindings
+commands/keybindings/keybindings.ts,command,covered-by-rust-equivalent,Rust command: keybindings
+commands/login/index.ts,command,covered-by-rust-equivalent,Rust command: login
+commands/login/login.tsx,command,covered-by-rust-equivalent,Rust command: login
+commands/logout/index.ts,command,covered-by-rust-equivalent,Rust command: logout
+commands/logout/logout.tsx,command,covered-by-rust-equivalent,Rust command: logout
+commands/mcp/addCommand.ts,command,covered-by-rust-equivalent,Rust command: mcp
+commands/mcp/index.ts,command,covered-by-rust-equivalent,Rust command: mcp
+commands/mcp/mcp.tsx,command,covered-by-rust-equivalent,Rust command: mcp
+commands/mcp/xaaIdpCommand.ts,command,covered-by-rust-equivalent,Rust command: mcp
+commands/memory/index.ts,command,covered-by-rust-equivalent,Rust command: memory
+commands/memory/memory.tsx,command,covered-by-rust-equivalent,Rust command: memory
+commands/mobile/index.ts,command,covered-by-rust-equivalent,Rust command: mobile
+commands/mobile/mobile.tsx,command,covered-by-rust-equivalent,Rust command: mobile
+commands/mock-limits/index.js,command-internal,needs-port,mock-limits internal/debug command
+commands/model/index.ts,command,covered-by-rust-equivalent,Rust command: model
+commands/model/model.tsx,command,covered-by-rust-equivalent,Rust command: model
+commands/oauth-refresh/index.js,command-local,needs-port,oauth-refresh local command
+commands/onboarding/index.js,command-internal,needs-port,onboarding internal/debug command
+commands/output-style/index.ts,command,covered-by-rust-equivalent,Rust command: output-style
+commands/output-style/output-style.tsx,command,covered-by-rust-equivalent,Rust command: output-style
+commands/passes/index.ts,command-local,needs-port,passes local command
+commands/passes/passes.tsx,command-local,needs-port,passes local command
+commands/perf-issue/index.js,command-internal,needs-port,perf-issue internal/debug command
+commands/permissions/index.ts,command,covered-by-rust-equivalent,Rust command: permissions
+commands/permissions/permissions.tsx,command,covered-by-rust-equivalent,Rust command: permissions
+commands/plan/index.ts,command,covered-by-rust-equivalent,Rust command: plan
+commands/plan/plan.tsx,command,covered-by-rust-equivalent,Rust command: plan
+commands/plugin/AddMarketplace.tsx,command,covered-by-rust-equivalent,Rust command: plugin
+commands/plugin/BrowseMarketplace.tsx,command,covered-by-rust-equivalent,Rust command: plugin
+commands/plugin/DiscoverPlugins.tsx,command,covered-by-rust-equivalent,Rust command: plugin
+commands/plugin/ManageMarketplaces.tsx,command,covered-by-rust-equivalent,Rust command: plugin
+commands/plugin/ManagePlugins.tsx,command,covered-by-rust-equivalent,Rust command: plugin
+commands/plugin/PluginErrors.tsx,command,covered-by-rust-equivalent,Rust command: plugin
+commands/plugin/PluginOptionsDialog.tsx,command,covered-by-rust-equivalent,Rust command: plugin
+commands/plugin/PluginOptionsFlow.tsx,command,covered-by-rust-equivalent,Rust command: plugin
+commands/plugin/PluginSettings.tsx,command,covered-by-rust-equivalent,Rust command: plugin
+commands/plugin/PluginTrustWarning.tsx,command,covered-by-rust-equivalent,Rust command: plugin
+commands/plugin/UnifiedInstalledCell.tsx,command,covered-by-rust-equivalent,Rust command: plugin
+commands/plugin/ValidatePlugin.tsx,command,covered-by-rust-equivalent,Rust command: plugin
+commands/plugin/index.tsx,command,covered-by-rust-equivalent,Rust command: plugin
+commands/plugin/parseArgs.ts,command,covered-by-rust-equivalent,Rust command: plugin
+commands/plugin/plugin.tsx,command,covered-by-rust-equivalent,Rust command: plugin
+commands/plugin/pluginDetailsHelpers.tsx,command,covered-by-rust-equivalent,Rust command: plugin
+commands/plugin/usePagination.ts,command,covered-by-rust-equivalent,Rust command: plugin
+commands/pr_comments/index.ts,command,needs-port,pr_comments not in Rust registry
+commands/privacy-settings/index.ts,command,covered-by-rust-equivalent,Rust command: privacy-settings
+commands/privacy-settings/privacy-settings.tsx,command,covered-by-rust-equivalent,Rust command: privacy-settings
+commands/rate-limit-options/index.ts,command-local,needs-port,rate-limit-options local command
+commands/rate-limit-options/rate-limit-options.tsx,command-local,needs-port,rate-limit-options local command
+commands/release-notes/index.ts,command,covered-by-rust-equivalent,Rust command: release-notes
+commands/release-notes/release-notes.ts,command,covered-by-rust-equivalent,Rust command: release-notes
+commands/reload-plugins/index.ts,command,covered-by-rust-equivalent,Rust command: reload-plugins
+commands/reload-plugins/reload-plugins.ts,command,covered-by-rust-equivalent,Rust command: reload-plugins
+commands/remote-env/index.ts,command-local,needs-port,remote-env local command
+commands/remote-env/remote-env.tsx,command-local,needs-port,remote-env local command
+commands/remote-setup/api.ts,command-local,needs-port,remote-setup local command
+commands/remote-setup/index.ts,command-local,needs-port,remote-setup local command
+commands/remote-setup/remote-setup.tsx,command-local,needs-port,remote-setup local command
+commands/rename/generateSessionName.ts,command,covered-by-rust-equivalent,Rust command: rename
+commands/rename/index.ts,command,covered-by-rust-equivalent,Rust command: rename
+commands/rename/rename.ts,command,covered-by-rust-equivalent,Rust command: rename
+commands/reset-limits/index.js,command-internal,needs-port,reset-limits internal/debug command
+commands/resume/index.ts,command,covered-by-rust-equivalent,Rust command: resume
+commands/resume/resume.tsx,command,covered-by-rust-equivalent,Rust command: resume
+commands/review/UltrareviewOverageDialog.tsx,command,covered-by-rust-equivalent,Rust command: review
+commands/review/reviewRemote.ts,command,covered-by-rust-equivalent,Rust command: review
+commands/review/ultrareviewCommand.tsx,command,covered-by-rust-equivalent,Rust command: review
+commands/review/ultrareviewEnabled.ts,command,covered-by-rust-equivalent,Rust command: review
+commands/review.ts,command,covered-by-rust-equivalent,Rust command: review
+commands/rewind/index.ts,command-local,needs-port,rewind local command
+commands/rewind/rewind.ts,command-local,needs-port,rewind local command
+commands/sandbox-toggle/index.ts,command-local,needs-port,sandbox-toggle local command
+commands/sandbox-toggle/sandbox-toggle.tsx,command-local,needs-port,sandbox-toggle local command
+commands/security-review.ts,command,covered-by-rust-equivalent,Rust command: security-review
+commands/session/index.ts,command,covered-by-rust-equivalent,Rust command: session
+commands/session/session.tsx,command,covered-by-rust-equivalent,Rust command: session
+commands/share/index.js,command-local,needs-port,share local command
+commands/skills/index.ts,command,covered-by-rust-equivalent,Rust command: skills
+commands/skills/skills.tsx,command,covered-by-rust-equivalent,Rust command: skills
+commands/stats/index.ts,command,covered-by-rust-equivalent,Rust command: stats
+commands/stats/stats.tsx,command,covered-by-rust-equivalent,Rust command: stats
+commands/status/index.ts,command,covered-by-rust-equivalent,Rust command: status
+commands/status/status.tsx,command,covered-by-rust-equivalent,Rust command: status
+commands/statusline.tsx,command,covered-by-rust-equivalent,Rust command: statusline
+commands/stickers/index.ts,command-local,needs-port,stickers local command
+commands/stickers/stickers.ts,command-local,needs-port,stickers local command
+commands/summary/index.js,command-internal,needs-port,summary internal/debug command
+commands/tag/index.ts,command,covered-by-rust-equivalent,Rust command: tag
+commands/tag/tag.tsx,command,covered-by-rust-equivalent,Rust command: tag
+commands/tasks/index.ts,command,covered-by-rust-equivalent,Rust command: tasks
+commands/tasks/tasks.tsx,command,covered-by-rust-equivalent,Rust command: tasks
+commands/teleport/index.js,command-internal,needs-port,teleport internal/debug command
+commands/terminalSetup/index.ts,command,needs-port,terminalSetup not in Rust registry
+commands/terminalSetup/terminalSetup.tsx,command,needs-port,terminalSetup not in Rust registry
+commands/theme/index.ts,command,covered-by-rust-equivalent,Rust command: theme
+commands/theme/theme.tsx,command,covered-by-rust-equivalent,Rust command: theme
+commands/thinkback/index.ts,command-internal,needs-port,thinkback internal/debug command
+commands/thinkback/thinkback.tsx,command-internal,needs-port,thinkback internal/debug command
+commands/thinkback-play/index.ts,command-internal,needs-port,thinkback-play internal/debug command
+commands/thinkback-play/thinkback-play.ts,command-internal,needs-port,thinkback-play internal/debug command
+commands/ultraplan.tsx,command-local,needs-port,ultraplan local command
+commands/upgrade/index.ts,command,covered-by-rust-equivalent,Rust command: upgrade
+commands/upgrade/upgrade.tsx,command,covered-by-rust-equivalent,Rust command: upgrade
+commands/usage/index.ts,command,covered-by-rust-equivalent,Rust command: usage
+commands/usage/usage.tsx,command,covered-by-rust-equivalent,Rust command: usage
+commands/version.ts,command,covered-by-rust-equivalent,Rust command: version
+commands/vim/index.ts,command,covered-by-rust-equivalent,Rust command: vim
+commands/vim/vim.ts,command,covered-by-rust-equivalent,Rust command: vim
+commands/voice/index.ts,command,covered-by-rust-equivalent,Rust command: voice
+commands/voice/voice.ts,command,covered-by-rust-equivalent,Rust command: voice
+commands.ts,misc,covered-by-rust-equivalent,top-level commands.ts
+components/AgentProgressLine.tsx,tui-component,covered-by-rust-equivalent,TUI component AgentProgressLine
+components/App.tsx,tui-component,needs-port,TUI component App
+components/ApproveApiKey.tsx,tui-component,covered-by-rust-equivalent,TUI component ApproveApiKey
+components/AutoModeOptInDialog.tsx,tui-component,covered-by-rust-equivalent,TUI component AutoModeOptInDialog
+components/AutoUpdater.tsx,tui-component,covered-by-rust-equivalent,TUI component AutoUpdater
+components/AutoUpdaterWrapper.tsx,tui-component,covered-by-rust-equivalent,TUI component AutoUpdaterWrapper
+components/AwsAuthStatusBox.tsx,tui-component,covered-by-rust-equivalent,TUI component AwsAuthStatusBox
+components/BaseTextInput.tsx,tui-component,covered-by-rust-equivalent,TUI component BaseTextInput
+components/BashModeProgress.tsx,tui-component,covered-by-rust-equivalent,TUI component BashModeProgress
+components/BridgeDialog.tsx,tui-component,covered-by-rust-equivalent,TUI component BridgeDialog
+components/BypassPermissionsModeDialog.tsx,tui-component,covered-by-rust-equivalent,TUI component BypassPermissionsModeDialog
+components/ChannelDowngradeDialog.tsx,tui-component,covered-by-rust-equivalent,TUI component ChannelDowngradeDialog
+components/ClaudeCodeHint/PluginHintMenu.tsx,tui-component,covered-by-rust-equivalent,TUI component PluginHintMenu
+components/ClaudeInChromeOnboarding.tsx,tui-component,covered-by-rust-equivalent,TUI component ClaudeInChromeOnboarding
+components/ClaudeMdExternalIncludesDialog.tsx,tui-component,covered-by-rust-equivalent,TUI component ClaudeMdExternalIncludesDialog
+components/ClickableImageRef.tsx,tui-component,covered-by-rust-equivalent,TUI component ClickableImageRef
+components/CompactSummary.tsx,tui-component,covered-by-rust-equivalent,TUI component CompactSummary
+components/ConfigurableShortcutHint.tsx,tui-component,covered-by-rust-equivalent,TUI component ConfigurableShortcutHint
+components/ConsoleOAuthFlow.tsx,tui-component,needs-port,TUI component ConsoleOAuthFlow
+components/ContextSuggestions.tsx,tui-component,covered-by-rust-equivalent,TUI component ContextSuggestions
+components/ContextVisualization.tsx,tui-component,covered-by-rust-equivalent,TUI component ContextVisualization
+components/CoordinatorAgentStatus.tsx,tui-component,covered-by-rust-equivalent,TUI component CoordinatorAgentStatus
+components/CostThresholdDialog.tsx,tui-component,covered-by-rust-equivalent,TUI component CostThresholdDialog
+components/CtrlOToExpand.tsx,tui-component,covered-by-rust-equivalent,TUI component CtrlOToExpand
+components/CustomSelect/SelectMulti.tsx,tui-component,covered-by-rust-equivalent,TUI component SelectMulti
+components/CustomSelect/index.ts,tui-component,covered-by-rust-equivalent,TUI component index
+components/CustomSelect/option-map.ts,tui-component,covered-by-rust-equivalent,TUI component option-map
+components/CustomSelect/select-input-option.tsx,tui-component,covered-by-rust-equivalent,TUI component select-input-option
+components/CustomSelect/select-option.tsx,tui-component,covered-by-rust-equivalent,TUI component select-option
+components/CustomSelect/select.tsx,tui-component,covered-by-rust-equivalent,TUI component select
+components/CustomSelect/use-multi-select-state.ts,tui-component,covered-by-rust-equivalent,TUI component use-multi-select-state
+components/CustomSelect/use-select-input.ts,tui-component,covered-by-rust-equivalent,TUI component use-select-input
+components/CustomSelect/use-select-navigation.ts,tui-component,covered-by-rust-equivalent,TUI component use-select-navigation
+components/CustomSelect/use-select-state.ts,tui-component,covered-by-rust-equivalent,TUI component use-select-state
+components/DesktopHandoff.tsx,tui-component,covered-by-rust-equivalent,TUI component DesktopHandoff
+components/DesktopUpsell/DesktopUpsellStartup.tsx,tui-component,covered-by-rust-equivalent,TUI component DesktopUpsellStartup
+components/DevBar.tsx,tui-component,needs-port,TUI component DevBar
+components/DevChannelsDialog.tsx,tui-component,covered-by-rust-equivalent,TUI component DevChannelsDialog
+components/DiagnosticsDisplay.tsx,tui-component,covered-by-rust-equivalent,TUI component DiagnosticsDisplay
+components/EffortCallout.tsx,tui-component,covered-by-rust-equivalent,TUI component EffortCallout
+components/EffortIndicator.ts,tui-component,covered-by-rust-equivalent,TUI component EffortIndicator
+components/ExitFlow.tsx,tui-component,needs-port,TUI component ExitFlow
+components/ExportDialog.tsx,tui-component,covered-by-rust-equivalent,TUI component ExportDialog
+components/FallbackToolUseErrorMessage.tsx,tui-component,covered-by-rust-equivalent,TUI component FallbackToolUseErrorMessage
+components/FallbackToolUseRejectedMessage.tsx,tui-component,covered-by-rust-equivalent,TUI component FallbackToolUseRejectedMessage
+components/FastIcon.tsx,tui-component,needs-port,TUI component FastIcon
+components/Feedback.tsx,tui-component,covered-by-rust-equivalent,TUI component Feedback
+components/FeedbackSurvey/FeedbackSurvey.tsx,tui-component,covered-by-rust-equivalent,TUI component FeedbackSurvey
+components/FeedbackSurvey/FeedbackSurveyView.tsx,tui-component,covered-by-rust-equivalent,TUI component FeedbackSurveyView
+components/FeedbackSurvey/TranscriptSharePrompt.tsx,tui-component,covered-by-rust-equivalent,TUI component TranscriptSharePrompt
+components/FeedbackSurvey/submitTranscriptShare.ts,tui-component,covered-by-rust-equivalent,TUI component submitTranscriptShare
+components/FeedbackSurvey/useDebouncedDigitInput.ts,tui-component,covered-by-rust-equivalent,TUI component useDebouncedDigitInput
+components/FeedbackSurvey/useFeedbackSurvey.tsx,tui-component,covered-by-rust-equivalent,TUI component useFeedbackSurvey
+components/FeedbackSurvey/useMemorySurvey.tsx,tui-component,covered-by-rust-equivalent,TUI component useMemorySurvey
+components/FeedbackSurvey/usePostCompactSurvey.tsx,tui-component,covered-by-rust-equivalent,TUI component usePostCompactSurvey
+components/FeedbackSurvey/useSurveyState.tsx,tui-component,covered-by-rust-equivalent,TUI component useSurveyState
+components/FileEditToolDiff.tsx,tui-component,needs-port,TUI component FileEditToolDiff
+components/FileEditToolUpdatedMessage.tsx,tui-component,covered-by-rust-equivalent,TUI component FileEditToolUpdatedMessage
+components/FileEditToolUseRejectedMessage.tsx,tui-component,covered-by-rust-equivalent,TUI component FileEditToolUseRejectedMessage
+components/FilePathLink.tsx,tui-component,needs-port,TUI component FilePathLink
+components/FullscreenLayout.tsx,tui-component,covered-by-rust-equivalent,TUI component FullscreenLayout
+components/GlobalSearchDialog.tsx,tui-component,covered-by-rust-equivalent,TUI component GlobalSearchDialog
+components/HelpV2/Commands.tsx,tui-component,covered-by-rust-equivalent,TUI component Commands
+components/HelpV2/General.tsx,tui-component,covered-by-rust-equivalent,TUI component General
+components/HelpV2/HelpV2.tsx,tui-component,needs-port,TUI component HelpV2
+components/HighlightedCode/Fallback.tsx,tui-component,covered-by-rust-equivalent,TUI component Fallback
+components/HighlightedCode.tsx,tui-component,covered-by-rust-equivalent,TUI component HighlightedCode
+components/HistorySearchDialog.tsx,tui-component,covered-by-rust-equivalent,TUI component HistorySearchDialog
+components/IdeAutoConnectDialog.tsx,tui-component,covered-by-rust-equivalent,TUI component IdeAutoConnectDialog
+components/IdeOnboardingDialog.tsx,tui-component,covered-by-rust-equivalent,TUI component IdeOnboardingDialog
+components/IdeStatusIndicator.tsx,tui-component,covered-by-rust-equivalent,TUI component IdeStatusIndicator
+components/IdleReturnDialog.tsx,tui-component,covered-by-rust-equivalent,TUI component IdleReturnDialog
+components/InterruptedByUser.tsx,tui-component,covered-by-rust-equivalent,TUI component InterruptedByUser
+components/InvalidConfigDialog.tsx,tui-component,covered-by-rust-equivalent,TUI component InvalidConfigDialog
+components/InvalidSettingsDialog.tsx,tui-component,covered-by-rust-equivalent,TUI component InvalidSettingsDialog
+components/KeybindingWarnings.tsx,tui-component,covered-by-rust-equivalent,TUI component KeybindingWarnings
+components/LanguagePicker.tsx,tui-component,covered-by-rust-equivalent,TUI component LanguagePicker
+components/LogSelector.tsx,tui-component,covered-by-rust-equivalent,TUI component LogSelector
+components/LogoV2/AnimatedAsterisk.tsx,tui-component,needs-port,TUI component AnimatedAsterisk
+components/LogoV2/AnimatedClawd.tsx,tui-component,needs-port,TUI component AnimatedClawd
+components/LogoV2/ChannelsNotice.tsx,tui-component,covered-by-rust-equivalent,TUI component ChannelsNotice
+components/LogoV2/Clawd.tsx,tui-component,needs-port,TUI component Clawd
+components/LogoV2/CondensedLogo.tsx,tui-component,needs-port,TUI component CondensedLogo
+components/LogoV2/EmergencyTip.tsx,tui-component,needs-port,TUI component EmergencyTip
+components/LogoV2/Feed.tsx,tui-component,needs-port,TUI component Feed
+components/LogoV2/FeedColumn.tsx,tui-component,covered-by-rust-equivalent,TUI component FeedColumn
+components/LogoV2/GuestPassesUpsell.tsx,tui-component,covered-by-rust-equivalent,TUI component GuestPassesUpsell
+components/LogoV2/LogoV2.tsx,tui-component,needs-port,TUI component LogoV2
+components/LogoV2/Opus1mMergeNotice.tsx,tui-component,covered-by-rust-equivalent,TUI component Opus1mMergeNotice
+components/LogoV2/OverageCreditUpsell.tsx,tui-component,covered-by-rust-equivalent,TUI component OverageCreditUpsell
+components/LogoV2/VoiceModeNotice.tsx,tui-component,covered-by-rust-equivalent,TUI component VoiceModeNotice
+components/LogoV2/WelcomeV2.tsx,tui-component,needs-port,TUI component WelcomeV2
+components/LogoV2/feedConfigs.tsx,tui-component,covered-by-rust-equivalent,TUI component feedConfigs
+components/LspRecommendation/LspRecommendationMenu.tsx,tui-component,covered-by-rust-equivalent,TUI component LspRecommendationMenu
+components/MCPServerApprovalDialog.tsx,tui-component,covered-by-rust-equivalent,TUI component MCPServerApprovalDialog
+components/MCPServerDesktopImportDialog.tsx,tui-component,covered-by-rust-equivalent,TUI component MCPServerDesktopImportDialog
+components/MCPServerDialogCopy.tsx,tui-component,covered-by-rust-equivalent,TUI component MCPServerDialogCopy
+components/MCPServerMultiselectDialog.tsx,tui-component,covered-by-rust-equivalent,TUI component MCPServerMultiselectDialog
+components/ManagedSettingsSecurityDialog/ManagedSettingsSecurityDialog.tsx,tui-component,covered-by-rust-equivalent,TUI component ManagedSettingsSecurityDialog
+components/ManagedSettingsSecurityDialog/utils.ts,tui-component,needs-port,TUI component utils
+components/Markdown.tsx,tui-component,covered-by-rust-equivalent,TUI component Markdown
+components/MarkdownTable.tsx,tui-component,covered-by-rust-equivalent,TUI component MarkdownTable
+components/MemoryUsageIndicator.tsx,tui-component,covered-by-rust-equivalent,TUI component MemoryUsageIndicator
+components/Message.tsx,tui-component,covered-by-rust-equivalent,TUI component Message
+components/MessageModel.tsx,tui-component,covered-by-rust-equivalent,TUI component MessageModel
+components/MessageResponse.tsx,tui-component,covered-by-rust-equivalent,TUI component MessageResponse
+components/MessageRow.tsx,tui-component,covered-by-rust-equivalent,TUI component MessageRow
+components/MessageSelector.tsx,tui-component,covered-by-rust-equivalent,TUI component MessageSelector
+components/MessageTimestamp.tsx,tui-component,covered-by-rust-equivalent,TUI component MessageTimestamp
+components/Messages.tsx,tui-component,covered-by-rust-equivalent,TUI component Messages
+components/ModelPicker.tsx,tui-component,covered-by-rust-equivalent,TUI component ModelPicker
+components/NativeAutoUpdater.tsx,tui-component,covered-by-rust-equivalent,TUI component NativeAutoUpdater
+components/NotebookEditToolUseRejectedMessage.tsx,tui-component,covered-by-rust-equivalent,TUI component NotebookEditToolUseRejectedMessage
+components/OffscreenFreeze.tsx,tui-component,needs-port,TUI component OffscreenFreeze
+components/Onboarding.tsx,tui-component,needs-port,TUI component Onboarding
+components/OutputStylePicker.tsx,tui-component,covered-by-rust-equivalent,TUI component OutputStylePicker
+components/PackageManagerAutoUpdater.tsx,tui-component,covered-by-rust-equivalent,TUI component PackageManagerAutoUpdater
+components/Passes/Passes.tsx,tui-component,needs-port,TUI component Passes
+components/PrBadge.tsx,tui-component,covered-by-rust-equivalent,TUI component PrBadge
+components/PressEnterToContinue.tsx,tui-component,covered-by-rust-equivalent,TUI component PressEnterToContinue
+components/PromptInput/HistorySearchInput.tsx,tui-component,covered-by-rust-equivalent,TUI component HistorySearchInput
+components/PromptInput/IssueFlagBanner.tsx,tui-component,covered-by-rust-equivalent,TUI component IssueFlagBanner
+components/PromptInput/Notifications.tsx,tui-component,covered-by-rust-equivalent,TUI component Notifications
+components/PromptInput/PromptInput.tsx,tui-component,covered-by-rust-equivalent,TUI component PromptInput
+components/PromptInput/PromptInputFooter.tsx,tui-component,covered-by-rust-equivalent,TUI component PromptInputFooter
+components/PromptInput/PromptInputFooterLeftSide.tsx,tui-component,covered-by-rust-equivalent,TUI component PromptInputFooterLeftSide
+components/PromptInput/PromptInputFooterSuggestions.tsx,tui-component,covered-by-rust-equivalent,TUI component PromptInputFooterSuggestions
+components/PromptInput/PromptInputHelpMenu.tsx,tui-component,covered-by-rust-equivalent,TUI component PromptInputHelpMenu
+components/PromptInput/PromptInputModeIndicator.tsx,tui-component,covered-by-rust-equivalent,TUI component PromptInputModeIndicator
+components/PromptInput/PromptInputQueuedCommands.tsx,tui-component,covered-by-rust-equivalent,TUI component PromptInputQueuedCommands
+components/PromptInput/PromptInputStashNotice.tsx,tui-component,covered-by-rust-equivalent,TUI component PromptInputStashNotice
+components/PromptInput/SandboxPromptFooterHint.tsx,tui-component,covered-by-rust-equivalent,TUI component SandboxPromptFooterHint
+components/PromptInput/ShimmeredInput.tsx,tui-component,covered-by-rust-equivalent,TUI component ShimmeredInput
+components/PromptInput/VoiceIndicator.tsx,tui-component,covered-by-rust-equivalent,TUI component VoiceIndicator
+components/PromptInput/inputModes.ts,tui-component,covered-by-rust-equivalent,TUI component inputModes
+components/PromptInput/inputPaste.ts,tui-component,covered-by-rust-equivalent,TUI component inputPaste
+components/PromptInput/useMaybeTruncateInput.ts,tui-component,covered-by-rust-equivalent,TUI component useMaybeTruncateInput
+components/PromptInput/usePromptInputPlaceholder.ts,tui-component,covered-by-rust-equivalent,TUI component usePromptInputPlaceholder
+components/PromptInput/useShowFastIconHint.ts,tui-component,needs-port,TUI component useShowFastIconHint
+components/PromptInput/useSwarmBanner.ts,tui-component,covered-by-rust-equivalent,TUI component useSwarmBanner
+components/PromptInput/utils.ts,tui-component,needs-port,TUI component utils
+components/QuickOpenDialog.tsx,tui-component,covered-by-rust-equivalent,TUI component QuickOpenDialog
+components/RemoteCallout.tsx,tui-component,covered-by-rust-equivalent,TUI component RemoteCallout
+components/RemoteEnvironmentDialog.tsx,tui-component,covered-by-rust-equivalent,TUI component RemoteEnvironmentDialog
+components/ResumeTask.tsx,tui-component,covered-by-rust-equivalent,TUI component ResumeTask
+components/SandboxViolationExpandedView.tsx,tui-component,covered-by-rust-equivalent,TUI component SandboxViolationExpandedView
+components/ScrollKeybindingHandler.tsx,tui-component,covered-by-rust-equivalent,TUI component ScrollKeybindingHandler
+components/SearchBox.tsx,tui-component,covered-by-rust-equivalent,TUI component SearchBox
+components/SentryErrorBoundary.ts,tui-component,covered-by-rust-equivalent,TUI component SentryErrorBoundary
+components/SessionBackgroundHint.tsx,tui-component,covered-by-rust-equivalent,TUI component SessionBackgroundHint
+components/SessionPreview.tsx,tui-component,covered-by-rust-equivalent,TUI component SessionPreview
+components/Settings/Config.tsx,tui-component,covered-by-rust-equivalent,TUI component Config
+components/Settings/Settings.tsx,tui-component,covered-by-rust-equivalent,TUI component Settings
+components/Settings/Status.tsx,tui-component,covered-by-rust-equivalent,TUI component Status
+components/Settings/Usage.tsx,tui-component,covered-by-rust-equivalent,TUI component Usage
+components/ShowInIDEPrompt.tsx,tui-component,covered-by-rust-equivalent,TUI component ShowInIDEPrompt
+components/SkillImprovementSurvey.tsx,tui-component,covered-by-rust-equivalent,TUI component SkillImprovementSurvey
+components/Spinner/FlashingChar.tsx,tui-component,needs-port,TUI component FlashingChar
+components/Spinner/GlimmerMessage.tsx,tui-component,covered-by-rust-equivalent,TUI component GlimmerMessage
+components/Spinner/ShimmerChar.tsx,tui-component,needs-port,TUI component ShimmerChar
+components/Spinner/SpinnerAnimationRow.tsx,tui-component,needs-port,TUI component SpinnerAnimationRow
+components/Spinner/SpinnerGlyph.tsx,tui-component,covered-by-rust-equivalent,TUI component SpinnerGlyph
+components/Spinner/TeammateSpinnerLine.tsx,tui-component,covered-by-rust-equivalent,TUI component TeammateSpinnerLine
+components/Spinner/TeammateSpinnerTree.tsx,tui-component,covered-by-rust-equivalent,TUI component TeammateSpinnerTree
+components/Spinner/index.ts,tui-component,covered-by-rust-equivalent,TUI component index
+components/Spinner/teammateSelectHint.ts,tui-component,covered-by-rust-equivalent,TUI component teammateSelectHint
+components/Spinner/useShimmerAnimation.ts,tui-component,needs-port,TUI component useShimmerAnimation
+components/Spinner/useStalledAnimation.ts,tui-component,covered-by-rust-equivalent,TUI component useStalledAnimation
+components/Spinner/utils.ts,tui-component,needs-port,TUI component utils
+components/Spinner.tsx,tui-component,needs-port,TUI component Spinner
+components/Stats.tsx,tui-component,covered-by-rust-equivalent,TUI component Stats
+components/StatusLine.tsx,tui-component,covered-by-rust-equivalent,TUI component StatusLine
+components/StatusNotices.tsx,tui-component,covered-by-rust-equivalent,TUI component StatusNotices
+components/StructuredDiff/Fallback.tsx,tui-component,covered-by-rust-equivalent,TUI component Fallback
+components/StructuredDiff/colorDiff.ts,tui-component,covered-by-rust-equivalent,TUI component colorDiff
+components/StructuredDiff.tsx,tui-component,covered-by-rust-equivalent,TUI component StructuredDiff
+components/StructuredDiffList.tsx,tui-component,covered-by-rust-equivalent,TUI component StructuredDiffList
+components/TagTabs.tsx,tui-component,needs-port,TUI component TagTabs
+components/TaskListV2.tsx,tui-component,needs-port,TUI component TaskListV2
+components/TeammateViewHeader.tsx,tui-component,covered-by-rust-equivalent,TUI component TeammateViewHeader
+components/TeleportError.tsx,tui-component,covered-by-rust-equivalent,TUI component TeleportError
+components/TeleportProgress.tsx,tui-component,covered-by-rust-equivalent,TUI component TeleportProgress
+components/TeleportRepoMismatchDialog.tsx,tui-component,covered-by-rust-equivalent,TUI component TeleportRepoMismatchDialog
+components/TeleportResumeWrapper.tsx,tui-component,covered-by-rust-equivalent,TUI component TeleportResumeWrapper
+components/TeleportStash.tsx,tui-component,needs-port,TUI component TeleportStash
+components/TextInput.tsx,tui-component,covered-by-rust-equivalent,TUI component TextInput
+components/ThemePicker.tsx,tui-component,covered-by-rust-equivalent,TUI component ThemePicker
+components/ThinkingToggle.tsx,tui-component,covered-by-rust-equivalent,TUI component ThinkingToggle
+components/TokenWarning.tsx,tui-component,covered-by-rust-equivalent,TUI component TokenWarning
+components/ToolUseLoader.tsx,tui-component,needs-port,TUI component ToolUseLoader
+components/TrustDialog/TrustDialog.tsx,tui-component,covered-by-rust-equivalent,TUI component TrustDialog
+components/TrustDialog/utils.ts,tui-component,needs-port,TUI component utils
+components/ValidationErrorsList.tsx,tui-component,covered-by-rust-equivalent,TUI component ValidationErrorsList
+components/VimTextInput.tsx,tui-component,covered-by-rust-equivalent,TUI component VimTextInput
+components/VirtualMessageList.tsx,tui-component,covered-by-rust-equivalent,TUI component VirtualMessageList
+components/WorkflowMultiselectDialog.tsx,tui-component,covered-by-rust-equivalent,TUI component WorkflowMultiselectDialog
+components/WorktreeExitDialog.tsx,tui-component,covered-by-rust-equivalent,TUI component WorktreeExitDialog
+components/agents/AgentDetail.tsx,tui-component,covered-by-rust-equivalent,TUI component AgentDetail
+components/agents/AgentEditor.tsx,tui-component,covered-by-rust-equivalent,TUI component AgentEditor
+components/agents/AgentNavigationFooter.tsx,tui-component,covered-by-rust-equivalent,TUI component AgentNavigationFooter
+components/agents/AgentsList.tsx,tui-component,covered-by-rust-equivalent,TUI component AgentsList
+components/agents/AgentsMenu.tsx,tui-component,covered-by-rust-equivalent,TUI component AgentsMenu
+components/agents/ColorPicker.tsx,tui-component,covered-by-rust-equivalent,TUI component ColorPicker
+components/agents/ModelSelector.tsx,tui-component,covered-by-rust-equivalent,TUI component ModelSelector
+components/agents/ToolSelector.tsx,tui-component,covered-by-rust-equivalent,TUI component ToolSelector
+components/agents/agentFileUtils.ts,tui-component,covered-by-rust-equivalent,TUI component agentFileUtils
+components/agents/generateAgent.ts,tui-component,covered-by-rust-equivalent,TUI component generateAgent
+components/agents/new-agent-creation/CreateAgentWizard.tsx,tui-component,covered-by-rust-equivalent,TUI component CreateAgentWizard
+components/agents/new-agent-creation/wizard-steps/ColorStep.tsx,tui-component,covered-by-rust-equivalent,TUI component ColorStep
+components/agents/new-agent-creation/wizard-steps/ConfirmStep.tsx,tui-component,covered-by-rust-equivalent,TUI component ConfirmStep
+components/agents/new-agent-creation/wizard-steps/ConfirmStepWrapper.tsx,tui-component,covered-by-rust-equivalent,TUI component ConfirmStepWrapper
+components/agents/new-agent-creation/wizard-steps/DescriptionStep.tsx,tui-component,covered-by-rust-equivalent,TUI component DescriptionStep
+components/agents/new-agent-creation/wizard-steps/GenerateStep.tsx,tui-component,covered-by-rust-equivalent,TUI component GenerateStep
+components/agents/new-agent-creation/wizard-steps/LocationStep.tsx,tui-component,covered-by-rust-equivalent,TUI component LocationStep
+components/agents/new-agent-creation/wizard-steps/MemoryStep.tsx,tui-component,covered-by-rust-equivalent,TUI component MemoryStep
+components/agents/new-agent-creation/wizard-steps/MethodStep.tsx,tui-component,covered-by-rust-equivalent,TUI component MethodStep
+components/agents/new-agent-creation/wizard-steps/ModelStep.tsx,tui-component,covered-by-rust-equivalent,TUI component ModelStep
+components/agents/new-agent-creation/wizard-steps/PromptStep.tsx,tui-component,covered-by-rust-equivalent,TUI component PromptStep
+components/agents/new-agent-creation/wizard-steps/ToolsStep.tsx,tui-component,covered-by-rust-equivalent,TUI component ToolsStep
+components/agents/new-agent-creation/wizard-steps/TypeStep.tsx,tui-component,needs-port,TUI component TypeStep
+components/agents/types.ts,tui-component,covered-by-rust-equivalent,TUI component types
+components/agents/utils.ts,tui-component,needs-port,TUI component utils
+components/agents/validateAgent.ts,tui-component,covered-by-rust-equivalent,TUI component validateAgent
+components/design-system/Byline.tsx,tui-component,needs-port,TUI component Byline
+components/design-system/Dialog.tsx,tui-component,covered-by-rust-equivalent,TUI component Dialog
+components/design-system/Divider.tsx,tui-component,needs-port,TUI component Divider
+components/design-system/FuzzyPicker.tsx,tui-component,covered-by-rust-equivalent,TUI component FuzzyPicker
+components/design-system/KeyboardShortcutHint.tsx,tui-component,covered-by-rust-equivalent,TUI component KeyboardShortcutHint
+components/design-system/ListItem.tsx,tui-component,needs-port,TUI component ListItem
+components/design-system/LoadingState.tsx,tui-component,covered-by-rust-equivalent,TUI component LoadingState
+components/design-system/Pane.tsx,tui-component,needs-port,TUI component Pane
+components/design-system/ProgressBar.tsx,tui-component,covered-by-rust-equivalent,TUI component ProgressBar
+components/design-system/Ratchet.tsx,tui-component,needs-port,TUI component Ratchet
+components/design-system/StatusIcon.tsx,tui-component,covered-by-rust-equivalent,TUI component StatusIcon
+components/design-system/Tabs.tsx,tui-component,needs-port,TUI component Tabs
+components/design-system/ThemeProvider.tsx,tui-component,covered-by-rust-equivalent,TUI component ThemeProvider
+components/design-system/ThemedBox.tsx,tui-component,needs-port,TUI component ThemedBox
+components/design-system/ThemedText.tsx,tui-component,needs-port,TUI component ThemedText
+components/design-system/color.ts,tui-component,covered-by-rust-equivalent,TUI component color
+components/diff/DiffDetailView.tsx,tui-component,covered-by-rust-equivalent,TUI component DiffDetailView
+components/diff/DiffDialog.tsx,tui-component,covered-by-rust-equivalent,TUI component DiffDialog
+components/diff/DiffFileList.tsx,tui-component,needs-port,TUI component DiffFileList
+components/grove/Grove.tsx,tui-component,covered-by-rust-equivalent,TUI component Grove
+components/hooks/HooksConfigMenu.tsx,tui-component,covered-by-rust-equivalent,TUI component HooksConfigMenu
+components/hooks/PromptDialog.tsx,tui-component,covered-by-rust-equivalent,TUI component PromptDialog
+components/hooks/SelectEventMode.tsx,tui-component,covered-by-rust-equivalent,TUI component SelectEventMode
+components/hooks/SelectHookMode.tsx,tui-component,covered-by-rust-equivalent,TUI component SelectHookMode
+components/hooks/SelectMatcherMode.tsx,tui-component,covered-by-rust-equivalent,TUI component SelectMatcherMode
+components/hooks/ViewHookMode.tsx,tui-component,needs-port,TUI component ViewHookMode
+components/mcp/CapabilitiesSection.tsx,tui-component,covered-by-rust-equivalent,TUI component CapabilitiesSection
+components/mcp/ElicitationDialog.tsx,tui-component,covered-by-rust-equivalent,TUI component ElicitationDialog
+components/mcp/MCPAgentServerMenu.tsx,tui-component,covered-by-rust-equivalent,TUI component MCPAgentServerMenu
+components/mcp/MCPListPanel.tsx,tui-component,covered-by-rust-equivalent,TUI component MCPListPanel
+components/mcp/MCPReconnect.tsx,tui-component,covered-by-rust-equivalent,TUI component MCPReconnect
+components/mcp/MCPRemoteServerMenu.tsx,tui-component,covered-by-rust-equivalent,TUI component MCPRemoteServerMenu
+components/mcp/MCPSettings.tsx,tui-component,covered-by-rust-equivalent,TUI component MCPSettings
+components/mcp/MCPStdioServerMenu.tsx,tui-component,covered-by-rust-equivalent,TUI component MCPStdioServerMenu
+components/mcp/MCPToolDetailView.tsx,tui-component,covered-by-rust-equivalent,TUI component MCPToolDetailView
+components/mcp/MCPToolListView.tsx,tui-component,needs-port,TUI component MCPToolListView
+components/mcp/McpParsingWarnings.tsx,tui-component,covered-by-rust-equivalent,TUI component McpParsingWarnings
+components/mcp/index.ts,tui-component,covered-by-rust-equivalent,TUI component index
+components/mcp/utils/reconnectHelpers.tsx,tui-component,covered-by-rust-equivalent,TUI component reconnectHelpers
+components/memory/MemoryFileSelector.tsx,tui-component,covered-by-rust-equivalent,TUI component MemoryFileSelector
+components/memory/MemoryUpdateNotification.tsx,tui-component,covered-by-rust-equivalent,TUI component MemoryUpdateNotification
+components/messageActions.tsx,tui-component,covered-by-rust-equivalent,TUI component messageActions
+components/messages/AdvisorMessage.tsx,tui-component,covered-by-rust-equivalent,TUI component AdvisorMessage
+components/messages/AssistantRedactedThinkingMessage.tsx,tui-component,covered-by-rust-equivalent,TUI component AssistantRedactedThinkingMessage
+components/messages/AssistantTextMessage.tsx,tui-component,covered-by-rust-equivalent,TUI component AssistantTextMessage
+components/messages/AssistantThinkingMessage.tsx,tui-component,covered-by-rust-equivalent,TUI component AssistantThinkingMessage
+components/messages/AssistantToolUseMessage.tsx,tui-component,covered-by-rust-equivalent,TUI component AssistantToolUseMessage
+components/messages/AttachmentMessage.tsx,tui-component,covered-by-rust-equivalent,TUI component AttachmentMessage
+components/messages/CollapsedReadSearchContent.tsx,tui-component,covered-by-rust-equivalent,TUI component CollapsedReadSearchContent
+components/messages/CompactBoundaryMessage.tsx,tui-component,covered-by-rust-equivalent,TUI component CompactBoundaryMessage
+components/messages/GroupedToolUseContent.tsx,tui-component,covered-by-rust-equivalent,TUI component GroupedToolUseContent
+components/messages/HighlightedThinkingText.tsx,tui-component,covered-by-rust-equivalent,TUI component HighlightedThinkingText
+components/messages/HookProgressMessage.tsx,tui-component,covered-by-rust-equivalent,TUI component HookProgressMessage
+components/messages/PlanApprovalMessage.tsx,tui-component,covered-by-rust-equivalent,TUI component PlanApprovalMessage
+components/messages/RateLimitMessage.tsx,tui-component,covered-by-rust-equivalent,TUI component RateLimitMessage
+components/messages/ShutdownMessage.tsx,tui-component,covered-by-rust-equivalent,TUI component ShutdownMessage
+components/messages/SystemAPIErrorMessage.tsx,tui-component,covered-by-rust-equivalent,TUI component SystemAPIErrorMessage
+components/messages/SystemTextMessage.tsx,tui-component,covered-by-rust-equivalent,TUI component SystemTextMessage
+components/messages/TaskAssignmentMessage.tsx,tui-component,covered-by-rust-equivalent,TUI component TaskAssignmentMessage
+components/messages/UserAgentNotificationMessage.tsx,tui-component,covered-by-rust-equivalent,TUI component UserAgentNotificationMessage
+components/messages/UserBashInputMessage.tsx,tui-component,covered-by-rust-equivalent,TUI component UserBashInputMessage
+components/messages/UserBashOutputMessage.tsx,tui-component,covered-by-rust-equivalent,TUI component UserBashOutputMessage
+components/messages/UserChannelMessage.tsx,tui-component,covered-by-rust-equivalent,TUI component UserChannelMessage
+components/messages/UserCommandMessage.tsx,tui-component,covered-by-rust-equivalent,TUI component UserCommandMessage
+components/messages/UserImageMessage.tsx,tui-component,covered-by-rust-equivalent,TUI component UserImageMessage
+components/messages/UserLocalCommandOutputMessage.tsx,tui-component,covered-by-rust-equivalent,TUI component UserLocalCommandOutputMessage
+components/messages/UserMemoryInputMessage.tsx,tui-component,covered-by-rust-equivalent,TUI component UserMemoryInputMessage
+components/messages/UserPlanMessage.tsx,tui-component,covered-by-rust-equivalent,TUI component UserPlanMessage
+components/messages/UserPromptMessage.tsx,tui-component,covered-by-rust-equivalent,TUI component UserPromptMessage
+components/messages/UserResourceUpdateMessage.tsx,tui-component,covered-by-rust-equivalent,TUI component UserResourceUpdateMessage
+components/messages/UserTeammateMessage.tsx,tui-component,covered-by-rust-equivalent,TUI component UserTeammateMessage
+components/messages/UserTextMessage.tsx,tui-component,covered-by-rust-equivalent,TUI component UserTextMessage
+components/messages/UserToolResultMessage/RejectedPlanMessage.tsx,tui-component,covered-by-rust-equivalent,TUI component RejectedPlanMessage
+components/messages/UserToolResultMessage/RejectedToolUseMessage.tsx,tui-component,covered-by-rust-equivalent,TUI component RejectedToolUseMessage
+components/messages/UserToolResultMessage/UserToolCanceledMessage.tsx,tui-component,covered-by-rust-equivalent,TUI component UserToolCanceledMessage
+components/messages/UserToolResultMessage/UserToolErrorMessage.tsx,tui-component,covered-by-rust-equivalent,TUI component UserToolErrorMessage
+components/messages/UserToolResultMessage/UserToolRejectMessage.tsx,tui-component,covered-by-rust-equivalent,TUI component UserToolRejectMessage
+components/messages/UserToolResultMessage/UserToolResultMessage.tsx,tui-component,covered-by-rust-equivalent,TUI component UserToolResultMessage
+components/messages/UserToolResultMessage/UserToolSuccessMessage.tsx,tui-component,covered-by-rust-equivalent,TUI component UserToolSuccessMessage
+components/messages/UserToolResultMessage/utils.tsx,tui-component,needs-port,TUI component utils
+components/messages/nullRenderingAttachments.ts,tui-component,covered-by-rust-equivalent,TUI component nullRenderingAttachments
+components/messages/teamMemCollapsed.tsx,tui-component,covered-by-rust-equivalent,TUI component teamMemCollapsed
+components/messages/teamMemSaved.ts,tui-component,covered-by-rust-equivalent,TUI component teamMemSaved
+components/permissions/AskUserQuestionPermissionRequest/AskUserQuestionPermissionRequest.tsx,tui-component,covered-by-rust-equivalent,TUI component AskUserQuestionPermissionRequest
+components/permissions/AskUserQuestionPermissionRequest/PreviewBox.tsx,tui-component,covered-by-rust-equivalent,TUI component PreviewBox
+components/permissions/AskUserQuestionPermissionRequest/PreviewQuestionView.tsx,tui-component,covered-by-rust-equivalent,TUI component PreviewQuestionView
+components/permissions/AskUserQuestionPermissionRequest/QuestionNavigationBar.tsx,tui-component,covered-by-rust-equivalent,TUI component QuestionNavigationBar
+components/permissions/AskUserQuestionPermissionRequest/QuestionView.tsx,tui-component,covered-by-rust-equivalent,TUI component QuestionView
+components/permissions/AskUserQuestionPermissionRequest/SubmitQuestionsView.tsx,tui-component,covered-by-rust-equivalent,TUI component SubmitQuestionsView
+components/permissions/AskUserQuestionPermissionRequest/use-multiple-choice-state.ts,tui-component,covered-by-rust-equivalent,TUI component use-multiple-choice-state
+components/permissions/BashPermissionRequest/BashPermissionRequest.tsx,tui-component,covered-by-rust-equivalent,TUI component BashPermissionRequest
+components/permissions/BashPermissionRequest/bashToolUseOptions.tsx,tui-component,covered-by-rust-equivalent,TUI component bashToolUseOptions
+components/permissions/ComputerUseApproval/ComputerUseApproval.tsx,tui-component,covered-by-rust-equivalent,TUI component ComputerUseApproval
+components/permissions/EnterPlanModePermissionRequest/EnterPlanModePermissionRequest.tsx,tui-component,covered-by-rust-equivalent,TUI component EnterPlanModePermissionRequest
+components/permissions/ExitPlanModePermissionRequest/ExitPlanModePermissionRequest.tsx,tui-component,covered-by-rust-equivalent,TUI component ExitPlanModePermissionRequest
+components/permissions/FallbackPermissionRequest.tsx,tui-component,covered-by-rust-equivalent,TUI component FallbackPermissionRequest
+components/permissions/FileEditPermissionRequest/FileEditPermissionRequest.tsx,tui-component,covered-by-rust-equivalent,TUI component FileEditPermissionRequest
+components/permissions/FilePermissionDialog/FilePermissionDialog.tsx,tui-component,covered-by-rust-equivalent,TUI component FilePermissionDialog
+components/permissions/FilePermissionDialog/ideDiffConfig.ts,tui-component,covered-by-rust-equivalent,TUI component ideDiffConfig
+components/permissions/FilePermissionDialog/permissionOptions.tsx,tui-component,covered-by-rust-equivalent,TUI component permissionOptions
+components/permissions/FilePermissionDialog/useFilePermissionDialog.ts,tui-component,covered-by-rust-equivalent,TUI component useFilePermissionDialog
+components/permissions/FilePermissionDialog/usePermissionHandler.ts,tui-component,covered-by-rust-equivalent,TUI component usePermissionHandler
+components/permissions/FileWritePermissionRequest/FileWritePermissionRequest.tsx,tui-component,covered-by-rust-equivalent,TUI component FileWritePermissionRequest
+components/permissions/FileWritePermissionRequest/FileWriteToolDiff.tsx,tui-component,covered-by-rust-equivalent,TUI component FileWriteToolDiff
+components/permissions/FilesystemPermissionRequest/FilesystemPermissionRequest.tsx,tui-component,covered-by-rust-equivalent,TUI component FilesystemPermissionRequest
+components/permissions/NotebookEditPermissionRequest/NotebookEditPermissionRequest.tsx,tui-component,covered-by-rust-equivalent,TUI component NotebookEditPermissionRequest
+components/permissions/NotebookEditPermissionRequest/NotebookEditToolDiff.tsx,tui-component,covered-by-rust-equivalent,TUI component NotebookEditToolDiff
+components/permissions/PermissionDecisionDebugInfo.tsx,tui-component,covered-by-rust-equivalent,TUI component PermissionDecisionDebugInfo
+components/permissions/PermissionDialog.tsx,tui-component,covered-by-rust-equivalent,TUI component PermissionDialog
+components/permissions/PermissionExplanation.tsx,tui-component,covered-by-rust-equivalent,TUI component PermissionExplanation
+components/permissions/PermissionPrompt.tsx,tui-component,covered-by-rust-equivalent,TUI component PermissionPrompt
+components/permissions/PermissionRequest.tsx,tui-component,covered-by-rust-equivalent,TUI component PermissionRequest
+components/permissions/PermissionRequestTitle.tsx,tui-component,covered-by-rust-equivalent,TUI component PermissionRequestTitle
+components/permissions/PermissionRuleExplanation.tsx,tui-component,covered-by-rust-equivalent,TUI component PermissionRuleExplanation
+components/permissions/PowerShellPermissionRequest/PowerShellPermissionRequest.tsx,tui-component,covered-by-rust-equivalent,TUI component PowerShellPermissionRequest
+components/permissions/PowerShellPermissionRequest/powershellToolUseOptions.tsx,tui-component,covered-by-rust-equivalent,TUI component powershellToolUseOptions
+components/permissions/SandboxPermissionRequest.tsx,tui-component,covered-by-rust-equivalent,TUI component SandboxPermissionRequest
+components/permissions/SedEditPermissionRequest/SedEditPermissionRequest.tsx,tui-component,covered-by-rust-equivalent,TUI component SedEditPermissionRequest
+components/permissions/SkillPermissionRequest/SkillPermissionRequest.tsx,tui-component,covered-by-rust-equivalent,TUI component SkillPermissionRequest
+components/permissions/WebFetchPermissionRequest/WebFetchPermissionRequest.tsx,tui-component,covered-by-rust-equivalent,TUI component WebFetchPermissionRequest
+components/permissions/WorkerBadge.tsx,tui-component,covered-by-rust-equivalent,TUI component WorkerBadge
+components/permissions/WorkerPendingPermission.tsx,tui-component,covered-by-rust-equivalent,TUI component WorkerPendingPermission
+components/permissions/hooks.ts,tui-component,covered-by-rust-equivalent,TUI component hooks
+components/permissions/rules/AddPermissionRules.tsx,tui-component,covered-by-rust-equivalent,TUI component AddPermissionRules
+components/permissions/rules/AddWorkspaceDirectory.tsx,tui-component,covered-by-rust-equivalent,TUI component AddWorkspaceDirectory
+components/permissions/rules/PermissionRuleDescription.tsx,tui-component,covered-by-rust-equivalent,TUI component PermissionRuleDescription
+components/permissions/rules/PermissionRuleInput.tsx,tui-component,covered-by-rust-equivalent,TUI component PermissionRuleInput
+components/permissions/rules/PermissionRuleList.tsx,tui-component,covered-by-rust-equivalent,TUI component PermissionRuleList
+components/permissions/rules/RecentDenialsTab.tsx,tui-component,covered-by-rust-equivalent,TUI component RecentDenialsTab
+components/permissions/rules/RemoveWorkspaceDirectory.tsx,tui-component,covered-by-rust-equivalent,TUI component RemoveWorkspaceDirectory
+components/permissions/rules/WorkspaceTab.tsx,tui-component,covered-by-rust-equivalent,TUI component WorkspaceTab
+components/permissions/shellPermissionHelpers.tsx,tui-component,covered-by-rust-equivalent,TUI component shellPermissionHelpers
+components/permissions/useShellPermissionFeedback.ts,tui-component,covered-by-rust-equivalent,TUI component useShellPermissionFeedback
+components/permissions/utils.ts,tui-component,needs-port,TUI component utils
+components/sandbox/SandboxConfigTab.tsx,tui-component,covered-by-rust-equivalent,TUI component SandboxConfigTab
+components/sandbox/SandboxDependenciesTab.tsx,tui-component,covered-by-rust-equivalent,TUI component SandboxDependenciesTab
+components/sandbox/SandboxDoctorSection.tsx,tui-component,covered-by-rust-equivalent,TUI component SandboxDoctorSection
+components/sandbox/SandboxOverridesTab.tsx,tui-component,covered-by-rust-equivalent,TUI component SandboxOverridesTab
+components/sandbox/SandboxSettings.tsx,tui-component,covered-by-rust-equivalent,TUI component SandboxSettings
+components/shell/ExpandShellOutputContext.tsx,tui-component,covered-by-rust-equivalent,TUI component ExpandShellOutputContext
+components/shell/OutputLine.tsx,tui-component,covered-by-rust-equivalent,TUI component OutputLine
+components/shell/ShellProgressMessage.tsx,tui-component,covered-by-rust-equivalent,TUI component ShellProgressMessage
+components/shell/ShellTimeDisplay.tsx,tui-component,covered-by-rust-equivalent,TUI component ShellTimeDisplay
+components/skills/SkillsMenu.tsx,tui-component,covered-by-rust-equivalent,TUI component SkillsMenu
+components/tasks/AsyncAgentDetailDialog.tsx,tui-component,covered-by-rust-equivalent,TUI component AsyncAgentDetailDialog
+components/tasks/BackgroundTask.tsx,tui-component,covered-by-rust-equivalent,TUI component BackgroundTask
+components/tasks/BackgroundTaskStatus.tsx,tui-component,covered-by-rust-equivalent,TUI component BackgroundTaskStatus
+components/tasks/BackgroundTasksDialog.tsx,tui-component,covered-by-rust-equivalent,TUI component BackgroundTasksDialog
+components/tasks/DreamDetailDialog.tsx,tui-component,covered-by-rust-equivalent,TUI component DreamDetailDialog
+components/tasks/InProcessTeammateDetailDialog.tsx,tui-component,covered-by-rust-equivalent,TUI component InProcessTeammateDetailDialog
+components/tasks/RemoteSessionDetailDialog.tsx,tui-component,covered-by-rust-equivalent,TUI component RemoteSessionDetailDialog
+components/tasks/RemoteSessionProgress.tsx,tui-component,covered-by-rust-equivalent,TUI component RemoteSessionProgress
+components/tasks/ShellDetailDialog.tsx,tui-component,covered-by-rust-equivalent,TUI component ShellDetailDialog
+components/tasks/ShellProgress.tsx,tui-component,covered-by-rust-equivalent,TUI component ShellProgress
+components/tasks/renderToolActivity.tsx,tui-component,covered-by-rust-equivalent,TUI component renderToolActivity
+components/tasks/taskStatusUtils.tsx,tui-component,covered-by-rust-equivalent,TUI component taskStatusUtils
+components/teams/TeamStatus.tsx,tui-component,covered-by-rust-equivalent,TUI component TeamStatus
+components/teams/TeamsDialog.tsx,tui-component,covered-by-rust-equivalent,TUI component TeamsDialog
+components/ui/OrderedList.tsx,tui-component,covered-by-rust-equivalent,TUI component OrderedList
+components/ui/OrderedListItem.tsx,tui-component,covered-by-rust-equivalent,TUI component OrderedListItem
+components/ui/TreeSelect.tsx,tui-component,covered-by-rust-equivalent,TUI component TreeSelect
+components/wizard/WizardDialogLayout.tsx,tui-component,covered-by-rust-equivalent,TUI component WizardDialogLayout
+components/wizard/WizardNavigationFooter.tsx,tui-component,covered-by-rust-equivalent,TUI component WizardNavigationFooter
+components/wizard/WizardProvider.tsx,tui-component,covered-by-rust-equivalent,TUI component WizardProvider
+components/wizard/index.ts,tui-component,covered-by-rust-equivalent,TUI component index
+components/wizard/useWizard.ts,tui-component,covered-by-rust-equivalent,TUI component useWizard
+constants/apiLimits.ts,constants,covered-by-rust-equivalent,constants embedded in Rust modules
+constants/betas.ts,constants,covered-by-rust-equivalent,constants embedded in Rust modules
+constants/common.ts,constants,covered-by-rust-equivalent,constants embedded in Rust modules
+constants/cyberRiskInstruction.ts,constants,covered-by-rust-equivalent,constants embedded in Rust modules
+constants/errorIds.ts,constants,covered-by-rust-equivalent,constants embedded in Rust modules
+constants/figures.ts,constants,covered-by-rust-equivalent,constants embedded in Rust modules
+constants/files.ts,constants,covered-by-rust-equivalent,constants embedded in Rust modules
+constants/github-app.ts,constants,covered-by-rust-equivalent,constants embedded in Rust modules
+constants/keys.ts,constants,covered-by-rust-equivalent,constants embedded in Rust modules
+constants/messages.ts,constants,covered-by-rust-equivalent,constants embedded in Rust modules
+constants/oauth.ts,constants,covered-by-rust-equivalent,constants embedded in Rust modules
+constants/outputStyles.ts,constants,covered-by-rust-equivalent,constants embedded in Rust modules
+constants/product.ts,constants,covered-by-rust-equivalent,constants embedded in Rust modules
+constants/prompts.ts,constants,covered-by-rust-equivalent,constants embedded in Rust modules
+constants/spinnerVerbs.ts,constants,covered-by-rust-equivalent,constants embedded in Rust modules
+constants/system.ts,constants,covered-by-rust-equivalent,constants embedded in Rust modules
+constants/systemPromptSections.ts,constants,covered-by-rust-equivalent,constants embedded in Rust modules
+constants/toolLimits.ts,constants,covered-by-rust-equivalent,constants embedded in Rust modules
+constants/tools.ts,constants,covered-by-rust-equivalent,constants embedded in Rust modules
+constants/turnCompletionVerbs.ts,constants,covered-by-rust-equivalent,constants embedded in Rust modules
+constants/xml.ts,constants,covered-by-rust-equivalent,constants embedded in Rust modules
+context/QueuedMessageContext.tsx,context,covered-by-rust-equivalent,context/QueuedMessageContext
+context/fpsMetrics.tsx,context,covered-by-rust-equivalent,context/fpsMetrics
+context/mailbox.tsx,context,needs-port,context/mailbox
+context/modalContext.tsx,context,covered-by-rust-equivalent,context/modalContext
+context/notifications.tsx,context,covered-by-rust-equivalent,context/notifications
+context/overlayContext.tsx,context,covered-by-rust-equivalent,context/overlayContext
+context/promptOverlayContext.tsx,context,covered-by-rust-equivalent,context/promptOverlayContext
+context/stats.tsx,context,covered-by-rust-equivalent,context/stats
+context/voice.tsx,context,covered-by-rust-equivalent,context/voice
+context.ts,misc,covered-by-rust-equivalent,top-level context.ts
+coordinator/coordinatorMode.ts,coordinator,covered-by-rust-equivalent,coordinator/coordinatorMode
+cost-tracker.ts,misc,covered-by-rust-equivalent,top-level cost-tracker.ts
+costHook.ts,misc,covered-by-rust-equivalent,top-level costHook.ts
+dialogLaunchers.tsx,misc,covered-by-rust-equivalent,top-level dialogLaunchers.tsx
+entrypoints/agentSdkTypes.ts,entrypoints,covered-by-rust-equivalent,entrypoints/agentSdkTypes
+entrypoints/cli.tsx,entrypoints,needs-port,entrypoints/cli
+entrypoints/init.ts,entrypoints,covered-by-rust-equivalent,entrypoints/init
+entrypoints/mcp.ts,entrypoints,needs-port,entrypoints/mcp
+entrypoints/sandboxTypes.ts,entrypoints,covered-by-rust-equivalent,entrypoints/sandboxTypes
+entrypoints/sdk/controlSchemas.ts,entrypoints,covered-by-rust-equivalent,entrypoints/controlSchemas
+entrypoints/sdk/coreSchemas.ts,entrypoints,covered-by-rust-equivalent,entrypoints/coreSchemas
+entrypoints/sdk/coreTypes.ts,entrypoints,covered-by-rust-equivalent,entrypoints/coreTypes
+history.ts,misc,covered-by-rust-equivalent,top-level history.ts
+hooks/fileSuggestions.ts,hook,covered-by-rust-equivalent,React hook fileSuggestions
+hooks/notifs/useAutoModeUnavailableNotification.ts,hook,covered-by-rust-equivalent,React hook useAutoModeUnavailableNotification
+hooks/notifs/useCanSwitchToExistingSubscription.tsx,hook,covered-by-rust-equivalent,React hook useCanSwitchToExistingSubscription
+hooks/notifs/useDeprecationWarningNotification.tsx,hook,covered-by-rust-equivalent,React hook useDeprecationWarningNotification
+hooks/notifs/useFastModeNotification.tsx,hook,covered-by-rust-equivalent,React hook useFastModeNotification
+hooks/notifs/useIDEStatusIndicator.tsx,hook,covered-by-rust-equivalent,React hook useIDEStatusIndicator
+hooks/notifs/useInstallMessages.tsx,hook,covered-by-rust-equivalent,React hook useInstallMessages
+hooks/notifs/useLspInitializationNotification.tsx,hook,covered-by-rust-equivalent,React hook useLspInitializationNotification
+hooks/notifs/useMcpConnectivityStatus.tsx,hook,covered-by-rust-equivalent,React hook useMcpConnectivityStatus
+hooks/notifs/useModelMigrationNotifications.tsx,hook,covered-by-rust-equivalent,React hook useModelMigrationNotifications
+hooks/notifs/useNpmDeprecationNotification.tsx,hook,covered-by-rust-equivalent,React hook useNpmDeprecationNotification
+hooks/notifs/usePluginAutoupdateNotification.tsx,hook,covered-by-rust-equivalent,React hook usePluginAutoupdateNotification
+hooks/notifs/usePluginInstallationStatus.tsx,hook,covered-by-rust-equivalent,React hook usePluginInstallationStatus
+hooks/notifs/useRateLimitWarningNotification.tsx,hook,covered-by-rust-equivalent,React hook useRateLimitWarningNotification
+hooks/notifs/useSettingsErrors.tsx,hook,covered-by-rust-equivalent,React hook useSettingsErrors
+hooks/notifs/useStartupNotification.ts,hook,covered-by-rust-equivalent,React hook useStartupNotification
+hooks/notifs/useTeammateShutdownNotification.ts,hook,covered-by-rust-equivalent,React hook useTeammateShutdownNotification
+hooks/renderPlaceholder.ts,hook,covered-by-rust-equivalent,React hook renderPlaceholder
+hooks/toolPermission/PermissionContext.ts,hook,covered-by-rust-equivalent,React hook PermissionContext
+hooks/toolPermission/handlers/coordinatorHandler.ts,hook,covered-by-rust-equivalent,React hook coordinatorHandler
+hooks/toolPermission/handlers/interactiveHandler.ts,hook,covered-by-rust-equivalent,React hook interactiveHandler
+hooks/toolPermission/handlers/swarmWorkerHandler.ts,hook,covered-by-rust-equivalent,React hook swarmWorkerHandler
+hooks/toolPermission/permissionLogging.ts,hook,covered-by-rust-equivalent,React hook permissionLogging
+hooks/unifiedSuggestions.ts,hook,covered-by-rust-equivalent,React hook unifiedSuggestions
+hooks/useAfterFirstRender.ts,hook,covered-by-rust-equivalent,React hook useAfterFirstRender
+hooks/useApiKeyVerification.ts,hook,covered-by-rust-equivalent,React hook useApiKeyVerification
+hooks/useArrowKeyHistory.tsx,hook,covered-by-rust-equivalent,React hook useArrowKeyHistory
+hooks/useAssistantHistory.ts,hook,covered-by-rust-equivalent,React hook useAssistantHistory
+hooks/useAwaySummary.ts,hook,covered-by-rust-equivalent,React hook useAwaySummary
+hooks/useBackgroundTaskNavigation.ts,hook,covered-by-rust-equivalent,React hook useBackgroundTaskNavigation
+hooks/useBlink.ts,hook,covered-by-rust-equivalent,React hook useBlink
+hooks/useCanUseTool.tsx,hook,needs-port,React hook useCanUseTool
+hooks/useCancelRequest.ts,hook,covered-by-rust-equivalent,React hook useCancelRequest
+hooks/useChromeExtensionNotification.tsx,hook,covered-by-rust-equivalent,React hook useChromeExtensionNotification
+hooks/useClaudeCodeHintRecommendation.tsx,hook,covered-by-rust-equivalent,React hook useClaudeCodeHintRecommendation
+hooks/useClipboardImageHint.ts,hook,covered-by-rust-equivalent,React hook useClipboardImageHint
+hooks/useCommandKeybindings.tsx,hook,covered-by-rust-equivalent,React hook useCommandKeybindings
+hooks/useCommandQueue.ts,hook,covered-by-rust-equivalent,React hook useCommandQueue
+hooks/useCopyOnSelect.ts,hook,covered-by-rust-equivalent,React hook useCopyOnSelect
+hooks/useDeferredHookMessages.ts,hook,covered-by-rust-equivalent,React hook useDeferredHookMessages
+hooks/useDiffData.ts,hook,needs-port,React hook useDiffData
+hooks/useDiffInIDE.ts,hook,needs-port,React hook useDiffInIDE
+hooks/useDirectConnect.ts,hook,covered-by-rust-equivalent,React hook useDirectConnect
+hooks/useDoublePress.ts,hook,covered-by-rust-equivalent,React hook useDoublePress
+hooks/useDynamicConfig.ts,hook,covered-by-rust-equivalent,React hook useDynamicConfig
+hooks/useElapsedTime.ts,hook,covered-by-rust-equivalent,React hook useElapsedTime
+hooks/useExitOnCtrlCD.ts,hook,needs-port,React hook useExitOnCtrlCD
+hooks/useExitOnCtrlCDWithKeybindings.ts,hook,covered-by-rust-equivalent,React hook useExitOnCtrlCDWithKeybindings
+hooks/useFileHistorySnapshotInit.ts,hook,covered-by-rust-equivalent,React hook useFileHistorySnapshotInit
+hooks/useGlobalKeybindings.tsx,hook,covered-by-rust-equivalent,React hook useGlobalKeybindings
+hooks/useHistorySearch.ts,hook,covered-by-rust-equivalent,React hook useHistorySearch
+hooks/useIDEIntegration.tsx,hook,covered-by-rust-equivalent,React hook useIDEIntegration
+hooks/useIdeAtMentioned.ts,hook,needs-port,React hook useIdeAtMentioned
+hooks/useIdeConnectionStatus.ts,hook,covered-by-rust-equivalent,React hook useIdeConnectionStatus
+hooks/useIdeLogging.ts,hook,covered-by-rust-equivalent,React hook useIdeLogging
+hooks/useIdeSelection.ts,hook,covered-by-rust-equivalent,React hook useIdeSelection
+hooks/useInboxPoller.ts,hook,covered-by-rust-equivalent,React hook useInboxPoller
+hooks/useInputBuffer.ts,hook,covered-by-rust-equivalent,React hook useInputBuffer
+hooks/useIssueFlagBanner.ts,hook,covered-by-rust-equivalent,React hook useIssueFlagBanner
+hooks/useLogMessages.ts,hook,covered-by-rust-equivalent,React hook useLogMessages
+hooks/useLspPluginRecommendation.tsx,hook,covered-by-rust-equivalent,React hook useLspPluginRecommendation
+hooks/useMailboxBridge.ts,hook,covered-by-rust-equivalent,React hook useMailboxBridge
+hooks/useMainLoopModel.ts,hook,covered-by-rust-equivalent,React hook useMainLoopModel
+hooks/useManagePlugins.ts,hook,covered-by-rust-equivalent,React hook useManagePlugins
+hooks/useMemoryUsage.ts,hook,covered-by-rust-equivalent,React hook useMemoryUsage
+hooks/useMergedClients.ts,hook,covered-by-rust-equivalent,React hook useMergedClients
+hooks/useMergedCommands.ts,hook,covered-by-rust-equivalent,React hook useMergedCommands
+hooks/useMergedTools.ts,hook,covered-by-rust-equivalent,React hook useMergedTools
+hooks/useMinDisplayTime.ts,hook,covered-by-rust-equivalent,React hook useMinDisplayTime
+hooks/useNotifyAfterTimeout.ts,hook,covered-by-rust-equivalent,React hook useNotifyAfterTimeout
+hooks/useOfficialMarketplaceNotification.tsx,hook,covered-by-rust-equivalent,React hook useOfficialMarketplaceNotification
+hooks/usePasteHandler.ts,hook,covered-by-rust-equivalent,React hook usePasteHandler
+hooks/usePluginRecommendationBase.tsx,hook,covered-by-rust-equivalent,React hook usePluginRecommendationBase
+hooks/usePrStatus.ts,hook,covered-by-rust-equivalent,React hook usePrStatus
+hooks/usePromptSuggestion.ts,hook,covered-by-rust-equivalent,React hook usePromptSuggestion
+hooks/usePromptsFromClaudeInChrome.tsx,hook,covered-by-rust-equivalent,React hook usePromptsFromClaudeInChrome
+hooks/useQueueProcessor.ts,hook,covered-by-rust-equivalent,React hook useQueueProcessor
+hooks/useRemoteSession.ts,hook,covered-by-rust-equivalent,React hook useRemoteSession
+hooks/useReplBridge.tsx,hook,covered-by-rust-equivalent,React hook useReplBridge
+hooks/useSSHSession.ts,hook,covered-by-rust-equivalent,React hook useSSHSession
+hooks/useScheduledTasks.ts,hook,covered-by-rust-equivalent,React hook useScheduledTasks
+hooks/useSearchInput.ts,hook,covered-by-rust-equivalent,React hook useSearchInput
+hooks/useSessionBackgrounding.ts,hook,covered-by-rust-equivalent,React hook useSessionBackgrounding
+hooks/useSettings.ts,hook,covered-by-rust-equivalent,React hook useSettings
+hooks/useSettingsChange.ts,hook,covered-by-rust-equivalent,React hook useSettingsChange
+hooks/useSkillImprovementSurvey.ts,hook,covered-by-rust-equivalent,React hook useSkillImprovementSurvey
+hooks/useSkillsChange.ts,hook,covered-by-rust-equivalent,React hook useSkillsChange
+hooks/useSwarmInitialization.ts,hook,covered-by-rust-equivalent,React hook useSwarmInitialization
+hooks/useSwarmPermissionPoller.ts,hook,covered-by-rust-equivalent,React hook useSwarmPermissionPoller
+hooks/useTaskListWatcher.ts,hook,covered-by-rust-equivalent,React hook useTaskListWatcher
+hooks/useTasksV2.ts,hook,covered-by-rust-equivalent,React hook useTasksV2
+hooks/useTeammateViewAutoExit.ts,hook,covered-by-rust-equivalent,React hook useTeammateViewAutoExit
+hooks/useTeleportResume.tsx,hook,covered-by-rust-equivalent,React hook useTeleportResume
+hooks/useTerminalSize.ts,hook,covered-by-rust-equivalent,React hook useTerminalSize
+hooks/useTextInput.ts,hook,covered-by-rust-equivalent,React hook useTextInput
+hooks/useTimeout.ts,hook,covered-by-rust-equivalent,React hook useTimeout
+hooks/useTurnDiffs.ts,hook,covered-by-rust-equivalent,React hook useTurnDiffs
+hooks/useTypeahead.tsx,hook,needs-port,React hook useTypeahead
+hooks/useUpdateNotification.ts,hook,covered-by-rust-equivalent,React hook useUpdateNotification
+hooks/useVimInput.ts,hook,covered-by-rust-equivalent,React hook useVimInput
+hooks/useVirtualScroll.ts,hook,covered-by-rust-equivalent,React hook useVirtualScroll
+hooks/useVoice.ts,hook,covered-by-rust-equivalent,React hook useVoice
+hooks/useVoiceEnabled.ts,hook,covered-by-rust-equivalent,React hook useVoiceEnabled
+hooks/useVoiceIntegration.tsx,hook,covered-by-rust-equivalent,React hook useVoiceIntegration
+ink/Ansi.tsx,tui-renderer,covered-by-rust-equivalent,Ink → ratatui replaces this area
+ink/bidi.ts,tui-renderer,covered-by-rust-equivalent,Ink → ratatui replaces this area
+ink/clearTerminal.ts,tui-renderer,covered-by-rust-equivalent,Ink → ratatui replaces this area
+ink/colorize.ts,tui-renderer,covered-by-rust-equivalent,Ink → ratatui replaces this area
+ink/components/AlternateScreen.tsx,tui-renderer,covered-by-rust-equivalent,Ink → ratatui replaces this area
+ink/components/App.tsx,tui-renderer,covered-by-rust-equivalent,Ink → ratatui replaces this area
+ink/components/AppContext.ts,tui-renderer,covered-by-rust-equivalent,Ink → ratatui replaces this area
+ink/components/Box.tsx,tui-renderer,covered-by-rust-equivalent,Ink → ratatui replaces this area
+ink/components/Button.tsx,tui-renderer,covered-by-rust-equivalent,Ink → ratatui replaces this area
+ink/components/ClockContext.tsx,tui-renderer,covered-by-rust-equivalent,Ink → ratatui replaces this area
+ink/components/CursorDeclarationContext.ts,tui-renderer,covered-by-rust-equivalent,Ink → ratatui replaces this area
+ink/components/ErrorOverview.tsx,tui-renderer,covered-by-rust-equivalent,Ink → ratatui replaces this area
+ink/components/Link.tsx,tui-renderer,covered-by-rust-equivalent,Ink → ratatui replaces this area
+ink/components/Newline.tsx,tui-renderer,covered-by-rust-equivalent,Ink → ratatui replaces this area
+ink/components/NoSelect.tsx,tui-renderer,covered-by-rust-equivalent,Ink → ratatui replaces this area
+ink/components/RawAnsi.tsx,tui-renderer,covered-by-rust-equivalent,Ink → ratatui replaces this area
+ink/components/ScrollBox.tsx,tui-renderer,covered-by-rust-equivalent,Ink → ratatui replaces this area
+ink/components/Spacer.tsx,tui-renderer,covered-by-rust-equivalent,Ink → ratatui replaces this area
+ink/components/StdinContext.ts,tui-renderer,covered-by-rust-equivalent,Ink → ratatui replaces this area
+ink/components/TerminalFocusContext.tsx,tui-renderer,covered-by-rust-equivalent,Ink → ratatui replaces this area
+ink/components/TerminalSizeContext.tsx,tui-renderer,covered-by-rust-equivalent,Ink → ratatui replaces this area
+ink/components/Text.tsx,tui-renderer,covered-by-rust-equivalent,Ink → ratatui replaces this area
+ink/constants.ts,tui-renderer,covered-by-rust-equivalent,Ink → ratatui replaces this area
+ink/dom.ts,tui-renderer,covered-by-rust-equivalent,Ink → ratatui replaces this area
+ink/events/click-event.ts,tui-renderer,covered-by-rust-equivalent,Ink → ratatui replaces this area
+ink/events/dispatcher.ts,tui-renderer,covered-by-rust-equivalent,Ink → ratatui replaces this area
+ink/events/emitter.ts,tui-renderer,covered-by-rust-equivalent,Ink → ratatui replaces this area
+ink/events/event-handlers.ts,tui-renderer,covered-by-rust-equivalent,Ink → ratatui replaces this area
+ink/events/event.ts,tui-renderer,covered-by-rust-equivalent,Ink → ratatui replaces this area
+ink/events/focus-event.ts,tui-renderer,covered-by-rust-equivalent,Ink → ratatui replaces this area
+ink/events/input-event.ts,tui-renderer,covered-by-rust-equivalent,Ink → ratatui replaces this area
+ink/events/keyboard-event.ts,tui-renderer,covered-by-rust-equivalent,Ink → ratatui replaces this area
+ink/events/terminal-event.ts,tui-renderer,covered-by-rust-equivalent,Ink → ratatui replaces this area
+ink/events/terminal-focus-event.ts,tui-renderer,covered-by-rust-equivalent,Ink → ratatui replaces this area
+ink/focus.ts,tui-renderer,covered-by-rust-equivalent,Ink → ratatui replaces this area
+ink/frame.ts,tui-renderer,covered-by-rust-equivalent,Ink → ratatui replaces this area
+ink/get-max-width.ts,tui-renderer,covered-by-rust-equivalent,Ink → ratatui replaces this area
+ink/hit-test.ts,tui-renderer,covered-by-rust-equivalent,Ink → ratatui replaces this area
+ink/hooks/use-animation-frame.ts,tui-renderer,covered-by-rust-equivalent,Ink → ratatui replaces this area
+ink/hooks/use-app.ts,tui-renderer,covered-by-rust-equivalent,Ink → ratatui replaces this area
+ink/hooks/use-declared-cursor.ts,tui-renderer,covered-by-rust-equivalent,Ink → ratatui replaces this area
+ink/hooks/use-input.ts,tui-renderer,covered-by-rust-equivalent,Ink → ratatui replaces this area
+ink/hooks/use-interval.ts,tui-renderer,covered-by-rust-equivalent,Ink → ratatui replaces this area
+ink/hooks/use-search-highlight.ts,tui-renderer,covered-by-rust-equivalent,Ink → ratatui replaces this area
+ink/hooks/use-selection.ts,tui-renderer,covered-by-rust-equivalent,Ink → ratatui replaces this area
+ink/hooks/use-stdin.ts,tui-renderer,covered-by-rust-equivalent,Ink → ratatui replaces this area
+ink/hooks/use-tab-status.ts,tui-renderer,covered-by-rust-equivalent,Ink → ratatui replaces this area
+ink/hooks/use-terminal-focus.ts,tui-renderer,covered-by-rust-equivalent,Ink → ratatui replaces this area
+ink/hooks/use-terminal-title.ts,tui-renderer,covered-by-rust-equivalent,Ink → ratatui replaces this area
+ink/hooks/use-terminal-viewport.ts,tui-renderer,covered-by-rust-equivalent,Ink → ratatui replaces this area
+ink/ink.tsx,tui-renderer,covered-by-rust-equivalent,Ink → ratatui replaces this area
+ink/instances.ts,tui-renderer,covered-by-rust-equivalent,Ink → ratatui replaces this area
+ink/layout/engine.ts,tui-renderer,covered-by-rust-equivalent,Ink → ratatui replaces this area
+ink/layout/geometry.ts,tui-renderer,covered-by-rust-equivalent,Ink → ratatui replaces this area
+ink/layout/node.ts,tui-renderer,covered-by-rust-equivalent,Ink → ratatui replaces this area
+ink/layout/yoga.ts,tui-renderer,covered-by-rust-equivalent,Ink → ratatui replaces this area
+ink/line-width-cache.ts,tui-renderer,covered-by-rust-equivalent,Ink → ratatui replaces this area
+ink/log-update.ts,tui-renderer,covered-by-rust-equivalent,Ink → ratatui replaces this area
+ink/measure-element.ts,tui-renderer,covered-by-rust-equivalent,Ink → ratatui replaces this area
+ink/measure-text.ts,tui-renderer,covered-by-rust-equivalent,Ink → ratatui replaces this area
+ink/node-cache.ts,tui-renderer,covered-by-rust-equivalent,Ink → ratatui replaces this area
+ink/optimizer.ts,tui-renderer,covered-by-rust-equivalent,Ink → ratatui replaces this area
+ink/output.ts,tui-renderer,covered-by-rust-equivalent,Ink → ratatui replaces this area
+ink/parse-keypress.ts,tui-renderer,covered-by-rust-equivalent,Ink → ratatui replaces this area
+ink/reconciler.ts,tui-renderer,covered-by-rust-equivalent,Ink → ratatui replaces this area
+ink/render-border.ts,tui-renderer,covered-by-rust-equivalent,Ink → ratatui replaces this area
+ink/render-node-to-output.ts,tui-renderer,covered-by-rust-equivalent,Ink → ratatui replaces this area
+ink/render-to-screen.ts,tui-renderer,covered-by-rust-equivalent,Ink → ratatui replaces this area
+ink/renderer.ts,tui-renderer,covered-by-rust-equivalent,Ink → ratatui replaces this area
+ink/root.ts,tui-renderer,covered-by-rust-equivalent,Ink → ratatui replaces this area
+ink/screen.ts,tui-renderer,covered-by-rust-equivalent,Ink → ratatui replaces this area
+ink/searchHighlight.ts,tui-renderer,covered-by-rust-equivalent,Ink → ratatui replaces this area
+ink/selection.ts,tui-renderer,covered-by-rust-equivalent,Ink → ratatui replaces this area
+ink/squash-text-nodes.ts,tui-renderer,covered-by-rust-equivalent,Ink → ratatui replaces this area
+ink/stringWidth.ts,tui-renderer,covered-by-rust-equivalent,Ink → ratatui replaces this area
+ink/styles.ts,tui-renderer,covered-by-rust-equivalent,Ink → ratatui replaces this area
+ink/supports-hyperlinks.ts,tui-renderer,covered-by-rust-equivalent,Ink → ratatui replaces this area
+ink/tabstops.ts,tui-renderer,covered-by-rust-equivalent,Ink → ratatui replaces this area
+ink/terminal-focus-state.ts,tui-renderer,covered-by-rust-equivalent,Ink → ratatui replaces this area
+ink/terminal-querier.ts,tui-renderer,covered-by-rust-equivalent,Ink → ratatui replaces this area
+ink/terminal.ts,tui-renderer,covered-by-rust-equivalent,Ink → ratatui replaces this area
+ink/termio/ansi.ts,tui-renderer,covered-by-rust-equivalent,Ink → ratatui replaces this area
+ink/termio/csi.ts,tui-renderer,covered-by-rust-equivalent,Ink → ratatui replaces this area
+ink/termio/dec.ts,tui-renderer,covered-by-rust-equivalent,Ink → ratatui replaces this area
+ink/termio/esc.ts,tui-renderer,covered-by-rust-equivalent,Ink → ratatui replaces this area
+ink/termio/osc.ts,tui-renderer,covered-by-rust-equivalent,Ink → ratatui replaces this area
+ink/termio/parser.ts,tui-renderer,covered-by-rust-equivalent,Ink → ratatui replaces this area
+ink/termio/sgr.ts,tui-renderer,covered-by-rust-equivalent,Ink → ratatui replaces this area
+ink/termio/tokenize.ts,tui-renderer,covered-by-rust-equivalent,Ink → ratatui replaces this area
+ink/termio/types.ts,tui-renderer,covered-by-rust-equivalent,Ink → ratatui replaces this area
+ink/termio.ts,tui-renderer,covered-by-rust-equivalent,Ink → ratatui replaces this area
+ink/useTerminalNotification.ts,tui-renderer,covered-by-rust-equivalent,Ink → ratatui replaces this area
+ink/warn.ts,tui-renderer,covered-by-rust-equivalent,Ink → ratatui replaces this area
+ink/widest-line.ts,tui-renderer,covered-by-rust-equivalent,Ink → ratatui replaces this area
+ink/wrap-text.ts,tui-renderer,covered-by-rust-equivalent,Ink → ratatui replaces this area
+ink/wrapAnsi.ts,tui-renderer,covered-by-rust-equivalent,Ink → ratatui replaces this area
+ink.ts,misc,needs-port,top-level ink.ts
+interactiveHelpers.tsx,misc,covered-by-rust-equivalent,top-level interactiveHelpers.tsx
+keybindings/KeybindingContext.tsx,keybindings,covered-by-rust-equivalent,keybindings embedded in Rust modules
+keybindings/KeybindingProviderSetup.tsx,keybindings,covered-by-rust-equivalent,keybindings embedded in Rust modules
+keybindings/defaultBindings.ts,keybindings,covered-by-rust-equivalent,keybindings embedded in Rust modules
+keybindings/loadUserBindings.ts,keybindings,covered-by-rust-equivalent,keybindings embedded in Rust modules
+keybindings/match.ts,keybindings,covered-by-rust-equivalent,keybindings embedded in Rust modules
+keybindings/parser.ts,keybindings,covered-by-rust-equivalent,keybindings embedded in Rust modules
+keybindings/reservedShortcuts.ts,keybindings,covered-by-rust-equivalent,keybindings embedded in Rust modules
+keybindings/resolver.ts,keybindings,covered-by-rust-equivalent,keybindings embedded in Rust modules
+keybindings/schema.ts,keybindings,covered-by-rust-equivalent,keybindings embedded in Rust modules
+keybindings/shortcutFormat.ts,keybindings,covered-by-rust-equivalent,keybindings embedded in Rust modules
+keybindings/template.ts,keybindings,covered-by-rust-equivalent,keybindings embedded in Rust modules
+keybindings/useKeybinding.ts,keybindings,covered-by-rust-equivalent,keybindings embedded in Rust modules
+keybindings/useShortcutDisplay.ts,keybindings,covered-by-rust-equivalent,keybindings embedded in Rust modules
+keybindings/validate.ts,keybindings,covered-by-rust-equivalent,keybindings embedded in Rust modules
+main.tsx,misc,covered-by-rust-equivalent,top-level main.tsx
+memdir/findRelevantMemories.ts,memdir,needs-port,Memory dir ops findRelevantMemories
+memdir/memdir.ts,memdir,needs-port,Memory dir ops memdir
+memdir/memoryAge.ts,memdir,needs-port,Memory dir ops memoryAge
+memdir/memoryScan.ts,memdir,needs-port,Memory dir ops memoryScan
+memdir/memoryTypes.ts,memdir,needs-port,Memory dir ops memoryTypes
+memdir/paths.ts,memdir,needs-port,Memory dir ops paths
+memdir/teamMemPaths.ts,memdir,needs-port,Memory dir ops teamMemPaths
+memdir/teamMemPrompts.ts,memdir,needs-port,Memory dir ops teamMemPrompts
+migrations/migrateAutoUpdatesToSettings.ts,migration,intentionally-omitted,"TS DB migration, no Rust equivalent"
+migrations/migrateBypassPermissionsAcceptedToSettings.ts,migration,intentionally-omitted,"TS DB migration, no Rust equivalent"
+migrations/migrateEnableAllProjectMcpServersToSettings.ts,migration,intentionally-omitted,"TS DB migration, no Rust equivalent"
+migrations/migrateFennecToOpus.ts,migration,intentionally-omitted,"TS DB migration, no Rust equivalent"
+migrations/migrateLegacyOpusToCurrent.ts,migration,intentionally-omitted,"TS DB migration, no Rust equivalent"
+migrations/migrateOpusToOpus1m.ts,migration,intentionally-omitted,"TS DB migration, no Rust equivalent"
+migrations/migrateReplBridgeEnabledToRemoteControlAtStartup.ts,migration,intentionally-omitted,"TS DB migration, no Rust equivalent"
+migrations/migrateSonnet1mToSonnet45.ts,migration,intentionally-omitted,"TS DB migration, no Rust equivalent"
+migrations/migrateSonnet45ToSonnet46.ts,migration,intentionally-omitted,"TS DB migration, no Rust equivalent"
+migrations/resetAutoModeOptInForDefaultOffer.ts,migration,intentionally-omitted,"TS DB migration, no Rust equivalent"
+migrations/resetProToOpusDefault.ts,migration,intentionally-omitted,"TS DB migration, no Rust equivalent"
+moreright/useMoreRight.tsx,misc,covered-by-rust-equivalent,top-level moreright/useMoreRight.tsx
+native-ts/color-diff/index.ts,native-ts,covered-by-rust-equivalent,native-ts/index
+native-ts/file-index/index.ts,native-ts,covered-by-rust-equivalent,native-ts/index
+native-ts/yoga-layout/enums.ts,native-ts,needs-port,native-ts/enums
+native-ts/yoga-layout/index.ts,native-ts,covered-by-rust-equivalent,native-ts/index
+outputStyles/loadOutputStylesDir.ts,outputStyles,covered-by-rust-equivalent,outputStyles/loadOutputStylesDir
+package-lock.json,misc,intentionally-omitted,top-level package-lock.json
+plugins/builtinPlugins.ts,plugins,covered-by-rust-equivalent,plugins/builtinPlugins
+plugins/bundled/index.ts,plugins,covered-by-rust-equivalent,plugins/index
+projectOnboardingState.ts,misc,covered-by-rust-equivalent,top-level projectOnboardingState.ts
+query/config.ts,query,covered-by-rust-equivalent,query/config
+query/deps.ts,query,needs-port,query/deps
+query/stopHooks.ts,query,covered-by-rust-equivalent,query/stopHooks
+query/tokenBudget.ts,query,covered-by-rust-equivalent,query/tokenBudget
+query.ts,misc,covered-by-rust-equivalent,top-level query.ts
+remote/RemoteSessionManager.ts,external-remote,external-service-blocked,remote requires external runtime
+remote/SessionsWebSocket.ts,external-remote,external-service-blocked,remote requires external runtime
+remote/remotePermissionBridge.ts,external-remote,external-service-blocked,remote requires external runtime
+remote/sdkMessageAdapter.ts,external-remote,external-service-blocked,remote requires external runtime
+replLauncher.tsx,misc,covered-by-rust-equivalent,top-level replLauncher.tsx
+schemas/hooks.ts,misc,covered-by-rust-equivalent,top-level schemas/hooks.ts
+screens/Doctor.tsx,screens,covered-by-rust-equivalent,screens/Doctor
+screens/REPL.tsx,screens,needs-port,screens/REPL
+screens/ResumeConversation.tsx,screens,covered-by-rust-equivalent,screens/ResumeConversation
+server/createDirectConnectSession.ts,external-server,external-service-blocked,server requires external runtime
+server/directConnectManager.ts,external-server,external-service-blocked,server requires external runtime
+server/types.ts,external-server,external-service-blocked,server requires external runtime
+services/AgentSummary/agentSummary.ts,services,covered-by-rust-equivalent,services/agentSummary
+services/MagicDocs/magicDocs.ts,services,needs-port,services/magicDocs
+services/MagicDocs/prompts.ts,services,covered-by-rust-equivalent,services/prompts
+services/PromptSuggestion/promptSuggestion.ts,services,covered-by-rust-equivalent,services/promptSuggestion
+services/PromptSuggestion/speculation.ts,services,needs-port,services/speculation
+services/SessionMemory/prompts.ts,services,covered-by-rust-equivalent,services/prompts
+services/SessionMemory/sessionMemory.ts,services,covered-by-rust-equivalent,services/sessionMemory
+services/SessionMemory/sessionMemoryUtils.ts,services,covered-by-rust-equivalent,services/sessionMemoryUtils
+services/analytics/config.ts,services,covered-by-rust-equivalent,services/config
+services/analytics/datadog.ts,services,needs-port,services/datadog
+services/analytics/firstPartyEventLogger.ts,services,covered-by-rust-equivalent,services/firstPartyEventLogger
+services/analytics/firstPartyEventLoggingExporter.ts,services,covered-by-rust-equivalent,services/firstPartyEventLoggingExporter
+services/analytics/growthbook.ts,services,needs-port,services/growthbook
+services/analytics/index.ts,services,covered-by-rust-equivalent,services/index
+services/analytics/metadata.ts,services,covered-by-rust-equivalent,services/metadata
+services/analytics/sink.ts,services,needs-port,services/sink
+services/analytics/sinkKillswitch.ts,services,needs-port,services/sinkKillswitch
+services/api/adminRequests.ts,services,covered-by-rust-equivalent,services/adminRequests
+services/api/bootstrap.ts,services,needs-port,services/bootstrap
+services/api/claude.ts,services,covered-by-rust-equivalent,services/claude
+services/api/client.ts,services,covered-by-rust-equivalent,services/client
+services/api/dumpPrompts.ts,services,covered-by-rust-equivalent,services/dumpPrompts
+services/api/emptyUsage.ts,services,covered-by-rust-equivalent,services/emptyUsage
+services/api/errorUtils.ts,services,covered-by-rust-equivalent,services/errorUtils
+services/api/errors.ts,services,covered-by-rust-equivalent,services/errors
+services/api/filesApi.ts,services,covered-by-rust-equivalent,services/filesApi
+services/api/firstTokenDate.ts,services,covered-by-rust-equivalent,services/firstTokenDate
+services/api/grove.ts,services,needs-port,services/grove
+services/api/logging.ts,services,covered-by-rust-equivalent,services/logging
+services/api/metricsOptOut.ts,services,covered-by-rust-equivalent,services/metricsOptOut
+services/api/overageCreditGrant.ts,services,covered-by-rust-equivalent,services/overageCreditGrant
+services/api/promptCacheBreakDetection.ts,services,covered-by-rust-equivalent,services/promptCacheBreakDetection
+services/api/referral.ts,services,needs-port,services/referral
+services/api/sessionIngress.ts,services,covered-by-rust-equivalent,services/sessionIngress
+services/api/ultrareviewQuota.ts,services,covered-by-rust-equivalent,services/ultrareviewQuota
+services/api/usage.ts,services,covered-by-rust-equivalent,services/usage
+services/api/withRetry.ts,services,covered-by-rust-equivalent,services/withRetry
+services/autoDream/autoDream.ts,services,covered-by-rust-equivalent,services/autoDream
+services/autoDream/config.ts,services,covered-by-rust-equivalent,services/config
+services/autoDream/consolidationLock.ts,services,needs-port,services/consolidationLock
+services/autoDream/consolidationPrompt.ts,services,covered-by-rust-equivalent,services/consolidationPrompt
+services/awaySummary.ts,services,covered-by-rust-equivalent,services/awaySummary
+services/claudeAiLimits.ts,services,covered-by-rust-equivalent,services/claudeAiLimits
+services/claudeAiLimitsHook.ts,services,covered-by-rust-equivalent,services/claudeAiLimitsHook
+services/compact/apiMicrocompact.ts,services,needs-port,services/apiMicrocompact
+services/compact/autoCompact.ts,services,covered-by-rust-equivalent,services/autoCompact
+services/compact/compact.ts,services,covered-by-rust-equivalent,services/compact
+services/compact/compactWarningHook.ts,services,covered-by-rust-equivalent,services/compactWarningHook
+services/compact/compactWarningState.ts,services,covered-by-rust-equivalent,services/compactWarningState
+services/compact/grouping.ts,services,covered-by-rust-equivalent,services/grouping
+services/compact/microCompact.ts,services,covered-by-rust-equivalent,services/microCompact
+services/compact/postCompactCleanup.ts,services,covered-by-rust-equivalent,services/postCompactCleanup
+services/compact/prompt.ts,services,covered-by-rust-equivalent,services/prompt
+services/compact/sessionMemoryCompact.ts,services,covered-by-rust-equivalent,services/sessionMemoryCompact
+services/compact/timeBasedMCConfig.ts,services,covered-by-rust-equivalent,services/timeBasedMCConfig
+services/diagnosticTracking.ts,services,covered-by-rust-equivalent,services/diagnosticTracking
+services/extractMemories/extractMemories.ts,services,covered-by-rust-equivalent,services/extractMemories
+services/extractMemories/prompts.ts,services,covered-by-rust-equivalent,services/prompts
+services/internalLogging.ts,services,covered-by-rust-equivalent,services/internalLogging
+services/lsp/LSPClient.ts,services,covered-by-rust-equivalent,services/LSPClient
+services/lsp/LSPDiagnosticRegistry.ts,services,covered-by-rust-equivalent,services/LSPDiagnosticRegistry
+services/lsp/LSPServerInstance.ts,services,covered-by-rust-equivalent,services/LSPServerInstance
+services/lsp/LSPServerManager.ts,services,covered-by-rust-equivalent,services/LSPServerManager
+services/lsp/config.ts,services,covered-by-rust-equivalent,services/config
+services/lsp/manager.ts,services,covered-by-rust-equivalent,services/manager
+services/lsp/passiveFeedback.ts,services,covered-by-rust-equivalent,services/passiveFeedback
+services/mcp/InProcessTransport.ts,services,covered-by-rust-equivalent,services/InProcessTransport
+services/mcp/MCPConnectionManager.tsx,services,covered-by-rust-equivalent,services/MCPConnectionManager
+services/mcp/SdkControlTransport.ts,services,covered-by-rust-equivalent,services/SdkControlTransport
+services/mcp/auth.ts,services,covered-by-rust-equivalent,services/auth
+services/mcp/channelAllowlist.ts,services,covered-by-rust-equivalent,services/channelAllowlist
+services/mcp/channelNotification.ts,services,covered-by-rust-equivalent,services/channelNotification
+services/mcp/channelPermissions.ts,services,covered-by-rust-equivalent,services/channelPermissions
+services/mcp/claudeai.ts,services,covered-by-rust-equivalent,services/claudeai
+services/mcp/client.ts,services,covered-by-rust-equivalent,services/client
+services/mcp/config.ts,services,covered-by-rust-equivalent,services/config
+services/mcp/elicitationHandler.ts,services,covered-by-rust-equivalent,services/elicitationHandler
+services/mcp/envExpansion.ts,services,covered-by-rust-equivalent,services/envExpansion
+services/mcp/headersHelper.ts,services,covered-by-rust-equivalent,services/headersHelper
+services/mcp/mcpStringUtils.ts,services,covered-by-rust-equivalent,services/mcpStringUtils
+services/mcp/normalization.ts,services,needs-port,services/normalization
+services/mcp/oauthPort.ts,services,covered-by-rust-equivalent,services/oauthPort
+services/mcp/officialRegistry.ts,services,covered-by-rust-equivalent,services/officialRegistry
+services/mcp/types.ts,services,covered-by-rust-equivalent,services/types
+services/mcp/useManageMCPConnections.ts,services,covered-by-rust-equivalent,services/useManageMCPConnections
+services/mcp/utils.ts,services,needs-port,services/utils
+services/mcp/vscodeSdkMcp.ts,services,covered-by-rust-equivalent,services/vscodeSdkMcp
+services/mcp/xaa.ts,services,needs-port,services/xaa
+services/mcp/xaaIdpLogin.ts,services,covered-by-rust-equivalent,services/xaaIdpLogin
+services/mcpServerApproval.tsx,services,covered-by-rust-equivalent,services/mcpServerApproval
+services/mockRateLimits.ts,services,covered-by-rust-equivalent,services/mockRateLimits
+services/notifier.ts,services,needs-port,services/notifier
+services/oauth/auth-code-listener.ts,services,covered-by-rust-equivalent,services/auth-code-listener
+services/oauth/client.ts,services,covered-by-rust-equivalent,services/client
+services/oauth/crypto.ts,services,needs-port,services/crypto
+services/oauth/getOauthProfile.ts,services,covered-by-rust-equivalent,services/getOauthProfile
+services/oauth/index.ts,services,covered-by-rust-equivalent,services/index
+services/plugins/PluginInstallationManager.ts,services,covered-by-rust-equivalent,services/PluginInstallationManager
+services/plugins/pluginCliCommands.ts,services,covered-by-rust-equivalent,services/pluginCliCommands
+services/plugins/pluginOperations.ts,services,covered-by-rust-equivalent,services/pluginOperations
+services/policyLimits/index.ts,services,covered-by-rust-equivalent,services/index
+services/policyLimits/types.ts,services,covered-by-rust-equivalent,services/types
+services/preventSleep.ts,services,covered-by-rust-equivalent,services/preventSleep
+services/rateLimitMessages.ts,services,covered-by-rust-equivalent,services/rateLimitMessages
+services/rateLimitMocking.ts,services,covered-by-rust-equivalent,services/rateLimitMocking
+services/remoteManagedSettings/index.ts,services,covered-by-rust-equivalent,services/index
+services/remoteManagedSettings/securityCheck.tsx,services,covered-by-rust-equivalent,services/securityCheck
+services/remoteManagedSettings/syncCache.ts,services,covered-by-rust-equivalent,services/syncCache
+services/remoteManagedSettings/syncCacheState.ts,services,covered-by-rust-equivalent,services/syncCacheState
+services/remoteManagedSettings/types.ts,services,covered-by-rust-equivalent,services/types
+services/settingsSync/index.ts,services,covered-by-rust-equivalent,services/index
+services/settingsSync/types.ts,services,covered-by-rust-equivalent,services/types
+services/teamMemorySync/index.ts,services,covered-by-rust-equivalent,services/index
+services/teamMemorySync/secretScanner.ts,services,covered-by-rust-equivalent,services/secretScanner
+services/teamMemorySync/teamMemSecretGuard.ts,services,covered-by-rust-equivalent,services/teamMemSecretGuard
+services/teamMemorySync/types.ts,services,covered-by-rust-equivalent,services/types
+services/teamMemorySync/watcher.ts,services,needs-port,services/watcher
+services/tips/tipHistory.ts,services,covered-by-rust-equivalent,services/tipHistory
+services/tips/tipRegistry.ts,services,covered-by-rust-equivalent,services/tipRegistry
+services/tips/tipScheduler.ts,services,needs-port,services/tipScheduler
+services/tokenEstimation.ts,services,covered-by-rust-equivalent,services/tokenEstimation
+services/toolUseSummary/toolUseSummaryGenerator.ts,services,covered-by-rust-equivalent,services/toolUseSummaryGenerator
+services/tools/StreamingToolExecutor.ts,services,covered-by-rust-equivalent,services/StreamingToolExecutor
+services/tools/toolExecution.ts,services,covered-by-rust-equivalent,services/toolExecution
+services/tools/toolHooks.ts,services,covered-by-rust-equivalent,services/toolHooks
+services/tools/toolOrchestration.ts,services,covered-by-rust-equivalent,services/toolOrchestration
+services/vcr.ts,services,needs-port,services/vcr
+services/voice.ts,services,covered-by-rust-equivalent,services/voice
+services/voiceKeyterms.ts,services,covered-by-rust-equivalent,services/voiceKeyterms
+services/voiceStreamSTT.ts,services,covered-by-rust-equivalent,services/voiceStreamSTT
+setup.ts,misc,covered-by-rust-equivalent,top-level setup.ts
+skills/bundled/batch.ts,misc,covered-by-rust-equivalent,top-level skills/bundled/batch.ts
+skills/bundled/claudeApi.ts,misc,covered-by-rust-equivalent,top-level skills/bundled/claudeApi.ts
+skills/bundled/claudeApiContent.ts,misc,covered-by-rust-equivalent,top-level skills/bundled/claudeApiContent.ts
+skills/bundled/claudeInChrome.ts,misc,covered-by-rust-equivalent,top-level skills/bundled/claudeInChrome.ts
+skills/bundled/debug.ts,misc,covered-by-rust-equivalent,top-level skills/bundled/debug.ts
+skills/bundled/index.ts,misc,covered-by-rust-equivalent,top-level skills/bundled/index.ts
+skills/bundled/keybindings.ts,misc,covered-by-rust-equivalent,top-level skills/bundled/keybindings.ts
+skills/bundled/loop.ts,misc,covered-by-rust-equivalent,top-level skills/bundled/loop.ts
+skills/bundled/loremIpsum.ts,misc,needs-port,top-level skills/bundled/loremIpsum.ts
+skills/bundled/remember.ts,misc,covered-by-rust-equivalent,top-level skills/bundled/remember.ts
+skills/bundled/scheduleRemoteAgents.ts,misc,covered-by-rust-equivalent,top-level skills/bundled/scheduleRemoteAgents.ts
+skills/bundled/simplify.ts,misc,needs-port,top-level skills/bundled/simplify.ts
+skills/bundled/skillify.ts,misc,needs-port,top-level skills/bundled/skillify.ts
+skills/bundled/stuck.ts,misc,needs-port,top-level skills/bundled/stuck.ts
+skills/bundled/updateConfig.ts,misc,covered-by-rust-equivalent,top-level skills/bundled/updateConfig.ts
+skills/bundled/verify.ts,misc,covered-by-rust-equivalent,top-level skills/bundled/verify.ts
+skills/bundled/verifyContent.ts,misc,covered-by-rust-equivalent,top-level skills/bundled/verifyContent.ts
+skills/bundledSkills.ts,misc,covered-by-rust-equivalent,top-level skills/bundledSkills.ts
+skills/loadSkillsDir.ts,misc,covered-by-rust-equivalent,top-level skills/loadSkillsDir.ts
+skills/mcpSkillBuilders.ts,misc,covered-by-rust-equivalent,top-level skills/mcpSkillBuilders.ts
+state/AppState.tsx,state,covered-by-rust-equivalent,state/AppState
+state/AppStateStore.ts,state,covered-by-rust-equivalent,state/AppStateStore
+state/onChangeAppState.ts,state,covered-by-rust-equivalent,state/onChangeAppState
+state/selectors.ts,state,needs-port,state/selectors
+state/store.ts,state,covered-by-rust-equivalent,state/store
+state/teammateViewHelpers.ts,state,covered-by-rust-equivalent,state/teammateViewHelpers
+tasks/DreamTask/DreamTask.ts,tasks,covered-by-rust-equivalent,tasks/DreamTask
+tasks/InProcessTeammateTask/InProcessTeammateTask.tsx,tasks,covered-by-rust-equivalent,tasks/InProcessTeammateTask
+tasks/InProcessTeammateTask/types.ts,tasks,covered-by-rust-equivalent,tasks/types
+tasks/LocalAgentTask/LocalAgentTask.tsx,tasks,covered-by-rust-equivalent,tasks/LocalAgentTask
+tasks/LocalMainSessionTask.ts,tasks,covered-by-rust-equivalent,tasks/LocalMainSessionTask
+tasks/LocalShellTask/LocalShellTask.tsx,tasks,covered-by-rust-equivalent,tasks/LocalShellTask
+tasks/LocalShellTask/guards.ts,tasks,covered-by-rust-equivalent,tasks/guards
+tasks/LocalShellTask/killShellTasks.ts,tasks,covered-by-rust-equivalent,tasks/killShellTasks
+tasks/RemoteAgentTask/RemoteAgentTask.tsx,tasks,covered-by-rust-equivalent,tasks/RemoteAgentTask
+tasks/pillLabel.ts,tasks,covered-by-rust-equivalent,tasks/pillLabel
+tasks/stopTask.ts,tasks,covered-by-rust-equivalent,tasks/stopTask
+tasks/types.ts,tasks,covered-by-rust-equivalent,tasks/types
+tasks.ts,misc,covered-by-rust-equivalent,top-level tasks.ts
+tools/AgentTool/AgentTool.tsx,tool,covered-by-rust-equivalent,Tool AgentTool
+tools/AgentTool/UI.tsx,tool,needs-port,Tool UI
+tools/AgentTool/agentColorManager.ts,tool,covered-by-rust-equivalent,Tool agentColorManager
+tools/AgentTool/agentDisplay.ts,tool,covered-by-rust-equivalent,Tool agentDisplay
+tools/AgentTool/agentMemory.ts,tool,covered-by-rust-equivalent,Tool agentMemory
+tools/AgentTool/agentMemorySnapshot.ts,tool,covered-by-rust-equivalent,Tool agentMemorySnapshot
+tools/AgentTool/agentToolUtils.ts,tool,covered-by-rust-equivalent,Tool agentToolUtils
+tools/AgentTool/built-in/claudeCodeGuideAgent.ts,tool,covered-by-rust-equivalent,Tool claudeCodeGuideAgent
+tools/AgentTool/built-in/exploreAgent.ts,tool,covered-by-rust-equivalent,Tool exploreAgent
+tools/AgentTool/built-in/generalPurposeAgent.ts,tool,covered-by-rust-equivalent,Tool generalPurposeAgent
+tools/AgentTool/built-in/planAgent.ts,tool,covered-by-rust-equivalent,Tool planAgent
+tools/AgentTool/built-in/statuslineSetup.ts,tool,covered-by-rust-equivalent,Tool statuslineSetup
+tools/AgentTool/built-in/verificationAgent.ts,tool,covered-by-rust-equivalent,Tool verificationAgent
+tools/AgentTool/builtInAgents.ts,tool,covered-by-rust-equivalent,Tool builtInAgents
+tools/AgentTool/constants.ts,tool,covered-by-rust-equivalent,Tool constants
+tools/AgentTool/forkSubagent.ts,tool,covered-by-rust-equivalent,Tool forkSubagent
+tools/AgentTool/loadAgentsDir.ts,tool,covered-by-rust-equivalent,Tool loadAgentsDir
+tools/AgentTool/prompt.ts,tool,covered-by-rust-equivalent,Tool prompt
+tools/AgentTool/resumeAgent.ts,tool,covered-by-rust-equivalent,Tool resumeAgent
+tools/AgentTool/runAgent.ts,tool,covered-by-rust-equivalent,Tool runAgent
+tools/AskUserQuestionTool/AskUserQuestionTool.tsx,tool,covered-by-rust-equivalent,Tool AskUserQuestionTool
+tools/AskUserQuestionTool/prompt.ts,tool,covered-by-rust-equivalent,Tool prompt
+tools/BashTool/BashTool.tsx,tool,needs-port,Tool BashTool
+tools/BashTool/BashToolResultMessage.tsx,tool,covered-by-rust-equivalent,Tool BashToolResultMessage
+tools/BashTool/UI.tsx,tool,needs-port,Tool UI
+tools/BashTool/bashCommandHelpers.ts,tool,covered-by-rust-equivalent,Tool bashCommandHelpers
+tools/BashTool/bashPermissions.ts,tool,covered-by-rust-equivalent,Tool bashPermissions
+tools/BashTool/bashSecurity.ts,tool,covered-by-rust-equivalent,Tool bashSecurity
+tools/BashTool/commandSemantics.ts,tool,covered-by-rust-equivalent,Tool commandSemantics
+tools/BashTool/commentLabel.ts,tool,covered-by-rust-equivalent,Tool commentLabel
+tools/BashTool/destructiveCommandWarning.ts,tool,covered-by-rust-equivalent,Tool destructiveCommandWarning
+tools/BashTool/modeValidation.ts,tool,covered-by-rust-equivalent,Tool modeValidation
+tools/BashTool/pathValidation.ts,tool,covered-by-rust-equivalent,Tool pathValidation
+tools/BashTool/prompt.ts,tool,covered-by-rust-equivalent,Tool prompt
+tools/BashTool/readOnlyValidation.ts,tool,covered-by-rust-equivalent,Tool readOnlyValidation
+tools/BashTool/sedEditParser.ts,tool,covered-by-rust-equivalent,Tool sedEditParser
+tools/BashTool/sedValidation.ts,tool,covered-by-rust-equivalent,Tool sedValidation
+tools/BashTool/shouldUseSandbox.ts,tool,covered-by-rust-equivalent,Tool shouldUseSandbox
+tools/BashTool/toolName.ts,tool,covered-by-rust-equivalent,Tool toolName
+tools/BashTool/utils.ts,tool,needs-port,Tool utils
+tools/BriefTool/BriefTool.ts,tool,covered-by-rust-equivalent,Tool BriefTool
+tools/BriefTool/UI.tsx,tool,needs-port,Tool UI
+tools/BriefTool/attachments.ts,tool,covered-by-rust-equivalent,Tool attachments
+tools/BriefTool/prompt.ts,tool,covered-by-rust-equivalent,Tool prompt
+tools/BriefTool/upload.ts,tool,covered-by-rust-equivalent,Tool upload
+tools/ConfigTool/ConfigTool.ts,tool,covered-by-rust-equivalent,Tool ConfigTool
+tools/ConfigTool/UI.tsx,tool,needs-port,Tool UI
+tools/ConfigTool/constants.ts,tool,covered-by-rust-equivalent,Tool constants
+tools/ConfigTool/prompt.ts,tool,covered-by-rust-equivalent,Tool prompt
+tools/ConfigTool/supportedSettings.ts,tool,covered-by-rust-equivalent,Tool supportedSettings
+tools/EnterPlanModeTool/EnterPlanModeTool.ts,tool,covered-by-rust-equivalent,Tool EnterPlanModeTool
+tools/EnterPlanModeTool/UI.tsx,tool,needs-port,Tool UI
+tools/EnterPlanModeTool/constants.ts,tool,covered-by-rust-equivalent,Tool constants
+tools/EnterPlanModeTool/prompt.ts,tool,covered-by-rust-equivalent,Tool prompt
+tools/EnterWorktreeTool/EnterWorktreeTool.ts,tool,covered-by-rust-equivalent,Tool EnterWorktreeTool
+tools/EnterWorktreeTool/UI.tsx,tool,needs-port,Tool UI
+tools/EnterWorktreeTool/constants.ts,tool,covered-by-rust-equivalent,Tool constants
+tools/EnterWorktreeTool/prompt.ts,tool,covered-by-rust-equivalent,Tool prompt
+tools/ExitPlanModeTool/ExitPlanModeV2Tool.ts,tool,needs-port,Tool ExitPlanModeV2Tool
+tools/ExitPlanModeTool/UI.tsx,tool,needs-port,Tool UI
+tools/ExitPlanModeTool/constants.ts,tool,covered-by-rust-equivalent,Tool constants
+tools/ExitPlanModeTool/prompt.ts,tool,covered-by-rust-equivalent,Tool prompt
+tools/ExitWorktreeTool/ExitWorktreeTool.ts,tool,covered-by-rust-equivalent,Tool ExitWorktreeTool
+tools/ExitWorktreeTool/UI.tsx,tool,needs-port,Tool UI
+tools/ExitWorktreeTool/constants.ts,tool,covered-by-rust-equivalent,Tool constants
+tools/ExitWorktreeTool/prompt.ts,tool,covered-by-rust-equivalent,Tool prompt
+tools/FileEditTool/FileEditTool.ts,tool,needs-port,Tool FileEditTool
+tools/FileEditTool/UI.tsx,tool,needs-port,Tool UI
+tools/FileEditTool/constants.ts,tool,covered-by-rust-equivalent,Tool constants
+tools/FileEditTool/prompt.ts,tool,covered-by-rust-equivalent,Tool prompt
+tools/FileEditTool/types.ts,tool,covered-by-rust-equivalent,Tool types
+tools/FileEditTool/utils.ts,tool,needs-port,Tool utils
+tools/FileReadTool/FileReadTool.ts,tool,needs-port,Tool FileReadTool
+tools/FileReadTool/UI.tsx,tool,needs-port,Tool UI
+tools/FileReadTool/imageProcessor.ts,tool,covered-by-rust-equivalent,Tool imageProcessor
+tools/FileReadTool/limits.ts,tool,covered-by-rust-equivalent,Tool limits
+tools/FileReadTool/prompt.ts,tool,covered-by-rust-equivalent,Tool prompt
+tools/FileWriteTool/FileWriteTool.ts,tool,covered-by-rust-equivalent,Tool FileWriteTool
+tools/FileWriteTool/UI.tsx,tool,needs-port,Tool UI
+tools/FileWriteTool/prompt.ts,tool,covered-by-rust-equivalent,Tool prompt
+tools/GlobTool/GlobTool.ts,tool,needs-port,Tool GlobTool
+tools/GlobTool/UI.tsx,tool,needs-port,Tool UI
+tools/GlobTool/prompt.ts,tool,covered-by-rust-equivalent,Tool prompt
+tools/GrepTool/GrepTool.ts,tool,needs-port,Tool GrepTool
+tools/GrepTool/UI.tsx,tool,needs-port,Tool UI
+tools/GrepTool/prompt.ts,tool,covered-by-rust-equivalent,Tool prompt
+tools/LSPTool/LSPTool.ts,tool,needs-port,Tool LSPTool
+tools/LSPTool/UI.tsx,tool,needs-port,Tool UI
+tools/LSPTool/formatters.ts,tool,needs-port,Tool formatters
+tools/LSPTool/prompt.ts,tool,covered-by-rust-equivalent,Tool prompt
+tools/LSPTool/schemas.ts,tool,covered-by-rust-equivalent,Tool schemas
+tools/LSPTool/symbolContext.ts,tool,covered-by-rust-equivalent,Tool symbolContext
+tools/ListMcpResourcesTool/ListMcpResourcesTool.ts,tool,covered-by-rust-equivalent,Tool ListMcpResourcesTool
+tools/ListMcpResourcesTool/UI.tsx,tool,needs-port,Tool UI
+tools/ListMcpResourcesTool/prompt.ts,tool,covered-by-rust-equivalent,Tool prompt
+tools/MCPTool/MCPTool.ts,tool,needs-port,Tool MCPTool
+tools/MCPTool/UI.tsx,tool,needs-port,Tool UI
+tools/MCPTool/classifyForCollapse.ts,tool,covered-by-rust-equivalent,Tool classifyForCollapse
+tools/MCPTool/prompt.ts,tool,covered-by-rust-equivalent,Tool prompt
+tools/McpAuthTool/McpAuthTool.ts,tool,needs-port,Tool McpAuthTool
+tools/NotebookEditTool/NotebookEditTool.ts,tool,covered-by-rust-equivalent,Tool NotebookEditTool
+tools/NotebookEditTool/UI.tsx,tool,needs-port,Tool UI
+tools/NotebookEditTool/constants.ts,tool,covered-by-rust-equivalent,Tool constants
+tools/NotebookEditTool/prompt.ts,tool,covered-by-rust-equivalent,Tool prompt
+tools/PowerShellTool/PowerShellTool.tsx,tool,covered-by-rust-equivalent,Tool PowerShellTool
+tools/PowerShellTool/UI.tsx,tool,needs-port,Tool UI
+tools/PowerShellTool/clmTypes.ts,tool,covered-by-rust-equivalent,Tool clmTypes
+tools/PowerShellTool/commandSemantics.ts,tool,covered-by-rust-equivalent,Tool commandSemantics
+tools/PowerShellTool/commonParameters.ts,tool,covered-by-rust-equivalent,Tool commonParameters
+tools/PowerShellTool/destructiveCommandWarning.ts,tool,covered-by-rust-equivalent,Tool destructiveCommandWarning
+tools/PowerShellTool/gitSafety.ts,tool,covered-by-rust-equivalent,Tool gitSafety
+tools/PowerShellTool/modeValidation.ts,tool,covered-by-rust-equivalent,Tool modeValidation
+tools/PowerShellTool/pathValidation.ts,tool,covered-by-rust-equivalent,Tool pathValidation
+tools/PowerShellTool/powershellPermissions.ts,tool,covered-by-rust-equivalent,Tool powershellPermissions
+tools/PowerShellTool/powershellSecurity.ts,tool,covered-by-rust-equivalent,Tool powershellSecurity
+tools/PowerShellTool/prompt.ts,tool,covered-by-rust-equivalent,Tool prompt
+tools/PowerShellTool/readOnlyValidation.ts,tool,covered-by-rust-equivalent,Tool readOnlyValidation
+tools/PowerShellTool/toolName.ts,tool,covered-by-rust-equivalent,Tool toolName
+tools/REPLTool/constants.ts,tool,covered-by-rust-equivalent,Tool constants
+tools/REPLTool/primitiveTools.ts,tool,covered-by-rust-equivalent,Tool primitiveTools
+tools/ReadMcpResourceTool/ReadMcpResourceTool.ts,tool,covered-by-rust-equivalent,Tool ReadMcpResourceTool
+tools/ReadMcpResourceTool/UI.tsx,tool,needs-port,Tool UI
+tools/ReadMcpResourceTool/prompt.ts,tool,covered-by-rust-equivalent,Tool prompt
+tools/RemoteTriggerTool/RemoteTriggerTool.ts,tool,covered-by-rust-equivalent,Tool RemoteTriggerTool
+tools/RemoteTriggerTool/UI.tsx,tool,needs-port,Tool UI
+tools/RemoteTriggerTool/prompt.ts,tool,covered-by-rust-equivalent,Tool prompt
+tools/ScheduleCronTool/CronCreateTool.ts,tool,covered-by-rust-equivalent,Tool CronCreateTool
+tools/ScheduleCronTool/CronDeleteTool.ts,tool,covered-by-rust-equivalent,Tool CronDeleteTool
+tools/ScheduleCronTool/CronListTool.ts,tool,needs-port,Tool CronListTool
+tools/ScheduleCronTool/UI.tsx,tool,needs-port,Tool UI
+tools/ScheduleCronTool/prompt.ts,tool,covered-by-rust-equivalent,Tool prompt
+tools/SendMessageTool/SendMessageTool.ts,tool,covered-by-rust-equivalent,Tool SendMessageTool
+tools/SendMessageTool/UI.tsx,tool,needs-port,Tool UI
+tools/SendMessageTool/constants.ts,tool,covered-by-rust-equivalent,Tool constants
+tools/SendMessageTool/prompt.ts,tool,covered-by-rust-equivalent,Tool prompt
+tools/SkillTool/SkillTool.ts,tool,covered-by-rust-equivalent,Tool SkillTool
+tools/SkillTool/UI.tsx,tool,needs-port,Tool UI
+tools/SkillTool/constants.ts,tool,covered-by-rust-equivalent,Tool constants
+tools/SkillTool/prompt.ts,tool,covered-by-rust-equivalent,Tool prompt
+tools/SleepTool/prompt.ts,tool,covered-by-rust-equivalent,Tool prompt
+tools/SyntheticOutputTool/SyntheticOutputTool.ts,tool,covered-by-rust-equivalent,Tool SyntheticOutputTool
+tools/TaskCreateTool/TaskCreateTool.ts,tool,covered-by-rust-equivalent,Tool TaskCreateTool
+tools/TaskCreateTool/constants.ts,tool,covered-by-rust-equivalent,Tool constants
+tools/TaskCreateTool/prompt.ts,tool,covered-by-rust-equivalent,Tool prompt
+tools/TaskGetTool/TaskGetTool.ts,tool,needs-port,Tool TaskGetTool
+tools/TaskGetTool/constants.ts,tool,covered-by-rust-equivalent,Tool constants
+tools/TaskGetTool/prompt.ts,tool,covered-by-rust-equivalent,Tool prompt
+tools/TaskListTool/TaskListTool.ts,tool,needs-port,Tool TaskListTool
+tools/TaskListTool/constants.ts,tool,covered-by-rust-equivalent,Tool constants
+tools/TaskListTool/prompt.ts,tool,covered-by-rust-equivalent,Tool prompt
+tools/TaskOutputTool/TaskOutputTool.tsx,tool,covered-by-rust-equivalent,Tool TaskOutputTool
+tools/TaskOutputTool/constants.ts,tool,covered-by-rust-equivalent,Tool constants
+tools/TaskStopTool/TaskStopTool.ts,tool,needs-port,Tool TaskStopTool
+tools/TaskStopTool/UI.tsx,tool,needs-port,Tool UI
+tools/TaskStopTool/prompt.ts,tool,covered-by-rust-equivalent,Tool prompt
+tools/TaskUpdateTool/TaskUpdateTool.ts,tool,covered-by-rust-equivalent,Tool TaskUpdateTool
+tools/TaskUpdateTool/constants.ts,tool,covered-by-rust-equivalent,Tool constants
+tools/TaskUpdateTool/prompt.ts,tool,covered-by-rust-equivalent,Tool prompt
+tools/TeamCreateTool/TeamCreateTool.ts,tool,covered-by-rust-equivalent,Tool TeamCreateTool
+tools/TeamCreateTool/UI.tsx,tool,needs-port,Tool UI
+tools/TeamCreateTool/constants.ts,tool,covered-by-rust-equivalent,Tool constants
+tools/TeamCreateTool/prompt.ts,tool,covered-by-rust-equivalent,Tool prompt
+tools/TeamDeleteTool/TeamDeleteTool.ts,tool,covered-by-rust-equivalent,Tool TeamDeleteTool
+tools/TeamDeleteTool/UI.tsx,tool,needs-port,Tool UI
+tools/TeamDeleteTool/constants.ts,tool,covered-by-rust-equivalent,Tool constants
+tools/TeamDeleteTool/prompt.ts,tool,covered-by-rust-equivalent,Tool prompt
+tools/TodoWriteTool/TodoWriteTool.ts,tool,covered-by-rust-equivalent,Tool TodoWriteTool
+tools/TodoWriteTool/constants.ts,tool,covered-by-rust-equivalent,Tool constants
+tools/TodoWriteTool/prompt.ts,tool,covered-by-rust-equivalent,Tool prompt
+tools/ToolSearchTool/ToolSearchTool.ts,tool,covered-by-rust-equivalent,Tool ToolSearchTool
+tools/ToolSearchTool/constants.ts,tool,covered-by-rust-equivalent,Tool constants
+tools/ToolSearchTool/prompt.ts,tool,covered-by-rust-equivalent,Tool prompt
+tools/WebFetchTool/UI.tsx,tool,needs-port,Tool UI
+tools/WebFetchTool/WebFetchTool.ts,tool,covered-by-rust-equivalent,Tool WebFetchTool
+tools/WebFetchTool/preapproved.ts,tool,covered-by-rust-equivalent,Tool preapproved
+tools/WebFetchTool/prompt.ts,tool,covered-by-rust-equivalent,Tool prompt
+tools/WebFetchTool/utils.ts,tool,needs-port,Tool utils
+tools/WebSearchTool/UI.tsx,tool,needs-port,Tool UI
+tools/WebSearchTool/WebSearchTool.ts,tool,covered-by-rust-equivalent,Tool WebSearchTool
+tools/WebSearchTool/prompt.ts,tool,covered-by-rust-equivalent,Tool prompt
+tools/shared/gitOperationTracking.ts,tool,covered-by-rust-equivalent,Tool gitOperationTracking
+tools/shared/spawnMultiAgent.ts,tool,covered-by-rust-equivalent,Tool spawnMultiAgent
+tools/testing/TestingPermissionTool.tsx,tool,covered-by-rust-equivalent,Tool TestingPermissionTool
+tools/utils.ts,tool,needs-port,Tool utils
+tools.ts,misc,covered-by-rust-equivalent,top-level tools.ts
+types/command.ts,types,covered-by-rust-equivalent,types/command
+types/generated/events_mono/claude_code/v1/claude_code_internal_event.ts,types,covered-by-rust-equivalent,types/claude_code_internal_event
+types/generated/events_mono/common/v1/auth.ts,types,covered-by-rust-equivalent,types/auth
+types/generated/events_mono/growthbook/v1/growthbook_experiment_event.ts,types,covered-by-rust-equivalent,types/growthbook_experiment_event
+types/generated/google/protobuf/timestamp.ts,types,covered-by-rust-equivalent,types/timestamp
+types/hooks.ts,types,covered-by-rust-equivalent,types/hooks
+types/ids.ts,types,needs-port,types/ids
+types/logs.ts,types,covered-by-rust-equivalent,types/logs
+types/permissions.ts,types,covered-by-rust-equivalent,types/permissions
+types/plugin.ts,types,covered-by-rust-equivalent,types/plugin
+types/textInputTypes.ts,types,covered-by-rust-equivalent,types/textInputTypes
+upstreamproxy/relay.ts,misc,needs-port,top-level upstreamproxy/relay.ts
+upstreamproxy/upstreamproxy.ts,misc,needs-port,top-level upstreamproxy/upstreamproxy.ts
+utils/CircularBuffer.ts,utils,covered-by-rust-equivalent,utils/CircularBuffer
+utils/Cursor.ts,utils,covered-by-rust-equivalent,utils/Cursor
+utils/QueryGuard.ts,utils,covered-by-rust-equivalent,utils/QueryGuard
+utils/Shell.ts,utils,covered-by-rust-equivalent,utils/Shell
+utils/ShellCommand.ts,utils,covered-by-rust-equivalent,utils/ShellCommand
+utils/abortController.ts,utils,covered-by-rust-equivalent,utils/abortController
+utils/activityManager.ts,utils,covered-by-rust-equivalent,utils/activityManager
+utils/advisor.ts,utils,needs-port,utils/advisor
+utils/agentContext.ts,utils,covered-by-rust-equivalent,utils/agentContext
+utils/agentId.ts,utils,covered-by-rust-equivalent,utils/agentId
+utils/agentSwarmsEnabled.ts,utils,covered-by-rust-equivalent,utils/agentSwarmsEnabled
+utils/agenticSessionSearch.ts,utils,covered-by-rust-equivalent,utils/agenticSessionSearch
+utils/analyzeContext.ts,utils,covered-by-rust-equivalent,utils/analyzeContext
+utils/ansiToPng.ts,utils,covered-by-rust-equivalent,utils/ansiToPng
+utils/ansiToSvg.ts,utils,covered-by-rust-equivalent,utils/ansiToSvg
+utils/api.ts,utils,needs-port,utils/api
+utils/apiPreconnect.ts,utils,covered-by-rust-equivalent,utils/apiPreconnect
+utils/appleTerminalBackup.ts,utils,covered-by-rust-equivalent,utils/appleTerminalBackup
+utils/argumentSubstitution.ts,utils,covered-by-rust-equivalent,utils/argumentSubstitution
+utils/array.ts,utils,covered-by-rust-equivalent,utils/array
+utils/asciicast.ts,utils,needs-port,utils/asciicast
+utils/attachments.ts,utils,covered-by-rust-equivalent,utils/attachments
+utils/attribution.ts,utils,needs-port,utils/attribution
+utils/auth.ts,utils,covered-by-rust-equivalent,utils/auth
+utils/authFileDescriptor.ts,utils,covered-by-rust-equivalent,utils/authFileDescriptor
+utils/authPortable.ts,utils,covered-by-rust-equivalent,utils/authPortable
+utils/autoModeDenials.ts,utils,covered-by-rust-equivalent,utils/autoModeDenials
+utils/autoRunIssue.tsx,utils,covered-by-rust-equivalent,utils/autoRunIssue
+utils/autoUpdater.ts,utils,covered-by-rust-equivalent,utils/autoUpdater
+utils/aws.ts,utils,needs-port,utils/aws
+utils/awsAuthStatusManager.ts,utils,covered-by-rust-equivalent,utils/awsAuthStatusManager
+utils/background/remote/preconditions.ts,utils,needs-port,utils/preconditions
+utils/background/remote/remoteSession.ts,utils,covered-by-rust-equivalent,utils/remoteSession
+utils/backgroundHousekeeping.ts,utils,covered-by-rust-equivalent,utils/backgroundHousekeeping
+utils/bash/ParsedCommand.ts,utils,covered-by-rust-equivalent,utils/ParsedCommand
+utils/bash/ShellSnapshot.ts,utils,covered-by-rust-equivalent,utils/ShellSnapshot
+utils/bash/ast.ts,utils,needs-port,utils/ast
+utils/bash/bashParser.ts,utils,covered-by-rust-equivalent,utils/bashParser
+utils/bash/bashPipeCommand.ts,utils,covered-by-rust-equivalent,utils/bashPipeCommand
+utils/bash/commands.ts,utils,covered-by-rust-equivalent,utils/commands
+utils/bash/heredoc.ts,utils,covered-by-rust-equivalent,utils/heredoc
+utils/bash/parser.ts,utils,covered-by-rust-equivalent,utils/parser
+utils/bash/prefix.ts,utils,covered-by-rust-equivalent,utils/prefix
+utils/bash/registry.ts,utils,covered-by-rust-equivalent,utils/registry
+utils/bash/shellCompletion.ts,utils,covered-by-rust-equivalent,utils/shellCompletion
+utils/bash/shellPrefix.ts,utils,covered-by-rust-equivalent,utils/shellPrefix
+utils/bash/shellQuote.ts,utils,covered-by-rust-equivalent,utils/shellQuote
+utils/bash/shellQuoting.ts,utils,covered-by-rust-equivalent,utils/shellQuoting
+utils/bash/specs/alias.ts,utils,covered-by-rust-equivalent,utils/alias
+utils/bash/specs/index.ts,utils,covered-by-rust-equivalent,utils/index
+utils/bash/specs/nohup.ts,utils,needs-port,utils/nohup
+utils/bash/specs/pyright.ts,utils,covered-by-rust-equivalent,utils/pyright
+utils/bash/specs/sleep.ts,utils,covered-by-rust-equivalent,utils/sleep
+utils/bash/specs/srun.ts,utils,needs-port,utils/srun
+utils/bash/specs/time.ts,utils,covered-by-rust-equivalent,utils/time
+utils/bash/specs/timeout.ts,utils,covered-by-rust-equivalent,utils/timeout
+utils/bash/treeSitterAnalysis.ts,utils,covered-by-rust-equivalent,utils/treeSitterAnalysis
+utils/betas.ts,utils,covered-by-rust-equivalent,utils/betas
+utils/billing.ts,utils,covered-by-rust-equivalent,utils/billing
+utils/binaryCheck.ts,utils,covered-by-rust-equivalent,utils/binaryCheck
+utils/browser.ts,utils,covered-by-rust-equivalent,utils/browser
+utils/bufferedWriter.ts,utils,covered-by-rust-equivalent,utils/bufferedWriter
+utils/bundledMode.ts,utils,covered-by-rust-equivalent,utils/bundledMode
+utils/caCerts.ts,utils,covered-by-rust-equivalent,utils/caCerts
+utils/caCertsConfig.ts,utils,covered-by-rust-equivalent,utils/caCertsConfig
+utils/cachePaths.ts,utils,covered-by-rust-equivalent,utils/cachePaths
+utils/classifierApprovals.ts,utils,covered-by-rust-equivalent,utils/classifierApprovals
+utils/classifierApprovalsHook.ts,utils,covered-by-rust-equivalent,utils/classifierApprovalsHook
+utils/claudeCodeHints.ts,utils,covered-by-rust-equivalent,utils/claudeCodeHints
+utils/claudeDesktop.ts,utils,covered-by-rust-equivalent,utils/claudeDesktop
+utils/claudeInChrome/chromeNativeHost.ts,utils,covered-by-rust-equivalent,utils/chromeNativeHost
+utils/claudeInChrome/common.ts,utils,needs-port,utils/common
+utils/claudeInChrome/mcpServer.ts,utils,covered-by-rust-equivalent,utils/mcpServer
+utils/claudeInChrome/prompt.ts,utils,covered-by-rust-equivalent,utils/prompt
+utils/claudeInChrome/setup.ts,utils,covered-by-rust-equivalent,utils/setup
+utils/claudeInChrome/setupPortable.ts,utils,covered-by-rust-equivalent,utils/setupPortable
+utils/claudeInChrome/toolRendering.tsx,utils,covered-by-rust-equivalent,utils/toolRendering
+utils/claudemd.ts,utils,needs-port,utils/claudemd
+utils/cleanup.ts,utils,covered-by-rust-equivalent,utils/cleanup
+utils/cleanupRegistry.ts,utils,covered-by-rust-equivalent,utils/cleanupRegistry
+utils/cliArgs.ts,utils,needs-port,utils/cliArgs
+utils/cliHighlight.ts,utils,covered-by-rust-equivalent,utils/cliHighlight
+utils/codeIndexing.ts,utils,covered-by-rust-equivalent,utils/codeIndexing
+utils/collapseBackgroundBashNotifications.ts,utils,covered-by-rust-equivalent,utils/collapseBackgroundBashNotifications
+utils/collapseHookSummaries.ts,utils,covered-by-rust-equivalent,utils/collapseHookSummaries
+utils/collapseReadSearch.ts,utils,covered-by-rust-equivalent,utils/collapseReadSearch
+utils/collapseTeammateShutdowns.ts,utils,covered-by-rust-equivalent,utils/collapseTeammateShutdowns
+utils/combinedAbortSignal.ts,utils,covered-by-rust-equivalent,utils/combinedAbortSignal
+utils/commandLifecycle.ts,utils,covered-by-rust-equivalent,utils/commandLifecycle
+utils/commitAttribution.ts,utils,covered-by-rust-equivalent,utils/commitAttribution
+utils/completionCache.ts,utils,covered-by-rust-equivalent,utils/completionCache
+utils/computerUse/appNames.ts,utils,covered-by-rust-equivalent,utils/appNames
+utils/computerUse/cleanup.ts,utils,covered-by-rust-equivalent,utils/cleanup
+utils/computerUse/common.ts,utils,needs-port,utils/common
+utils/computerUse/computerUseLock.ts,utils,needs-port,utils/computerUseLock
+utils/computerUse/drainRunLoop.ts,utils,covered-by-rust-equivalent,utils/drainRunLoop
+utils/computerUse/escHotkey.ts,utils,needs-port,utils/escHotkey
+utils/computerUse/executor.ts,utils,covered-by-rust-equivalent,utils/executor
+utils/computerUse/gates.ts,utils,covered-by-rust-equivalent,utils/gates
+utils/computerUse/hostAdapter.ts,utils,covered-by-rust-equivalent,utils/hostAdapter
+utils/computerUse/inputLoader.ts,utils,covered-by-rust-equivalent,utils/inputLoader
+utils/computerUse/mcpServer.ts,utils,covered-by-rust-equivalent,utils/mcpServer
+utils/computerUse/setup.ts,utils,covered-by-rust-equivalent,utils/setup
+utils/computerUse/swiftLoader.ts,utils,needs-port,utils/swiftLoader
+utils/computerUse/toolRendering.tsx,utils,covered-by-rust-equivalent,utils/toolRendering
+utils/computerUse/wrapper.tsx,utils,covered-by-rust-equivalent,utils/wrapper
+utils/concurrentSessions.ts,utils,covered-by-rust-equivalent,utils/concurrentSessions
+utils/config.ts,utils,covered-by-rust-equivalent,utils/config
+utils/configConstants.ts,utils,covered-by-rust-equivalent,utils/configConstants
+utils/contentArray.ts,utils,covered-by-rust-equivalent,utils/contentArray
+utils/context.ts,utils,covered-by-rust-equivalent,utils/context
+utils/contextAnalysis.ts,utils,covered-by-rust-equivalent,utils/contextAnalysis
+utils/contextSuggestions.ts,utils,covered-by-rust-equivalent,utils/contextSuggestions
+utils/controlMessageCompat.ts,utils,covered-by-rust-equivalent,utils/controlMessageCompat
+utils/conversationRecovery.ts,utils,covered-by-rust-equivalent,utils/conversationRecovery
+utils/cron.ts,utils,covered-by-rust-equivalent,utils/cron
+utils/cronJitterConfig.ts,utils,covered-by-rust-equivalent,utils/cronJitterConfig
+utils/cronScheduler.ts,utils,covered-by-rust-equivalent,utils/cronScheduler
+utils/cronTasks.ts,utils,covered-by-rust-equivalent,utils/cronTasks
+utils/cronTasksLock.ts,utils,covered-by-rust-equivalent,utils/cronTasksLock
+utils/crossProjectResume.ts,utils,covered-by-rust-equivalent,utils/crossProjectResume
+utils/crypto.ts,utils,needs-port,utils/crypto
+utils/cwd.ts,utils,needs-port,utils/cwd
+utils/debug.ts,utils,covered-by-rust-equivalent,utils/debug
+utils/debugFilter.ts,utils,covered-by-rust-equivalent,utils/debugFilter
+utils/deepLink/banner.ts,utils,covered-by-rust-equivalent,utils/banner
+utils/deepLink/parseDeepLink.ts,utils,covered-by-rust-equivalent,utils/parseDeepLink
+utils/deepLink/protocolHandler.ts,utils,covered-by-rust-equivalent,utils/protocolHandler
+utils/deepLink/registerProtocol.ts,utils,covered-by-rust-equivalent,utils/registerProtocol
+utils/deepLink/terminalLauncher.ts,utils,covered-by-rust-equivalent,utils/terminalLauncher
+utils/deepLink/terminalPreference.ts,utils,covered-by-rust-equivalent,utils/terminalPreference
+utils/desktopDeepLink.ts,utils,covered-by-rust-equivalent,utils/desktopDeepLink
+utils/detectRepository.ts,utils,covered-by-rust-equivalent,utils/detectRepository
+utils/diagLogs.ts,utils,covered-by-rust-equivalent,utils/diagLogs
+utils/diff.ts,utils,covered-by-rust-equivalent,utils/diff
+utils/directMemberMessage.ts,utils,covered-by-rust-equivalent,utils/directMemberMessage
+utils/displayTags.ts,utils,covered-by-rust-equivalent,utils/displayTags
+utils/doctorContextWarnings.ts,utils,covered-by-rust-equivalent,utils/doctorContextWarnings
+utils/doctorDiagnostic.ts,utils,covered-by-rust-equivalent,utils/doctorDiagnostic
+utils/dxt/helpers.ts,utils,covered-by-rust-equivalent,utils/helpers
+utils/dxt/zip.ts,utils,needs-port,utils/zip
+utils/earlyInput.ts,utils,covered-by-rust-equivalent,utils/earlyInput
+utils/editor.ts,utils,covered-by-rust-equivalent,utils/editor
+utils/effort.ts,utils,covered-by-rust-equivalent,utils/effort
+utils/embeddedTools.ts,utils,covered-by-rust-equivalent,utils/embeddedTools
+utils/env.ts,utils,needs-port,utils/env
+utils/envDynamic.ts,utils,covered-by-rust-equivalent,utils/envDynamic
+utils/envUtils.ts,utils,needs-port,utils/envUtils
+utils/envValidation.ts,utils,covered-by-rust-equivalent,utils/envValidation
+utils/errorLogSink.ts,utils,covered-by-rust-equivalent,utils/errorLogSink
+utils/errors.ts,utils,covered-by-rust-equivalent,utils/errors
+utils/exampleCommands.ts,utils,covered-by-rust-equivalent,utils/exampleCommands
+utils/execFileNoThrow.ts,utils,covered-by-rust-equivalent,utils/execFileNoThrow
+utils/execFileNoThrowPortable.ts,utils,covered-by-rust-equivalent,utils/execFileNoThrowPortable
+utils/execSyncWrapper.ts,utils,covered-by-rust-equivalent,utils/execSyncWrapper
+utils/exportRenderer.tsx,utils,covered-by-rust-equivalent,utils/exportRenderer
+utils/extraUsage.ts,utils,covered-by-rust-equivalent,utils/extraUsage
+utils/fastMode.ts,utils,covered-by-rust-equivalent,utils/fastMode
+utils/file.ts,utils,covered-by-rust-equivalent,utils/file
+utils/fileHistory.ts,utils,covered-by-rust-equivalent,utils/fileHistory
+utils/fileOperationAnalytics.ts,utils,covered-by-rust-equivalent,utils/fileOperationAnalytics
+utils/filePersistence/filePersistence.ts,utils,covered-by-rust-equivalent,utils/filePersistence
+utils/filePersistence/outputsScanner.ts,utils,covered-by-rust-equivalent,utils/outputsScanner
+utils/fileRead.ts,utils,covered-by-rust-equivalent,utils/fileRead
+utils/fileReadCache.ts,utils,covered-by-rust-equivalent,utils/fileReadCache
+utils/fileStateCache.ts,utils,covered-by-rust-equivalent,utils/fileStateCache
+utils/findExecutable.ts,utils,covered-by-rust-equivalent,utils/findExecutable
+utils/fingerprint.ts,utils,needs-port,utils/fingerprint
+utils/forkedAgent.ts,utils,covered-by-rust-equivalent,utils/forkedAgent
+utils/format.ts,utils,covered-by-rust-equivalent,utils/format
+utils/formatBriefTimestamp.ts,utils,covered-by-rust-equivalent,utils/formatBriefTimestamp
+utils/fpsTracker.ts,utils,covered-by-rust-equivalent,utils/fpsTracker
+utils/frontmatterParser.ts,utils,covered-by-rust-equivalent,utils/frontmatterParser
+utils/fsOperations.ts,utils,covered-by-rust-equivalent,utils/fsOperations
+utils/fullscreen.ts,utils,covered-by-rust-equivalent,utils/fullscreen
+utils/generatedFiles.ts,utils,covered-by-rust-equivalent,utils/generatedFiles
+utils/generators.ts,utils,needs-port,utils/generators
+utils/genericProcessUtils.ts,utils,covered-by-rust-equivalent,utils/genericProcessUtils
+utils/getWorktreePaths.ts,utils,covered-by-rust-equivalent,utils/getWorktreePaths
+utils/getWorktreePathsPortable.ts,utils,covered-by-rust-equivalent,utils/getWorktreePathsPortable
+utils/ghPrStatus.ts,utils,covered-by-rust-equivalent,utils/ghPrStatus
+utils/git/gitConfigParser.ts,utils,covered-by-rust-equivalent,utils/gitConfigParser
+utils/git/gitFilesystem.ts,utils,covered-by-rust-equivalent,utils/gitFilesystem
+utils/git/gitignore.ts,utils,needs-port,utils/gitignore
+utils/git.ts,utils,needs-port,utils/git
+utils/gitDiff.ts,utils,needs-port,utils/gitDiff
+utils/gitSettings.ts,utils,covered-by-rust-equivalent,utils/gitSettings
+utils/github/ghAuthStatus.ts,utils,covered-by-rust-equivalent,utils/ghAuthStatus
+utils/githubRepoPathMapping.ts,utils,covered-by-rust-equivalent,utils/githubRepoPathMapping
+utils/glob.ts,utils,covered-by-rust-equivalent,utils/glob
+utils/gracefulShutdown.ts,utils,covered-by-rust-equivalent,utils/gracefulShutdown
+utils/groupToolUses.ts,utils,covered-by-rust-equivalent,utils/groupToolUses
+utils/handlePromptSubmit.ts,utils,covered-by-rust-equivalent,utils/handlePromptSubmit
+utils/hash.ts,utils,covered-by-rust-equivalent,utils/hash
+utils/headlessProfiler.ts,utils,needs-port,utils/headlessProfiler
+utils/heapDumpService.ts,utils,covered-by-rust-equivalent,utils/heapDumpService
+utils/heatmap.ts,utils,needs-port,utils/heatmap
+utils/highlightMatch.tsx,utils,covered-by-rust-equivalent,utils/highlightMatch
+utils/hooks/AsyncHookRegistry.ts,utils,covered-by-rust-equivalent,utils/AsyncHookRegistry
+utils/hooks/apiQueryHookHelper.ts,utils,covered-by-rust-equivalent,utils/apiQueryHookHelper
+utils/hooks/execAgentHook.ts,utils,covered-by-rust-equivalent,utils/execAgentHook
+utils/hooks/execHttpHook.ts,utils,covered-by-rust-equivalent,utils/execHttpHook
+utils/hooks/execPromptHook.ts,utils,covered-by-rust-equivalent,utils/execPromptHook
+utils/hooks/fileChangedWatcher.ts,utils,covered-by-rust-equivalent,utils/fileChangedWatcher
+utils/hooks/hookEvents.ts,utils,covered-by-rust-equivalent,utils/hookEvents
+utils/hooks/hookHelpers.ts,utils,covered-by-rust-equivalent,utils/hookHelpers
+utils/hooks/hooksConfigManager.ts,utils,covered-by-rust-equivalent,utils/hooksConfigManager
+utils/hooks/hooksConfigSnapshot.ts,utils,covered-by-rust-equivalent,utils/hooksConfigSnapshot
+utils/hooks/hooksSettings.ts,utils,covered-by-rust-equivalent,utils/hooksSettings
+utils/hooks/postSamplingHooks.ts,utils,covered-by-rust-equivalent,utils/postSamplingHooks
+utils/hooks/registerFrontmatterHooks.ts,utils,covered-by-rust-equivalent,utils/registerFrontmatterHooks
+utils/hooks/registerSkillHooks.ts,utils,covered-by-rust-equivalent,utils/registerSkillHooks
+utils/hooks/sessionHooks.ts,utils,covered-by-rust-equivalent,utils/sessionHooks
+utils/hooks/skillImprovement.ts,utils,covered-by-rust-equivalent,utils/skillImprovement
+utils/hooks/ssrfGuard.ts,utils,covered-by-rust-equivalent,utils/ssrfGuard
+utils/hooks.ts,utils,covered-by-rust-equivalent,utils/hooks
+utils/horizontalScroll.ts,utils,covered-by-rust-equivalent,utils/horizontalScroll
+utils/http.ts,utils,covered-by-rust-equivalent,utils/http
+utils/hyperlink.ts,utils,covered-by-rust-equivalent,utils/hyperlink
+utils/iTermBackup.ts,utils,needs-port,utils/iTermBackup
+utils/ide.ts,utils,needs-port,utils/ide
+utils/idePathConversion.ts,utils,covered-by-rust-equivalent,utils/idePathConversion
+utils/idleTimeout.ts,utils,covered-by-rust-equivalent,utils/idleTimeout
+utils/imagePaste.ts,utils,covered-by-rust-equivalent,utils/imagePaste
+utils/imageResizer.ts,utils,covered-by-rust-equivalent,utils/imageResizer
+utils/imageStore.ts,utils,covered-by-rust-equivalent,utils/imageStore
+utils/imageValidation.ts,utils,covered-by-rust-equivalent,utils/imageValidation
+utils/immediateCommand.ts,utils,covered-by-rust-equivalent,utils/immediateCommand
+utils/inProcessTeammateHelpers.ts,utils,covered-by-rust-equivalent,utils/inProcessTeammateHelpers
+utils/ink.ts,utils,needs-port,utils/ink
+utils/intl.ts,utils,covered-by-rust-equivalent,utils/intl
+utils/jetbrains.ts,utils,covered-by-rust-equivalent,utils/jetbrains
+utils/json.ts,utils,covered-by-rust-equivalent,utils/json
+utils/jsonRead.ts,utils,covered-by-rust-equivalent,utils/jsonRead
+utils/keyboardShortcuts.ts,utils,covered-by-rust-equivalent,utils/keyboardShortcuts
+utils/lazySchema.ts,utils,covered-by-rust-equivalent,utils/lazySchema
+utils/listSessionsImpl.ts,utils,covered-by-rust-equivalent,utils/listSessionsImpl
+utils/localInstaller.ts,utils,covered-by-rust-equivalent,utils/localInstaller
+utils/lockfile.ts,utils,needs-port,utils/lockfile
+utils/log.ts,utils,needs-port,utils/log
+utils/logoV2Utils.ts,utils,covered-by-rust-equivalent,utils/logoV2Utils
+utils/mailbox.ts,utils,needs-port,utils/mailbox
+utils/managedEnv.ts,utils,covered-by-rust-equivalent,utils/managedEnv
+utils/managedEnvConstants.ts,utils,covered-by-rust-equivalent,utils/managedEnvConstants
+utils/markdown.ts,utils,covered-by-rust-equivalent,utils/markdown
+utils/markdownConfigLoader.ts,utils,covered-by-rust-equivalent,utils/markdownConfigLoader
+utils/mcp/dateTimeParser.ts,utils,covered-by-rust-equivalent,utils/dateTimeParser
+utils/mcp/elicitationValidation.ts,utils,covered-by-rust-equivalent,utils/elicitationValidation
+utils/mcpInstructionsDelta.ts,utils,covered-by-rust-equivalent,utils/mcpInstructionsDelta
+utils/mcpOutputStorage.ts,utils,covered-by-rust-equivalent,utils/mcpOutputStorage
+utils/mcpValidation.ts,utils,covered-by-rust-equivalent,utils/mcpValidation
+utils/mcpWebSocketTransport.ts,utils,covered-by-rust-equivalent,utils/mcpWebSocketTransport
+utils/memoize.ts,utils,needs-port,utils/memoize
+utils/memory/types.ts,utils,covered-by-rust-equivalent,utils/types
+utils/memory/versions.ts,utils,covered-by-rust-equivalent,utils/versions
+utils/memoryFileDetection.ts,utils,covered-by-rust-equivalent,utils/memoryFileDetection
+utils/messagePredicates.ts,utils,covered-by-rust-equivalent,utils/messagePredicates
+utils/messageQueueManager.ts,utils,covered-by-rust-equivalent,utils/messageQueueManager
+utils/messages/mappers.ts,utils,needs-port,utils/mappers
+utils/messages/systemInit.ts,utils,covered-by-rust-equivalent,utils/systemInit
+utils/messages.ts,utils,covered-by-rust-equivalent,utils/messages
+utils/model/agent.ts,utils,covered-by-rust-equivalent,utils/agent
+utils/model/aliases.ts,utils,covered-by-rust-equivalent,utils/aliases
+utils/model/antModels.ts,utils,covered-by-rust-equivalent,utils/antModels
+utils/model/bedrock.ts,utils,covered-by-rust-equivalent,utils/bedrock
+utils/model/check1mAccess.ts,utils,covered-by-rust-equivalent,utils/check1mAccess
+utils/model/configs.ts,utils,covered-by-rust-equivalent,utils/configs
+utils/model/contextWindowUpgradeCheck.ts,utils,covered-by-rust-equivalent,utils/contextWindowUpgradeCheck
+utils/model/deprecation.ts,utils,covered-by-rust-equivalent,utils/deprecation
+utils/model/model.ts,utils,covered-by-rust-equivalent,utils/model
+utils/model/modelAllowlist.ts,utils,covered-by-rust-equivalent,utils/modelAllowlist
+utils/model/modelCapabilities.ts,utils,covered-by-rust-equivalent,utils/modelCapabilities
+utils/model/modelOptions.ts,utils,covered-by-rust-equivalent,utils/modelOptions
+utils/model/modelStrings.ts,utils,covered-by-rust-equivalent,utils/modelStrings
+utils/model/modelSupportOverrides.ts,utils,covered-by-rust-equivalent,utils/modelSupportOverrides
+utils/model/providers.ts,utils,covered-by-rust-equivalent,utils/providers
+utils/model/validateModel.ts,utils,covered-by-rust-equivalent,utils/validateModel
+utils/modelCost.ts,utils,covered-by-rust-equivalent,utils/modelCost
+utils/modifiers.ts,utils,covered-by-rust-equivalent,utils/modifiers
+utils/mtls.ts,utils,needs-port,utils/mtls
+utils/nativeInstaller/download.ts,utils,covered-by-rust-equivalent,utils/download
+utils/nativeInstaller/index.ts,utils,covered-by-rust-equivalent,utils/index
+utils/nativeInstaller/installer.ts,utils,needs-port,utils/installer
+utils/nativeInstaller/packageManagers.ts,utils,covered-by-rust-equivalent,utils/packageManagers
+utils/nativeInstaller/pidLock.ts,utils,needs-port,utils/pidLock
+utils/notebook.ts,utils,covered-by-rust-equivalent,utils/notebook
+utils/objectGroupBy.ts,utils,covered-by-rust-equivalent,utils/objectGroupBy
+utils/pasteStore.ts,utils,covered-by-rust-equivalent,utils/pasteStore
+utils/path.ts,utils,covered-by-rust-equivalent,utils/path
+utils/pdf.ts,utils,needs-port,utils/pdf
+utils/pdfUtils.ts,utils,needs-port,utils/pdfUtils
+utils/peerAddress.ts,utils,covered-by-rust-equivalent,utils/peerAddress
+utils/permissions/PermissionMode.ts,utils,covered-by-rust-equivalent,utils/PermissionMode
+utils/permissions/PermissionPromptToolResultSchema.ts,utils,covered-by-rust-equivalent,utils/PermissionPromptToolResultSchema
+utils/permissions/PermissionResult.ts,utils,covered-by-rust-equivalent,utils/PermissionResult
+utils/permissions/PermissionRule.ts,utils,covered-by-rust-equivalent,utils/PermissionRule
+utils/permissions/PermissionUpdate.ts,utils,covered-by-rust-equivalent,utils/PermissionUpdate
+utils/permissions/PermissionUpdateSchema.ts,utils,covered-by-rust-equivalent,utils/PermissionUpdateSchema
+utils/permissions/autoModeState.ts,utils,covered-by-rust-equivalent,utils/autoModeState
+utils/permissions/bashClassifier.ts,utils,covered-by-rust-equivalent,utils/bashClassifier
+utils/permissions/bypassPermissionsKillswitch.ts,utils,covered-by-rust-equivalent,utils/bypassPermissionsKillswitch
+utils/permissions/classifierDecision.ts,utils,covered-by-rust-equivalent,utils/classifierDecision
+utils/permissions/classifierShared.ts,utils,covered-by-rust-equivalent,utils/classifierShared
+utils/permissions/dangerousPatterns.ts,utils,covered-by-rust-equivalent,utils/dangerousPatterns
+utils/permissions/denialTracking.ts,utils,covered-by-rust-equivalent,utils/denialTracking
+utils/permissions/filesystem.ts,utils,covered-by-rust-equivalent,utils/filesystem
+utils/permissions/getNextPermissionMode.ts,utils,covered-by-rust-equivalent,utils/getNextPermissionMode
+utils/permissions/pathValidation.ts,utils,covered-by-rust-equivalent,utils/pathValidation
+utils/permissions/permissionExplainer.ts,utils,covered-by-rust-equivalent,utils/permissionExplainer
+utils/permissions/permissionRuleParser.ts,utils,covered-by-rust-equivalent,utils/permissionRuleParser
+utils/permissions/permissionSetup.ts,utils,covered-by-rust-equivalent,utils/permissionSetup
+utils/permissions/permissions.ts,utils,covered-by-rust-equivalent,utils/permissions
+utils/permissions/permissionsLoader.ts,utils,covered-by-rust-equivalent,utils/permissionsLoader
+utils/permissions/shadowedRuleDetection.ts,utils,covered-by-rust-equivalent,utils/shadowedRuleDetection
+utils/permissions/shellRuleMatching.ts,utils,covered-by-rust-equivalent,utils/shellRuleMatching
+utils/permissions/yoloClassifier.ts,utils,covered-by-rust-equivalent,utils/yoloClassifier
+utils/planModeV2.ts,utils,covered-by-rust-equivalent,utils/planModeV2
+utils/plans.ts,utils,needs-port,utils/plans
+utils/platform.ts,utils,covered-by-rust-equivalent,utils/platform
+utils/plugins/addDirPluginSettings.ts,utils,covered-by-rust-equivalent,utils/addDirPluginSettings
+utils/plugins/cacheUtils.ts,utils,covered-by-rust-equivalent,utils/cacheUtils
+utils/plugins/dependencyResolver.ts,utils,covered-by-rust-equivalent,utils/dependencyResolver
+utils/plugins/fetchTelemetry.ts,utils,covered-by-rust-equivalent,utils/fetchTelemetry
+utils/plugins/gitAvailability.ts,utils,covered-by-rust-equivalent,utils/gitAvailability
+utils/plugins/headlessPluginInstall.ts,utils,covered-by-rust-equivalent,utils/headlessPluginInstall
+utils/plugins/hintRecommendation.ts,utils,covered-by-rust-equivalent,utils/hintRecommendation
+utils/plugins/installCounts.ts,utils,covered-by-rust-equivalent,utils/installCounts
+utils/plugins/installedPluginsManager.ts,utils,covered-by-rust-equivalent,utils/installedPluginsManager
+utils/plugins/loadPluginAgents.ts,utils,covered-by-rust-equivalent,utils/loadPluginAgents
+utils/plugins/loadPluginCommands.ts,utils,covered-by-rust-equivalent,utils/loadPluginCommands
+utils/plugins/loadPluginHooks.ts,utils,covered-by-rust-equivalent,utils/loadPluginHooks
+utils/plugins/loadPluginOutputStyles.ts,utils,covered-by-rust-equivalent,utils/loadPluginOutputStyles
+utils/plugins/lspPluginIntegration.ts,utils,covered-by-rust-equivalent,utils/lspPluginIntegration
+utils/plugins/lspRecommendation.ts,utils,covered-by-rust-equivalent,utils/lspRecommendation
+utils/plugins/managedPlugins.ts,utils,covered-by-rust-equivalent,utils/managedPlugins
+utils/plugins/marketplaceHelpers.ts,utils,covered-by-rust-equivalent,utils/marketplaceHelpers
+utils/plugins/marketplaceManager.ts,utils,covered-by-rust-equivalent,utils/marketplaceManager
+utils/plugins/mcpPluginIntegration.ts,utils,covered-by-rust-equivalent,utils/mcpPluginIntegration
+utils/plugins/mcpbHandler.ts,utils,covered-by-rust-equivalent,utils/mcpbHandler
+utils/plugins/officialMarketplace.ts,utils,covered-by-rust-equivalent,utils/officialMarketplace
+utils/plugins/officialMarketplaceGcs.ts,utils,covered-by-rust-equivalent,utils/officialMarketplaceGcs
+utils/plugins/officialMarketplaceStartupCheck.ts,utils,covered-by-rust-equivalent,utils/officialMarketplaceStartupCheck
+utils/plugins/orphanedPluginFilter.ts,utils,covered-by-rust-equivalent,utils/orphanedPluginFilter
+utils/plugins/parseMarketplaceInput.ts,utils,covered-by-rust-equivalent,utils/parseMarketplaceInput
+utils/plugins/performStartupChecks.tsx,utils,covered-by-rust-equivalent,utils/performStartupChecks
+utils/plugins/pluginAutoupdate.ts,utils,covered-by-rust-equivalent,utils/pluginAutoupdate
+utils/plugins/pluginBlocklist.ts,utils,covered-by-rust-equivalent,utils/pluginBlocklist
+utils/plugins/pluginDirectories.ts,utils,covered-by-rust-equivalent,utils/pluginDirectories
+utils/plugins/pluginFlagging.ts,utils,covered-by-rust-equivalent,utils/pluginFlagging
+utils/plugins/pluginIdentifier.ts,utils,covered-by-rust-equivalent,utils/pluginIdentifier
+utils/plugins/pluginInstallationHelpers.ts,utils,covered-by-rust-equivalent,utils/pluginInstallationHelpers
+utils/plugins/pluginLoader.ts,utils,covered-by-rust-equivalent,utils/pluginLoader
+utils/plugins/pluginOptionsStorage.ts,utils,covered-by-rust-equivalent,utils/pluginOptionsStorage
+utils/plugins/pluginPolicy.ts,utils,covered-by-rust-equivalent,utils/pluginPolicy
+utils/plugins/pluginStartupCheck.ts,utils,covered-by-rust-equivalent,utils/pluginStartupCheck
+utils/plugins/pluginVersioning.ts,utils,covered-by-rust-equivalent,utils/pluginVersioning
+utils/plugins/reconciler.ts,utils,covered-by-rust-equivalent,utils/reconciler
+utils/plugins/refresh.ts,utils,covered-by-rust-equivalent,utils/refresh
+utils/plugins/schemas.ts,utils,covered-by-rust-equivalent,utils/schemas
+utils/plugins/validatePlugin.ts,utils,covered-by-rust-equivalent,utils/validatePlugin
+utils/plugins/walkPluginMarkdown.ts,utils,covered-by-rust-equivalent,utils/walkPluginMarkdown
+utils/plugins/zipCache.ts,utils,covered-by-rust-equivalent,utils/zipCache
+utils/plugins/zipCacheAdapters.ts,utils,covered-by-rust-equivalent,utils/zipCacheAdapters
+utils/powershell/dangerousCmdlets.ts,utils,covered-by-rust-equivalent,utils/dangerousCmdlets
+utils/powershell/parser.ts,utils,covered-by-rust-equivalent,utils/parser
+utils/powershell/staticPrefix.ts,utils,covered-by-rust-equivalent,utils/staticPrefix
+utils/preflightChecks.tsx,utils,covered-by-rust-equivalent,utils/preflightChecks
+utils/privacyLevel.ts,utils,covered-by-rust-equivalent,utils/privacyLevel
+utils/process.ts,utils,covered-by-rust-equivalent,utils/process
+utils/processUserInput/processBashCommand.tsx,utils,covered-by-rust-equivalent,utils/processBashCommand
+utils/processUserInput/processSlashCommand.tsx,utils,covered-by-rust-equivalent,utils/processSlashCommand
+utils/processUserInput/processTextPrompt.ts,utils,covered-by-rust-equivalent,utils/processTextPrompt
+utils/processUserInput/processUserInput.ts,utils,covered-by-rust-equivalent,utils/processUserInput
+utils/profilerBase.ts,utils,needs-port,utils/profilerBase
+utils/promptCategory.ts,utils,covered-by-rust-equivalent,utils/promptCategory
+utils/promptEditor.ts,utils,covered-by-rust-equivalent,utils/promptEditor
+utils/promptShellExecution.ts,utils,covered-by-rust-equivalent,utils/promptShellExecution
+utils/proxy.ts,utils,covered-by-rust-equivalent,utils/proxy
+utils/queryContext.ts,utils,covered-by-rust-equivalent,utils/queryContext
+utils/queryHelpers.ts,utils,covered-by-rust-equivalent,utils/queryHelpers
+utils/queryProfiler.ts,utils,covered-by-rust-equivalent,utils/queryProfiler
+utils/queueProcessor.ts,utils,covered-by-rust-equivalent,utils/queueProcessor
+utils/readEditContext.ts,utils,covered-by-rust-equivalent,utils/readEditContext
+utils/readFileInRange.ts,utils,covered-by-rust-equivalent,utils/readFileInRange
+utils/releaseNotes.ts,utils,covered-by-rust-equivalent,utils/releaseNotes
+utils/renderOptions.ts,utils,covered-by-rust-equivalent,utils/renderOptions
+utils/ripgrep.ts,utils,covered-by-rust-equivalent,utils/ripgrep
+utils/sandbox/sandbox-adapter.ts,utils,covered-by-rust-equivalent,utils/sandbox-adapter
+utils/sandbox/sandbox-ui-utils.ts,utils,covered-by-rust-equivalent,utils/sandbox-ui-utils
+utils/sanitization.ts,utils,needs-port,utils/sanitization
+utils/screenshotClipboard.ts,utils,covered-by-rust-equivalent,utils/screenshotClipboard
+utils/sdkEventQueue.ts,utils,covered-by-rust-equivalent,utils/sdkEventQueue
+utils/secureStorage/fallbackStorage.ts,utils,covered-by-rust-equivalent,utils/fallbackStorage
+utils/secureStorage/index.ts,utils,covered-by-rust-equivalent,utils/index
+utils/secureStorage/keychainPrefetch.ts,utils,needs-port,utils/keychainPrefetch
+utils/secureStorage/macOsKeychainHelpers.ts,utils,covered-by-rust-equivalent,utils/macOsKeychainHelpers
+utils/secureStorage/macOsKeychainStorage.ts,utils,covered-by-rust-equivalent,utils/macOsKeychainStorage
+utils/secureStorage/plainTextStorage.ts,utils,covered-by-rust-equivalent,utils/plainTextStorage
+utils/semanticBoolean.ts,utils,covered-by-rust-equivalent,utils/semanticBoolean
+utils/semanticNumber.ts,utils,covered-by-rust-equivalent,utils/semanticNumber
+utils/semver.ts,utils,needs-port,utils/semver
+utils/sequential.ts,utils,needs-port,utils/sequential
+utils/sessionActivity.ts,utils,covered-by-rust-equivalent,utils/sessionActivity
+utils/sessionEnvVars.ts,utils,covered-by-rust-equivalent,utils/sessionEnvVars
+utils/sessionEnvironment.ts,utils,covered-by-rust-equivalent,utils/sessionEnvironment
+utils/sessionFileAccessHooks.ts,utils,covered-by-rust-equivalent,utils/sessionFileAccessHooks
+utils/sessionIngressAuth.ts,utils,covered-by-rust-equivalent,utils/sessionIngressAuth
+utils/sessionRestore.ts,utils,covered-by-rust-equivalent,utils/sessionRestore
+utils/sessionStart.ts,utils,covered-by-rust-equivalent,utils/sessionStart
+utils/sessionState.ts,utils,covered-by-rust-equivalent,utils/sessionState
+utils/sessionStorage.ts,utils,covered-by-rust-equivalent,utils/sessionStorage
+utils/sessionStoragePortable.ts,utils,covered-by-rust-equivalent,utils/sessionStoragePortable
+utils/sessionTitle.ts,utils,covered-by-rust-equivalent,utils/sessionTitle
+utils/sessionUrl.ts,utils,covered-by-rust-equivalent,utils/sessionUrl
+utils/set.ts,utils,needs-port,utils/set
+utils/settings/allErrors.ts,utils,covered-by-rust-equivalent,utils/allErrors
+utils/settings/applySettingsChange.ts,utils,covered-by-rust-equivalent,utils/applySettingsChange
+utils/settings/changeDetector.ts,utils,covered-by-rust-equivalent,utils/changeDetector
+utils/settings/constants.ts,utils,covered-by-rust-equivalent,utils/constants
+utils/settings/internalWrites.ts,utils,covered-by-rust-equivalent,utils/internalWrites
+utils/settings/managedPath.ts,utils,covered-by-rust-equivalent,utils/managedPath
+utils/settings/mdm/constants.ts,utils,covered-by-rust-equivalent,utils/constants
+utils/settings/mdm/rawRead.ts,utils,needs-port,utils/rawRead
+utils/settings/mdm/settings.ts,utils,covered-by-rust-equivalent,utils/settings
+utils/settings/permissionValidation.ts,utils,covered-by-rust-equivalent,utils/permissionValidation
+utils/settings/pluginOnlyPolicy.ts,utils,covered-by-rust-equivalent,utils/pluginOnlyPolicy
+utils/settings/schemaOutput.ts,utils,covered-by-rust-equivalent,utils/schemaOutput
+utils/settings/settings.ts,utils,covered-by-rust-equivalent,utils/settings
+utils/settings/settingsCache.ts,utils,covered-by-rust-equivalent,utils/settingsCache
+utils/settings/toolValidationConfig.ts,utils,covered-by-rust-equivalent,utils/toolValidationConfig
+utils/settings/types.ts,utils,covered-by-rust-equivalent,utils/types
+utils/settings/validateEditTool.ts,utils,covered-by-rust-equivalent,utils/validateEditTool
+utils/settings/validation.ts,utils,covered-by-rust-equivalent,utils/validation
+utils/settings/validationTips.ts,utils,covered-by-rust-equivalent,utils/validationTips
+utils/shell/bashProvider.ts,utils,covered-by-rust-equivalent,utils/bashProvider
+utils/shell/outputLimits.ts,utils,covered-by-rust-equivalent,utils/outputLimits
+utils/shell/powershellDetection.ts,utils,covered-by-rust-equivalent,utils/powershellDetection
+utils/shell/powershellProvider.ts,utils,covered-by-rust-equivalent,utils/powershellProvider
+utils/shell/prefix.ts,utils,covered-by-rust-equivalent,utils/prefix
+utils/shell/readOnlyCommandValidation.ts,utils,covered-by-rust-equivalent,utils/readOnlyCommandValidation
+utils/shell/resolveDefaultShell.ts,utils,covered-by-rust-equivalent,utils/resolveDefaultShell
+utils/shell/shellProvider.ts,utils,covered-by-rust-equivalent,utils/shellProvider
+utils/shell/shellToolUtils.ts,utils,covered-by-rust-equivalent,utils/shellToolUtils
+utils/shell/specPrefix.ts,utils,covered-by-rust-equivalent,utils/specPrefix
+utils/shellConfig.ts,utils,covered-by-rust-equivalent,utils/shellConfig
+utils/sideQuery.ts,utils,covered-by-rust-equivalent,utils/sideQuery
+utils/sideQuestion.ts,utils,covered-by-rust-equivalent,utils/sideQuestion
+utils/signal.ts,utils,covered-by-rust-equivalent,utils/signal
+utils/sinks.ts,utils,needs-port,utils/sinks
+utils/skills/skillChangeDetector.ts,utils,covered-by-rust-equivalent,utils/skillChangeDetector
+utils/slashCommandParsing.ts,utils,covered-by-rust-equivalent,utils/slashCommandParsing
+utils/sleep.ts,utils,covered-by-rust-equivalent,utils/sleep
+utils/sliceAnsi.ts,utils,covered-by-rust-equivalent,utils/sliceAnsi
+utils/slowOperations.ts,utils,covered-by-rust-equivalent,utils/slowOperations
+utils/standaloneAgent.ts,utils,covered-by-rust-equivalent,utils/standaloneAgent
+utils/startupProfiler.ts,utils,covered-by-rust-equivalent,utils/startupProfiler
+utils/staticRender.tsx,utils,covered-by-rust-equivalent,utils/staticRender
+utils/stats.ts,utils,covered-by-rust-equivalent,utils/stats
+utils/statsCache.ts,utils,covered-by-rust-equivalent,utils/statsCache
+utils/status.tsx,utils,covered-by-rust-equivalent,utils/status
+utils/statusNoticeDefinitions.tsx,utils,covered-by-rust-equivalent,utils/statusNoticeDefinitions
+utils/statusNoticeHelpers.ts,utils,covered-by-rust-equivalent,utils/statusNoticeHelpers
+utils/stream.ts,utils,covered-by-rust-equivalent,utils/stream
+utils/streamJsonStdoutGuard.ts,utils,covered-by-rust-equivalent,utils/streamJsonStdoutGuard
+utils/streamlinedTransform.ts,utils,needs-port,utils/streamlinedTransform
+utils/stringUtils.ts,utils,covered-by-rust-equivalent,utils/stringUtils
+utils/subprocessEnv.ts,utils,covered-by-rust-equivalent,utils/subprocessEnv
+utils/suggestions/commandSuggestions.ts,utils,covered-by-rust-equivalent,utils/commandSuggestions
+utils/suggestions/directoryCompletion.ts,utils,covered-by-rust-equivalent,utils/directoryCompletion
+utils/suggestions/shellHistoryCompletion.ts,utils,covered-by-rust-equivalent,utils/shellHistoryCompletion
+utils/suggestions/skillUsageTracking.ts,utils,covered-by-rust-equivalent,utils/skillUsageTracking
+utils/suggestions/slackChannelSuggestions.ts,utils,covered-by-rust-equivalent,utils/slackChannelSuggestions
+utils/swarm/It2SetupPrompt.tsx,utils,covered-by-rust-equivalent,utils/It2SetupPrompt
+utils/swarm/backends/ITermBackend.ts,utils,covered-by-rust-equivalent,utils/ITermBackend
+utils/swarm/backends/InProcessBackend.ts,utils,covered-by-rust-equivalent,utils/InProcessBackend
+utils/swarm/backends/PaneBackendExecutor.ts,utils,covered-by-rust-equivalent,utils/PaneBackendExecutor
+utils/swarm/backends/TmuxBackend.ts,utils,covered-by-rust-equivalent,utils/TmuxBackend
+utils/swarm/backends/detection.ts,utils,covered-by-rust-equivalent,utils/detection
+utils/swarm/backends/it2Setup.ts,utils,covered-by-rust-equivalent,utils/it2Setup
+utils/swarm/backends/registry.ts,utils,covered-by-rust-equivalent,utils/registry
+utils/swarm/backends/teammateModeSnapshot.ts,utils,covered-by-rust-equivalent,utils/teammateModeSnapshot
+utils/swarm/backends/types.ts,utils,covered-by-rust-equivalent,utils/types
+utils/swarm/constants.ts,utils,covered-by-rust-equivalent,utils/constants
+utils/swarm/inProcessRunner.ts,utils,covered-by-rust-equivalent,utils/inProcessRunner
+utils/swarm/leaderPermissionBridge.ts,utils,covered-by-rust-equivalent,utils/leaderPermissionBridge
+utils/swarm/permissionSync.ts,utils,covered-by-rust-equivalent,utils/permissionSync
+utils/swarm/reconnection.ts,utils,needs-port,utils/reconnection
+utils/swarm/spawnInProcess.ts,utils,covered-by-rust-equivalent,utils/spawnInProcess
+utils/swarm/spawnUtils.ts,utils,covered-by-rust-equivalent,utils/spawnUtils
+utils/swarm/teamHelpers.ts,utils,covered-by-rust-equivalent,utils/teamHelpers
+utils/swarm/teammateInit.ts,utils,covered-by-rust-equivalent,utils/teammateInit
+utils/swarm/teammateLayoutManager.ts,utils,covered-by-rust-equivalent,utils/teammateLayoutManager
+utils/swarm/teammateModel.ts,utils,covered-by-rust-equivalent,utils/teammateModel
+utils/swarm/teammatePromptAddendum.ts,utils,covered-by-rust-equivalent,utils/teammatePromptAddendum
+utils/systemDirectories.ts,utils,covered-by-rust-equivalent,utils/systemDirectories
+utils/systemPrompt.ts,utils,covered-by-rust-equivalent,utils/systemPrompt
+utils/systemPromptType.ts,utils,covered-by-rust-equivalent,utils/systemPromptType
+utils/systemTheme.ts,utils,covered-by-rust-equivalent,utils/systemTheme
+utils/taggedId.ts,utils,covered-by-rust-equivalent,utils/taggedId
+utils/task/TaskOutput.ts,utils,covered-by-rust-equivalent,utils/TaskOutput
+utils/task/diskOutput.ts,utils,covered-by-rust-equivalent,utils/diskOutput
+utils/task/framework.ts,utils,covered-by-rust-equivalent,utils/framework
+utils/task/outputFormatting.ts,utils,covered-by-rust-equivalent,utils/outputFormatting
+utils/task/sdkProgress.ts,utils,covered-by-rust-equivalent,utils/sdkProgress
+utils/tasks.ts,utils,covered-by-rust-equivalent,utils/tasks
+utils/teamDiscovery.ts,utils,covered-by-rust-equivalent,utils/teamDiscovery
+utils/teamMemoryOps.ts,utils,covered-by-rust-equivalent,utils/teamMemoryOps
+utils/teammate.ts,utils,covered-by-rust-equivalent,utils/teammate
+utils/teammateContext.ts,utils,covered-by-rust-equivalent,utils/teammateContext
+utils/teammateMailbox.ts,utils,covered-by-rust-equivalent,utils/teammateMailbox
+utils/telemetry/betaSessionTracing.ts,utils,covered-by-rust-equivalent,utils/betaSessionTracing
+utils/telemetry/bigqueryExporter.ts,utils,covered-by-rust-equivalent,utils/bigqueryExporter
+utils/telemetry/events.ts,utils,covered-by-rust-equivalent,utils/events
+utils/telemetry/instrumentation.ts,utils,needs-port,utils/instrumentation
+utils/telemetry/logger.ts,utils,needs-port,utils/logger
+utils/telemetry/perfettoTracing.ts,utils,needs-port,utils/perfettoTracing
+utils/telemetry/pluginTelemetry.ts,utils,covered-by-rust-equivalent,utils/pluginTelemetry
+utils/telemetry/sessionTracing.ts,utils,covered-by-rust-equivalent,utils/sessionTracing
+utils/telemetry/skillLoadedEvent.ts,utils,covered-by-rust-equivalent,utils/skillLoadedEvent
+utils/telemetryAttributes.ts,utils,covered-by-rust-equivalent,utils/telemetryAttributes
+utils/teleport/api.ts,utils,needs-port,utils/api
+utils/teleport/environmentSelection.ts,utils,covered-by-rust-equivalent,utils/environmentSelection
+utils/teleport/environments.ts,utils,needs-port,utils/environments
+utils/teleport/gitBundle.ts,utils,covered-by-rust-equivalent,utils/gitBundle
+utils/teleport.tsx,utils,needs-port,utils/teleport
+utils/tempfile.ts,utils,covered-by-rust-equivalent,utils/tempfile
+utils/terminal.ts,utils,covered-by-rust-equivalent,utils/terminal
+utils/terminalPanel.ts,utils,covered-by-rust-equivalent,utils/terminalPanel
+utils/textHighlighting.ts,utils,covered-by-rust-equivalent,utils/textHighlighting
+utils/theme.ts,utils,covered-by-rust-equivalent,utils/theme
+utils/thinking.ts,utils,covered-by-rust-equivalent,utils/thinking
+utils/timeouts.ts,utils,covered-by-rust-equivalent,utils/timeouts
+utils/tmuxSocket.ts,utils,covered-by-rust-equivalent,utils/tmuxSocket
+utils/todo/types.ts,utils,covered-by-rust-equivalent,utils/types
+utils/tokenBudget.ts,utils,covered-by-rust-equivalent,utils/tokenBudget
+utils/tokens.ts,utils,covered-by-rust-equivalent,utils/tokens
+utils/toolErrors.ts,utils,covered-by-rust-equivalent,utils/toolErrors
+utils/toolPool.ts,utils,covered-by-rust-equivalent,utils/toolPool
+utils/toolResultStorage.ts,utils,covered-by-rust-equivalent,utils/toolResultStorage
+utils/toolSchemaCache.ts,utils,covered-by-rust-equivalent,utils/toolSchemaCache
+utils/toolSearch.ts,utils,covered-by-rust-equivalent,utils/toolSearch
+utils/transcriptSearch.ts,utils,covered-by-rust-equivalent,utils/transcriptSearch
+utils/treeify.ts,utils,needs-port,utils/treeify
+utils/truncate.ts,utils,covered-by-rust-equivalent,utils/truncate
+utils/ultraplan/ccrSession.ts,utils,covered-by-rust-equivalent,utils/ccrSession
+utils/ultraplan/keyword.ts,utils,covered-by-rust-equivalent,utils/keyword
+utils/unaryLogging.ts,utils,covered-by-rust-equivalent,utils/unaryLogging
+utils/undercover.ts,utils,needs-port,utils/undercover
+utils/user.ts,utils,covered-by-rust-equivalent,utils/user
+utils/userAgent.ts,utils,covered-by-rust-equivalent,utils/userAgent
+utils/userPromptKeywords.ts,utils,covered-by-rust-equivalent,utils/userPromptKeywords
+utils/uuid.ts,utils,covered-by-rust-equivalent,utils/uuid
+utils/warningHandler.ts,utils,covered-by-rust-equivalent,utils/warningHandler
+utils/which.ts,utils,covered-by-rust-equivalent,utils/which
+utils/windowsPaths.ts,utils,covered-by-rust-equivalent,utils/windowsPaths
+utils/withResolvers.ts,utils,covered-by-rust-equivalent,utils/withResolvers
+utils/words.ts,utils,covered-by-rust-equivalent,utils/words
+utils/workloadContext.ts,utils,covered-by-rust-equivalent,utils/workloadContext
+utils/worktree.ts,utils,covered-by-rust-equivalent,utils/worktree
+utils/worktreeModeEnabled.ts,utils,covered-by-rust-equivalent,utils/worktreeModeEnabled
+utils/xdg.ts,utils,needs-port,utils/xdg
+utils/xml.ts,utils,needs-port,utils/xml
+utils/yaml.ts,utils,needs-port,utils/yaml
+utils/zodToJsonSchema.ts,utils,covered-by-rust-equivalent,utils/zodToJsonSchema
+vim/motions.ts,misc,needs-port,top-level vim/motions.ts
+vim/operators.ts,misc,needs-port,top-level vim/operators.ts
+vim/textObjects.ts,misc,covered-by-rust-equivalent,top-level vim/textObjects.ts
+vim/transitions.ts,misc,covered-by-rust-equivalent,top-level vim/transitions.ts
+vim/types.ts,misc,covered-by-rust-equivalent,top-level vim/types.ts
+voice/voiceModeEnabled.ts,external-voice,external-service-blocked,voice requires external runtime
