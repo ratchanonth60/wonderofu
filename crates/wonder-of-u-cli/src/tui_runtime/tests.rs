@@ -624,6 +624,7 @@ fn controller_dismisses_theme_notice_dialog_cleanly() {
 #[test]
 fn apply_command_output_hints_clears_stale_notice_dialog() {
     let dir = unique_test_dir("tui-notice-clear");
+    write_provider_config(dir.as_path(), "http://127.0.0.1:1");
     let registry = commands::registry(Some(dir.clone())).expect("registry");
     let mut controller = TuiController::new(
         test_context(&dir),
@@ -3197,6 +3198,7 @@ fn controller_empty_task_panel_shows_notice_when_opened() {
 #[test]
 fn controller_active_overlay_is_none_when_idle() {
     let dir = unique_test_dir("tui-overlay-none");
+    write_provider_config(dir.as_path(), "http://127.0.0.1:1");
     let registry = commands::registry(Some(dir.clone())).expect("registry");
     let controller = TuiController::new(
         test_context(&dir),
@@ -3302,6 +3304,7 @@ fn controller_setting_notice_clears_picker() {
 #[test]
 fn controller_confirms_exit_when_session_has_activity() {
     let dir = unique_test_dir("tui-exit-confirm");
+    write_provider_config(dir.as_path(), "http://127.0.0.1:1");
     let registry = commands::registry(Some(dir.clone())).expect("registry");
     let mut controller = TuiController::new(
         test_context(&dir),
@@ -3641,6 +3644,7 @@ fn controller_history_search_with_empty_history_is_safe() {
 #[test]
 fn controller_restores_permission_dialog_from_snapshot_resume() {
     let dir = unique_test_dir("tui-resume-permission-dialog");
+    write_provider_config(dir.as_path(), "http://127.0.0.1:1");
     let registry = commands::registry(Some(dir.clone())).expect("registry");
     let mut state = AppState::new(dir.clone());
     state.input_mode = InputMode::PermissionPending;
@@ -3725,6 +3729,7 @@ fn controller_restores_permission_dialog_from_snapshot_resume() {
 #[test]
 fn controller_restores_task_notice_from_snapshot_resume() {
     let dir = unique_test_dir("tui-resume-task-dialog");
+    write_provider_config(dir.as_path(), "http://127.0.0.1:1");
     let registry = commands::registry(Some(dir.clone())).expect("registry");
     let mut state = AppState::new(dir.clone());
     state.input_mode = InputMode::TaskNotification;
@@ -3780,6 +3785,7 @@ fn controller_restores_task_notice_from_snapshot_resume() {
 #[test]
 fn controller_restores_notice_dialog_from_snapshot_resume() {
     let dir = unique_test_dir("tui-resume-notice-dialog");
+    write_provider_config(dir.as_path(), "http://127.0.0.1:1");
     let registry = commands::registry(Some(dir.clone())).expect("registry");
     let mut state = AppState::new(dir.clone());
     let message = MessageEnvelope::new(
@@ -3824,6 +3830,7 @@ fn controller_restores_notice_dialog_from_snapshot_resume() {
 #[test]
 fn controller_restores_status_note_from_snapshot_resume() {
     let dir = unique_test_dir("tui-resume-status-note");
+    write_provider_config(dir.as_path(), "http://127.0.0.1:1");
     let registry = commands::registry(Some(dir.clone())).expect("registry");
     let mut state = AppState::new(dir.clone());
     state.set_session_color(Some("purple".into()));
@@ -5072,6 +5079,7 @@ fn scroll_mouse_event(kind: wonder_of_u_tui::MouseEventKind, col: u16, row: u16)
 #[test]
 fn controller_mouse_scroll_up_inside_transcript_scrolls_toward_older() {
     let dir = unique_test_dir("mouse-scroll-up");
+    write_provider_config(&dir, "http://127.0.0.1:1/v1");
     let registry = commands::registry(Some(dir.clone())).expect("registry");
     let mut controller = TuiController::new(
         test_context(&dir),
@@ -5102,6 +5110,7 @@ fn controller_mouse_scroll_up_inside_transcript_scrolls_toward_older() {
 #[test]
 fn controller_mouse_scroll_down_inside_transcript_scrolls_toward_newer() {
     let dir = unique_test_dir("mouse-scroll-down");
+    write_provider_config(&dir, "http://127.0.0.1:1/v1");
     let registry = commands::registry(Some(dir.clone())).expect("registry");
     let mut controller = TuiController::new(
         test_context(&dir),
@@ -5128,6 +5137,7 @@ fn controller_mouse_scroll_down_inside_transcript_scrolls_toward_newer() {
 #[test]
 fn controller_mouse_scroll_outside_transcript_area_ignored() {
     let dir = unique_test_dir("mouse-scroll-outside");
+    write_provider_config(&dir, "http://127.0.0.1:1/v1");
     let registry = commands::registry(Some(dir.clone())).expect("registry");
     let mut controller = TuiController::new(
         test_context(&dir),
@@ -5154,6 +5164,7 @@ fn controller_mouse_scroll_outside_transcript_area_ignored() {
 #[test]
 fn controller_mouse_scroll_ignored_when_overlay_active() {
     let dir = unique_test_dir("mouse-scroll-overlay");
+    write_provider_config(&dir, "http://127.0.0.1:1/v1");
     let registry = commands::registry(Some(dir.clone())).expect("registry");
     let mut controller = TuiController::new(
         test_context(&dir),
@@ -5183,6 +5194,7 @@ fn controller_mouse_scroll_ignored_when_overlay_active() {
 #[test]
 fn controller_horizontal_mouse_wheel_ignored() {
     let dir = unique_test_dir("mouse-scroll-horiz");
+    write_provider_config(&dir, "http://127.0.0.1:1/v1");
     let registry = commands::registry(Some(dir.clone())).expect("registry");
     let mut controller = TuiController::new(
         test_context(&dir),
@@ -5207,5 +5219,86 @@ fn controller_horizontal_mouse_wheel_ignored() {
     assert_eq!(
         controller.scroll_state.offset_from_bottom, 0,
         "horizontal wheel events must not change the scroll position"
+    );
+}
+
+// ── autostart tests ───────────────────────────────────────────────────────────
+
+fn make_unconfigured_controller() -> (TuiController<'static>, PathBuf) {
+    let dir = unique_test_dir("tui-autostart-unconfigured");
+    let registry = Box::new(commands::registry(Some(dir.clone())).expect("registry"));
+    let registry: &'static _ = Box::leak(registry);
+    let controller = TuiController::new(
+        test_context(&dir),
+        registry,
+        Some(dir.as_path()),
+        TuiLaunchOptions { session_id: None },
+    )
+    .expect("controller");
+    (controller, dir)
+}
+
+fn make_ready_controller() -> (TuiController<'static>, PathBuf) {
+    let dir = unique_test_dir("tui-autostart-ready");
+    write_provider_config(dir.as_path(), "http://127.0.0.1:1");
+    let registry = Box::new(commands::registry(Some(dir.clone())).expect("registry"));
+    let registry: &'static _ = Box::leak(registry);
+    let controller = TuiController::new(
+        test_context(&dir),
+        registry,
+        Some(dir.as_path()),
+        TuiLaunchOptions { session_id: None },
+    )
+    .expect("controller");
+    (controller, dir)
+}
+
+#[test]
+fn controller_auto_opens_setup_when_provider_not_configured() {
+    let (controller, _dir) = make_unconfigured_controller();
+
+    assert!(
+        controller.pending_setup_overlay.is_some(),
+        "setup overlay should be auto-opened when provider is not configured"
+    );
+    assert!(
+        !controller.setup_cancelled_this_session,
+        "cancelled flag must be false on first launch"
+    );
+}
+
+#[test]
+fn controller_does_not_auto_open_setup_when_provider_ready() {
+    let (controller, _dir) = make_ready_controller();
+
+    assert!(
+        controller.pending_setup_overlay.is_none(),
+        "setup overlay must NOT open when provider is already configured"
+    );
+}
+
+#[test]
+fn controller_cancel_setup_sets_session_flag_and_prevents_reopen() {
+    let (mut controller, _dir) = make_unconfigured_controller();
+
+    controller
+        .cancel_setup_overlay()
+        .expect("cancel_setup_overlay");
+
+    assert!(
+        controller.setup_cancelled_this_session,
+        "cancel must set the session flag"
+    );
+    assert!(
+        controller.pending_setup_overlay.is_none(),
+        "overlay must be closed after cancel"
+    );
+
+    controller
+        .maybe_auto_open_setup()
+        .expect("maybe_auto_open_setup");
+    assert!(
+        controller.pending_setup_overlay.is_none(),
+        "session flag must prevent autostart from re-opening the overlay"
     );
 }

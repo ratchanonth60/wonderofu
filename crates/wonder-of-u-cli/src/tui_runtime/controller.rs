@@ -49,6 +49,9 @@ pub(super) struct TuiController<'a> {
     /// Updated on every `UiEvent::Resize` so that mouse hit-testing can
     /// recompute the transcript area rect without touching ratatui's backend.
     pub(super) last_terminal_size: (u16, u16),
+    /// Set to `true` when the user explicitly cancels the setup overlay during
+    /// this session, suppressing the autostart re-open logic.
+    pub(super) setup_cancelled_this_session: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -204,11 +207,13 @@ impl<'a> TuiController<'a> {
             active_suggestions: None,
             scroll_state: TranscriptScrollState::new(),
             last_terminal_size: (0, 0),
+            setup_cancelled_this_session: false,
         };
         controller.hydrate_initial_settings()?;
         controller.refresh_runtime_state()?;
         controller.rebuild_ephemeral_state();
         controller.persist_state_snapshot()?;
+        controller.maybe_auto_open_setup()?;
         Ok(controller)
     }
 
@@ -2976,8 +2981,7 @@ impl<'a> TuiController<'a> {
         }
         let count = overlay.items.len();
         let current = overlay.selected_index as isize;
-        overlay.selected_index =
-            (current + delta).rem_euclid(count as isize) as usize;
+        overlay.selected_index = (current + delta).rem_euclid(count as isize) as usize;
         self.needs_render = true;
     }
 
@@ -3018,12 +3022,15 @@ impl<'a> TuiController<'a> {
         Ok(())
     }
 
-    /// Cancels the setup overlay and records a status note.
+    /// Cancels the setup overlay, records a status note, and marks this session
+    /// so that the autostart logic does not re-open the overlay.
     pub(super) fn cancel_setup_overlay(&mut self) -> Result<()> {
         let Some(overlay) = self.pending_setup_overlay.take() else {
             self.dismiss_dialog();
             return Ok(());
         };
+        // Prevent maybe_auto_open_setup from re-opening for the rest of this session.
+        self.setup_cancelled_this_session = true;
         self.dialog = None;
         self.record_command_message(&overlay.original_input, Some("status=setup cancelled"))?;
         self.status_note = Some("setup cancelled".into());
@@ -3066,6 +3073,23 @@ impl<'a> TuiController<'a> {
                 }
             },
         }
+    }
+
+    /// Opens `/setup` automatically when the provider is not yet configured,
+    /// unless the user already dismissed it during this session.
+    ///
+    /// Called once at the end of [`TuiController::new`]. After the first
+    /// successful provider configuration the method becomes a no-op.
+    pub(super) fn maybe_auto_open_setup(&mut self) -> Result<()> {
+        if self.setup_cancelled_this_session {
+            return Ok(());
+        }
+        if self.state.provider_readiness() == ProviderReadiness::Ready {
+            return Ok(());
+        }
+        // Provider is not ready and the user has not cancelled yet â run the
+        // slash command so the normal output-parsing path opens the overlay.
+        self.execute_slash_command_with("/setup", &mut |_| Ok(()))
     }
 
     pub(super) fn dismiss_dialog(&mut self) {
@@ -3617,7 +3641,10 @@ impl<'a> TuiController<'a> {
         // Only apply the scroll when the pointer is inside the transcript
         // messages area; wheel events over the prompt bar or chrome are
         // silently ignored.
-        if !self.transcript_messages_rect().contains(mouse.column, mouse.row) {
+        if !self
+            .transcript_messages_rect()
+            .contains(mouse.column, mouse.row)
+        {
             return;
         }
 
