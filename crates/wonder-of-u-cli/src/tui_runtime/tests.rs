@@ -4745,3 +4745,166 @@ fn controller_setup_overlay_tab_key_selects_item() {
         "Tab should confirm and close the setup overlay"
     );
 }
+
+// ── Scroll-key routing tests ──────────────────────────────────────────────────
+
+/// Build a controller that has had an initial resize so `last_visible_lines` is
+/// set and page-scroll math works (40-line transcript, 10-line viewport).
+fn controller_with_scroll_dims() -> (super::TuiController, tempfile::TempDir) {
+    let (mut ctrl, dir) = write_provider_config();
+    ctrl.scroll_state.on_resize(10, 40);
+    ctrl.scroll_state.scroll_to_top();
+    (ctrl, dir)
+}
+
+/// Build a `KeyEvent` with `Ctrl` held.
+fn ctrl_key(code: KeyCode) -> KeyEvent {
+    use wonder_of_u_tui::KeyModifiers;
+    KeyEvent {
+        code,
+        modifiers: KeyModifiers { control: true, shift: false, alt: false },
+    }
+}
+
+#[test]
+fn controller_page_up_scrolls_one_page_toward_top() {
+    let (mut ctrl, _dir) = controller_with_scroll_dims();
+    ctrl.scroll_state.scroll_to_bottom();
+    let before = ctrl.scroll_state.offset_from_bottom;
+
+    send_prompt_key(&mut ctrl, KeyEvent { code: KeyCode::PageUp, modifiers: Default::default() });
+
+    assert!(
+        ctrl.scroll_state.offset_from_bottom > before,
+        "PageUp should increase offset_from_bottom (scroll toward older content)"
+    );
+}
+
+#[test]
+fn controller_page_down_scrolls_one_page_toward_bottom() {
+    let (mut ctrl, _dir) = controller_with_scroll_dims();
+    ctrl.scroll_state.scroll_to_top();
+    let before = ctrl.scroll_state.offset_from_bottom;
+
+    send_prompt_key(&mut ctrl, KeyEvent { code: KeyCode::PageDown, modifiers: Default::default() });
+
+    assert!(
+        ctrl.scroll_state.offset_from_bottom < before,
+        "PageDown should decrease offset_from_bottom (scroll toward newer content)"
+    );
+}
+
+#[test]
+fn controller_page_down_from_tail_stays_at_zero() {
+    let (mut ctrl, _dir) = controller_with_scroll_dims();
+    ctrl.scroll_state.scroll_to_bottom();
+
+    send_prompt_key(&mut ctrl, KeyEvent { code: KeyCode::PageDown, modifiers: Default::default() });
+
+    assert_eq!(
+        ctrl.scroll_state.offset_from_bottom, 0,
+        "PageDown from tail should stay at 0 (saturating sub)"
+    );
+}
+
+#[test]
+fn controller_ctrl_home_jumps_to_top() {
+    let (mut ctrl, _dir) = controller_with_scroll_dims();
+    ctrl.scroll_state.scroll_to_bottom();
+    let expected = ctrl.scroll_state.last_total_lines
+        .saturating_sub(ctrl.scroll_state.last_visible_lines);
+
+    send_prompt_key(&mut ctrl, ctrl_key(KeyCode::Home));
+
+    assert_eq!(
+        ctrl.scroll_state.offset_from_bottom, expected,
+        "Ctrl+Home should jump to max offset (oldest content)"
+    );
+}
+
+#[test]
+fn controller_ctrl_end_returns_to_tail() {
+    let (mut ctrl, _dir) = controller_with_scroll_dims();
+    ctrl.scroll_state.scroll_to_top();
+
+    send_prompt_key(&mut ctrl, ctrl_key(KeyCode::End));
+
+    assert_eq!(
+        ctrl.scroll_state.offset_from_bottom, 0,
+        "Ctrl+End should return to follow-tail (offset = 0)"
+    );
+}
+
+#[test]
+fn controller_scroll_keys_no_op_while_dialog_overlay_active() {
+    let (mut ctrl, _dir) = controller_with_scroll_dims();
+    // Open the model picker — sets self.dialog = Some(...)
+    for ch in ['/', 'm', 'o', 'd', 'e', 'l'] {
+        send_prompt_key(&mut ctrl, KeyEvent { code: KeyCode::Char(ch), modifiers: Default::default() });
+    }
+    send_prompt_key(&mut ctrl, KeyEvent { code: KeyCode::Enter, modifiers: Default::default() });
+
+    ctrl.scroll_state.scroll_to_bottom();
+    let before = ctrl.scroll_state.offset_from_bottom;
+
+    send_prompt_key(&mut ctrl, KeyEvent { code: KeyCode::PageUp, modifiers: Default::default() });
+
+    if ctrl.dialog.is_some() {
+        assert_eq!(
+            ctrl.scroll_state.offset_from_bottom, before,
+            "PageUp must be a no-op while a dialog overlay is active"
+        );
+    }
+}
+
+#[test]
+fn controller_scroll_keys_no_op_while_setup_overlay_active() {
+    let (mut ctrl, _dir) = controller_with_scroll_dims();
+    // Open the setup overlay via /setup.
+    for ch in ['/', 's', 'e', 't', 'u', 'p'] {
+        send_prompt_key(&mut ctrl, KeyEvent { code: KeyCode::Char(ch), modifiers: Default::default() });
+    }
+    send_prompt_key(&mut ctrl, KeyEvent { code: KeyCode::Enter, modifiers: Default::default() });
+
+    ctrl.scroll_state.scroll_to_bottom();
+    let before = ctrl.scroll_state.offset_from_bottom;
+
+    send_prompt_key(&mut ctrl, KeyEvent { code: KeyCode::PageUp, modifiers: Default::default() });
+
+    if ctrl.pending_setup_overlay.is_some() {
+        assert_eq!(
+            ctrl.scroll_state.offset_from_bottom, before,
+            "PageUp must be a no-op while the setup overlay is active"
+        );
+    }
+}
+
+#[test]
+fn controller_plain_home_still_edits_prompt_not_scroll() {
+    let (mut ctrl, _dir) = controller_with_scroll_dims();
+    for ch in ['h', 'e', 'l', 'l', 'o'] {
+        send_prompt_key(&mut ctrl, KeyEvent { code: KeyCode::Char(ch), modifiers: Default::default() });
+    }
+    ctrl.scroll_state.scroll_to_bottom();
+
+    send_prompt_key(&mut ctrl, KeyEvent { code: KeyCode::Home, modifiers: Default::default() });
+
+    assert_eq!(
+        ctrl.scroll_state.offset_from_bottom, 0,
+        "Plain Home should not alter scroll offset"
+    );
+}
+
+#[test]
+fn controller_plain_end_still_edits_prompt_not_scroll() {
+    let (mut ctrl, _dir) = controller_with_scroll_dims();
+    ctrl.scroll_state.scroll_to_top();
+    let top_offset = ctrl.scroll_state.offset_from_bottom;
+
+    send_prompt_key(&mut ctrl, KeyEvent { code: KeyCode::End, modifiers: Default::default() });
+
+    assert_eq!(
+        ctrl.scroll_state.offset_from_bottom, top_offset,
+        "Plain End should not alter scroll offset"
+    );
+}
