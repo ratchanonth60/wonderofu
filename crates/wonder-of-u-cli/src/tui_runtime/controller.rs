@@ -35,6 +35,8 @@ pub(super) struct TuiController<'a> {
     pub(super) pending_external_editor: Option<ExternalEditorRequest>,
     /// Ephemeral setup hub overlay opened by `/setup`.  Never persisted.
     pub(super) pending_setup_overlay: Option<SetupOverlayState>,
+    /// Ephemeral provider-login / API-base form opened from the setup hub.  Never persisted.
+    pub(super) pending_provider_form: Option<ProviderFormState>,
     /// Countdown ticks until the task notification dialog is auto-dismissed.
     pub(super) task_notice_ttl: Option<u8>,
     pub(super) notifications: NotificationQueue,
@@ -201,6 +203,7 @@ impl<'a> TuiController<'a> {
             pending_memory_picker: None,
             pending_external_editor: None,
             pending_setup_overlay: None,
+            pending_provider_form: None,
             task_notice_ttl: None,
             notifications: NotificationQueue::new(),
             slash_suggestions: build_slash_suggestions(registry),
@@ -579,6 +582,9 @@ impl<'a> TuiController<'a> {
         }
         if self.pending_setup_overlay.is_some() {
             return self.handle_setup_overlay_key(key, resolved, before_blocking);
+        }
+        if self.pending_provider_form.is_some() {
+            return self.handle_provider_form_key(key, resolved);
         }
         match self.dialog.as_ref().map(DialogView::kind) {
             Some(wonder_of_u_tui::DialogKind::Permission) => {
@@ -3018,6 +3024,9 @@ impl<'a> TuiController<'a> {
                 );
                 self.needs_render = true;
             }
+            SetupItemAction::ProviderForm(kind) => {
+                self.open_provider_form(kind);
+            }
         }
         Ok(())
     }
@@ -3087,9 +3096,153 @@ impl<'a> TuiController<'a> {
         if self.state.provider_readiness() == ProviderReadiness::Ready {
             return Ok(());
         }
-        // Provider is not ready and the user has not cancelled yet â run the
+        // Provider is not ready and the user has not cancelled yet - run the
         // slash command so the normal output-parsing path opens the overlay.
         self.execute_slash_command_with("/setup", &mut |_| Ok(()))
+    }
+
+    /// Opens a two-stage provider form (API-key or API-base) from the setup hub.
+    ///
+    /// Providers are pre-filtered: API-key forms only list providers that
+    /// require a key (`AuthMaterialKind::ApiKey`); API-base forms list all.
+    pub(super) fn open_provider_form(&mut self, kind: ProviderFormKind) {
+        let options: Vec<ProviderFormOption> = ProviderResolver::builtin()
+            .registry()
+            .providers()
+            .filter(|p| match kind {
+                ProviderFormKind::ApiKey => p.auth_kind == AuthMaterialKind::ApiKey,
+                ProviderFormKind::ApiBase => true,
+            })
+            .map(|p| ProviderFormOption {
+                provider_id: p.id.clone(),
+                display_name: p.display_name.clone(),
+            })
+            .collect();
+        // The setup overlay is replaced by the provider form.
+        self.pending_setup_overlay = None;
+        self.pending_provider_form = Some(ProviderFormState::new(kind, options));
+        self.needs_render = true;
+    }
+
+    /// Handles keyboard input while the provider form is active.
+    pub(super) fn handle_provider_form_key(
+        &mut self,
+        key: KeyEvent,
+        resolved: Option<ResolvedKey>,
+    ) -> Result<()> {
+        let stage = match &self.pending_provider_form {
+            Some(f) => f.stage.clone(),
+            None => return Ok(()),
+        };
+        match stage {
+            ProviderFormStage::PickProvider => match key.code {
+                KeyCode::Up => {
+                    let f = self.pending_provider_form.as_mut().unwrap();
+                    if !f.options.is_empty() {
+                        f.selected_index =
+                            (f.selected_index + f.options.len() - 1) % f.options.len();
+                    }
+                    self.needs_render = true;
+                    Ok(())
+                }
+                KeyCode::Down => {
+                    let f = self.pending_provider_form.as_mut().unwrap();
+                    if !f.options.is_empty() {
+                        f.selected_index = (f.selected_index + 1) % f.options.len();
+                    }
+                    self.needs_render = true;
+                    Ok(())
+                }
+                KeyCode::Esc => self.cancel_provider_form(),
+                _ => {
+                    let advance =
+                        matches!(resolved, Some(ResolvedKey::Edit(EditAction::InsertNewline)))
+                            || key.code == KeyCode::Tab;
+                    if advance {
+                        let f = self.pending_provider_form.as_mut().unwrap();
+                        if f.options.is_empty() {
+                            self.status_note = Some("no providers available for this form".into());
+                        } else {
+                            f.stage = ProviderFormStage::EnterValue;
+                        }
+                    } else {
+                        self.status_note = Some(provider_form_status_note(&stage));
+                    }
+                    self.needs_render = true;
+                    Ok(())
+                }
+            },
+            ProviderFormStage::EnterValue => {
+                if key.code == KeyCode::Esc {
+                    // Go back to provider selection; clear the staged input.
+                    let f = self.pending_provider_form.as_mut().unwrap();
+                    f.stage = ProviderFormStage::PickProvider;
+                    f.input = TextBuffer::new(false);
+                    self.needs_render = true;
+                    return Ok(());
+                }
+                if matches!(resolved, Some(ResolvedKey::Edit(EditAction::InsertNewline))) {
+                    return self.complete_provider_form();
+                }
+                if let Some(res) = resolved {
+                    let f = self.pending_provider_form.as_mut().unwrap();
+                    apply_picker_query_edit(&mut f.input, res);
+                }
+                self.needs_render = true;
+                Ok(())
+            }
+        }
+    }
+
+    /// Commits the staged value and closes the form.
+    ///
+    /// For API keys the value is written to [`CredentialStore`] and the status
+    /// note names the provider but **never** includes the key value itself.
+    /// For API-base URLs the value is written to [`SettingsStore`].
+    pub(super) fn complete_provider_form(&mut self) -> Result<()> {
+        let Some(form) = self.pending_provider_form.take() else {
+            return Ok(());
+        };
+        let Some(opt) = form.options.get(form.selected_index).cloned() else {
+            self.status_note = Some("provider form: no provider selected".into());
+            self.needs_render = true;
+            return Ok(());
+        };
+        let provider_id = opt.provider_id;
+        let provider_display = opt.display_name;
+        let value = form.input.text().to_string();
+        let Some(dir) = self.storage_dir.clone() else {
+            self.status_note = Some("provider form: no storage dir configured".into());
+            self.needs_render = true;
+            return Ok(());
+        };
+        match form.kind {
+            ProviderFormKind::ApiKey => {
+                CredentialStore::new(&dir).set_api_key(&provider_id, value)?;
+                // Status note names the provider but NEVER includes the key value.
+                self.status_note = Some(format!("API key saved for {provider_display}"));
+            }
+            ProviderFormKind::ApiBase => {
+                let mut settings = SettingsStore::new(&dir).read()?;
+                settings
+                    .providers
+                    .entry(provider_id.clone())
+                    .or_insert_with(Default::default)
+                    .api_base = Some(value);
+                SettingsStore::new(&dir).write(&settings)?;
+                self.status_note = Some(format!("API base saved for {provider_display}"));
+            }
+        }
+        self.needs_render = true;
+        Ok(())
+    }
+
+    /// Cancels the provider form and records a status note.
+    pub(super) fn cancel_provider_form(&mut self) -> Result<()> {
+        self.pending_provider_form = None;
+        self.status_note = Some("provider form cancelled".into());
+        self.needs_render = true;
+        Ok(())
     }
 
     pub(super) fn dismiss_dialog(&mut self) {
@@ -3100,6 +3253,7 @@ impl<'a> TuiController<'a> {
         self.pending_theme_picker = None;
         self.pending_model_picker = None;
         self.pending_setup_overlay = None;
+        self.pending_provider_form = None;
         if matches!(
             self.state.input_mode,
             InputMode::PermissionPending | InputMode::TaskNotification
@@ -3154,6 +3308,7 @@ impl<'a> TuiController<'a> {
             || self.pending_theme_picker.is_some()
             || self.pending_model_picker.is_some()
             || self.pending_setup_overlay.is_some()
+            || self.pending_provider_form.is_some()
     }
 
     pub(super) fn current_picker_list_view(&self) -> Option<PickerListView> {
@@ -3263,6 +3418,9 @@ impl<'a> TuiController<'a> {
                 hint: PICKER_HINT.into(),
             });
         }
+        if let Some(form) = &self.pending_provider_form {
+            return Some(provider_form_picker_view(form));
+        }
         if let Some(overlay) = &self.pending_setup_overlay {
             let readiness_hint = format!(
                 "{PICKER_HINT}  ·  provider: {}  readiness: {}",
@@ -3281,6 +3439,7 @@ impl<'a> TuiController<'a> {
                         tag: match &item.action {
                             SetupItemAction::Dispatch(_) => None,
                             SetupItemAction::Placeholder(_) => Some("coming soon".into()),
+                            SetupItemAction::ProviderForm(_) => None,
                         },
                         selected: i == overlay.selected_index,
                     })
@@ -3422,6 +3581,7 @@ impl<'a> TuiController<'a> {
         self.pending_model_picker = None;
         self.pending_external_editor = None;
         self.pending_setup_overlay = None;
+        self.pending_provider_form = None;
         match self.state.input_mode {
             InputMode::Prompt => {
                 self.turn_state = if self.prompt.text().trim().is_empty() {
