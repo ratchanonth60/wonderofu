@@ -6155,6 +6155,271 @@ fn sanitize_error_combined_credential_patterns_are_both_redacted() {
     );
 }
 
+// ── sidebar regression tests ──────────────────────────────────────────────────
+
+/// After construction the sidebar panel must be enabled so first-time users see
+/// the keybinding hints and session metadata without any extra setup.
+#[test]
+fn sidebar_default_visible() {
+    let dir = unique_test_dir("tui-sidebar-default-visible");
+    let registry = commands::registry(Some(dir.clone())).expect("registry");
+    let controller = TuiController::new(
+        test_context(&dir),
+        &registry,
+        Some(dir.as_path()),
+        TuiLaunchOptions { session_id: None },
+    )
+    .expect("controller");
+
+    assert!(
+        controller.sidebar_visible,
+        "sidebar must default to visible after construction"
+    );
+}
+
+/// Calling `toggle_sidebar()` twice must return to the original visible state.
+/// The first call sets status_note to "sidebar off"; the second sets it to "sidebar on".
+#[test]
+fn sidebar_toggle_method_flips_and_restores() {
+    let dir = unique_test_dir("tui-sidebar-toggle-method");
+    let registry = commands::registry(Some(dir.clone())).expect("registry");
+    let mut controller = TuiController::new(
+        test_context(&dir),
+        &registry,
+        Some(dir.as_path()),
+        TuiLaunchOptions { session_id: None },
+    )
+    .expect("controller");
+
+    assert!(controller.sidebar_visible, "precondition: starts visible");
+
+    controller.toggle_sidebar();
+    assert!(!controller.sidebar_visible, "sidebar must be hidden after first toggle");
+    assert_eq!(
+        controller.status_note.as_deref(),
+        Some("sidebar off"),
+        "status note must read 'sidebar off' after hiding"
+    );
+
+    controller.toggle_sidebar();
+    assert!(controller.sidebar_visible, "sidebar must be visible after second toggle");
+    assert_eq!(
+        controller.status_note.as_deref(),
+        Some("sidebar on"),
+        "status note must read 'sidebar on' after restoring"
+    );
+}
+
+/// Pressing Ctrl+B must flip `sidebar_visible` via the normal key-event path,
+/// exercising the `is_ctrl_char('b')` intercept in `handle_key_event`.
+///
+/// Any auto-opened setup overlay is dismissed first so the key reaches the
+/// sidebar intercept rather than being swallowed by `handle_dialog_key`.
+#[test]
+fn sidebar_ctrl_b_toggles_via_key_event() {
+    let dir = unique_test_dir("tui-sidebar-ctrl-b");
+    let registry = commands::registry(Some(dir.clone())).expect("registry");
+    let mut controller = TuiController::new(
+        test_context(&dir),
+        &registry,
+        Some(dir.as_path()),
+        TuiLaunchOptions { session_id: None },
+    )
+    .expect("controller");
+
+    // Dismiss any auto-opened setup overlay so Ctrl+B reaches the main key
+    // handler; handle_key_event routes to handle_dialog_key when a picker
+    // overlay is active, which would swallow the keystroke.
+    controller.pending_setup_overlay = None;
+
+    let was_visible = controller.sidebar_visible;
+
+    let ctrl_b = KeyEvent {
+        code: KeyCode::Char('b'),
+        modifiers: wonder_of_u_tui::KeyModifiers {
+            control: true,
+            ..wonder_of_u_tui::KeyModifiers::default()
+        },
+    };
+    send_prompt_key(&mut controller, ctrl_b);
+
+    assert_eq!(
+        controller.sidebar_visible,
+        !was_visible,
+        "Ctrl+B must flip sidebar_visible"
+    );
+}
+
+/// The bare `/sidebar` command must behave as a toggle (same as `toggle_sidebar()`).
+#[test]
+fn sidebar_slash_command_bare_toggles() {
+    let dir = unique_test_dir("tui-sidebar-slash-toggle");
+    let registry = commands::registry(Some(dir.clone())).expect("registry");
+    let mut controller = TuiController::new(
+        test_context(&dir),
+        &registry,
+        Some(dir.as_path()),
+        TuiLaunchOptions { session_id: None },
+    )
+    .expect("controller");
+
+    let original = controller.sidebar_visible;
+
+    controller
+        .execute_slash_command("/sidebar")
+        .expect("/sidebar must not error");
+
+    assert_eq!(
+        controller.sidebar_visible,
+        !original,
+        "/sidebar bare must flip sidebar_visible"
+    );
+}
+
+/// `/sidebar on` must unconditionally set visible; `/sidebar off` must hide;
+/// `/sidebar toggle` must flip — verified in sequence to keep them independent.
+#[test]
+fn sidebar_slash_on_off_toggle_subcommands() {
+    let dir = unique_test_dir("tui-sidebar-slash-on-off");
+    let registry = commands::registry(Some(dir.clone())).expect("registry");
+    let mut controller = TuiController::new(
+        test_context(&dir),
+        &registry,
+        Some(dir.as_path()),
+        TuiLaunchOptions { session_id: None },
+    )
+    .expect("controller");
+
+    // `/sidebar off` must hide regardless of current state.
+    controller
+        .execute_slash_command("/sidebar off")
+        .expect("/sidebar off must not error");
+    assert!(!controller.sidebar_visible, "/sidebar off must set sidebar_visible=false");
+    assert_eq!(
+        controller.status_note.as_deref(),
+        Some("sidebar off"),
+        "status note must read 'sidebar off'"
+    );
+
+    // `/sidebar on` must restore visibility.
+    controller
+        .execute_slash_command("/sidebar on")
+        .expect("/sidebar on must not error");
+    assert!(controller.sidebar_visible, "/sidebar on must set sidebar_visible=true");
+    assert_eq!(
+        controller.status_note.as_deref(),
+        Some("sidebar on"),
+        "status note must read 'sidebar on'"
+    );
+
+    // `/sidebar toggle` must flip to hidden again.
+    controller
+        .execute_slash_command("/sidebar toggle")
+        .expect("/sidebar toggle must not error");
+    assert!(!controller.sidebar_visible, "/sidebar toggle must flip to false");
+}
+
+/// When `sidebar_visible` is false, `view()` must return `sidebar: None` so the
+/// renderer suppresses the column entirely.
+#[test]
+fn sidebar_view_is_none_when_hidden() {
+    let dir = unique_test_dir("tui-sidebar-view-none");
+    let registry = commands::registry(Some(dir.clone())).expect("registry");
+    let mut controller = TuiController::new(
+        test_context(&dir),
+        &registry,
+        Some(dir.as_path()),
+        TuiLaunchOptions { session_id: None },
+    )
+    .expect("controller");
+
+    controller.sidebar_visible = false;
+
+    assert!(
+        controller.view().sidebar.is_none(),
+        "view().sidebar must be None when sidebar_visible=false"
+    );
+}
+
+/// When `sidebar_visible` is true, `view()` must carry a populated `SidebarView`
+/// so the renderer can display the companion panel.
+#[test]
+fn sidebar_view_is_some_when_visible() {
+    let dir = unique_test_dir("tui-sidebar-view-some");
+    let registry = commands::registry(Some(dir.clone())).expect("registry");
+    let mut controller = TuiController::new(
+        test_context(&dir),
+        &registry,
+        Some(dir.as_path()),
+        TuiLaunchOptions { session_id: None },
+    )
+    .expect("controller");
+
+    controller.sidebar_visible = true;
+
+    assert!(
+        controller.view().sidebar.is_some(),
+        "view().sidebar must be Some when sidebar_visible=true"
+    );
+}
+
+/// With the sidebar visible and a non-empty prompt, the status bar must show the
+/// compact key-hint string (containing "⌃B") and must NOT contain the full
+/// session/turn details (which would duplicate what the sidebar already shows).
+#[test]
+fn sidebar_compact_status_when_visible() {
+    let dir = unique_test_dir("tui-sidebar-compact-status");
+    let registry = commands::registry(Some(dir.clone())).expect("registry");
+    let mut controller = TuiController::new(
+        test_context(&dir),
+        &registry,
+        Some(dir.as_path()),
+        TuiLaunchOptions { session_id: None },
+    )
+    .expect("controller");
+
+    controller.sidebar_visible = true;
+    // A non-empty prompt prevents the unconditional shortcut-hint override.
+    controller.prompt.insert_text("hello");
+
+    let status = controller.view().status;
+
+    assert!(
+        status.contains("⌃B"),
+        "compact status must contain '⌃B' sidebar hint; got: {status:?}"
+    );
+    assert!(
+        !status.contains("turn="),
+        "compact status must not contain full 'turn=' detail; got: {status:?}"
+    );
+}
+
+/// With the sidebar hidden and a non-empty prompt, the status bar must show the
+/// full session/turn information so the user retains context.
+#[test]
+fn sidebar_full_status_when_hidden() {
+    let dir = unique_test_dir("tui-sidebar-full-status");
+    let registry = commands::registry(Some(dir.clone())).expect("registry");
+    let mut controller = TuiController::new(
+        test_context(&dir),
+        &registry,
+        Some(dir.as_path()),
+        TuiLaunchOptions { session_id: None },
+    )
+    .expect("controller");
+
+    controller.sidebar_visible = false;
+    // A non-empty prompt prevents the unconditional shortcut-hint override.
+    controller.prompt.insert_text("hello");
+
+    let status = controller.view().status;
+
+    assert!(
+        status.contains("turn="),
+        "full status must contain 'turn=' when sidebar is hidden; got: {status:?}"
+    );
+}
+
 // ── controller provider failure ───────────────────────────────────────────────
 
 #[test]
