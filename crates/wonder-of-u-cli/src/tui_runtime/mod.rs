@@ -39,7 +39,7 @@ use wonder_of_u_storage::{TaskStore, TranscriptStore};
 use wonder_of_u_tools::provider_tool_specs;
 use wonder_of_u_tui::{
     CrosstermEventSource, DialogView, EditAction, EventLoop, HistorySearchView, KeyBindingContext,
-    KeyBindingResolver, KeyCode, KeyEvent, NotificationInput, NotificationLifetime,
+    KeyBindingResolver, KeyCode, KeyEvent, MouseEventKind, NotificationInput, NotificationLifetime,
     NotificationQueue, NotificationSeverity, PermissionSummaryView, PickerListEntry,
     PickerListView, PromptSuggestion, PromptSuggestionState, Rect, ResolvedKey, ShellLayout,
     ShellView, SlashSuggestionEntry, SlashSuggestionsOverlay, TextBuffer, Theme,

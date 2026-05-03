@@ -33,6 +33,15 @@ impl Rect {
     pub const fn bottom(self) -> u16 {
         self.y.saturating_add(self.height)
     }
+
+    /// Returns `true` when `(col, row)` lies inside the rectangle.
+    ///
+    /// Uses half-open intervals `[x, x+width)` × `[y, y+height)`, which
+    /// matches terminal coordinate conventions.
+    #[must_use]
+    pub const fn contains(self, col: u16, row: u16) -> bool {
+        col >= self.x && col < self.right() && row >= self.y && row < self.bottom()
+    }
     /// Constant fn
     #[must_use]
     pub const fn is_empty(self) -> bool {

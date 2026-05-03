@@ -4745,3 +4745,113 @@ fn controller_setup_overlay_tab_key_selects_item() {
         "Tab should confirm and close the setup overlay"
     );
 }
+
+// ── tui-scroll-mouse: mouse-wheel transcript navigation ──────────────────────
+
+fn scroll_mouse_event(kind: wonder_of_u_tui::MouseEventKind, col: u16, row: u16) -> UiEvent {
+    use crossterm::event::{
+        KeyModifiers as CrosstermMods, MouseEvent as CrosstermME,
+        MouseEventKind as CrosstermMEK,
+    };
+    let ct_kind = match kind {
+        wonder_of_u_tui::MouseEventKind::ScrollUp => CrosstermMEK::ScrollUp,
+        wonder_of_u_tui::MouseEventKind::ScrollDown => CrosstermMEK::ScrollDown,
+        wonder_of_u_tui::MouseEventKind::ScrollLeft => CrosstermMEK::ScrollLeft,
+        wonder_of_u_tui::MouseEventKind::ScrollRight => CrosstermMEK::ScrollRight,
+        _ => panic!("scroll_mouse_event: unsupported MouseEventKind"),
+    };
+    UiEvent::Mouse(CrosstermME {
+        kind: ct_kind,
+        column: col,
+        row,
+        modifiers: CrosstermMods::empty(),
+    })
+}
+
+#[test]
+fn controller_mouse_scroll_up_inside_transcript_scrolls_toward_older() {
+    let dir = unique_test_dir("mouse-scroll-up");
+    let registry = commands::registry(Some(dir.clone())).expect("registry");
+    let mut controller = TuiController::new(
+        test_context(&dir), &registry, Some(dir.as_path()),
+        TuiLaunchOptions { session_id: None },
+    ).expect("controller");
+    controller.on_terminal_resize(80, 24);
+    controller.scroll_state.on_resize(20, 100);
+
+    assert_eq!(controller.scroll_state.offset_from_bottom, 0, "starts at tail");
+    controller.handle_mouse_event(scroll_mouse_event(wonder_of_u_tui::MouseEventKind::ScrollUp, 40, 5));
+    assert_eq!(controller.scroll_state.offset_from_bottom, 3,
+        "ScrollUp must advance 3 lines toward older content");
+    assert!(controller.needs_render);
+}
+
+#[test]
+fn controller_mouse_scroll_down_inside_transcript_scrolls_toward_newer() {
+    let dir = unique_test_dir("mouse-scroll-down");
+    let registry = commands::registry(Some(dir.clone())).expect("registry");
+    let mut controller = TuiController::new(
+        test_context(&dir), &registry, Some(dir.as_path()),
+        TuiLaunchOptions { session_id: None },
+    ).expect("controller");
+    controller.on_terminal_resize(80, 24);
+    controller.scroll_state.on_resize(20, 100);
+
+    controller.scroll_state.scroll_by(10);
+    controller.handle_mouse_event(scroll_mouse_event(wonder_of_u_tui::MouseEventKind::ScrollDown, 40, 5));
+    assert_eq!(controller.scroll_state.offset_from_bottom, 7,
+        "ScrollDown must retreat 3 lines toward newer content");
+}
+
+#[test]
+fn controller_mouse_scroll_outside_transcript_area_ignored() {
+    let dir = unique_test_dir("mouse-scroll-outside");
+    let registry = commands::registry(Some(dir.clone())).expect("registry");
+    let mut controller = TuiController::new(
+        test_context(&dir), &registry, Some(dir.as_path()),
+        TuiLaunchOptions { session_id: None },
+    ).expect("controller");
+    controller.on_terminal_resize(80, 24);
+    controller.scroll_state.on_resize(20, 100);
+
+    // row 22 falls in the prompt/chrome zone of an 80×24 terminal
+    controller.handle_mouse_event(scroll_mouse_event(wonder_of_u_tui::MouseEventKind::ScrollUp, 40, 22));
+    assert_eq!(controller.scroll_state.offset_from_bottom, 0,
+        "wheel over the prompt zone must be ignored");
+}
+
+#[test]
+fn controller_mouse_scroll_ignored_when_overlay_active() {
+    let dir = unique_test_dir("mouse-scroll-overlay");
+    let registry = commands::registry(Some(dir.clone())).expect("registry");
+    let mut controller = TuiController::new(
+        test_context(&dir), &registry, Some(dir.as_path()),
+        TuiLaunchOptions { session_id: None },
+    ).expect("controller");
+    controller.on_terminal_resize(80, 24);
+    controller.scroll_state.on_resize(20, 100);
+
+    controller.dialog = Some(wonder_of_u_tui::DialogView::notice(
+        "Overlay active", ["This dialog prevents scrolling"],
+    ));
+    controller.handle_mouse_event(scroll_mouse_event(wonder_of_u_tui::MouseEventKind::ScrollUp, 40, 5));
+    assert_eq!(controller.scroll_state.offset_from_bottom, 0,
+        "scroll must be suppressed while a dialog is shown");
+}
+
+#[test]
+fn controller_horizontal_mouse_wheel_ignored() {
+    let dir = unique_test_dir("mouse-scroll-horiz");
+    let registry = commands::registry(Some(dir.clone())).expect("registry");
+    let mut controller = TuiController::new(
+        test_context(&dir), &registry, Some(dir.as_path()),
+        TuiLaunchOptions { session_id: None },
+    ).expect("controller");
+    controller.on_terminal_resize(80, 24);
+    controller.scroll_state.on_resize(20, 100);
+
+    controller.handle_mouse_event(scroll_mouse_event(wonder_of_u_tui::MouseEventKind::ScrollLeft, 40, 5));
+    controller.handle_mouse_event(scroll_mouse_event(wonder_of_u_tui::MouseEventKind::ScrollRight, 40, 5));
+    assert_eq!(controller.scroll_state.offset_from_bottom, 0,
+        "horizontal wheel events must not change the scroll position");
+}
