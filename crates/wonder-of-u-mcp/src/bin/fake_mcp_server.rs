@@ -42,11 +42,10 @@ fn main() -> io::Result<()> {
                     error: None,
                 },
             )?,
-            "notifications/initialized" => {
-                if exit_after.as_deref() == Some("initialized") {
-                    return Ok(());
-                }
+            "notifications/initialized" if exit_after.as_deref() == Some("initialized") => {
+                return Ok(());
             }
+            "notifications/initialized" => {}
             "tools/list" => write_response(
                 &mut writer,
                 JsonRpcResponse {

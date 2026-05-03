@@ -35,7 +35,7 @@ fn canonical_json(value: &Value) -> String {
         }
         Value::Object(map) => {
             let mut entries = map.iter().collect::<Vec<_>>();
-            entries.sort_by(|(left, _), (right, _)| left.cmp(right));
+            entries.sort_by_key(|(key, _)| *key);
 
             let mut rendered = String::from("{");
             for (index, (key, item)) in entries.into_iter().enumerate() {

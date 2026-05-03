@@ -30,6 +30,29 @@ pub struct SlashSuggestionsOverlay {
     /// Stores the entries
     pub entries: Vec<SlashSuggestionEntry>,
 }
+/// Scroll metadata passed from the controller to the renderer each frame.
+///
+/// The renderer uses this to decide which slice of the transcript to display
+/// and whether to show the "scrolled up" indicator in the status line.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct TranscriptScrollView {
+    /// Lines from the bottom that have been scrolled away.
+    /// `0` means "follow tail" (newest lines always visible).
+    pub offset_from_bottom: usize,
+    /// Total rendered transcript lines (used for the indicator count).
+    pub total_lines: usize,
+    /// Visible transcript rows available for rendering.
+    pub visible_lines: usize,
+}
+
+impl TranscriptScrollView {
+    /// Returns `true` when the view is pinned to the newest content.
+    #[must_use]
+    pub fn is_following_tail(self) -> bool {
+        self.offset_from_bottom == 0
+    }
+}
+
 /// Represents shell view
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct ShellView {
@@ -63,6 +86,8 @@ pub struct ShellView {
     pub notifications: Vec<NotificationView>,
     /// When `Some`, display the slash-command autocomplete overlay.
     pub slash_suggestions: Option<SlashSuggestionsOverlay>,
+    /// Scroll position snapshot for windowed transcript rendering.
+    pub scroll: TranscriptScrollView,
 }
 
 impl ShellView {
@@ -96,6 +121,8 @@ impl ShellView {
             picker_list: None,
             notifications: Vec::new(),
             slash_suggestions: None,
+            // Default to follow-tail; the controller will override this each frame.
+            scroll: TranscriptScrollView::default(),
         }
     }
 }
@@ -224,9 +251,12 @@ fn draw_message_view(frame: &mut FrameBuffer, area: Rect, view: &ShellView, them
 
     let msg_lines = message_panel_lines(view, theme);
     if view.messages.is_empty() {
+        // Welcome screen: always top-anchored, never windowed.
         draw_lines(frame, transcript_area, &msg_lines);
-    } else {
+    } else if view.scroll.is_following_tail() {
         draw_lines_tail(frame, transcript_area, &msg_lines);
+    } else {
+        draw_lines_windowed(frame, transcript_area, &msg_lines, view.scroll.offset_from_bottom);
     }
 
     if docked_height == 0 || docked_height > area.height.saturating_sub(title_height) {
@@ -316,6 +346,29 @@ fn draw_lines_tail(frame: &mut FrameBuffer, area: Rect, lines: &[StyledLine]) {
 
     let visible = usize::from(area.height);
     let start = lines.len().saturating_sub(visible);
+    draw_lines(frame, area, &lines[start..]);
+}
+
+/// Renders a windowed slice of `lines` anchored by `offset_from_bottom` rows
+/// above the tail.
+///
+/// `start = (total - visible).saturating_sub(offset_from_bottom)` — saturating
+/// arithmetic ensures the view never scrolls past the first line.
+fn draw_lines_windowed(
+    frame: &mut FrameBuffer,
+    area: Rect,
+    lines: &[StyledLine],
+    offset_from_bottom: usize,
+) {
+    if area.is_empty() {
+        return;
+    }
+
+    let visible = usize::from(area.height);
+    let start = lines
+        .len()
+        .saturating_sub(visible)
+        .saturating_sub(offset_from_bottom);
     draw_lines(frame, area, &lines[start..]);
 }
 
@@ -797,7 +850,7 @@ fn footer_badges(text: &str) -> String {
 }
 
 fn status_line_text(view: &ShellView) -> String {
-    match (
+    let base = match (
         view.loading,
         view.loading_verb.as_deref(),
         view.status.is_empty(),
@@ -808,6 +861,16 @@ fn status_line_text(view: &ShellView) -> String {
         (true, None, true) => "⠿".into(),
         (false, _, false) => format!("◆ {}", view.status),
         (false, _, true) => "◆".into(),
+    };
+
+    // Append a compact scroll indicator when the user has scrolled up from tail.
+    if !view.scroll.is_following_tail() {
+        format!(
+            "{}  ↑ {} lines · Ctrl+End bottom",
+            base, view.scroll.offset_from_bottom
+        )
+    } else {
+        base
     }
 }
 
@@ -985,6 +1048,7 @@ mod tests {
             picker_list: None,
             notifications: Vec::new(),
             slash_suggestions: None,
+            scroll: TranscriptScrollView::default(),
         };
 
         let frame = render_snapshot(30, 9, &view, &Theme::default());
@@ -1033,6 +1097,7 @@ mod tests {
             picker_list: None,
             notifications: Vec::new(),
             slash_suggestions: None,
+            scroll: TranscriptScrollView::default(),
         };
 
         let frame = render_snapshot(48, 10, &view, &Theme::default());
@@ -1128,6 +1193,7 @@ mod tests {
             picker_list: None,
             notifications: Vec::new(),
             slash_suggestions: None,
+            scroll: TranscriptScrollView::default(),
         };
 
         let frame = render_snapshot(42, 12, &view, &Theme::default());
@@ -1173,6 +1239,7 @@ mod tests {
             picker_list: None,
             notifications: Vec::new(),
             slash_suggestions: None,
+            scroll: TranscriptScrollView::default(),
         };
 
         let frame = render_snapshot(42, 12, &view, &Theme::default());
@@ -1223,6 +1290,7 @@ mod tests {
             picker_list: None,
             notifications: Vec::new(),
             slash_suggestions: None,
+            scroll: TranscriptScrollView::default(),
         };
 
         let frame = render_snapshot(42, 14, &view, &Theme::default());
@@ -1271,6 +1339,7 @@ mod tests {
             picker_list: None,
             notifications: Vec::new(),
             slash_suggestions: None,
+            scroll: TranscriptScrollView::default(),
         };
 
         let frame = render_snapshot(32, 9, &view, &Theme::default());
@@ -1303,6 +1372,7 @@ mod tests {
             picker_list: None,
             notifications: Vec::new(),
             slash_suggestions: None,
+            scroll: TranscriptScrollView::default(),
         };
 
         let frame = render_snapshot(48, 8, &view, &Theme::default());
@@ -1359,6 +1429,7 @@ mod tests {
                 },
             ],
             slash_suggestions: None,
+            scroll: TranscriptScrollView::default(),
         };
 
         let frame = render_snapshot(48, 12, &view, &Theme::default());
@@ -1422,6 +1493,7 @@ mod tests {
             }),
             notifications: Vec::new(),
             slash_suggestions: None,
+            scroll: TranscriptScrollView::default(),
         };
 
         let frame = render_snapshot(60, 16, &view, &Theme::default());
@@ -1451,10 +1523,176 @@ mod tests {
             picker_list: None,
             notifications: Vec::new(),
             slash_suggestions: None,
+            scroll: TranscriptScrollView::default(),
         };
 
         let frame = render_snapshot(32, 8, &view, &Theme::default());
 
         assert!(frame.to_plain_text().contains("⠿ thinking… | turn=active"));
+    }
+
+    // ── scroll rendering ─────────────────────────────────────────────────────
+
+    fn make_long_transcript(count: usize) -> Vec<MessageLineView> {
+        (1..=count)
+            .map(|i| MessageLineView::new(format!("line {i:02}"), MessageRole::Assistant))
+            .collect()
+    }
+
+    #[test]
+    fn transcript_tail_mode_shows_newest_lines() {
+        // 10 lines of content → tail mode (offset 0) must show the newest line.
+        let view = ShellView {
+            title: "Session: Tail".into(),
+            messages: make_long_transcript(10),
+            prompt: String::new(),
+            status: "tail".into(),
+            scroll: TranscriptScrollView::default(), // offset_from_bottom = 0
+            ..ShellView::default()
+        };
+
+        let frame = render_snapshot(20, 7, &view, &Theme::default());
+        let text = frame.to_plain_text();
+        assert!(!text.contains("line 01"), "oldest line must not appear");
+        assert!(text.contains("line 10"), "newest line must appear");
+        // Status line must NOT show the scroll indicator in tail mode.
+        assert!(
+            !text.contains("Ctrl+End"),
+            "scroll indicator must be absent in tail mode"
+        );
+    }
+
+    #[test]
+    fn transcript_scrolled_up_shows_earlier_window() {
+        // 10 lines, render_snapshot(20, 12) → 6 visible transcript rows.
+        // offset_from_bottom = 3 → start = (10 - 6) - 3 = 1 → shows lines 02–07.
+        let view = ShellView {
+            title: "Session: Scrolled".into(),
+            messages: make_long_transcript(10),
+            prompt: String::new(),
+            status: "scrolled".into(),
+            scroll: TranscriptScrollView {
+                offset_from_bottom: 3,
+                total_lines: 10,
+                visible_lines: 6,
+            },
+            ..ShellView::default()
+        };
+
+        let frame = render_snapshot(20, 12, &view, &Theme::default());
+        let text = frame.to_plain_text();
+        assert!(text.contains("line 02"), "window start must be visible");
+        assert!(text.contains("line 07"), "window end must be visible");
+        assert!(!text.contains("line 01"), "line before window must be hidden");
+        assert!(!text.contains("line 10"), "newest line must not appear");
+    }
+
+    #[test]
+    fn scroll_indicator_appears_in_status_when_scrolled_up() {
+        // Scrolling up by 5 lines must add "↑ 5 lines · Ctrl+End bottom" to the
+        // status row.
+        let view = ShellView {
+            title: "Session: Ind".into(),
+            messages: make_long_transcript(10),
+            prompt: String::new(),
+            status: "scrolled".into(),
+            scroll: TranscriptScrollView {
+                offset_from_bottom: 5,
+                total_lines: 10,
+                visible_lines: 4,
+            },
+            ..ShellView::default()
+        };
+
+        let frame = render_snapshot(60, 8, &view, &Theme::default());
+        let text = frame.to_plain_text();
+        assert!(
+            text.contains("5 lines"),
+            "line count must appear in indicator; got: {text:?}"
+        );
+        assert!(
+            text.contains("Ctrl+End bottom"),
+            "hint text must appear in indicator; got: {text:?}"
+        );
+    }
+
+    #[test]
+    fn scroll_indicator_absent_when_at_tail() {
+        let view = ShellView {
+            title: "Session: Tail".into(),
+            messages: make_long_transcript(5),
+            prompt: String::new(),
+            status: "tail".into(),
+            scroll: TranscriptScrollView::default(),
+            ..ShellView::default()
+        };
+
+        let frame = render_snapshot(60, 8, &view, &Theme::default());
+        let text = frame.to_plain_text();
+        assert!(
+            !text.contains("Ctrl+End"),
+            "scroll indicator must not appear in tail mode"
+        );
+    }
+
+    #[test]
+    fn welcome_screen_unchanged_when_messages_empty() {
+        // The welcome screen is always top-anchored regardless of any scroll offset,
+        // because `draw_lines` (not the windowed path) is used for empty messages.
+        let view = ShellView {
+            title: "Session: Empty".into(),
+            messages: Vec::new(),
+            prompt: String::new(),
+            status: "welcome".into(),
+            // Even if a non-zero offset somehow leaks in, the welcome path is unchanged.
+            scroll: TranscriptScrollView {
+                offset_from_bottom: 99,
+                total_lines: 0,
+                visible_lines: 10,
+            },
+            ..ShellView::default()
+        };
+
+        // Use a tall frame so the welcome tagline (line 8 of the welcome screen) is
+        // actually visible in the transcript area.
+        let frame = render_snapshot(42, 20, &view, &Theme::default());
+        let text = frame.to_plain_text();
+        // The ASCII-art banner should appear at the top.
+        assert!(text.contains("██╗"), "welcome banner must be present");
+        assert!(
+            text.contains("wonder-of-u  ·  AI coding assistant"),
+            "welcome tagline must be present"
+        );
+    }
+
+    #[test]
+    fn scrolled_up_past_top_is_clamped_to_first_line() {
+        // 3 lines of content, offset = 999 (far beyond max).
+        // render_snapshot(20, 12) → 6 visible transcript rows.
+        // start = (3 - 6).saturating_sub(999) = 0 → all 3 lines are shown.
+        let view = ShellView {
+            title: "Session: Clamp".into(),
+            messages: make_long_transcript(3),
+            prompt: String::new(),
+            status: "clamped".into(),
+            scroll: TranscriptScrollView {
+                offset_from_bottom: 999,
+                total_lines: 3,
+                visible_lines: 6,
+            },
+            ..ShellView::default()
+        };
+
+        let frame = render_snapshot(20, 12, &view, &Theme::default());
+        let text = frame.to_plain_text();
+        // All three lines must appear since start is clamped to 0.
+        assert!(
+            text.contains("line 01"),
+            "first line must be visible when clamped"
+        );
+        assert!(
+            text.contains("line 03"),
+            "last line must be visible when clamped"
+        );
     }
 }

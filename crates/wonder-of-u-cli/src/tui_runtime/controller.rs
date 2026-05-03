@@ -2186,6 +2186,12 @@ impl<'a> TuiController<'a> {
                 .collect();
             SlashSuggestionsOverlay { entries }
         });
+        // Wire scroll position so the renderer shows the correct transcript window.
+        view.scroll = TranscriptScrollView {
+            offset_from_bottom: self.scroll_state.offset_from_bottom,
+            total_lines: self.scroll_state.last_total_lines,
+            visible_lines: self.scroll_state.last_visible_lines,
+        };
         view
     }
 
