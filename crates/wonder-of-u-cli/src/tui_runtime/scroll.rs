@@ -42,8 +42,7 @@ impl TranscriptScrollState {
     ///
     /// This is the default mode; it is restored by calling
     /// [`scroll_to_bottom`](TranscriptScrollState::scroll_to_bottom).
-    // Wired by the keyboard/render handler added in a later task.
-    #[allow(dead_code)]
+    #[allow(dead_code)]  // only used in tests, not from production call sites
     #[must_use]
     pub(super) fn is_following_tail(&self) -> bool {
         self.offset_from_bottom == 0
@@ -96,8 +95,6 @@ impl TranscriptScrollState {
     /// Positive `delta` moves toward older content (up); negative `delta`
     /// moves toward newer content (down).  The result is always clamped to
     /// `[0, max_offset()]`.
-    // Wired by the keyboard/mouse scroll handler added in a later task.
-    #[allow(dead_code)]
     pub(super) fn scroll_by(&mut self, delta: i32) {
         if delta > 0 {
             self.offset_from_bottom = self
@@ -111,15 +108,11 @@ impl TranscriptScrollState {
     }
 
     /// Jumps to the oldest available transcript content (maximum scroll-up).
-    // Wired by the keyboard handler added in a later task.
-    #[allow(dead_code)]
     pub(super) fn scroll_to_top(&mut self) {
         self.offset_from_bottom = self.max_offset();
     }
 
     /// Returns to follow-tail (live) mode.
-    // Called by the keyboard/mouse scroll handlers added in a later task.
-    #[allow(dead_code)]
     pub(super) fn scroll_to_bottom(&mut self) {
         self.offset_from_bottom = 0;
     }

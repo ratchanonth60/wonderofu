@@ -315,6 +315,36 @@ impl<'a> TuiController<'a> {
             }
         }
 
+        // Route scroll keys to the transcript when no picker/dialog overlay is active.
+        // Plain Home/End fall through intentionally so they reach the keymap resolver
+        // and perform prompt cursor movement.
+        if !self.has_picker_overlay() && self.dialog.is_none() {
+            let page = self.scroll_state.last_visible_lines.max(1);
+            match (key.code, key.modifiers.control) {
+                (KeyCode::PageUp, _) => {
+                    self.scroll_state.scroll_by(page as i32);
+                    self.needs_render = true;
+                    return Ok(());
+                }
+                (KeyCode::PageDown, _) => {
+                    self.scroll_state.scroll_by(-(page as i32));
+                    self.needs_render = true;
+                    return Ok(());
+                }
+                (KeyCode::Home, true) => {
+                    self.scroll_state.scroll_to_top();
+                    self.needs_render = true;
+                    return Ok(());
+                }
+                (KeyCode::End, true) => {
+                    self.scroll_state.scroll_to_bottom();
+                    self.needs_render = true;
+                    return Ok(());
+                }
+                _ => {}
+            }
+        }
+
         let Some(resolved) = resolved else {
             return if self.vim.mode() == VimMode::Normal || key.code == KeyCode::Esc {
                 self.handle_vim_key(key)
