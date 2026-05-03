@@ -37,6 +37,8 @@ pub(super) struct TuiController<'a> {
     pub(super) slash_suggestions: Vec<PromptSuggestion>,
     /// Live filtered state when the user is typing a `/` command.
     pub(super) active_suggestions: Option<PromptSuggestionState>,
+    /// Ephemeral transcript scroll position; never persisted to `AppState`.
+    pub(super) scroll_state: TranscriptScrollState,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -189,6 +191,7 @@ impl<'a> TuiController<'a> {
             notifications: NotificationQueue::new(),
             slash_suggestions: build_slash_suggestions(registry),
             active_suggestions: None,
+            scroll_state: TranscriptScrollState::new(),
         };
         controller.hydrate_initial_settings()?;
         controller.refresh_runtime_state()?;
@@ -257,7 +260,12 @@ impl<'a> TuiController<'a> {
                 self.needs_render = true;
                 Ok(())
             }
-            UiEvent::Resize { .. } | UiEvent::Mouse(_) => {
+            UiEvent::Resize { width, height } => {
+                self.needs_render = true;
+                self.on_terminal_resize(width, height);
+                Ok(())
+            }
+            UiEvent::Mouse(_) => {
                 self.needs_render = true;
                 Ok(())
             }
@@ -1750,7 +1758,9 @@ impl<'a> TuiController<'a> {
             &self.state,
             &mut self.persistence,
             &[message],
-        )
+        )?;
+        self.notify_transcript_changed();
+        Ok(())
     }
 
     pub(super) fn persist_messages(&mut self, messages: &[MessageEnvelope]) -> Result<()> {
@@ -1762,7 +1772,11 @@ impl<'a> TuiController<'a> {
             &self.state,
             &mut self.persistence,
             messages,
-        )
+        )?;
+        // Keep scroll state consistent: follow-tail stays pinned; scrolled-up
+        // mode preserves the viewport relative to the bottom of the transcript.
+        self.notify_transcript_changed();
+        Ok(())
     }
 
     pub(super) fn tool_context(&self) -> ToolContext {
@@ -1937,6 +1951,8 @@ impl<'a> TuiController<'a> {
         self.state.session.entrypoint = Some("tui".into());
         self.state.session.app_version = Some(env!("CARGO_PKG_VERSION").into());
         self.rebuild_ephemeral_state();
+        // Messages have been fully replaced; bring scroll state in sync.
+        self.notify_transcript_changed();
         Ok(())
     }
 
@@ -3305,6 +3321,35 @@ impl<'a> TuiController<'a> {
 
     pub(super) fn mark_rendered(&mut self) {
         self.needs_render = false;
+    }
+
+    /// Recomputes the visible transcript height from terminal dimensions and
+    /// calls [`TranscriptScrollState::on_resize`] to keep the scroll state
+    /// consistent after the terminal is resized.
+    ///
+    /// Uses a rough prompt-height estimate derived from the current prompt text
+    /// so that the scroll state stays accurate without building a full view.
+    pub(super) fn on_terminal_resize(&mut self, width: u16, height: u16) {
+        // Estimate prompt height the same way ShellView::prompt_height() does:
+        // number of text lines + 2 border rows.
+        let prompt_lines = self.prompt.text().lines().count().max(1);
+        let prompt_height = u16::try_from(prompt_lines)
+            .unwrap_or(u16::MAX)
+            .saturating_add(2);
+        let layout = ShellLayout::split(Rect::new(0, 0, width, height), prompt_height);
+        let total = message_lines(&self.state.messages).len();
+        self.scroll_state
+            .on_resize(usize::from(layout.messages.height), total);
+    }
+
+    /// Recomputes the total rendered transcript line count and notifies the
+    /// scroll state so that follow-tail and scrolled-up modes remain correct.
+    ///
+    /// Call this after any operation that adds or removes messages from
+    /// `self.state.messages`.
+    pub(super) fn notify_transcript_changed(&mut self) {
+        let total = message_lines(&self.state.messages).len();
+        self.scroll_state.on_messages_changed(total);
     }
 }
 
