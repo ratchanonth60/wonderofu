@@ -5730,7 +5730,13 @@ fn copilot_oauth_tick_stores_token_and_redacts_in_status_note() {
         .get("copilot")
         .expect("copilot credential must be stored");
     assert!(
-        matches!(copilot, AuthMaterial::OAuth { access_token: Some(_), .. }),
+        matches!(
+            copilot,
+            AuthMaterial::OAuth {
+                access_token: Some(_),
+                ..
+            }
+        ),
         "copilot credential must be OAuth with an access_token; got: {copilot:?}"
     );
     if let AuthMaterial::OAuth {
