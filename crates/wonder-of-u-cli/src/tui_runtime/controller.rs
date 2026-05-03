@@ -3943,6 +3943,10 @@ impl<'a> TuiController<'a> {
     }
 
     pub(super) fn prompt_cursor(&self, width: u16, height: u16) -> (u16, u16) {
+        // ShellView::from_app_state always includes a sidebar panel; tell the
+        // cursor helpers to apply the same column deduction that render_shell
+        // uses on wide terminals so the cursor never overshoots the │ separator.
+        let sidebar_active = true;
         if let Some(search) = &self.history_search {
             let view = HistorySearchView {
                 query: search.query.text(),
@@ -3953,9 +3957,21 @@ impl<'a> TuiController<'a> {
                 match_index: search.cursor,
                 match_total: search.matches.len(),
             };
-            return history_search_cursor_position(width, height, &view, search.query.cursor());
+            return history_search_cursor_position(
+                width,
+                height,
+                &view,
+                search.query.cursor(),
+                sidebar_active,
+            );
         }
-        prompt_cursor_position(width, height, &self.prompt.text(), self.prompt.cursor())
+        prompt_cursor_position(
+            width,
+            height,
+            &self.prompt.text(),
+            self.prompt.cursor(),
+            sidebar_active,
+        )
     }
 
     pub(super) fn needs_render(&self) -> bool {
@@ -3999,12 +4015,12 @@ impl<'a> TuiController<'a> {
     /// so that the scroll state stays accurate without building a full view.
     pub(super) fn on_terminal_resize(&mut self, width: u16, height: u16) {
         self.last_terminal_size = (width, height);
-        // Compact prompt height: separator row + content rows (no border bottom).
+        // Box prompt height: top border + content rows + bottom border.
         let prompt_lines = self.prompt.text().lines().count().max(1);
         let uncapped = u16::try_from(prompt_lines)
             .unwrap_or(u16::MAX)
-            .saturating_add(1);
-        let cap = (height / 3).max(2);
+            .saturating_add(2);
+        let cap = (height / 3).max(3);
         let prompt_height = uncapped.min(cap);
         let layout = ShellLayout::split(Rect::new(0, 0, width, height), prompt_height);
         let total = message_lines(&self.state.messages).len();
@@ -4036,8 +4052,8 @@ impl<'a> TuiController<'a> {
         let prompt_lines = self.prompt.text().lines().count().max(1);
         let uncapped = u16::try_from(prompt_lines)
             .unwrap_or(u16::MAX)
-            .saturating_add(1);
-        let cap = (height / 3).max(2);
+            .saturating_add(2);
+        let cap = (height / 3).max(3);
         let prompt_height = uncapped.min(cap);
         ShellLayout::split(Rect::new(0, 0, width, height), prompt_height).messages
     }

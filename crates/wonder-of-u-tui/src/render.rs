@@ -1,4 +1,4 @@
-use wonder_of_u_core::AppState;
+use wonder_of_u_core::{AppState, InputMode};
 
 use crate::{
     dialog::DialogView,
@@ -53,6 +53,38 @@ impl TranscriptScrollView {
     }
 }
 
+/// Keyboard-shortcut hints and session metadata shown in the right-side companion
+/// panel on wide terminals (≥ [`MIN_SIDEBAR_WIDTH`] columns).
+///
+/// The panel occupies its own column beside the full transcript + prompt region
+/// at shell level, so the prompt box always keeps its full allocated width.
+///
+/// Intentionally flat strings so the renderer has no coupling to
+/// `wonder-of-u-core` types.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct SidebarView {
+    /// Short `provider · model` label (e.g. `"copilot · gpt-4"`).
+    ///
+    /// `None` when no provider context has been configured yet.
+    pub model_hint: Option<String>,
+    /// `true` when the active provider has valid credentials.
+    ///
+    /// Rendered as a green `✓ ready` when true, amber `⚠ auth missing` when false.
+    pub auth_ok: bool,
+    /// Non-default input-mode label (e.g. `"bash"`, `"permission"`).
+    ///
+    /// `None` in the normal `Prompt` mode; the renderer omits the row entirely.
+    pub mode_hint: Option<String>,
+    /// Active git branch name. `None` when not in a repository or unknown.
+    pub git_branch: Option<String>,
+    /// Short working-directory label (last path component).
+    ///
+    /// `None` when the path cannot be determined.
+    pub cwd_hint: Option<String>,
+    /// Number of active background tasks. `0` suppresses the row.
+    pub task_count: usize,
+}
+
 /// Represents shell view
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct ShellView {
@@ -88,12 +120,17 @@ pub struct ShellView {
     pub slash_suggestions: Option<SlashSuggestionsOverlay>,
     /// Scroll position snapshot for windowed transcript rendering.
     pub scroll: TranscriptScrollView,
+    /// Right-side companion panel shown beside all shell content on wide terminals.
+    ///
+    /// `None` suppresses the panel entirely (e.g. when constructed manually in
+    /// tests or when no provider context is available yet).
+    pub sidebar: Option<SidebarView>,
 }
 
 impl ShellView {
     /// Returns the height the prompt area should occupy.
     ///
-    /// Compact layout: 1 separator row + content rows (no border bottom).
+    /// Bordered-box layout: 1 top-border row + content rows + 1 bottom-border row.
     #[must_use]
     pub fn prompt_height(&self) -> u16 {
         let line_count = match &self.history_search {
@@ -101,12 +138,42 @@ impl ShellView {
             None => text_line_count(&self.prompt),
         };
         u16::try_from(line_count)
-            .unwrap_or(u16::MAX.saturating_sub(1))
-            .saturating_add(1)
+            .unwrap_or(u16::MAX.saturating_sub(2))
+            .saturating_add(2)
     }
     /// Handles from app state
     #[must_use]
     pub fn from_app_state(app: &AppState, prompt: impl Into<String>) -> Self {
+        let sidebar = {
+            let model_hint = match (&app.provider, &app.model) {
+                (Some(provider), Some(model)) => Some(format!("{provider} · {model}")),
+                _ => None,
+            };
+            let auth_ok = app.auth.is_ready();
+            let mode_hint = match app.input_mode {
+                InputMode::Bash => Some("bash".into()),
+                InputMode::PermissionPending => Some("permission".into()),
+                InputMode::TaskNotification => Some("notification".into()),
+                InputMode::Prompt => None,
+            };
+            let git_branch = app.session.git_branch.clone();
+            // Use the last path component as a short cwd label.
+            let cwd_hint = app
+                .session
+                .cwd
+                .file_name()
+                .and_then(|n| n.to_str())
+                .map(|s| s.to_owned());
+            let task_count = app.background_tasks.len();
+            SidebarView {
+                model_hint,
+                auth_ok,
+                mode_hint,
+                git_branch,
+                cwd_hint,
+                task_count,
+            }
+        };
         Self {
             title: format!("Session: {}", app.session.title),
             messages: message_lines(&app.messages),
@@ -125,6 +192,7 @@ impl ShellView {
             slash_suggestions: None,
             // Default to follow-tail; the controller will override this each frame.
             scroll: TranscriptScrollView::default(),
+            sidebar: Some(sidebar),
         }
     }
 }
@@ -137,12 +205,38 @@ struct StyledLine {
 
 /// Renders shell
 pub fn render_shell(frame: &mut FrameBuffer, view: &ShellView, theme: &Theme) {
+    let area = frame.area();
+    frame.fill_rect(area, ' ', theme.background);
+
+    // Wide-terminal sidebar: when the terminal is at least MIN_SIDEBAR_WIDTH columns
+    // wide and the view carries sidebar data, carve out a right-hand column.
+    // All main-content drawing (transcript + prompt box + chrome) is then confined
+    // to the narrower left column — the prompt box keeps its full allocated width.
+    let main_area = if let Some(sidebar) = &view.sidebar {
+        if area.width >= MIN_SIDEBAR_WIDTH {
+            let main_w = area.width.saturating_sub(SIDEBAR_WIDTH + 1);
+            let sep_x = area.x.saturating_add(main_w);
+            // Full-height vertical separator between main content and sidebar.
+            for row in 0..area.height {
+                frame.put(sep_x, area.y.saturating_add(row), '│', theme.border);
+            }
+            let sidebar_area =
+                Rect::new(sep_x.saturating_add(1), area.y, SIDEBAR_WIDTH, area.height);
+            draw_shell_sidebar(frame, sidebar_area, sidebar, theme);
+            Rect::new(area.x, area.y, main_w, area.height)
+        } else {
+            area
+        }
+    } else {
+        area
+    };
+
     // Cap prompt height at roughly one third of the terminal so chat/history
-    // always dominates the display.  Minimum of 2 rows (separator + one line).
-    let max_prompt = (frame.area().height / 3).max(2);
+    // always dominates the display.  Minimum of 3 rows (top border + one content
+    // line + bottom border) to keep the box chrome intact.
+    let max_prompt = (main_area.height / 3).max(3);
     let prompt_height = view.prompt_height().min(max_prompt);
-    let layout = ShellLayout::split(frame.area(), prompt_height);
-    frame.fill_rect(frame.area(), ' ', theme.background);
+    let layout = ShellLayout::split(main_area, prompt_height);
 
     draw_message_view(frame, layout.messages, view, theme);
     draw_prompt_view(frame, layout.prompt, view, theme);
@@ -286,21 +380,174 @@ fn draw_prompt_view(frame: &mut FrameBuffer, area: Rect, view: &ShellView, theme
 
     frame.fill_rect(area, ' ', theme.background);
 
-    // Compact layout: a single separator rule on the top row, then content below.
-    // This replaces the old rounded-border box and saves two rows for transcript.
-    draw_rule(frame, area.x, area.y, area.width, theme.border);
-
-    if area.height < 2 {
+    // Narrow / short fallback: skip the box chrome and write lines directly.
+    if area.width < 3 || area.height < 3 {
+        draw_lines(frame, area, &prompt_panel_lines(view, theme));
         return;
     }
 
+    // Bordered-box layout: rounded corners with a " prompt " label on the top
+    // border, matching the pre-compact UX.
+    draw_rounded_border(frame, area, theme.border);
+    frame.write_str(
+        area.x.saturating_add(2),
+        area.y,
+        " prompt ",
+        theme.footer,
+        area.width.saturating_sub(4),
+    );
+
+    // Prompt content fills the full inner width — the sidebar (when shown) lives
+    // in its own column at shell level, so nothing shrinks the typing area.
     let content = Rect::new(
-        area.x,
+        area.x.saturating_add(1),
         area.y.saturating_add(1),
-        area.width,
-        area.height.saturating_sub(1),
+        area.width.saturating_sub(2),
+        area.height.saturating_sub(2),
     );
     draw_lines(frame, content, &prompt_panel_lines(view, theme));
+}
+
+/// Minimum total terminal width required to activate the shell-level sidebar.
+///
+/// Below this threshold all content occupies the full terminal width,
+/// preserving readability on narrow terminals.
+pub const MIN_SIDEBAR_WIDTH: u16 = 100;
+
+/// Column width of the sidebar panel (excluding the `│` separator).
+pub const SIDEBAR_WIDTH: u16 = 22;
+
+/// Returns the effective main-column width used by [`render_shell`].
+///
+/// When `has_sidebar` is `true` and `terminal_width` meets the
+/// [`MIN_SIDEBAR_WIDTH`] threshold, the sidebar column (and the `│` separator)
+/// are subtracted exactly as the renderer does.  Pass this result as the layout
+/// width to cursor-position helpers so they stay in sync with the renderer.
+///
+/// # Examples
+///
+/// ```
+/// use wonder_of_u_tui::{shell_main_area_width, MIN_SIDEBAR_WIDTH, SIDEBAR_WIDTH};
+///
+/// // Narrow terminal: no deduction regardless of sidebar flag.
+/// assert_eq!(shell_main_area_width(80, true), 80);
+///
+/// // Wide terminal with sidebar: subtracts sidebar + separator.
+/// assert_eq!(shell_main_area_width(100, true), 100 - SIDEBAR_WIDTH - 1);
+///
+/// // Wide terminal without sidebar: no deduction.
+/// assert_eq!(shell_main_area_width(100, false), 100);
+/// ```
+pub fn shell_main_area_width(terminal_width: u16, has_sidebar: bool) -> u16 {
+    if has_sidebar && terminal_width >= MIN_SIDEBAR_WIDTH {
+        terminal_width.saturating_sub(SIDEBAR_WIDTH + 1)
+    } else {
+        terminal_width
+    }
+}
+
+/// Draws the right-side sidebar showing keybinding hints and session metadata.
+///
+/// The sidebar receives the full terminal height, so all hint rows are always
+/// visible regardless of the current prompt size.
+fn draw_shell_sidebar(frame: &mut FrameBuffer, area: Rect, sidebar: &SidebarView, theme: &Theme) {
+    if area.is_empty() {
+        return;
+    }
+    draw_lines(frame, area, &sidebar_hint_lines(sidebar, theme));
+}
+
+/// Builds the ordered list of hint lines for the sidebar panel.
+///
+/// Lines are intentionally ≤ [`SIDEBAR_WIDTH`] columns wide.
+fn sidebar_hint_lines(sidebar: &SidebarView, theme: &Theme) -> Vec<StyledLine> {
+    let dim = theme.footer;
+    let accent = theme.prompt;
+
+    let mut lines: Vec<StyledLine> = vec![
+        // Keyboard shortcuts — always shown.
+        StyledLine {
+            text: "↵  Enter    send".into(),
+            style: dim,
+        },
+        StyledLine {
+            text: "⇧↵ Shift+Enter".into(),
+            style: dim,
+        },
+        StyledLine {
+            text: "⎋  Esc   cancel".into(),
+            style: dim,
+        },
+        StyledLine {
+            text: "?  shortcuts".into(),
+            style: dim,
+        },
+        // Visual spacer before the status rows.
+        StyledLine {
+            text: String::new(),
+            style: dim,
+        },
+    ];
+
+    // Provider · model label (omitted when no provider is configured).
+    if let Some(model) = &sidebar.model_hint {
+        lines.push(StyledLine {
+            text: format!("◈  {model}"),
+            style: accent,
+        });
+    }
+
+    // Authentication / credential status.
+    if sidebar.auth_ok {
+        lines.push(StyledLine {
+            text: "✓  ready".into(),
+            style: TextStyle::default().fg(Color::Green),
+        });
+    } else {
+        lines.push(StyledLine {
+            text: "⚠  auth missing".into(),
+            style: TextStyle::default().fg(Color::Yellow),
+        });
+    }
+
+    // Git branch (omitted when not in a repository).
+    if let Some(branch) = &sidebar.git_branch {
+        lines.push(StyledLine {
+            text: format!("⎇  {branch}"),
+            style: dim,
+        });
+    }
+
+    // Working-directory hint (last path component).
+    if let Some(cwd) = &sidebar.cwd_hint {
+        lines.push(StyledLine {
+            text: format!("  {cwd}"),
+            style: dim,
+        });
+    }
+
+    // Active background task count (omitted when zero).
+    if sidebar.task_count > 0 {
+        let label = if sidebar.task_count == 1 {
+            "task"
+        } else {
+            "tasks"
+        };
+        lines.push(StyledLine {
+            text: format!("⚙  {} {label}", sidebar.task_count),
+            style: accent,
+        });
+    }
+
+    // Non-default input mode (e.g. "bash", "permission") — omitted in normal mode.
+    if let Some(mode) = &sidebar.mode_hint {
+        lines.push(StyledLine {
+            text: format!("⌘  {mode}"),
+            style: accent.bold(),
+        });
+    }
+
+    lines
 }
 
 fn docked_panel_lines(view: &ShellView, theme: &Theme) -> Vec<StyledLine> {
@@ -1056,6 +1303,7 @@ mod tests {
             notifications: Vec::new(),
             slash_suggestions: None,
             scroll: TranscriptScrollView::default(),
+            sidebar: None,
         };
 
         let frame = render_snapshot(30, 9, &view, &Theme::default());
@@ -1067,9 +1315,9 @@ mod tests {
                 "",
                 "   ██╗    ██╗  ██████╗  ██╗",
                 "   ██║    ██║ ██╔═══██╗ ██║",
-                "   ██║ █╗ ██║ ██║   ██║ ██║",
-                "──────────────────────────────",
-                "›",
+                "╭─ prompt ───────────────────╮",
+                "│›                           │",
+                "╰────────────────────────────╯",
                 "◆ prompt | 0 messages",
                 "             ctrl-c interrupt",
             ]
@@ -1105,6 +1353,7 @@ mod tests {
             notifications: Vec::new(),
             slash_suggestions: None,
             scroll: TranscriptScrollView::default(),
+            sidebar: None,
         };
 
         let frame = render_snapshot(48, 10, &view, &Theme::default());
@@ -1115,11 +1364,11 @@ mod tests {
                 "▸ wonder-of-u  Demo",
                 "system> ready",
                 "assistant> hello",
-                "",
                 "Tasks",
                 "[running] shell: index workspace",
-                "────────────────────────────────────────────────",
-                "› /status",
+                "╭─ prompt ─────────────────────────────────────╮",
+                "│› /status                                     │",
+                "╰──────────────────────────────────────────────╯",
                 "◆ prompt | 2 messages",
                 "              cwd=/workspace · ctrl-c interrupt",
             ]
@@ -1201,6 +1450,7 @@ mod tests {
             notifications: Vec::new(),
             slash_suggestions: None,
             scroll: TranscriptScrollView::default(),
+            sidebar: None,
         };
 
         let frame = render_snapshot(42, 12, &view, &Theme::default());
@@ -1211,13 +1461,13 @@ mod tests {
                 "▸ wonder-of-u  Demo",
                 "assistant> ready",
                 "",
-                "",
                 "Queued",
                 "1. /status",
                 "2. draft migration plan",
                 "+2 more queued",
-                "──────────────────────────────────────────",
-                "› /plan",
+                "╭─ prompt ───────────────────────────────╮",
+                "│› /plan                                 │",
+                "╰────────────────────────────────────────╯",
                 "◆ prompt | 1 messages",
                 "        cwd=/workspace · ctrl-c interrupt",
             ]
@@ -1247,6 +1497,7 @@ mod tests {
             notifications: Vec::new(),
             slash_suggestions: None,
             scroll: TranscriptScrollView::default(),
+            sidebar: None,
         };
 
         let frame = render_snapshot(42, 12, &view, &Theme::default());
@@ -1261,9 +1512,9 @@ mod tests {
                 " │[Confirm]  Cancel                     │",
                 " ╰──────────────────────────────────────╯",
                 "",
-                "",
-                "──────────────────────────────────────────",
-                "› continue?",
+                "╭─ prompt ───────────────────────────────╮",
+                "│› continue?                             │",
+                "╰────────────────────────────────────────╯",
                 "◆ permission | 1 messages",
                 "        cwd=/workspace · ctrl-c interrupt",
             ]
@@ -1298,9 +1549,10 @@ mod tests {
             notifications: Vec::new(),
             slash_suggestions: None,
             scroll: TranscriptScrollView::default(),
+            sidebar: None,
         };
 
-        let frame = render_snapshot(42, 14, &view, &Theme::default());
+        let frame = render_snapshot(42, 16, &view, &Theme::default());
 
         assert_eq!(
             frame.to_plain_text(),
@@ -1313,10 +1565,12 @@ mod tests {
                 "",
                 "",
                 "",
-                "──────────────────────────────────────────",
-                "search: pla",
-                "match 2/3",
-                "draft plan",
+                "",
+                "╭─ prompt ───────────────────────────────╮",
+                "│search: pla                             │",
+                "│match 2/3                               │",
+                "│draft plan                              │",
+                "╰────────────────────────────────────────╯",
                 "◆ prompt | 1 messages",
                 "        cwd=/workspace · ctrl-c interrupt",
             ]
@@ -1347,6 +1601,7 @@ mod tests {
             notifications: Vec::new(),
             slash_suggestions: None,
             scroll: TranscriptScrollView::default(),
+            sidebar: None,
         };
 
         let frame = render_snapshot(32, 9, &view, &Theme::default());
@@ -1380,6 +1635,7 @@ mod tests {
             notifications: Vec::new(),
             slash_suggestions: None,
             scroll: TranscriptScrollView::default(),
+            sidebar: None,
         };
 
         let frame = render_snapshot(48, 8, &view, &Theme::default());
@@ -1390,9 +1646,9 @@ mod tests {
                 "▸ wonder-of-u  Demo",
                 "tools[bash]> 1 call",
                 "  • #00000000 ok · command=\"echo hi\" → done",
-                "",
-                "────────────────────────────────────────────────",
-                "›",
+                "╭─ prompt ─────────────────────────────────────╮",
+                "│›                                             │",
+                "╰──────────────────────────────────────────────╯",
                 "◆ prompt | 2 messages",
                 "              cwd=/workspace · ctrl-c interrupt",
             ]
@@ -1437,6 +1693,7 @@ mod tests {
             ],
             slash_suggestions: None,
             scroll: TranscriptScrollView::default(),
+            sidebar: None,
         };
 
         let frame = render_snapshot(48, 12, &view, &Theme::default());
@@ -1451,9 +1708,9 @@ mod tests {
                 "                      ╭─ok Task update • focus─╮",
                 "                      │tests passed            │",
                 "                      ╰────────────────────────╯",
-                "",
-                "────────────────────────────────────────────────",
-                "›",
+                "╭─ prompt ─────────────────────────────────────╮",
+                "│›                                             │",
+                "╰──────────────────────────────────────────────╯",
                 "◆ prompt | 1 messages",
                 "              cwd=/workspace · ctrl-c interrupt",
             ]
@@ -1501,6 +1758,7 @@ mod tests {
             notifications: Vec::new(),
             slash_suggestions: None,
             scroll: TranscriptScrollView::default(),
+            sidebar: None,
         };
 
         let frame = render_snapshot(60, 16, &view, &Theme::default());
@@ -1531,6 +1789,7 @@ mod tests {
             notifications: Vec::new(),
             slash_suggestions: None,
             scroll: TranscriptScrollView::default(),
+            sidebar: None,
         };
 
         let frame = render_snapshot(32, 8, &view, &Theme::default());
@@ -1571,17 +1830,17 @@ mod tests {
 
     #[test]
     fn transcript_scrolled_up_shows_earlier_window() {
-        // 10 lines, render_snapshot(20, 12) → 7 visible transcript rows (compact layout).
-        // offset_from_bottom = 2 → start = (10 - 7) - 2 = 1 → shows lines 02–08.
+        // 10 lines, render_snapshot(20, 12) → 6 visible transcript rows (box layout).
+        // offset_from_bottom = 3 → start = (10 - 6) - 3 = 1 → shows lines 02–07.
         let view = ShellView {
             title: "Session: Scrolled".into(),
             messages: make_long_transcript(10),
             prompt: String::new(),
             status: "scrolled".into(),
             scroll: TranscriptScrollView {
-                offset_from_bottom: 2,
+                offset_from_bottom: 3,
                 total_lines: 10,
-                visible_lines: 7,
+                visible_lines: 6,
             },
             ..ShellView::default()
         };
@@ -1589,7 +1848,7 @@ mod tests {
         let frame = render_snapshot(20, 12, &view, &Theme::default());
         let text = frame.to_plain_text();
         assert!(text.contains("line 02"), "window start must be visible");
-        assert!(text.contains("line 08"), "window end must be visible");
+        assert!(text.contains("line 07"), "window end must be visible");
         assert!(
             !text.contains("line 01"),
             "line before window must be hidden"
@@ -1709,39 +1968,39 @@ mod tests {
     // ── prompt height and cap ────────────────────────────────────────────────
 
     #[test]
-    fn prompt_height_single_line_is_separator_plus_one() {
-        // Compact layout: 1 separator row + 1 content row = 2.
+    fn prompt_height_single_line_is_box_row_count() {
+        // Box layout: 1 top border + 1 content row + 1 bottom border = 3.
         let view = ShellView {
             prompt: "hello".into(),
             ..ShellView::default()
         };
-        assert_eq!(view.prompt_height(), 2);
+        assert_eq!(view.prompt_height(), 3);
     }
 
     #[test]
     fn prompt_height_multiline_counts_all_lines() {
-        // 3-line prompt → 1 separator + 3 content rows = 4.
+        // 3-line prompt → 1 top border + 3 content rows + 1 bottom border = 5.
         let view = ShellView {
             prompt: "line one\nline two\nline three".into(),
             ..ShellView::default()
         };
-        assert_eq!(view.prompt_height(), 4);
+        assert_eq!(view.prompt_height(), 5);
     }
 
     #[test]
-    fn prompt_height_empty_prompt_returns_two() {
-        // An empty prompt still needs 1 separator + 1 blank content row.
+    fn prompt_height_empty_prompt_returns_three() {
+        // An empty prompt has 1 content row (the › marker) → 1 + 2 borders = 3.
         let view = ShellView {
             prompt: String::new(),
             ..ShellView::default()
         };
-        assert_eq!(view.prompt_height(), 2);
+        assert_eq!(view.prompt_height(), 3);
     }
 
     #[test]
     fn render_shell_caps_prompt_to_one_third_of_terminal_height() {
-        // Terminal height = 9 rows; one-third cap = max(9/3, 2) = 3 prompt rows.
-        // A 10-line prompt would request prompt_height() = 11, but the renderer
+        // Terminal height = 9 rows; one-third cap = max(9/3, 3) = 3 prompt rows.
+        // A 10-line prompt would request prompt_height() = 12, but the renderer
         // must cap it at 3 so the history/transcript area always gets space.
         let ten_line_prompt = (0..10)
             .map(|i| format!("line {i}"))
@@ -1772,11 +2031,9 @@ mod tests {
 
     #[test]
     fn multiline_prompt_first_line_has_marker_continuation_lines_do_not() {
-        // The compact prompt renders the first line prefixed with '› ' and
-        // subsequent lines without the marker so cursor-column arithmetic for
-        // lines after the first does not need to compensate for the marker width.
-        // Use a 14-row terminal so the one-third cap (14/3 = 4) matches the
-        // 3-line prompt height (1 sep + 3 content = 4), ensuring all lines render.
+        // Box prompt for 3 lines → prompt_height() = 5 (top border + 3 content +
+        // bottom border).  At height=16 the one-third cap = max(16/3, 3) = 5,
+        // which exactly fits all three content lines inside the box.
         let view = ShellView {
             title: "Session: ML".into(),
             messages: Vec::new(),
@@ -1785,7 +2042,7 @@ mod tests {
             ..ShellView::default()
         };
 
-        let frame = render_snapshot(30, 14, &view, &Theme::default());
+        let frame = render_snapshot(30, 16, &view, &Theme::default());
         let text = frame.to_plain_text();
 
         // First line must carry the prompt marker.
@@ -1834,6 +2091,344 @@ mod tests {
             view.messages[0].text.contains("connection refused"),
             "message body must appear in the transcript line; got: {:?}",
             view.messages[0].text
+        );
+    }
+
+    // ── sidebar panel ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn sidebar_absent_on_narrow_terminal_below_min_width() {
+        // Width 99 is one below the MIN_SIDEBAR_WIDTH threshold — the sidebar
+        // must not appear even when `view.sidebar` is Some.
+        let view = ShellView {
+            prompt: "hello".into(),
+            sidebar: Some(SidebarView {
+                model_hint: Some("openai · gpt-4o".into()),
+                auth_ok: true,
+                ..SidebarView::default()
+            }),
+            ..ShellView::default()
+        };
+
+        let frame = render_snapshot(99, 8, &view, &Theme::default());
+        let text = frame.to_plain_text();
+
+        // Sidebar hint content must not appear on a narrow terminal.
+        assert!(
+            !text.contains("Enter"),
+            "sidebar hints must be absent on narrow terminal; rendered:\n{text}"
+        );
+    }
+
+    #[test]
+    fn sidebar_renders_on_wide_terminal_at_min_width() {
+        // Width == MIN_SIDEBAR_WIDTH (100) must activate the sidebar.
+        // The sidebar spans the full terminal height so a single-line prompt is
+        // sufficient — no need for a tall prompt to expose sidebar rows.
+        let view = ShellView {
+            prompt: "say hello".into(),
+            sidebar: Some(SidebarView {
+                model_hint: Some("copilot · gpt-4".into()),
+                auth_ok: true,
+                ..SidebarView::default()
+            }),
+            ..ShellView::default()
+        };
+
+        let frame = render_snapshot(100, 8, &view, &Theme::default());
+        let text = frame.to_plain_text();
+
+        assert!(
+            text.contains("Enter"),
+            "Enter hint must appear in sidebar; rendered:\n{text}"
+        );
+        assert!(
+            text.contains("Esc"),
+            "Esc hint must appear in sidebar; rendered:\n{text}"
+        );
+        assert!(
+            text.contains("copilot · gpt-4"),
+            "model hint must appear in sidebar; rendered:\n{text}"
+        );
+        assert!(
+            text.contains("ready"),
+            "auth-ok label must appear; rendered:\n{text}"
+        );
+        // Prompt content must still be visible in the main (left) column.
+        assert!(
+            text.contains("say hello"),
+            "prompt text must survive sidebar split; rendered:\n{text}"
+        );
+    }
+
+    #[test]
+    fn sidebar_absent_when_field_is_none() {
+        // sidebar = None must suppress the panel even on a wide terminal.
+        let view = ShellView {
+            prompt: "test".into(),
+            sidebar: None,
+            ..ShellView::default()
+        };
+
+        let frame = render_snapshot(100, 6, &view, &Theme::default());
+        let text = frame.to_plain_text();
+
+        assert!(
+            !text.contains("Enter"),
+            "sidebar must not render when field is None; rendered:\n{text}"
+        );
+    }
+
+    #[test]
+    fn sidebar_shows_auth_missing_warning_when_not_authenticated() {
+        let view = ShellView {
+            prompt: "help".into(),
+            sidebar: Some(SidebarView {
+                model_hint: Some("anthropic · claude-3".into()),
+                auth_ok: false,
+                ..SidebarView::default()
+            }),
+            ..ShellView::default()
+        };
+
+        // Width=100 activates the sidebar; height=8 exposes all hint rows
+        // (Enter=0, Shift+Enter=1, Esc=2, ?=3, spacer=4, model=5, auth=6).
+        let frame = render_snapshot(100, 8, &view, &Theme::default());
+        let text = frame.to_plain_text();
+
+        assert!(
+            text.contains("auth missing"),
+            "auth-missing warning must appear; rendered:\n{text}"
+        );
+        assert!(
+            !text.contains("✓"),
+            "ready checkmark must not appear when not authenticated; rendered:\n{text}"
+        );
+    }
+
+    #[test]
+    fn sidebar_shows_mode_hint_for_bash_mode() {
+        let view = ShellView {
+            prompt: "!ls".into(),
+            sidebar: Some(SidebarView {
+                model_hint: None,
+                auth_ok: true,
+                mode_hint: Some("bash".into()),
+                ..SidebarView::default()
+            }),
+            ..ShellView::default()
+        };
+
+        // hint rows: Enter(0), Shift+Enter(1), Esc(2), ?(3), spacer(4),
+        // auth(5, no model), mode(6) — all within height=8.
+        let frame = render_snapshot(100, 8, &view, &Theme::default());
+        let text = frame.to_plain_text();
+
+        assert!(
+            text.contains("bash"),
+            "bash mode hint must appear in sidebar; rendered:\n{text}"
+        );
+    }
+
+    #[test]
+    fn sidebar_shows_git_branch_when_configured() {
+        let view = ShellView {
+            prompt: "hi".into(),
+            sidebar: Some(SidebarView {
+                git_branch: Some("feat/my-feature".into()),
+                auth_ok: true,
+                ..SidebarView::default()
+            }),
+            ..ShellView::default()
+        };
+
+        let frame = render_snapshot(100, 10, &view, &Theme::default());
+        let text = frame.to_plain_text();
+
+        assert!(
+            text.contains("feat/my-feature"),
+            "git branch must appear in sidebar; rendered:\n{text}"
+        );
+    }
+
+    #[test]
+    fn sidebar_shows_cwd_hint_when_configured() {
+        let view = ShellView {
+            prompt: "hi".into(),
+            sidebar: Some(SidebarView {
+                cwd_hint: Some("myproject".into()),
+                auth_ok: true,
+                ..SidebarView::default()
+            }),
+            ..ShellView::default()
+        };
+
+        let frame = render_snapshot(100, 10, &view, &Theme::default());
+        let text = frame.to_plain_text();
+
+        assert!(
+            text.contains("myproject"),
+            "cwd hint must appear in sidebar; rendered:\n{text}"
+        );
+    }
+
+    #[test]
+    fn sidebar_shows_task_count_when_nonzero() {
+        let view = ShellView {
+            prompt: "hi".into(),
+            sidebar: Some(SidebarView {
+                task_count: 3,
+                auth_ok: true,
+                ..SidebarView::default()
+            }),
+            ..ShellView::default()
+        };
+
+        let frame = render_snapshot(100, 10, &view, &Theme::default());
+        let text = frame.to_plain_text();
+
+        assert!(
+            text.contains("3 tasks"),
+            "task count must appear in sidebar; rendered:\n{text}"
+        );
+    }
+
+    #[test]
+    fn from_app_state_populates_sidebar_with_provider_and_auth() {
+        let mut app = AppState::new(PathBuf::from("/workspace"));
+        app.provider = Some("openai".into());
+        app.model = Some("gpt-4o".into());
+
+        let view = ShellView::from_app_state(&app, "");
+
+        let sidebar = view.sidebar.expect("sidebar must be Some from_app_state");
+        assert_eq!(
+            sidebar.model_hint.as_deref(),
+            Some("openai · gpt-4o"),
+            "model_hint must combine provider and model"
+        );
+        // Default AuthState is NotRequired → is_ready() == true.
+        assert!(sidebar.auth_ok, "default auth must be ready");
+        assert!(
+            sidebar.mode_hint.is_none(),
+            "default Prompt mode must produce no mode_hint"
+        );
+    }
+
+    #[test]
+    fn from_app_state_populates_sidebar_git_branch_and_cwd() {
+        let mut app = AppState::new(PathBuf::from("/workspace/myproject"));
+        app.session.git_branch = Some("feat/my-feature".into());
+
+        let view = ShellView::from_app_state(&app, "");
+
+        let sidebar = view.sidebar.expect("sidebar must be Some from_app_state");
+        assert_eq!(
+            sidebar.git_branch.as_deref(),
+            Some("feat/my-feature"),
+            "git_branch must be forwarded from session"
+        );
+        assert_eq!(
+            sidebar.cwd_hint.as_deref(),
+            Some("myproject"),
+            "cwd_hint must be the last path component"
+        );
+    }
+
+    #[test]
+    fn sidebar_multiline_prompt_uses_full_main_column_width() {
+        // The sidebar lives at shell level; the prompt box takes the entire
+        // main-column width — no internal split should compress the typing area.
+        let view = ShellView {
+            prompt: "first line\nsecond line\nthird line".into(),
+            sidebar: Some(SidebarView {
+                model_hint: Some("copilot · gpt-4".into()),
+                auth_ok: true,
+                ..SidebarView::default()
+            }),
+            ..ShellView::default()
+        };
+
+        // width=100 → main_w=77, sidebar=22, sep=1.
+        // height=14 → max_prompt=4; prompt_height=5 (3 content+2 border).min(4)=4.
+        // Box shows 2 content rows: "first line" and "second line".
+        let frame = render_snapshot(100, 14, &view, &Theme::default());
+        let text = frame.to_plain_text();
+
+        assert!(
+            text.contains("› first line"),
+            "first prompt line must carry the marker; rendered:\n{text}"
+        );
+        assert!(
+            text.contains("second line"),
+            "second prompt line must be visible; rendered:\n{text}"
+        );
+        assert!(
+            text.contains("Enter"),
+            "sidebar Enter hint must be present at shell level; rendered:\n{text}"
+        );
+    }
+
+    #[test]
+    fn prompt_box_spans_full_terminal_width_on_narrow_terminal() {
+        // Width 99 is one below MIN_SIDEBAR_WIDTH.  Even when `sidebar` is Some,
+        // no column is carved out — the prompt box must use the full 99 columns.
+        let view = ShellView {
+            prompt: "hello".into(),
+            sidebar: Some(SidebarView {
+                model_hint: Some("copilot · gpt-4".into()),
+                auth_ok: true,
+                ..SidebarView::default()
+            }),
+            ..ShellView::default()
+        };
+
+        let frame = render_snapshot(99, 6, &view, &Theme::default());
+        let text = frame.to_plain_text();
+
+        // The bottom border line starts with '╰' and ends with '╯'.
+        // to_plain_text trims trailing spaces, so '╯' is preserved as the last char.
+        let bottom_border = text
+            .lines()
+            .find(|l| l.starts_with('╰'))
+            .expect("bottom border line must be present");
+
+        assert!(
+            bottom_border.ends_with('╯'),
+            "prompt box right corner must be at column 98; got: {bottom_border:?}"
+        );
+        // The border line must span all 99 columns — no sidebar column was carved out.
+        let col_count = bottom_border.chars().count();
+        assert_eq!(
+            col_count, 99,
+            "prompt box border must be 99 cols wide on narrow terminal; got {col_count}"
+        );
+    }
+
+    #[test]
+    fn prompt_view_does_not_panic_on_tiny_terminal() {
+        // When the prompt area is width < 3 or height < 3, draw_prompt_view falls back
+        // to writing content lines directly without box chrome.  Verify no panic and
+        // that the '›' marker still appears (content is written to the area).
+        let view = ShellView {
+            prompt: "hi".into(),
+            ..ShellView::default()
+        };
+
+        // height=3 → chrome=2, available=1, prompt_height capped to 1 → area.height=1
+        // which is < 3, so the no-box fallback path is taken.
+        let frame = render_snapshot(10, 3, &view, &Theme::default());
+        let text = frame.to_plain_text();
+
+        // Must not panic; the prompt marker '›' must still appear.
+        assert!(
+            text.contains('›'),
+            "prompt marker must appear even without box chrome; rendered:\n{text}"
+        );
+        // No rounded-box corners should be present in the fallback path.
+        assert!(
+            !text.contains('╭'),
+            "box corners must be absent in tiny-terminal fallback; rendered:\n{text}"
         );
     }
 }

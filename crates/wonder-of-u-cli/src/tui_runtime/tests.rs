@@ -3983,8 +3983,10 @@ fn controller_preserves_restored_provider_selection_on_resume() {
 
 #[test]
 fn prompt_cursor_tracks_edit_position_inside_prompt_panel() {
-    let (x, y) = prompt_cursor_position(40, 10, "abc", 2);
-    assert_eq!((x, y), (4, 7));
+    // Box layout (40×10): prompt at y=5, height=3 → content at x=1, y=6.
+    // cursor=2 → after "ab" → line=0, col=2, x_offset=2 → (1+2+2, 6) = (5, 6).
+    let (x, y) = prompt_cursor_position(40, 10, "abc", 2, false);
+    assert_eq!((x, y), (5, 6));
 }
 
 /// Verify that enabling brief mode injects the hint into the system prompt
@@ -5980,31 +5982,25 @@ fn sanitize_error_plain_message_passes_through_unchanged() {
 
 // ── prompt / history-search cursor at small terminal height ──────────────────
 
-/// At terminal heights 5-8 the renderer's cap formula `(h/3).max(2)` differs
-/// from the former buggy `(h/3).max(3)`.  This test uses height=6 where:
-///   renderer cap = (6/3).max(2) = 2   (correct)
-///   former cap   = (6/3).max(3) = 3   (wrong)
-///
-/// A 3-line prompt has uncapped height=4.  With cap=2 the layout places the
-/// prompt rect at y=2 so the first content row is y=3.  With the wrong cap=3
-/// the prompt rect was at y=1 (content at y=2) — one row above where the
-/// renderer actually draws it.
+/// Box-layout cap sanity: at height=6 the renderer uses `(h/3).max(3) = 3`.
+/// A 3-line prompt has uncapped box height = 5, capped to 3.  The prompt rect
+/// lands at y=1 so the first content row is y=2.
 #[test]
 fn prompt_cursor_position_small_terminal_respects_renderer_cap() {
-    // 3-line prompt: uncapped height = 4.  At height=6, correct cap = 2.
-    let (x, y) = prompt_cursor_position(40, 6, "line1\nline2\nline3", 5);
-    // Cursor is in "line1" (no newline before position 5), first line → "› " prefix.
-    // layout.prompt = Rect(0, 2, 40, 2), content_y = 3, content_height = 1.
+    // 3-line prompt: uncapped box height = 5.  At height=6, cap = max(2, 3) = 3.
+    let (x, y) = prompt_cursor_position(40, 6, "line1\nline2\nline3", 5, false);
+    // cursor=5 → "line1" (no newline seen) → line=0, col=5, first-line x_offset=2.
+    // layout.prompt = Rect(0, 1, 40, 3), content_x=1, content_y=2, content_height=1.
     assert_eq!(
         (x, y),
-        (7, 3),
+        (8, 2),
         "cursor row must land inside the prompt area rendered at the correct cap; got ({x}, {y})"
     );
 }
 
-/// Same cap-formula fix for `history_search_cursor_position`.  At height=6
-/// (cap=2) a history-search view with no match has uncapped height=4 which
-/// gets capped to 2, placing content_y=3.  The old cap=3 would give content_y=2.
+/// Same cap-formula check for `history_search_cursor_position`.  At height=6
+/// (box cap=3) a history-search view with no match has uncapped height=5 which
+/// gets capped to 3, placing content_y=2.
 #[test]
 fn history_search_cursor_position_small_terminal_respects_renderer_cap() {
     let view = HistorySearchView {
@@ -6013,12 +6009,118 @@ fn history_search_cursor_position_small_terminal_respects_renderer_cap() {
         match_index: 0,
         match_total: 0,
     };
-    // query_cursor=3 → x = content_x + "search: ".len() + 3 = 11
-    let (x, y) = history_search_cursor_position(40, 6, &view, 3);
+    // query_cursor=3 → x = content_x(1) + "search: ".len()(8) + 3 = 12
+    let (x, y) = history_search_cursor_position(40, 6, &view, 3, false);
     assert_eq!(
         (x, y),
-        (11, 3),
-        "history-search cursor must use the renderer's cap; got ({x}, {y})"
+        (12, 2),
+        "history-search cursor must use the renderer's box cap; got ({x}, {y})"
+    );
+}
+
+/// Continuation lines (line index > 0) must use `x_offset = 0` because the
+/// `› ` marker only appears on the first prompt line.  This is the key
+/// distinction from the first-line path and ensures the cursor lands at the
+/// correct column inside the restored rounded-bordered box.
+#[test]
+fn prompt_cursor_position_continuation_line_has_no_marker_offset() {
+    // "abc\ndef" with cursor=6 points to 'f' on the second line.
+    // Processing "abc\nde" → a(col=1), b(col=2), c(col=3), \n(line=1, col=0),
+    // d(col=1), e(col=2) → line=1, col=2.
+    // On 40×16 (no cap): prompt_height("abc\ndef")=4 (2 lines + 2 borders).
+    //   cap = max(5, 3) = 5; capped = 4 (uncapped fits).
+    //   layout.prompt = Rect(0, 10, 40, 4) → content_x=1, content_y=11.
+    //   content_height = 2 (4 − 2 borders).
+    // line=1 is within content_height − the continuation path applies.
+    //   x = content_x(1) + x_offset(0) + col(2) = 3
+    //   y = content_y(11) + line(1) = 12
+    let (x, y) = prompt_cursor_position(40, 16, "abc\ndef", 6, false);
+    assert_eq!(
+        (x, y),
+        (3, 12),
+        "continuation-line cursor must use x_offset=0 (no marker); got ({x}, {y})"
+    );
+}
+
+// ── wide-terminal cursor regression (sidebar column deduction) ────────────────
+
+/// On a 100-column terminal the renderer carves out a 22-col sidebar plus a
+/// 1-col `│` separator, leaving `main_w = 77` for the prompt box.  Before the
+/// fix, both cursor helpers used the raw terminal width (100) for layout, so a
+/// prompt/query long enough to push the cursor past column 76 would land on or
+/// inside the separator/sidebar area.
+///
+/// Concrete geometry for width=100, height=24 with sidebar_active=true:
+///   effective_width = 77
+///   prompt box = Rect(0, 19, 77, 3)  →  content_x=1, content_width=75
+///   first-line max cursor x = content_x(1) + x_offset(2) + max_col(72) = 75
+///   separator sits at column 77 (render_shell draws │ there)
+///   → cursor x must be < 77
+
+#[test]
+fn prompt_cursor_position_wide_terminal_stays_inside_main_area() {
+    // 80-char single-line prompt; cursor at the very end.  Before the fix the
+    // unclamped x would be 1+2+80 = 83, well inside the sidebar (78..99).
+    let prompt = "a".repeat(80);
+    let (x, y) = prompt_cursor_position(100, 24, &prompt, 80, true);
+
+    // main_w = 77; separator at column 77; valid main-area columns = 0..=76.
+    assert!(
+        x < 77,
+        "cursor x ({x}) must be left of the │ separator at column 77"
+    );
+    // Max reachable: content_x(1) + x_offset(2) + max_col(72) = 75.
+    assert_eq!(
+        (x, y),
+        (75, 20),
+        "wide-terminal cursor must clamp to the rightmost content cell; got ({x}, {y})"
+    );
+}
+
+/// Same regression gate for `history_search_cursor_position`.  A query whose
+/// length (plus the 8-char "search: " prefix) exceeds the content width of the
+/// main area must be clamped to the last valid content column.
+///
+/// Width=100, sidebar_active=true → effective_width=77 → content_width=75.
+/// max x = content_x(1) + content_width(75) - 1 = 75.
+#[test]
+fn history_search_cursor_wide_terminal_stays_inside_main_area() {
+    // query_cursor=90 → prefix(8)+cursor(90)=98.  Before the fix:
+    //   content_width = 98 (layout over full 100 cols), x = min(99, 98) = 98 → sidebar!
+    // After fix:
+    //   content_width = 75, x = min(99, 75) = 75 → stays in main area.
+    let view = HistorySearchView {
+        query: "a".repeat(90),
+        match_text: None,
+        match_index: 0,
+        match_total: 0,
+    };
+    let (x, y) = history_search_cursor_position(100, 24, &view, 90, true);
+
+    assert!(
+        x < 77,
+        "history-search cursor x ({x}) must be left of the │ separator at column 77"
+    );
+    assert_eq!(
+        (x, y),
+        (75, 18),
+        "wide-terminal history-search cursor must clamp to rightmost content cell; got ({x}, {y})"
+    );
+}
+
+/// Verify that a narrow terminal (width=99, one below the sidebar threshold)
+/// is unaffected by the sidebar logic even when sidebar_active=true.  The
+/// prompt layout still spans the full terminal width.
+#[test]
+fn prompt_cursor_position_just_below_sidebar_threshold_uses_full_width() {
+    // At width=99 shell_main_area_width returns 99 regardless of sidebar_active.
+    // 10-char prompt, cursor at end → line=0, col=10, x_offset=2.
+    // effective_width=99 → content_width=97 → max_col=94 → x=1+2+10=13.
+    let (x, y) = prompt_cursor_position(99, 20, &"a".repeat(10), 10, true);
+    assert_eq!(
+        (x, y),
+        (13, 16),
+        "terminal just below sidebar threshold must use full width; got ({x}, {y})"
     );
 }
 

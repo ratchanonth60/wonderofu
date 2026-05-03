@@ -225,6 +225,11 @@ pub(super) fn prompt_cursor_position(
     height: u16,
     prompt: &str,
     cursor: usize,
+    // Whether the caller's ShellView contains a sidebar panel.  When true the
+    // renderer subtracts SIDEBAR_WIDTH + 1 from the terminal width on terminals
+    // wider than MIN_SIDEBAR_WIDTH, and we must mirror that here so the cursor
+    // x coordinate never overshoots into the │ separator or sidebar columns.
+    sidebar_active: bool,
 ) -> (u16, u16) {
     let uncapped_height = ShellView {
         title: String::new(),
@@ -243,20 +248,25 @@ pub(super) fn prompt_cursor_position(
         notifications: Vec::new(),
         slash_suggestions: None,
         scroll: wonder_of_u_tui::TranscriptScrollView::default(),
+        sidebar: None,
     }
     .prompt_height();
     // Apply the same 1/3-terminal cap used by the renderer.
-    let cap = (height / 3).max(2);
+    let cap = (height / 3).max(3);
     let capped_height = uncapped_height.min(cap);
+    // Mirror render_shell: on wide terminals the sidebar column is carved out,
+    // shrinking the area available for the prompt box.
+    let effective_width = wonder_of_u_tui::shell_main_area_width(width, sidebar_active);
     let layout = ShellLayout::split(
-        wonder_of_u_tui::Rect::new(0, 0, width.max(1), height.max(1)),
+        wonder_of_u_tui::Rect::new(0, 0, effective_width.max(1), height.max(1)),
         capped_height,
     );
-    // Compact layout: content starts one row below the separator line.
-    let content_x = layout.prompt.x;
+    // Box layout: content is inset 1 col from x (just inside the │ border),
+    // 1 row below the top border, and 2 cols narrower (│ on each side).
+    let content_x = layout.prompt.x.saturating_add(1);
     let content_y = layout.prompt.y.saturating_add(1);
-    let content_width = layout.prompt.width;
-    let content_height = layout.prompt.height.saturating_sub(1);
+    let content_width = layout.prompt.width.saturating_sub(2);
+    let content_height = layout.prompt.height.saturating_sub(2);
 
     let cursor_text = prompt.chars().take(cursor).collect::<String>();
     let mut line = 0u16;
@@ -271,10 +281,13 @@ pub(super) fn prompt_cursor_position(
     }
     // First line has a "› " prefix (2 chars); subsequent lines start at column 0.
     let x_offset: u16 = if line == 0 { 2 } else { 0 };
+    // Clamp column so that content_x + x_offset + column never exceeds
+    // content_x + content_width − 1 (the rightmost cell inside the box border).
+    let max_col = content_width.saturating_sub(x_offset).saturating_sub(1);
     (
         content_x
             .saturating_add(x_offset)
-            .saturating_add(column.min(content_width.saturating_sub(1))),
+            .saturating_add(column.min(max_col)),
         content_y.saturating_add(line.min(content_height.saturating_sub(1))),
     )
 }
@@ -284,6 +297,9 @@ pub(super) fn history_search_cursor_position(
     height: u16,
     view: &HistorySearchView,
     query_cursor: usize,
+    // Whether the caller's ShellView contains a sidebar panel — mirrors the
+    // same flag in prompt_cursor_position.
+    sidebar_active: bool,
 ) -> (u16, u16) {
     let uncapped_height = ShellView {
         title: String::new(),
@@ -302,18 +318,21 @@ pub(super) fn history_search_cursor_position(
         notifications: Vec::new(),
         slash_suggestions: None,
         scroll: wonder_of_u_tui::TranscriptScrollView::default(),
+        sidebar: None,
     }
     .prompt_height();
-    let cap = (height / 3).max(2);
+    let cap = (height / 3).max(3);
     let capped_height = uncapped_height.min(cap);
+    // Mirror render_shell's sidebar column deduction on wide terminals.
+    let effective_width = wonder_of_u_tui::shell_main_area_width(width, sidebar_active);
     let layout = ShellLayout::split(
-        wonder_of_u_tui::Rect::new(0, 0, width.max(1), height.max(1)),
+        wonder_of_u_tui::Rect::new(0, 0, effective_width.max(1), height.max(1)),
         capped_height,
     );
-    // Content starts one row below the separator.
-    let content_x = layout.prompt.x;
+    // Box layout: content starts at x+1, y+1, with width-2 available columns.
+    let content_x = layout.prompt.x.saturating_add(1);
     let content_y = layout.prompt.y.saturating_add(1);
-    let content_width = layout.prompt.width;
+    let content_width = layout.prompt.width.saturating_sub(2);
     let query_prefix = "search: ".chars().count();
     (
         content_x
