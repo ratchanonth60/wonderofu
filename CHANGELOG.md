@@ -20,6 +20,7 @@ All notable changes are documented here.
 - `/setup` hub overlay: provider API-key entry, API-base override, Copilot OAuth device-code flow, model/theme/permission/memory/terminal/keybindings items; auto-opens on first launch when no provider is configured
 - Chat transcript scroll: `PageUp`/`PageDown` (one page), `Ctrl+Home`/`Ctrl+End` (jump to top/live tail), mouse wheel over transcript area; all scroll controls suppressed while any overlay is active
 - Docs: README, USAGE.md, and CONFIGURATION.md updated for TUI setup hub and chat scroll UX
+- Regression tests for TUI setup/scroll/OAuth/provider-form (todo: tui-setup-scroll-tests ✓ done): `action_for_item_id` all 9 known IDs + unknown fallback; `SetupOverlayState::clamp_selection`; `ProviderFormState::selected_display_name` + `display_value` bullet-masking; `CopilotOAuthFlowState` Debug redaction; `ConsoleOAuthFlowView::instructions` with/without expiry; `OnboardingView::render_lines` completed/pending/footer/empty
 
 ## [0.1.0] — Initial parity release
 
