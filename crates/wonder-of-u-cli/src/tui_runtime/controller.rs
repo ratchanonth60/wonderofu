@@ -306,7 +306,10 @@ impl<'a> TuiController<'a> {
         F: FnMut(&Self) -> Result<()>,
     {
         let resolved = self.keymap.resolve(KeyBindingContext::Prompt, key);
-        if self.dialog.is_some() {
+        if self.dialog.is_some()
+            || self.has_picker_overlay()
+            || self.pending_copilot_oauth.is_some()
+        {
             return self.handle_dialog_key(key, resolved, before_blocking);
         }
         if self.history_search.is_some() {
@@ -3068,7 +3071,7 @@ impl<'a> TuiController<'a> {
         F: FnMut(&Self) -> Result<()>,
     {
         match key.code {
-            KeyCode::Tab => self.complete_setup_overlay(before_blocking),
+            KeyCode::Tab | KeyCode::Enter => self.complete_setup_overlay(before_blocking),
             KeyCode::Up => {
                 self.step_setup_overlay(-1);
                 Ok(())
@@ -3167,7 +3170,7 @@ impl<'a> TuiController<'a> {
                 _ => {
                     let advance =
                         matches!(resolved, Some(ResolvedKey::Edit(EditAction::InsertNewline)))
-                            || key.code == KeyCode::Tab;
+                            || matches!(key.code, KeyCode::Tab | KeyCode::Enter);
                     if advance {
                         let f = self.pending_provider_form.as_mut().unwrap();
                         if f.options.is_empty() {
@@ -3191,7 +3194,9 @@ impl<'a> TuiController<'a> {
                     self.needs_render = true;
                     return Ok(());
                 }
-                if matches!(resolved, Some(ResolvedKey::Edit(EditAction::InsertNewline))) {
+                if matches!(resolved, Some(ResolvedKey::Edit(EditAction::InsertNewline)))
+                    || key.code == KeyCode::Enter
+                {
                     return self.complete_provider_form();
                 }
                 if let Some(res) = resolved {

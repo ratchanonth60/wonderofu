@@ -3349,6 +3349,7 @@ fn controller_confirms_exit_when_session_has_activity() {
 #[test]
 fn controller_executes_vim_normal_mode_edits() {
     let dir = unique_test_dir("tui-vim-mode");
+    write_provider_config(dir.as_path(), "http://127.0.0.1:1");
     let registry = commands::registry(Some(dir.clone())).expect("registry");
     let mut controller = TuiController::new(
         test_context(&dir),
@@ -3410,6 +3411,7 @@ fn controller_executes_vim_normal_mode_edits() {
 #[test]
 fn controller_enters_history_search_with_ctrl_r() {
     let dir = unique_test_dir("tui-history-search-enter");
+    write_provider_config(dir.as_path(), "http://127.0.0.1:1");
     let registry = commands::registry(Some(dir.clone())).expect("registry");
     let mut controller = TuiController::new(
         test_context(&dir),
@@ -3445,6 +3447,7 @@ fn controller_enters_history_search_with_ctrl_r() {
 #[test]
 fn controller_filters_history_search_with_substring_query() {
     let dir = unique_test_dir("tui-history-search-filter");
+    write_provider_config(dir.as_path(), "http://127.0.0.1:1");
     let registry = commands::registry(Some(dir.clone())).expect("registry");
     let mut controller = TuiController::new(
         test_context(&dir),
@@ -3476,6 +3479,7 @@ fn controller_filters_history_search_with_substring_query() {
 #[test]
 fn controller_history_search_cycles_through_matches() {
     let dir = unique_test_dir("tui-history-search-cycle");
+    write_provider_config(dir.as_path(), "http://127.0.0.1:1");
     let registry = commands::registry(Some(dir.clone())).expect("registry");
     let mut controller = TuiController::new(
         test_context(&dir),
@@ -3537,6 +3541,7 @@ fn controller_history_search_cycles_through_matches() {
 #[test]
 fn controller_history_search_enter_accepts_match() {
     let dir = unique_test_dir("tui-history-search-accept");
+    write_provider_config(dir.as_path(), "http://127.0.0.1:1");
     let registry = commands::registry(Some(dir.clone())).expect("registry");
     let mut controller = TuiController::new(
         test_context(&dir),
@@ -3584,6 +3589,7 @@ fn controller_history_search_esc_restores_prior_buffer() {
 #[test]
 fn controller_history_search_reports_no_matches() {
     let dir = unique_test_dir("tui-history-search-no-match");
+    write_provider_config(dir.as_path(), "http://127.0.0.1:1");
     let registry = commands::registry(Some(dir.clone())).expect("registry");
     let mut controller = TuiController::new(
         test_context(&dir),
@@ -3615,6 +3621,7 @@ fn controller_history_search_reports_no_matches() {
 #[test]
 fn controller_history_search_with_empty_history_is_safe() {
     let dir = unique_test_dir("tui-history-search-empty");
+    write_provider_config(dir.as_path(), "http://127.0.0.1:1");
     let registry = commands::registry(Some(dir.clone())).expect("registry");
     let mut controller = TuiController::new(
         test_context(&dir),
@@ -4825,6 +4832,44 @@ fn controller_setup_overlay_tab_key_selects_item() {
     assert!(
         controller.pending_setup_overlay.is_none(),
         "Tab should confirm and close the setup overlay"
+    );
+}
+
+#[test]
+fn controller_setup_overlay_handles_prompt_keys_in_vim_normal_mode() {
+    let (mut controller, _dir) = open_setup_overlay_controller();
+    controller.vim = VimState::new(VimMode::Normal);
+
+    send_prompt_key(&mut controller, picker_key(KeyCode::Down));
+    assert_eq!(
+        controller
+            .pending_setup_overlay
+            .as_ref()
+            .expect("setup overlay remains open")
+            .selected_index,
+        1,
+        "setup overlay should receive navigation before Vim normal mode"
+    );
+
+    send_prompt_key(&mut controller, picker_key(KeyCode::Up));
+    assert_eq!(
+        controller
+            .pending_setup_overlay
+            .as_ref()
+            .expect("setup overlay remains open")
+            .selected_index,
+        0
+    );
+
+    send_prompt_key(&mut controller, picker_key(KeyCode::Enter));
+
+    assert!(
+        controller.pending_setup_overlay.is_none(),
+        "Enter should confirm the selected setup item in Vim normal mode"
+    );
+    assert!(
+        controller.pending_provider_form.is_some(),
+        "the login setup item should open the provider form"
     );
 }
 
