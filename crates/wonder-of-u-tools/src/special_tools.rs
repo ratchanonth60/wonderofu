@@ -611,6 +611,7 @@ impl Tool for StructuredOutputTool {
         spec.input_schema = json!({
             "type": "object",
             "description": "structured JSON payload returned to the caller",
+            "properties": {},
             "additionalProperties": true
         });
         spec.read_only = true;
