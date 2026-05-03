@@ -58,16 +58,22 @@ wonder-of-u config show
 
 ## TUI preferences
 
-Inside the TUI, use slash commands:
+Inside the TUI, open the **setup hub** with `/setup` to access provider login,
+model selection, theme, permissions, memory, terminal settings, and keybindings
+from a single menu.  The hub opens automatically on first launch when no provider
+is configured.
+
+Individual slash commands are also available directly:
 
 ```text
-/theme
-/color
-/vim
-/brief
-/fast
-/effort
-/permissions
+/setup          open the settings hub (provider login, model, theme, …)
+/theme          change the colour theme
+/color          toggle colour rendering
+/vim            toggle Vim editing mode
+/brief          toggle concise response mode
+/fast           toggle fast (low-latency) mode
+/effort         set reasoning effort level
+/permissions    open the permission manager
 ```
 
 Most settings are persisted in snapshots/settings so resumed sessions keep the

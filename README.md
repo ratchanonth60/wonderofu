@@ -13,8 +13,8 @@ wonder-of-u
 
 | Area | What you get |
 | --- | --- |
-| Terminal UI | ratatui/crossterm shell with rounded panels, slash autocomplete, model/theme/memory pickers, Vim mode, history search, notifications, and permission dialogs |
-| Providers | Anthropic, OpenAI, and GitHub Copilot OAuth flows |
+| Terminal UI | ratatui/crossterm shell with rounded panels, slash autocomplete, model/theme/memory pickers, Vim mode, history search, notifications, permission dialogs, `/setup` hub, and chat transcript scroll |
+| Providers | Anthropic, OpenAI, and GitHub Copilot OAuth device-code flow — configurable from the TUI via `/setup` |
 | Sessions | JSONL-backed transcripts, snapshots, resume, export, rename, tag, clear, and compact |
 | Tools | Native file/search/shell-style tool runtime with permission checks and path validation |
 | Extensions | MCP stdio discovery, plugin manifests, local skills, agents, and background task management |
@@ -70,7 +70,19 @@ wonder-of-u session list
 wonder-of-u resume <session-id>
 ```
 
-Inside the TUI, type `/` to open slash-command autocomplete.
+Inside the TUI, type `/` to open slash-command autocomplete, or `/setup` to open the
+settings hub (also opened automatically on first launch when no provider is configured).
+
+### Chat transcript scroll
+
+| Key / action | Effect |
+| --- | --- |
+| `PageUp` / `PageDown` | Scroll up / down one viewport page |
+| `Ctrl+Home` | Jump to the top of the transcript |
+| `Ctrl+End` | Return to live tail (follow-tail mode) |
+| Mouse wheel (over transcript) | Scroll up / down by a few lines |
+
+Scroll controls are suppressed while any overlay (picker, dialog, history search) is active.
 
 ## Common commands
 
