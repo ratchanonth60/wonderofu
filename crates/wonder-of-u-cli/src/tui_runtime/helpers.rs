@@ -36,6 +36,10 @@ pub(super) fn launch_external_editor(request: &ExternalEditorRequest) -> Result<
 /// user can still navigate to the URL manually using the code shown in the
 /// dialog.
 pub(super) fn open_browser_url(url: &str) {
+    if browser_launch_disabled() {
+        return;
+    }
+
     #[cfg(target_os = "macos")]
     let _ = ProcessCommand::new("open").arg(url).spawn();
     #[cfg(target_os = "linux")]
@@ -44,6 +48,21 @@ pub(super) fn open_browser_url(url: &str) {
     let _ = ProcessCommand::new("cmd")
         .args(["/c", "start", "", url])
         .spawn();
+}
+
+pub(super) fn browser_launch_disabled() -> bool {
+    cfg!(test) || env_flag_enabled("WONDER_OF_U_NO_BROWSER")
+}
+
+fn env_flag_enabled(name: &str) -> bool {
+    std::env::var(name)
+        .map(|value| {
+            matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            )
+        })
+        .unwrap_or(false)
 }
 
 pub(super) fn tui_editor_command() -> Option<(String, Vec<String>)> {

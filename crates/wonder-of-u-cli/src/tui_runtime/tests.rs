@@ -5641,6 +5641,14 @@ fn copilot_oauth_awaiting_shows_dialog_with_url_and_code() {
 }
 
 #[test]
+fn tui_browser_launch_is_disabled_under_tests() {
+    assert!(
+        browser_launch_disabled(),
+        "TUI tests must never spawn a real system browser"
+    );
+}
+
+#[test]
 fn copilot_oauth_esc_cancels_awaiting_confirmation() {
     let (mut controller, _dir) = make_controller_with_copilot_awaiting();
 
