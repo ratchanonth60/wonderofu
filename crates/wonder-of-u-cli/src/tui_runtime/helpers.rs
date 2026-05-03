@@ -228,6 +228,7 @@ pub(super) fn prompt_cursor_position(
             picker_list: None,
             notifications: Vec::new(),
             slash_suggestions: None,
+            scroll: wonder_of_u_tui::TranscriptScrollView::default(),
         }
         .prompt_height(),
     );
@@ -283,6 +284,7 @@ pub(super) fn history_search_cursor_position(
             picker_list: None,
             notifications: Vec::new(),
             slash_suggestions: None,
+            scroll: wonder_of_u_tui::TranscriptScrollView::default(),
         }
         .prompt_height(),
     );

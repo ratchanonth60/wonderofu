@@ -43,7 +43,7 @@ use wonder_of_u_tui::{
     NotificationQueue, NotificationSeverity, PermissionSummaryView, PickerListEntry,
     PickerListView, PromptSuggestion, PromptSuggestionState, Rect, ResolvedKey, ShellLayout,
     ShellView, SlashSuggestionEntry, SlashSuggestionsOverlay, TextBuffer, Theme,
-    TurnState, UiEvent, VimMode, VimState, message_lines,
+    TranscriptScrollView, TurnState, UiEvent, VimMode, VimState, message_lines,
 };
 
 use crate::commands;
