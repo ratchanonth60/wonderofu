@@ -23,6 +23,7 @@ mod plugin;
 pub(crate) mod project;
 pub(crate) mod prompt;
 mod session;
+mod setup;
 mod skills;
 mod status;
 mod task_runtime;
@@ -62,6 +63,7 @@ use status::{
     MobileCommand, OutputStyleCommand, ReleaseNotesCommand, StatsCommand, StatusCommand,
     UpgradeCommand, UsageCommand, VersionCommand,
 };
+use setup::SetupCommand;
 use tui::TuiCommand;
 use workflow::{
     AgentsCommand, BriefCommand, ColorCommand, CommitCommand, CommitPushPrCommand, EffortCommand,
@@ -179,6 +181,7 @@ pub fn registry(storage_dir: Option<PathBuf>) -> Result<CommandRegistry> {
         InstallSlackAppCommand::command_spec(),
         CreateMovedToPluginCommand::command_spec(),
         TuiCommand::command_spec(),
+        SetupCommand::command_spec(),
     ]
     .into();
 
@@ -298,6 +301,7 @@ pub fn registry(storage_dir: Option<PathBuf>) -> Result<CommandRegistry> {
     registry.register(Arc::new(InstallSlackAppCommand::new()))?;
     registry.register(Arc::new(CreateMovedToPluginCommand::new()))?;
     registry.register(Arc::new(TuiCommand::new()))?;
+    registry.register(Arc::new(SetupCommand::new(storage_dir.clone())))?;
     Ok(registry)
 }
 
