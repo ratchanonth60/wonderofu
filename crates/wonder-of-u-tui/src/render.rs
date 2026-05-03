@@ -1,4 +1,4 @@
-use wonder_of_u_core::{AppState, InputMode};
+use wonder_of_u_core::AppState;
 
 use crate::{
     dialog::DialogView,
@@ -53,36 +53,39 @@ impl TranscriptScrollView {
     }
 }
 
-/// Keyboard-shortcut hints and session metadata shown in the right-side companion
-/// panel on wide terminals (≥ [`MIN_SIDEBAR_WIDTH`] columns).
+/// Sectioned data model for the right-side companion panel shown on wide
+/// terminals (≥ [`MIN_SIDEBAR_WIDTH`] columns).
 ///
-/// The panel occupies its own column beside the full transcript + prompt region
-/// at shell level, so the prompt box always keeps its full allocated width.
+/// Each field is one *section*; non-empty sections are rendered with a styled
+/// section-header row (`"─ Name ─"`) followed by their body lines, separated by
+/// blank rows.  Empty sections are silently omitted so callers do not need to
+/// check before populating.
 ///
-/// Intentionally flat strings so the renderer has no coupling to
-/// `wonder-of-u-core` types.
+/// All strings are intentionally plain so the renderer has no coupling to
+/// `wonder-of-u-core` types.  Special line prefixes drive extra colour:
+///
+/// | prefix | colour |
+/// |--------|--------|
+/// | `✓`    | green  |
+/// | `⚠`    | yellow |
+/// | `◈`    | `theme.prompt` (accent) |
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct SidebarView {
-    /// Short `provider · model` label (e.g. `"copilot · gpt-4"`).
-    ///
-    /// `None` when no provider context has been configured yet.
-    pub model_hint: Option<String>,
-    /// `true` when the active provider has valid credentials.
-    ///
-    /// Rendered as a green `✓ ready` when true, amber `⚠ auth missing` when false.
-    pub auth_ok: bool,
-    /// Non-default input-mode label (e.g. `"bash"`, `"permission"`).
-    ///
-    /// `None` in the normal `Prompt` mode; the renderer omits the row entirely.
-    pub mode_hint: Option<String>,
-    /// Active git branch name. `None` when not in a repository or unknown.
-    pub git_branch: Option<String>,
-    /// Short working-directory label (last path component).
-    ///
-    /// `None` when the path cannot be determined.
-    pub cwd_hint: Option<String>,
-    /// Number of active background tasks. `0` suppresses the row.
-    pub task_count: usize,
+    /// Section 1 – Session: turn state, title, status note etc.
+    /// Each entry is one display row.
+    pub session_lines: Vec<String>,
+    /// Section 2 – Context: token/cost usage summary.
+    pub context_lines: Vec<String>,
+    /// Section 3 – Providers: one entry per line, active model marked with `◈`.
+    pub provider_lines: Vec<String>,
+    /// Section 4 – Status: turn detail, loading verb, error snippets.
+    pub status_lines: Vec<String>,
+    /// Section 5 – Controls: compact keybindings.
+    pub control_lines: Vec<String>,
+    /// Section 6 – Workspace: cwd, git, storage, runtime labels.
+    pub workspace_lines: Vec<String>,
+    /// Section 7 – Tasks: background task count + hints.
+    pub task_lines: Vec<String>,
 }
 
 /// Represents shell view
@@ -145,33 +148,68 @@ impl ShellView {
     #[must_use]
     pub fn from_app_state(app: &AppState, prompt: impl Into<String>) -> Self {
         let sidebar = {
-            let model_hint = match (&app.provider, &app.model) {
-                (Some(provider), Some(model)) => Some(format!("{provider} · {model}")),
-                _ => None,
+            // Section 1 – Session: show a short session id prefix.
+            let session_lines = vec![format!(
+                "◈ {}",
+                app.session
+                    .id
+                    .to_string()
+                    .chars()
+                    .take(8)
+                    .collect::<String>()
+            )];
+
+            // Section 2 – Context: placeholder for future token/cost usage.
+            let context_lines: Vec<String> = Vec::new();
+
+            // Section 3 – Providers: one line combining provider and model.
+            let provider_lines = match (&app.provider, &app.model) {
+                (Some(provider), Some(model)) => vec![format!("{provider} · {model}")],
+                _ => Vec::new(),
             };
-            let auth_ok = app.auth.is_ready();
-            let mode_hint = match app.input_mode {
-                InputMode::Bash => Some("bash".into()),
-                InputMode::PermissionPending => Some("permission".into()),
-                InputMode::TaskNotification => Some("notification".into()),
-                InputMode::Prompt => None,
-            };
-            let git_branch = app.session.git_branch.clone();
+
+            // Section 4 – Status: stub idle line; controller overwrites this each frame.
+            let status_lines = vec!["● idle".into()];
+
+            // Section 5 – Controls: compact keybinding reference.
+            let control_lines = vec![
+                "↵ send  ⇧↵ newline".into(),
+                "⎋ cancel  ? help".into(),
+                "⌃B sidebar  ⌃C exit".into(),
+            ];
+
+            // Section 6 – Workspace: git branch and short cwd label.
+            let mut workspace_lines: Vec<String> = Vec::new();
+            if let Some(branch) = &app.session.git_branch {
+                workspace_lines.push(format!("⎇  {branch}"));
+            }
             // Use the last path component as a short cwd label.
-            let cwd_hint = app
+            if let Some(cwd) = app
                 .session
                 .cwd
                 .file_name()
                 .and_then(|n| n.to_str())
-                .map(|s| s.to_owned());
-            let task_count = app.background_tasks.len();
+            {
+                workspace_lines.push(format!("  {cwd}"));
+            }
+
+            // Section 7 – Tasks: background task count (omitted when none).
+            let task_lines = if app.background_tasks.is_empty() {
+                Vec::new()
+            } else {
+                let n = app.background_tasks.len();
+                let label = if n == 1 { "task" } else { "tasks" };
+                vec![format!("⚙  {n} {label}")]
+            };
+
             SidebarView {
-                model_hint,
-                auth_ok,
-                mode_hint,
-                git_branch,
-                cwd_hint,
-                task_count,
+                session_lines,
+                context_lines,
+                provider_lines,
+                status_lines,
+                control_lines,
+                workspace_lines,
+                task_lines,
             }
         };
         Self {
@@ -454,100 +492,75 @@ fn draw_shell_sidebar(frame: &mut FrameBuffer, area: Rect, sidebar: &SidebarView
     if area.is_empty() {
         return;
     }
-    draw_lines(frame, area, &sidebar_hint_lines(sidebar, theme));
+    draw_lines(frame, area, &sidebar_section_lines(sidebar, theme));
 }
 
-/// Builds the ordered list of hint lines for the sidebar panel.
+/// Builds the ordered list of styled lines for the sidebar panel.
 ///
-/// Lines are intentionally ≤ [`SIDEBAR_WIDTH`] columns wide.
-fn sidebar_hint_lines(sidebar: &SidebarView, theme: &Theme) -> Vec<StyledLine> {
+/// Each non-empty section is prefixed by a dim section-header row and followed
+/// by a blank separator row.  Lines are clamped to [`SIDEBAR_WIDTH`] columns by
+/// [`draw_lines`].  Special line-prefix characters drive extra colour:
+///
+/// | prefix | colour |
+/// |--------|--------|
+/// | `✓`    | `Color::Green` |
+/// | `⚠`    | `Color::Yellow` |
+/// | `◈`    | `theme.prompt` |
+fn sidebar_section_lines(sidebar: &SidebarView, theme: &Theme) -> Vec<StyledLine> {
     let dim = theme.footer;
     let accent = theme.prompt;
 
-    let mut lines: Vec<StyledLine> = vec![
-        // Keyboard shortcuts — always shown.
-        StyledLine {
-            text: "↵  Enter    send".into(),
-            style: dim,
-        },
-        StyledLine {
-            text: "⇧↵ Shift+Enter".into(),
-            style: dim,
-        },
-        StyledLine {
-            text: "⎋  Esc   cancel".into(),
-            style: dim,
-        },
-        StyledLine {
-            text: "?  shortcuts".into(),
-            style: dim,
-        },
-        // Visual spacer before the status rows.
-        StyledLine {
-            text: String::new(),
-            style: dim,
-        },
+    // (header text, section body lines)
+    let sections: &[(&str, &[String])] = &[
+        ("─ Session ─", &sidebar.session_lines),
+        ("─ Context ─", &sidebar.context_lines),
+        ("─ Providers ─", &sidebar.provider_lines),
+        ("─ Status ─", &sidebar.status_lines),
+        ("─ Controls ─", &sidebar.control_lines),
+        ("─ Workspace ─", &sidebar.workspace_lines),
+        ("─ Tasks ─", &sidebar.task_lines),
     ];
 
-    // Provider · model label (omitted when no provider is configured).
-    if let Some(model) = &sidebar.model_hint {
-        lines.push(StyledLine {
-            text: format!("◈  {model}"),
-            style: accent,
+    let mut out: Vec<StyledLine> = Vec::new();
+
+    for (header, body) in sections {
+        if body.is_empty() {
+            continue;
+        }
+
+        // Blank separator before each section (except at the very top).
+        if !out.is_empty() {
+            out.push(StyledLine {
+                text: String::new(),
+                style: dim,
+            });
+        }
+
+        // Section header row.
+        out.push(StyledLine {
+            text: (*header).to_owned(),
+            style: theme.title,
         });
+
+        // Body lines with prefix-driven colouring.
+        for line in *body {
+            let style = if line.starts_with('✓') {
+                TextStyle::default().fg(Color::Green)
+            } else if line.starts_with('⚠') {
+                TextStyle::default().fg(Color::Yellow)
+            } else if line.starts_with('◈') {
+                accent
+            } else {
+                dim
+            };
+            out.push(StyledLine {
+                text: line.clone(),
+                style,
+            });
+        }
     }
 
-    // Authentication / credential status.
-    if sidebar.auth_ok {
-        lines.push(StyledLine {
-            text: "✓  ready".into(),
-            style: TextStyle::default().fg(Color::Green),
-        });
-    } else {
-        lines.push(StyledLine {
-            text: "⚠  auth missing".into(),
-            style: TextStyle::default().fg(Color::Yellow),
-        });
-    }
-
-    // Git branch (omitted when not in a repository).
-    if let Some(branch) = &sidebar.git_branch {
-        lines.push(StyledLine {
-            text: format!("⎇  {branch}"),
-            style: dim,
-        });
-    }
-
-    // Working-directory hint (last path component).
-    if let Some(cwd) = &sidebar.cwd_hint {
-        lines.push(StyledLine {
-            text: format!("  {cwd}"),
-            style: dim,
-        });
-    }
-
-    // Active background task count (omitted when zero).
-    if sidebar.task_count > 0 {
-        let label = if sidebar.task_count == 1 {
-            "task"
-        } else {
-            "tasks"
-        };
-        lines.push(StyledLine {
-            text: format!("⚙  {} {label}", sidebar.task_count),
-            style: accent,
-        });
-    }
-
-    // Non-default input mode (e.g. "bash", "permission") — omitted in normal mode.
-    if let Some(mode) = &sidebar.mode_hint {
-        lines.push(StyledLine {
-            text: format!("⌘  {mode}"),
-            style: accent.bold(),
-        });
-    }
-
-    lines
+    out
 }
 
 fn docked_panel_lines(view: &ShellView, theme: &Theme) -> Vec<StyledLine> {
@@ -2103,8 +2116,8 @@ mod tests {
         let view = ShellView {
             prompt: "hello".into(),
             sidebar: Some(SidebarView {
-                model_hint: Some("openai · gpt-4o".into()),
-                auth_ok: true,
+                provider_lines: vec!["openai · gpt-4o".into()],
+                status_lines: vec!["✓ ready".into()],
                 ..SidebarView::default()
             }),
             ..ShellView::default()
@@ -2113,9 +2126,9 @@ mod tests {
         let frame = render_snapshot(99, 8, &view, &Theme::default());
         let text = frame.to_plain_text();
 
-        // Sidebar hint content must not appear on a narrow terminal.
+        // Sidebar section headers must not appear on a narrow terminal.
         assert!(
-            !text.contains("Enter"),
+            !text.contains("─ Providers ─"),
             "sidebar hints must be absent on narrow terminal; rendered:\n{text}"
         );
     }
@@ -2128,8 +2141,12 @@ mod tests {
         let view = ShellView {
             prompt: "say hello".into(),
             sidebar: Some(SidebarView {
-                model_hint: Some("copilot · gpt-4".into()),
-                auth_ok: true,
+                provider_lines: vec!["◈ copilot · gpt-4".into()],
+                control_lines: vec![
+                    "↵ send  ⇧↵ newline".into(),
+                    "⎋ cancel  ? help".into(),
+                ],
+                status_lines: vec!["✓ ready".into()],
                 ..SidebarView::default()
             }),
             ..ShellView::default()
@@ -2139,12 +2156,12 @@ mod tests {
         let text = frame.to_plain_text();
 
         assert!(
-            text.contains("Enter"),
-            "Enter hint must appear in sidebar; rendered:\n{text}"
+            text.contains("─ Controls ─"),
+            "Controls header must appear in sidebar; rendered:\n{text}"
         );
         assert!(
-            text.contains("Esc"),
-            "Esc hint must appear in sidebar; rendered:\n{text}"
+            text.contains("─ Providers ─"),
+            "Providers header must appear in sidebar; rendered:\n{text}"
         );
         assert!(
             text.contains("copilot · gpt-4"),
@@ -2184,15 +2201,13 @@ mod tests {
         let view = ShellView {
             prompt: "help".into(),
             sidebar: Some(SidebarView {
-                model_hint: Some("anthropic · claude-3".into()),
-                auth_ok: false,
+                provider_lines: vec!["anthropic · claude-3".into()],
+                status_lines: vec!["⚠ auth missing".into()],
                 ..SidebarView::default()
             }),
             ..ShellView::default()
         };
 
-        // Width=100 activates the sidebar; height=8 exposes all hint rows
-        // (Enter=0, Shift+Enter=1, Esc=2, ?=3, spacer=4, model=5, auth=6).
         let frame = render_snapshot(100, 8, &view, &Theme::default());
         let text = frame.to_plain_text();
 
@@ -2211,16 +2226,12 @@ mod tests {
         let view = ShellView {
             prompt: "!ls".into(),
             sidebar: Some(SidebarView {
-                model_hint: None,
-                auth_ok: true,
-                mode_hint: Some("bash".into()),
+                status_lines: vec!["● bash mode".into()],
                 ..SidebarView::default()
             }),
             ..ShellView::default()
         };
 
-        // hint rows: Enter(0), Shift+Enter(1), Esc(2), ?(3), spacer(4),
-        // auth(5, no model), mode(6) — all within height=8.
         let frame = render_snapshot(100, 8, &view, &Theme::default());
         let text = frame.to_plain_text();
 
@@ -2235,8 +2246,10 @@ mod tests {
         let view = ShellView {
             prompt: "hi".into(),
             sidebar: Some(SidebarView {
-                git_branch: Some("feat/my-feature".into()),
-                auth_ok: true,
+                workspace_lines: vec![
+                    "⎇  feat/my-feature".into(),
+                    "✓ ready".into(),
+                ],
                 ..SidebarView::default()
             }),
             ..ShellView::default()
@@ -2256,8 +2269,7 @@ mod tests {
         let view = ShellView {
             prompt: "hi".into(),
             sidebar: Some(SidebarView {
-                cwd_hint: Some("myproject".into()),
-                auth_ok: true,
+                workspace_lines: vec!["  myproject".into()],
                 ..SidebarView::default()
             }),
             ..ShellView::default()
@@ -2277,8 +2289,7 @@ mod tests {
         let view = ShellView {
             prompt: "hi".into(),
             sidebar: Some(SidebarView {
-                task_count: 3,
-                auth_ok: true,
+                task_lines: vec!["⚙  3 tasks".into()],
                 ..SidebarView::default()
             }),
             ..ShellView::default()
@@ -2302,16 +2313,23 @@ mod tests {
         let view = ShellView::from_app_state(&app, "");
 
         let sidebar = view.sidebar.expect("sidebar must be Some from_app_state");
-        assert_eq!(
-            sidebar.model_hint.as_deref(),
-            Some("openai · gpt-4o"),
-            "model_hint must combine provider and model"
-        );
-        // Default AuthState is NotRequired → is_ready() == true.
-        assert!(sidebar.auth_ok, "default auth must be ready");
         assert!(
-            sidebar.mode_hint.is_none(),
-            "default Prompt mode must produce no mode_hint"
+            sidebar
+                .provider_lines
+                .iter()
+                .any(|l| l.contains("openai · gpt-4o")),
+            "provider_lines must combine provider and model; got: {:?}",
+            sidebar.provider_lines
+        );
+        assert!(
+            !sidebar.control_lines.is_empty(),
+            "control_lines must be populated"
+        );
+        // Default status is the idle stub.
+        assert!(
+            sidebar.status_lines.iter().any(|l| l.contains("idle")),
+            "default status must be idle stub; got: {:?}",
+            sidebar.status_lines
         );
     }
 
@@ -2323,15 +2341,21 @@ mod tests {
         let view = ShellView::from_app_state(&app, "");
 
         let sidebar = view.sidebar.expect("sidebar must be Some from_app_state");
-        assert_eq!(
-            sidebar.git_branch.as_deref(),
-            Some("feat/my-feature"),
-            "git_branch must be forwarded from session"
+        assert!(
+            sidebar
+                .workspace_lines
+                .iter()
+                .any(|l| l.contains("feat/my-feature")),
+            "workspace_lines must contain git branch; got: {:?}",
+            sidebar.workspace_lines
         );
-        assert_eq!(
-            sidebar.cwd_hint.as_deref(),
-            Some("myproject"),
-            "cwd_hint must be the last path component"
+        assert!(
+            sidebar
+                .workspace_lines
+                .iter()
+                .any(|l| l.contains("myproject")),
+            "workspace_lines must contain the last cwd component; got: {:?}",
+            sidebar.workspace_lines
         );
     }
 
@@ -2342,8 +2366,8 @@ mod tests {
         let view = ShellView {
             prompt: "first line\nsecond line\nthird line".into(),
             sidebar: Some(SidebarView {
-                model_hint: Some("copilot · gpt-4".into()),
-                auth_ok: true,
+                provider_lines: vec!["◈ copilot · gpt-4".into()],
+                control_lines: vec!["↵ send  ⇧↵ newline".into()],
                 ..SidebarView::default()
             }),
             ..ShellView::default()
@@ -2364,8 +2388,8 @@ mod tests {
             "second prompt line must be visible; rendered:\n{text}"
         );
         assert!(
-            text.contains("Enter"),
-            "sidebar Enter hint must be present at shell level; rendered:\n{text}"
+            text.contains("─ Controls ─"),
+            "sidebar Controls header must be present at shell level; rendered:\n{text}"
         );
     }
 
@@ -2376,8 +2400,7 @@ mod tests {
         let view = ShellView {
             prompt: "hello".into(),
             sidebar: Some(SidebarView {
-                model_hint: Some("copilot · gpt-4".into()),
-                auth_ok: true,
+                provider_lines: vec!["◈ copilot · gpt-4".into()],
                 ..SidebarView::default()
             }),
             ..ShellView::default()
@@ -2430,5 +2453,117 @@ mod tests {
             !text.contains('╭'),
             "box corners must be absent in tiny-terminal fallback; rendered:\n{text}"
         );
+    }
+
+    // ── new sectioned-sidebar tests ──────────────────────────────────────────
+
+    #[test]
+    fn sidebar_section_header_providers_appears_on_wide_terminal() {
+        // A non-empty `provider_lines` section must produce a "─ Providers ─"
+        // header row visible in the rendered output on a wide terminal.
+        let view = ShellView {
+            prompt: "hi".into(),
+            sidebar: Some(SidebarView {
+                provider_lines: vec!["◈ anthropic · claude-3-5-sonnet".into()],
+                ..SidebarView::default()
+            }),
+            ..ShellView::default()
+        };
+
+        let frame = render_snapshot(100, 10, &view, &Theme::default());
+        let text = frame.to_plain_text();
+
+        assert!(
+            text.contains("─ Providers ─"),
+            "Providers section header must appear on wide terminal; rendered:\n{text}"
+        );
+    }
+
+    #[test]
+    fn sidebar_provider_line_with_diamond_prefix_rendered() {
+        // A `provider_lines` entry with the `◈` prefix must appear in the output.
+        let view = ShellView {
+            prompt: "hi".into(),
+            sidebar: Some(SidebarView {
+                provider_lines: vec!["◈ openai · gpt-4o".into()],
+                ..SidebarView::default()
+            }),
+            ..ShellView::default()
+        };
+
+        let frame = render_snapshot(100, 10, &view, &Theme::default());
+        let text = frame.to_plain_text();
+
+        assert!(
+            text.contains("◈"),
+            "◈ prefix must appear in sidebar provider line; rendered:\n{text}"
+        );
+        assert!(
+            text.contains("openai · gpt-4o"),
+            "provider body text must appear; rendered:\n{text}"
+        );
+    }
+
+    #[test]
+    fn sidebar_absent_on_narrow_terminal_below_100_cols() {
+        // Narrow terminal (width < MIN_SIDEBAR_WIDTH = 100): sidebar must be
+        // completely suppressed even when `sidebar` field is `Some`.
+        let view = ShellView {
+            prompt: "narrow".into(),
+            sidebar: Some(SidebarView {
+                provider_lines: vec!["◈ copilot · gpt-4".into()],
+                control_lines: vec!["↵ send  ⇧↵ newline".into()],
+                ..SidebarView::default()
+            }),
+            ..ShellView::default()
+        };
+
+        let frame = render_snapshot(99, 8, &view, &Theme::default());
+        let text = frame.to_plain_text();
+
+        assert!(
+            !text.contains("─ Providers ─"),
+            "Providers header must NOT appear on narrow (99-col) terminal; rendered:\n{text}"
+        );
+        assert!(
+            !text.contains("─ Controls ─"),
+            "Controls header must NOT appear on narrow terminal; rendered:\n{text}"
+        );
+    }
+
+    #[test]
+    fn sidebar_empty_sections_are_omitted() {
+        // Sections with empty Vec must not produce stray headers or blank rows.
+        let view = ShellView {
+            prompt: "check".into(),
+            sidebar: Some(SidebarView {
+                // Only status_lines is populated; everything else is empty.
+                status_lines: vec!["● idle".into()],
+                ..SidebarView::default()
+            }),
+            ..ShellView::default()
+        };
+
+        let frame = render_snapshot(100, 10, &view, &Theme::default());
+        let text = frame.to_plain_text();
+
+        assert!(
+            text.contains("─ Status ─"),
+            "Status header must appear; rendered:\n{text}"
+        );
+        // Empty sections must produce no headers.
+        for absent in &[
+            "─ Session ─",
+            "─ Context ─",
+            "─ Providers ─",
+            "─ Controls ─",
+            "─ Workspace ─",
+            "─ Tasks ─",
+        ] {
+            assert!(
+                !text.contains(absent),
+                "{absent} header must not appear when section is empty; rendered:\n{text}"
+            );
+        }
     }
 }
