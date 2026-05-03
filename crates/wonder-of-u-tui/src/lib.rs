@@ -158,8 +158,8 @@ pub use prompt::{
 };
 /// Re-exports items from `render`
 pub use render::{
-    ShellView, SlashSuggestionEntry, SlashSuggestionsOverlay, TranscriptScrollView,
-    render_shell, render_snapshot,
+    ShellView, SlashSuggestionEntry, SlashSuggestionsOverlay, TranscriptScrollView, render_shell,
+    render_snapshot,
 };
 /// Re-exports items from `security`
 pub use security::{

@@ -171,8 +171,6 @@ pub(super) fn action_for_item_id(id: &str, _command: &str) -> SetupItemAction {
              For now, run: wonder-of-u login --provider copilot"
                 .into(),
         ),
-        _ => SetupItemAction::Placeholder(format!(
-            "'{id}' setup is not yet available in the TUI."
-        )),
+        _ => SetupItemAction::Placeholder(format!("'{id}' setup is not yet available in the TUI.")),
     }
 }

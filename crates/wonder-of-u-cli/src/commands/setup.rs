@@ -303,8 +303,14 @@ mod tests {
         else {
             panic!("expected Text output");
         };
-        assert!(text.contains("provider_selection="), "missing provider_selection");
-        assert!(text.contains("provider_readiness="), "missing provider_readiness");
+        assert!(
+            text.contains("provider_selection="),
+            "missing provider_selection"
+        );
+        assert!(
+            text.contains("provider_readiness="),
+            "missing provider_readiness"
+        );
     }
 
     #[test]
@@ -315,8 +321,14 @@ mod tests {
         else {
             panic!("expected Text output");
         };
-        let item_count = text.lines().filter(|l| l.starts_with("setup_item=")).count();
-        assert_eq!(item_count, 9, "expected 9 setup_item lines, got {item_count}");
+        let item_count = text
+            .lines()
+            .filter(|l| l.starts_with("setup_item="))
+            .count();
+        assert_eq!(
+            item_count, 9,
+            "expected 9 setup_item lines, got {item_count}"
+        );
     }
 
     #[test]
@@ -415,7 +427,15 @@ mod tests {
             panic!("expected Text output");
         };
 
-        for slash_cmd in ["login", "model", "config", "theme", "permissions", "memory", "keybindings"] {
+        for slash_cmd in [
+            "login",
+            "model",
+            "config",
+            "theme",
+            "permissions",
+            "memory",
+            "keybindings",
+        ] {
             assert!(
                 text.contains(&format!("/{slash_cmd}")),
                 "non-interactive output should mention /{slash_cmd}"

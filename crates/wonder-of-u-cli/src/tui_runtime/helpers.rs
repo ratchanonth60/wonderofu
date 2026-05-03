@@ -1381,7 +1381,11 @@ pub(super) fn parse_setup_overlay_state(text: &str) -> Option<SetupOverlayState>
     if items.is_empty() {
         return None;
     }
-    Some(SetupOverlayState::new(items, provider_label, readiness_label))
+    Some(SetupOverlayState::new(
+        items,
+        provider_label,
+        readiness_label,
+    ))
 }
 
 /// Parses a single `setup_item=<json>` value into a [`SetupItem`].

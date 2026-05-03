@@ -57,13 +57,13 @@ use session::{
     ClearCommand, CompactCommand, ExportCommand, RenameCommand, ResumeCommand, SessionCommand,
     TagCommand,
 };
+use setup::SetupCommand;
 use skills::SkillsCommand;
 use status::{
     ChromeCommand, CostCommand, DesktopCommand, FeedbackCommand, IdeCommand, InsightsCommand,
     MobileCommand, OutputStyleCommand, ReleaseNotesCommand, StatsCommand, StatusCommand,
     UpgradeCommand, UsageCommand, VersionCommand,
 };
-use setup::SetupCommand;
 use tui::TuiCommand;
 use workflow::{
     AgentsCommand, BriefCommand, ColorCommand, CommitCommand, CommitPushPrCommand, EffortCommand,

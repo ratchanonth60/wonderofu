@@ -42,7 +42,7 @@ impl TranscriptScrollState {
     ///
     /// This is the default mode; it is restored by calling
     /// [`scroll_to_bottom`](TranscriptScrollState::scroll_to_bottom).
-    #[allow(dead_code)]  // only used in tests, not from production call sites
+    #[allow(dead_code)] // only used in tests, not from production call sites
     #[must_use]
     pub(super) fn is_following_tail(&self) -> bool {
         self.offset_from_bottom == 0
@@ -54,7 +54,8 @@ impl TranscriptScrollState {
     /// viewport (no scrolling is possible).
     #[must_use]
     fn max_offset(&self) -> usize {
-        self.last_total_lines.saturating_sub(self.last_visible_lines)
+        self.last_total_lines
+            .saturating_sub(self.last_visible_lines)
     }
 
     /// Clamps `offset_from_bottom` to `[0, max_offset()]`.
@@ -158,7 +159,10 @@ mod tests {
 
     #[test]
     fn default_matches_new() {
-        assert_eq!(TranscriptScrollState::default(), TranscriptScrollState::new());
+        assert_eq!(
+            TranscriptScrollState::default(),
+            TranscriptScrollState::new()
+        );
     }
 
     // ── max_offset ───────────────────────────────────────────────────────────

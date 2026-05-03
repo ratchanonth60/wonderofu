@@ -256,7 +256,12 @@ fn draw_message_view(frame: &mut FrameBuffer, area: Rect, view: &ShellView, them
     } else if view.scroll.is_following_tail() {
         draw_lines_tail(frame, transcript_area, &msg_lines);
     } else {
-        draw_lines_windowed(frame, transcript_area, &msg_lines, view.scroll.offset_from_bottom);
+        draw_lines_windowed(
+            frame,
+            transcript_area,
+            &msg_lines,
+            view.scroll.offset_from_bottom,
+        );
     }
 
     if docked_height == 0 || docked_height > area.height.saturating_sub(title_height) {
@@ -1583,7 +1588,10 @@ mod tests {
         let text = frame.to_plain_text();
         assert!(text.contains("line 02"), "window start must be visible");
         assert!(text.contains("line 07"), "window end must be visible");
-        assert!(!text.contains("line 01"), "line before window must be hidden");
+        assert!(
+            !text.contains("line 01"),
+            "line before window must be hidden"
+        );
         assert!(!text.contains("line 10"), "newest line must not appear");
     }
 
