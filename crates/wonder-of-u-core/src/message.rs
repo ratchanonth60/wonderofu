@@ -230,9 +230,9 @@ pub enum MessagePayload {
     /// A sanitized provider or runtime error persisted into the transcript.
     ///
     /// The `message` field contains display-safe text with credentials
-    /// already redacted and length already bounded.  The `kind` field
-    /// is a short machine-readable tag (e.g. `"provider"`, `"runtime"`,
-    /// `"timeout"`) that callers may use for styling or filtering.
+    /// already redacted. The `kind` field is a short machine-readable tag
+    /// (e.g. `"provider"`, `"runtime"`, `"timeout"`) that callers may use
+    /// for styling or filtering.
     ProviderError {
         /// Machine-readable error kind.
         kind: String,

@@ -5958,17 +5958,14 @@ fn sanitize_error_authorization_header_is_redacted() {
 }
 
 #[test]
-fn sanitize_error_long_message_is_truncated() {
-    // Transcript entries must never be unbounded; messages exceeding the cap
-    // (400 chars) must be truncated.  `truncate_chars` appends a one-char
-    // ellipsis so the result is exactly 400 *chars* (not bytes).
+fn sanitize_error_long_message_is_preserved() {
+    // Provider errors can include useful multi-line diagnostics. The history
+    // entry should preserve the full text after credential redaction so users
+    // can inspect the complete failure.
     let long_msg = "x".repeat(500);
     let sanitized = sanitize_error_for_display(&long_msg);
-    assert!(
-        sanitized.chars().count() <= 400,
-        "sanitized message must not exceed 400 chars; char count={} got: {sanitized:?}",
-        sanitized.chars().count()
-    );
+    assert_eq!(sanitized.chars().count(), 500);
+    assert_eq!(sanitized, long_msg);
 }
 
 #[test]

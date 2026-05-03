@@ -1450,12 +1450,8 @@ pub(super) fn provider_form_status_note(stage: &ProviderFormStage) -> String {
 /// - Stage 2 (`EnterValue`): the query box holds the staged (masked) value;
 ///   the list shows only the selected provider as context.
 ///
-/// Maximum character length for provider errors inserted into transcript history.
-const MAX_ERROR_DISPLAY_LEN: usize = 400;
-
-/// Redacts credential-like patterns from `error` and truncates to
-/// [`MAX_ERROR_DISPLAY_LEN`] characters so that raw provider responses are
-/// safe to persist in the transcript.
+/// Redacts credential-like patterns from `error` so raw provider responses are
+/// safe to persist in the transcript without hiding useful diagnostic context.
 ///
 /// Redaction rules (applied in order, case-insensitive):
 /// - `Authorization: Bearer <token>` headers → header name preserved, token replaced
@@ -1465,11 +1461,10 @@ const MAX_ERROR_DISPLAY_LEN: usize = 400;
 /// # Examples
 ///
 /// ```ignore
-/// // Keys and bearer tokens are redacted; truncation applies to long strings.
+/// // Keys and bearer tokens are redacted before the error is persisted.
 /// ```
 pub(super) fn sanitize_error_for_display(error: &str) -> String {
-    let redacted = redact_credentials(error);
-    truncate_chars(&redacted, MAX_ERROR_DISPLAY_LEN)
+    redact_credentials(error)
 }
 
 /// Replaces credential-like substrings with placeholder text.
