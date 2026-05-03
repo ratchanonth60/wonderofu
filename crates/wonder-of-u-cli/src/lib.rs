@@ -557,18 +557,47 @@ fn run_with_terminal_mode<W: Write>(
     writer: &mut W,
     interactive_terminal: bool,
 ) -> Result<()> {
-    let registry = commands::registry(cli.storage_dir.clone())?;
+    let storage_dir = cli.storage_dir.or_else(resolve_default_storage_dir);
+    let registry = commands::registry(storage_dir.clone())?;
     match launch_plan(cli.command, interactive_terminal)? {
         LaunchPlan::Tui { session_id } => tui_runtime::run_tui(
             writer,
             &registry,
-            cli.storage_dir.as_deref(),
+            storage_dir.as_deref(),
             tui_runtime::TuiLaunchOptions { session_id },
         ),
         LaunchPlan::Invocation(invocation) => {
-            run_registered_invocation(invocation, &registry, cli.storage_dir.as_deref(), writer)
+            run_registered_invocation(invocation, &registry, storage_dir.as_deref(), writer)
         }
     }
+}
+
+/// Resolves the default storage directory from well-known environment variables.
+///
+/// Lookup order:
+/// 1. `WONDER_OF_U_STORAGE_DIR` — explicit override.
+/// 2. `XDG_CONFIG_HOME/wonder-of-u` — XDG Base Directory spec.
+/// 3. `HOME/.config/wonder-of-u` — POSIX fallback.
+///
+/// Returns `None` when none of the variables are set; callers that require a
+/// storage directory will surface a helpful error via [`wonder_of_u_agent::require_storage_dir`].
+fn resolve_default_storage_dir() -> Option<PathBuf> {
+    if let Ok(path) = std::env::var("WONDER_OF_U_STORAGE_DIR") {
+        if !path.is_empty() {
+            return Some(PathBuf::from(path));
+        }
+    }
+    if let Ok(path) = std::env::var("XDG_CONFIG_HOME") {
+        if !path.is_empty() {
+            return Some(PathBuf::from(path).join("wonder-of-u"));
+        }
+    }
+    if let Ok(path) = std::env::var("HOME") {
+        if !path.is_empty() {
+            return Some(PathBuf::from(path).join(".config").join("wonder-of-u"));
+        }
+    }
+    None
 }
 
 #[cfg(test)]
