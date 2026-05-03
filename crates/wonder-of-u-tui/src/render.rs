@@ -91,7 +91,9 @@ pub struct ShellView {
 }
 
 impl ShellView {
-    /// Handles prompt height
+    /// Returns the height the prompt area should occupy.
+    ///
+    /// Compact layout: 1 separator row + content rows (no border bottom).
     #[must_use]
     pub fn prompt_height(&self) -> u16 {
         let line_count = match &self.history_search {
@@ -99,8 +101,8 @@ impl ShellView {
             None => text_line_count(&self.prompt),
         };
         u16::try_from(line_count)
-            .unwrap_or(u16::MAX.saturating_sub(2))
-            .saturating_add(2)
+            .unwrap_or(u16::MAX.saturating_sub(1))
+            .saturating_add(1)
     }
     /// Handles from app state
     #[must_use]
@@ -135,7 +137,11 @@ struct StyledLine {
 
 /// Renders shell
 pub fn render_shell(frame: &mut FrameBuffer, view: &ShellView, theme: &Theme) {
-    let layout = ShellLayout::split(frame.area(), view.prompt_height());
+    // Cap prompt height at roughly one third of the terminal so chat/history
+    // always dominates the display.  Minimum of 2 rows (separator + one line).
+    let max_prompt = (frame.area().height / 3).max(2);
+    let prompt_height = view.prompt_height().min(max_prompt);
+    let layout = ShellLayout::split(frame.area(), prompt_height);
     frame.fill_rect(frame.area(), ' ', theme.background);
 
     draw_message_view(frame, layout.messages, view, theme);
@@ -279,25 +285,20 @@ fn draw_prompt_view(frame: &mut FrameBuffer, area: Rect, view: &ShellView, theme
     }
 
     frame.fill_rect(area, ' ', theme.background);
-    if area.width < 4 || area.height < 3 {
-        draw_lines(frame, area, &prompt_panel_lines(view, theme));
+
+    // Compact layout: a single separator rule on the top row, then content below.
+    // This replaces the old rounded-border box and saves two rows for transcript.
+    draw_rule(frame, area.x, area.y, area.width, theme.border);
+
+    if area.height < 2 {
         return;
     }
 
-    draw_rounded_border(frame, area, theme.border);
-    frame.write_str(
-        area.x.saturating_add(2),
-        area.y,
-        " prompt ",
-        theme.footer,
-        area.width.saturating_sub(4),
-    );
-
     let content = Rect::new(
-        area.x.saturating_add(2),
+        area.x,
         area.y.saturating_add(1),
-        area.width.saturating_sub(4),
-        area.height.saturating_sub(2),
+        area.width,
+        area.height.saturating_sub(1),
     );
     draw_lines(frame, content, &prompt_panel_lines(view, theme));
 }
@@ -922,6 +923,7 @@ fn welcome_panel_lines(theme: &Theme) -> Vec<StyledLine> {
         l!("   │  Type a message to get started     │", dim),
         l!("   │  /  for slash commands             │", dim),
         l!("   │  ?  for help                       │", dim),
+        l!("   │  Shift+Enter  insert newline        │", dim),
         l!("   ╰────────────────────────────────────╯", dim),
         l!("", body),
     ]
@@ -1065,9 +1067,9 @@ mod tests {
                 "",
                 "   ██╗    ██╗  ██████╗  ██╗",
                 "   ██║    ██║ ██╔═══██╗ ██║",
-                "╭─ prompt ───────────────────╮",
-                "│ ›                          │",
-                "╰────────────────────────────╯",
+                "   ██║ █╗ ██║ ██║   ██║ ██║",
+                "──────────────────────────────",
+                "›",
                 "◆ prompt | 0 messages",
                 "             ctrl-c interrupt",
             ]
@@ -1113,11 +1115,11 @@ mod tests {
                 "▸ wonder-of-u  Demo",
                 "system> ready",
                 "assistant> hello",
+                "",
                 "Tasks",
                 "[running] shell: index workspace",
-                "╭─ prompt ─────────────────────────────────────╮",
-                "│ › /status                                    │",
-                "╰──────────────────────────────────────────────╯",
+                "────────────────────────────────────────────────",
+                "› /status",
                 "◆ prompt | 2 messages",
                 "              cwd=/workspace · ctrl-c interrupt",
             ]
@@ -1209,13 +1211,13 @@ mod tests {
                 "▸ wonder-of-u  Demo",
                 "assistant> ready",
                 "",
+                "",
                 "Queued",
                 "1. /status",
                 "2. draft migration plan",
                 "+2 more queued",
-                "╭─ prompt ───────────────────────────────╮",
-                "│ › /plan                                │",
-                "╰────────────────────────────────────────╯",
+                "──────────────────────────────────────────",
+                "› /plan",
                 "◆ prompt | 1 messages",
                 "        cwd=/workspace · ctrl-c interrupt",
             ]
@@ -1259,9 +1261,9 @@ mod tests {
                 " │[Confirm]  Cancel                     │",
                 " ╰──────────────────────────────────────╯",
                 "",
-                "╭─ prompt ───────────────────────────────╮",
-                "│ › continue?                            │",
-                "╰────────────────────────────────────────╯",
+                "",
+                "──────────────────────────────────────────",
+                "› continue?",
                 "◆ permission | 1 messages",
                 "        cwd=/workspace · ctrl-c interrupt",
             ]
@@ -1310,11 +1312,11 @@ mod tests {
                 "",
                 "",
                 "",
-                "╭─ prompt ───────────────────────────────╮",
-                "│ search: pla                            │",
-                "│ match 2/3                              │",
-                "│ draft plan                             │",
-                "╰────────────────────────────────────────╯",
+                "",
+                "──────────────────────────────────────────",
+                "search: pla",
+                "match 2/3",
+                "draft plan",
                 "◆ prompt | 1 messages",
                 "        cwd=/workspace · ctrl-c interrupt",
             ]
@@ -1388,9 +1390,9 @@ mod tests {
                 "▸ wonder-of-u  Demo",
                 "tools[bash]> 1 call",
                 "  • #00000000 ok · command=\"echo hi\" → done",
-                "╭─ prompt ─────────────────────────────────────╮",
-                "│ ›                                            │",
-                "╰──────────────────────────────────────────────╯",
+                "",
+                "────────────────────────────────────────────────",
+                "›",
                 "◆ prompt | 2 messages",
                 "              cwd=/workspace · ctrl-c interrupt",
             ]
@@ -1449,9 +1451,9 @@ mod tests {
                 "                      ╭─ok Task update • focus─╮",
                 "                      │tests passed            │",
                 "                      ╰────────────────────────╯",
-                "╭─ prompt ─────────────────────────────────────╮",
-                "│ ›                                            │",
-                "╰──────────────────────────────────────────────╯",
+                "",
+                "────────────────────────────────────────────────",
+                "›",
                 "◆ prompt | 1 messages",
                 "              cwd=/workspace · ctrl-c interrupt",
             ]
@@ -1569,17 +1571,17 @@ mod tests {
 
     #[test]
     fn transcript_scrolled_up_shows_earlier_window() {
-        // 10 lines, render_snapshot(20, 12) → 6 visible transcript rows.
-        // offset_from_bottom = 3 → start = (10 - 6) - 3 = 1 → shows lines 02–07.
+        // 10 lines, render_snapshot(20, 12) → 7 visible transcript rows (compact layout).
+        // offset_from_bottom = 2 → start = (10 - 7) - 2 = 1 → shows lines 02–08.
         let view = ShellView {
             title: "Session: Scrolled".into(),
             messages: make_long_transcript(10),
             prompt: String::new(),
             status: "scrolled".into(),
             scroll: TranscriptScrollView {
-                offset_from_bottom: 3,
+                offset_from_bottom: 2,
                 total_lines: 10,
-                visible_lines: 6,
+                visible_lines: 7,
             },
             ..ShellView::default()
         };
@@ -1587,7 +1589,7 @@ mod tests {
         let frame = render_snapshot(20, 12, &view, &Theme::default());
         let text = frame.to_plain_text();
         assert!(text.contains("line 02"), "window start must be visible");
-        assert!(text.contains("line 07"), "window end must be visible");
+        assert!(text.contains("line 08"), "window end must be visible");
         assert!(
             !text.contains("line 01"),
             "line before window must be hidden"
@@ -1701,6 +1703,137 @@ mod tests {
         assert!(
             text.contains("line 03"),
             "last line must be visible when clamped"
+        );
+    }
+
+    // ── prompt height and cap ────────────────────────────────────────────────
+
+    #[test]
+    fn prompt_height_single_line_is_separator_plus_one() {
+        // Compact layout: 1 separator row + 1 content row = 2.
+        let view = ShellView {
+            prompt: "hello".into(),
+            ..ShellView::default()
+        };
+        assert_eq!(view.prompt_height(), 2);
+    }
+
+    #[test]
+    fn prompt_height_multiline_counts_all_lines() {
+        // 3-line prompt → 1 separator + 3 content rows = 4.
+        let view = ShellView {
+            prompt: "line one\nline two\nline three".into(),
+            ..ShellView::default()
+        };
+        assert_eq!(view.prompt_height(), 4);
+    }
+
+    #[test]
+    fn prompt_height_empty_prompt_returns_two() {
+        // An empty prompt still needs 1 separator + 1 blank content row.
+        let view = ShellView {
+            prompt: String::new(),
+            ..ShellView::default()
+        };
+        assert_eq!(view.prompt_height(), 2);
+    }
+
+    #[test]
+    fn render_shell_caps_prompt_to_one_third_of_terminal_height() {
+        // Terminal height = 9 rows; one-third cap = max(9/3, 2) = 3 prompt rows.
+        // A 10-line prompt would request prompt_height() = 11, but the renderer
+        // must cap it at 3 so the history/transcript area always gets space.
+        let ten_line_prompt = (0..10)
+            .map(|i| format!("line {i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let view = ShellView {
+            title: "Session: Cap".into(),
+            messages: vec![MessageLineView::new(
+                "assistant> hello",
+                MessageRole::Assistant,
+            )],
+            prompt: ten_line_prompt,
+            status: "prompt".into(),
+            ..ShellView::default()
+        };
+
+        // The uncapped prompt would be 11 rows tall; with a 9-row terminal the
+        // render should not panic and the transcript line must still be visible.
+        let frame = render_snapshot(40, 9, &view, &Theme::default());
+        let text = frame.to_plain_text();
+        assert!(
+            text.contains("assistant> hello"),
+            "transcript must survive tall prompt; rendered:\n{text}"
+        );
+    }
+
+    // ── multiline prompt marker and cursor offset ────────────────────────────
+
+    #[test]
+    fn multiline_prompt_first_line_has_marker_continuation_lines_do_not() {
+        // The compact prompt renders the first line prefixed with '› ' and
+        // subsequent lines without the marker so cursor-column arithmetic for
+        // lines after the first does not need to compensate for the marker width.
+        // Use a 14-row terminal so the one-third cap (14/3 = 4) matches the
+        // 3-line prompt height (1 sep + 3 content = 4), ensuring all lines render.
+        let view = ShellView {
+            title: "Session: ML".into(),
+            messages: Vec::new(),
+            prompt: "first line\nsecond line\nthird line".into(),
+            status: "prompt".into(),
+            ..ShellView::default()
+        };
+
+        let frame = render_snapshot(30, 14, &view, &Theme::default());
+        let text = frame.to_plain_text();
+
+        // First line must carry the prompt marker.
+        assert!(
+            text.contains("› first line"),
+            "first prompt line must have the '› ' marker; rendered:\n{text}"
+        );
+        // Continuation lines must not carry the marker — they should start
+        // flush with the content column without '› '.
+        assert!(
+            text.contains("second line") && !text.contains("› second line"),
+            "second prompt line must NOT have the '› ' marker; rendered:\n{text}"
+        );
+        assert!(
+            text.contains("third line") && !text.contains("› third line"),
+            "third prompt line must NOT have the '› ' marker; rendered:\n{text}"
+        );
+    }
+
+    // ── provider error rendering via ShellView::from_app_state ──────────────
+
+    #[test]
+    fn provider_error_payload_appears_as_error_role_in_shell_view() {
+        // Verify that from_app_state maps a ProviderError payload through
+        // message_lines() into a MessageLineView with MessageRole::Error.
+        // This complements the lower-level render_message test by confirming
+        // the full pipeline from AppState → ShellView → transcript line.
+        let mut app = AppState::new(PathBuf::from("/workspace"));
+        let envelope = MessageEnvelope::new(
+            app.session.id,
+            MessagePayload::ProviderError {
+                kind: "provider".into(),
+                message: "connection refused".into(),
+            },
+        );
+        app.push_message(envelope).expect("push provider error");
+
+        let view = ShellView::from_app_state(&app, "");
+        assert_eq!(view.messages.len(), 1, "one transcript line expected");
+        assert_eq!(
+            view.messages[0].role,
+            MessageRole::Error,
+            "ProviderError must map to MessageRole::Error"
+        );
+        assert!(
+            view.messages[0].text.contains("connection refused"),
+            "message body must appear in the transcript line; got: {:?}",
+            view.messages[0].text
         );
     }
 }

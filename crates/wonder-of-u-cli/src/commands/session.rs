@@ -932,6 +932,7 @@ fn payload_distribution(messages: &[MessageEnvelope]) -> String {
             | MessagePayload::Task { .. }
             | MessagePayload::Permission { .. }
             | MessagePayload::PlanApproval { .. }
+            | MessagePayload::ProviderError { .. }
             | MessagePayload::Command { .. } => progress += 1,
         }
     }
@@ -1040,6 +1041,9 @@ fn message_summary(message: &MessageEnvelope) -> String {
             "plan {}: {summary}",
             if *approved { "approved" } else { "rejected" }
         ),
+        MessagePayload::ProviderError { kind, message } => {
+            format!("error[{kind}]: {message}")
+        }
     }
 }
 

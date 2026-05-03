@@ -3984,7 +3984,7 @@ fn controller_preserves_restored_provider_selection_on_resume() {
 #[test]
 fn prompt_cursor_tracks_edit_position_inside_prompt_panel() {
     let (x, y) = prompt_cursor_position(40, 10, "abc", 2);
-    assert_eq!((x, y), (6, 6));
+    assert_eq!((x, y), (4, 7));
 }
 
 /// Verify that enabling brief mode injects the hint into the system prompt
@@ -5895,4 +5895,216 @@ fn copilot_oauth_setup_overlay_item_has_copilot_oauth_action() {
         "copilot-oauth item must use CopilotOAuth action; got {:?}",
         item.action
     );
+}
+
+// ── sanitize_error_for_display ────────────────────────────────────────────────
+
+#[test]
+fn sanitize_error_bearer_token_is_redacted() {
+    // Raw provider errors may contain Authorization headers or inline Bearer
+    // tokens.  These must never reach the persistent transcript.
+    let raw = "request failed: Bearer supersecrettoken123 trailing text";
+    let sanitized = sanitize_error_for_display(raw);
+    assert!(
+        !sanitized.contains("supersecrettoken123"),
+        "bearer token must be redacted; got: {sanitized:?}"
+    );
+    assert!(
+        sanitized.contains("Bearer [REDACTED]"),
+        "placeholder must be present; got: {sanitized:?}"
+    );
+    // Non-sensitive parts of the message must survive.
+    assert!(
+        sanitized.contains("request failed"),
+        "non-sensitive prefix must survive; got: {sanitized:?}"
+    );
+}
+
+#[test]
+fn sanitize_error_sk_key_is_redacted() {
+    // OpenAI-style `sk-...` keys embedded in error messages are redacted.
+    let raw = r#"{"error":"invalid key","key":"sk-abc123XYZ"}"#;
+    let sanitized = sanitize_error_for_display(raw);
+    assert!(
+        !sanitized.contains("sk-abc123XYZ"),
+        "sk- key must be redacted; got: {sanitized:?}"
+    );
+    assert!(
+        sanitized.contains("sk-[REDACTED]"),
+        "redacted placeholder must be present; got: {sanitized:?}"
+    );
+}
+
+#[test]
+fn sanitize_error_authorization_header_is_redacted() {
+    // Multi-line error dumps that include HTTP headers must have the
+    // Authorization line fully replaced so the value is never persisted.
+    let raw =
+        "HTTP/1.1 401 Unauthorized\nAuthorization: Bearer tok999\nContent-Type: application/json";
+    let sanitized = sanitize_error_for_display(raw);
+    assert!(
+        !sanitized.contains("tok999"),
+        "auth value must be redacted; got: {sanitized:?}"
+    );
+    assert!(
+        sanitized.contains("Authorization: [REDACTED]"),
+        "placeholder must replace the header value; got: {sanitized:?}"
+    );
+    // Other headers must survive.
+    assert!(
+        sanitized.contains("Content-Type"),
+        "non-sensitive headers must survive; got: {sanitized:?}"
+    );
+}
+
+#[test]
+fn sanitize_error_long_message_is_truncated() {
+    // Transcript entries must never be unbounded; messages exceeding the cap
+    // (400 chars) must be truncated.  `truncate_chars` appends a one-char
+    // ellipsis so the result is exactly 400 *chars* (not bytes).
+    let long_msg = "x".repeat(500);
+    let sanitized = sanitize_error_for_display(&long_msg);
+    assert!(
+        sanitized.chars().count() <= 400,
+        "sanitized message must not exceed 400 chars; char count={} got: {sanitized:?}",
+        sanitized.chars().count()
+    );
+}
+
+#[test]
+fn sanitize_error_plain_message_passes_through_unchanged() {
+    let plain = "connection refused (os error 111)";
+    let sanitized = sanitize_error_for_display(plain);
+    assert_eq!(
+        sanitized, plain,
+        "plain messages without credentials must be unchanged"
+    );
+}
+
+// ── prompt / history-search cursor at small terminal height ──────────────────
+
+/// At terminal heights 5-8 the renderer's cap formula `(h/3).max(2)` differs
+/// from the former buggy `(h/3).max(3)`.  This test uses height=6 where:
+///   renderer cap = (6/3).max(2) = 2   (correct)
+///   former cap   = (6/3).max(3) = 3   (wrong)
+///
+/// A 3-line prompt has uncapped height=4.  With cap=2 the layout places the
+/// prompt rect at y=2 so the first content row is y=3.  With the wrong cap=3
+/// the prompt rect was at y=1 (content at y=2) — one row above where the
+/// renderer actually draws it.
+#[test]
+fn prompt_cursor_position_small_terminal_respects_renderer_cap() {
+    // 3-line prompt: uncapped height = 4.  At height=6, correct cap = 2.
+    let (x, y) = prompt_cursor_position(40, 6, "line1\nline2\nline3", 5);
+    // Cursor is in "line1" (no newline before position 5), first line → "› " prefix.
+    // layout.prompt = Rect(0, 2, 40, 2), content_y = 3, content_height = 1.
+    assert_eq!(
+        (x, y),
+        (7, 3),
+        "cursor row must land inside the prompt area rendered at the correct cap; got ({x}, {y})"
+    );
+}
+
+/// Same cap-formula fix for `history_search_cursor_position`.  At height=6
+/// (cap=2) a history-search view with no match has uncapped height=4 which
+/// gets capped to 2, placing content_y=3.  The old cap=3 would give content_y=2.
+#[test]
+fn history_search_cursor_position_small_terminal_respects_renderer_cap() {
+    let view = HistorySearchView {
+        query: "abc".into(),
+        match_text: None,
+        match_index: 0,
+        match_total: 0,
+    };
+    // query_cursor=3 → x = content_x + "search: ".len() + 3 = 11
+    let (x, y) = history_search_cursor_position(40, 6, &view, 3);
+    assert_eq!(
+        (x, y),
+        (11, 3),
+        "history-search cursor must use the renderer's cap; got ({x}, {y})"
+    );
+}
+
+// ── combined-pattern sanitization ─────────────────────────────────────────────
+
+/// An error message that contains both an `sk-` API key *and* a Bearer token
+/// must have both patterns independently redacted.
+#[test]
+fn sanitize_error_combined_credential_patterns_are_both_redacted() {
+    let raw = "request failed: Authorization: Bearer eyJhbGciOiJSUzI1NiJ9.payload, \
+               key=sk-proj-ABCDEFGHIJKLMNOPQRSTUVWXYZ12345678";
+    let sanitized = sanitize_error_for_display(raw);
+    assert!(
+        !sanitized.contains("eyJhbGciOiJSUzI1NiJ9"),
+        "Bearer token value must be redacted; got: {sanitized:?}"
+    );
+    assert!(
+        !sanitized.contains("sk-proj-"),
+        "sk- key must be redacted; got: {sanitized:?}"
+    );
+    assert!(
+        sanitized.contains("[REDACTED]"),
+        "redacted placeholder must appear; got: {sanitized:?}"
+    );
+}
+
+// ── controller provider failure ───────────────────────────────────────────────
+
+#[test]
+fn controller_provider_failure_appends_error_message_and_clears_prompt() {
+    // Point the provider at a port that refuses connections so submit_prompt
+    // receives a network error.  The error must be persisted as a
+    // ProviderError transcript entry and the prompt must be cleared.
+    let dir = unique_test_dir("tui-provider-failure");
+    // Port 1 reliably refuses connections on Linux (privileged port, never bound).
+    write_provider_config(dir.as_path(), "http://127.0.0.1:1");
+    let registry = commands::registry(Some(dir.clone())).expect("registry");
+    let mut controller = TuiController::new(
+        test_context(&dir),
+        &registry,
+        Some(dir.as_path()),
+        TuiLaunchOptions { session_id: None },
+    )
+    .expect("controller");
+
+    controller.prompt.insert_text("trigger provider failure");
+    controller
+        .submit_prompt(&mut |_| Ok(()))
+        .expect("submit_prompt itself must not propagate the provider error");
+
+    // The prompt must be cleared — error is visible in history.
+    assert_eq!(
+        controller.prompt.text(),
+        "",
+        "prompt must be cleared after provider failure"
+    );
+    // A ProviderError must have been appended to the transcript.
+    let has_provider_error = controller.state.messages.iter().any(|msg| {
+        matches!(&msg.payload, MessagePayload::ProviderError { kind, .. } if kind == "provider")
+    });
+    assert!(
+        has_provider_error,
+        "transcript must contain a ProviderError after submit failure; messages: {:?}",
+        controller
+            .state
+            .messages
+            .iter()
+            .map(|m| &m.payload)
+            .collect::<Vec<_>>()
+    );
+    // The status note must point the user to history.
+    assert_eq!(
+        controller.status_note.as_deref(),
+        Some("provider error — see history"),
+        "status note must direct user to history"
+    );
+    // The error message in history must not contain raw credentials.
+    for msg in &controller.state.messages {
+        if let MessagePayload::ProviderError { message, .. } = &msg.payload {
+            assert!(
+                !message.contains("Bearer ") || message.contains("[REDACTED]"),
+                "persisted error must not contain unredacted Bearer tokens"
+            );
+        }
+    }
 }

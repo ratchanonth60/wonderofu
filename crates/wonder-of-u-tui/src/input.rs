@@ -27,8 +27,18 @@ pub enum Motion {
 pub enum EditAction {
     /// Represents move
     Move(Motion),
-    /// Represents insert newline
+    /// Inserts a newline — the controller interprets this as **submit**.
+    ///
+    /// Plain `Enter` maps to this action; use [`InsertLiteralNewline`] for
+    /// `Shift+Enter` multiline composition.
+    ///
+    /// [`InsertLiteralNewline`]: EditAction::InsertLiteralNewline
     InsertNewline,
+    /// Inserts a literal `\n` into the buffer without triggering submit.
+    ///
+    /// Only meaningful for multiline prompt buffers; single-line buffers
+    /// silently discard the character (see [`TextBuffer::insert_char`]).
+    InsertLiteralNewline,
     /// Represents backspace
     Backspace,
     /// Represents delete
@@ -116,7 +126,11 @@ impl TextBuffer {
     pub fn apply_edit_action(&mut self, action: EditAction) {
         match action {
             EditAction::Move(motion) => self.move_caret(motion, 1),
-            EditAction::InsertNewline => self.insert_char('\n'),
+            // InsertNewline is intercepted by the controller as "submit";
+            // hitting it through the buffer directly still inserts '\n'.
+            EditAction::InsertNewline | EditAction::InsertLiteralNewline => {
+                self.insert_char('\n');
+            }
             EditAction::Backspace => {
                 self.backspace();
             }
@@ -533,6 +547,24 @@ mod tests {
         buffer.append_after_cursor();
         buffer.insert_text("A");
         assert_eq!(buffer.text(), "bAeta");
+    }
+
+    #[test]
+    fn insert_literal_newline_inserts_into_multiline_buffer() {
+        let mut buf = TextBuffer::new(true);
+        buf.insert_text("hello");
+        buf.apply_edit_action(EditAction::InsertLiteralNewline);
+        buf.insert_text("world");
+        assert_eq!(buf.text(), "hello\nworld");
+        assert_eq!(buf.cursor(), 11);
+    }
+
+    #[test]
+    fn insert_literal_newline_is_blocked_in_single_line_buffer() {
+        let mut buf = TextBuffer::new(false);
+        buf.insert_text("hello");
+        buf.apply_edit_action(EditAction::InsertLiteralNewline);
+        assert_eq!(buf.text(), "hello");
     }
 
     #[test]

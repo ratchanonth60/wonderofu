@@ -21,6 +21,20 @@ The TUI includes:
 - `/setup` hub for provider and preference configuration
 - Scrollable chat transcript with keyboard and mouse controls
 
+## Chat history and prompt input
+
+The transcript is the main AI conversation surface. Assistant output, tool/runtime
+updates, and provider errors are shown inline in history so failures remain visible
+after transient status text changes.
+
+| Key | Effect |
+| --- | --- |
+| `Enter` | Submit the current prompt |
+| `Shift+Enter` | Insert a newline for a multiline prompt |
+
+The prompt can grow across lines, but its height is capped so the transcript remains
+usable while composing longer messages.
+
 ## Setup hub (`/setup`)
 
 Type `/setup` inside the TUI (or press Enter when the auto-open prompt appears on first

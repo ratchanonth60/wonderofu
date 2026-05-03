@@ -13,7 +13,7 @@ wonder-of-u
 
 | Area | What you get |
 | --- | --- |
-| Terminal UI | ratatui/crossterm shell with rounded panels, slash autocomplete, model/theme/memory pickers, Vim mode, history search, notifications, permission dialogs, `/setup` hub, and chat transcript scroll |
+| Terminal UI | ratatui/crossterm shell with a chat-first transcript, inline error history, multiline prompt input, slash autocomplete, model/theme/memory pickers, Vim mode, history search, notifications, permission dialogs, `/setup` hub, and transcript scroll |
 | Providers | Anthropic, OpenAI, and GitHub Copilot OAuth device-code flow — configurable from the TUI via `/setup` |
 | Sessions | JSONL-backed transcripts, snapshots, resume, export, rename, tag, clear, and compact |
 | Tools | Native file/search/shell-style tool runtime with permission checks and path validation |
@@ -72,6 +72,21 @@ wonder-of-u resume <session-id>
 
 Inside the TUI, type `/` to open slash-command autocomplete, or `/setup` to open the
 settings hub (also opened automatically on first launch when no provider is configured).
+
+### Chat history
+
+The transcript is the primary AI conversation surface. Assistant replies, tool/runtime
+updates, and provider errors all appear inline in the chat history so failures stay
+visible after the status line changes.
+
+### Prompt input
+
+| Key | Effect |
+| --- | --- |
+| `Enter` | Submit the current prompt |
+| `Shift+Enter` | Insert a newline for a multiline prompt |
+
+Multiline prompts grow only up to a capped height so the transcript remains visible.
 
 ### Chat transcript scroll
 

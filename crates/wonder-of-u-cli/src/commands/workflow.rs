@@ -3258,6 +3258,7 @@ fn format_resolved_key(result: ResolvedKey) -> String {
             EditAction::Backspace => "delete backward".into(),
             EditAction::Delete => "delete forward".into(),
             EditAction::InsertNewline => "submit / insert newline".into(),
+            EditAction::InsertLiteralNewline => "insert literal newline".into(),
         },
         ResolvedKey::InsertChar(ch) => format!("insert `{ch}`"),
         ResolvedKey::System(SystemAction::Interrupt) => "interrupt or exit".into(),

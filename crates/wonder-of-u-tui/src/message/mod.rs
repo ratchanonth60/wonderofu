@@ -349,6 +349,14 @@ fn render_message(message: &MessageEnvelope, output: &mut Vec<MessageLineView>) 
                 MessageRole::Error
             },
         )),
+        MessagePayload::ProviderError { kind, message } => {
+            push_prefixed_lines(
+                output,
+                &format!("error[{kind}]> "),
+                message,
+                MessageRole::Error,
+            );
+        }
     }
 }
 
@@ -581,5 +589,23 @@ mod tests {
                 ),
             ]
         );
+    }
+
+    #[test]
+    fn provider_error_renders_with_error_role_and_kind_prefix() {
+        let session_id = SessionId::new();
+        let messages = vec![MessageEnvelope::new(
+            session_id,
+            MessagePayload::ProviderError {
+                kind: "provider".into(),
+                message: "connection refused\nextra detail".into(),
+            },
+        )];
+
+        let lines = message_lines(&messages);
+        assert_eq!(lines.len(), 2);
+        assert_eq!(lines[0].role, MessageRole::Error);
+        assert!(lines[0].text.starts_with("error[provider]> "));
+        assert_eq!(lines[1].role, MessageRole::Error);
     }
 }

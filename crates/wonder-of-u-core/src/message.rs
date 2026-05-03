@@ -227,11 +227,41 @@ pub enum MessagePayload {
         /// Stores the approved
         approved: bool,
     },
+    /// A sanitized provider or runtime error persisted into the transcript.
+    ///
+    /// The `message` field contains display-safe text with credentials
+    /// already redacted and length already bounded.  The `kind` field
+    /// is a short machine-readable tag (e.g. `"provider"`, `"runtime"`,
+    /// `"timeout"`) that callers may use for styling or filtering.
+    ProviderError {
+        /// Machine-readable error kind.
+        kind: String,
+        /// Sanitized, display-safe error message.
+        message: String,
+    },
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn provider_error_payload_round_trips_json() {
+        let session_id = SessionId::new();
+        let msg = MessageEnvelope::new(
+            session_id,
+            MessagePayload::ProviderError {
+                kind: "provider".into(),
+                message: "connection refused".into(),
+            },
+        );
+        let json = serde_json::to_string(&msg).expect("serialize");
+        let decoded: MessageEnvelope = serde_json::from_str(&json).expect("deserialize");
+        assert!(
+            matches!(&decoded.payload, MessagePayload::ProviderError { kind, message }
+                if kind == "provider" && message == "connection refused")
+        );
+    }
 
     #[test]
     fn message_envelope_json_round_trips() {

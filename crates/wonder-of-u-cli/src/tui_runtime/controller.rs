@@ -189,7 +189,7 @@ impl<'a> TuiController<'a> {
             storage_dir: storage_dir.map(Path::to_path_buf),
             state,
             persistence,
-            prompt: TextBuffer::new(false),
+            prompt: TextBuffer::new(true),
             keymap: crate::commands::workflow::load_keybinding_resolver(storage_dir)?,
             vim: VimState::default(),
             history_search: None,
@@ -476,7 +476,7 @@ impl<'a> TuiController<'a> {
             .and_then(|s| s.selected())
             .map(|s| s.replacement.clone());
         if let Some(text) = replacement {
-            self.prompt = TextBuffer::new(false);
+            self.prompt = TextBuffer::new(true);
             for ch in text.chars() {
                 self.prompt.insert_char(ch);
             }
@@ -1127,11 +1127,12 @@ impl<'a> TuiController<'a> {
             return Ok(());
         }
 
-        self.prompt = TextBuffer::new(false);
+        self.prompt = TextBuffer::new(true);
         self.reset_history_recall();
         self.status_note = None;
         self.needs_render = true;
 
+        let is_provider_prompt = !input.starts_with('/');
         let result = if input.starts_with('/') {
             self.turn_state = TurnState::CommandQueued;
             before_blocking(self)?;
@@ -1149,8 +1150,33 @@ impl<'a> TuiController<'a> {
                 }
                 self.needs_render = true;
             }
+            Err(error) if is_provider_prompt => {
+                // Persist the error into history so the user can see it even
+                // after scrolling; then leave the prompt cleared.
+                let sanitized = sanitize_error_for_display(&error.to_string());
+                if let Ok(error_msg) = append_contextual_message(
+                    &mut self.state,
+                    MessagePayload::ProviderError {
+                        kind: "provider".into(),
+                        message: sanitized,
+                    },
+                ) {
+                    // Best-effort persist; non-fatal if storage is unavailable.
+                    let _ = persist_messages_and_state(
+                        self.storage_dir.as_deref(),
+                        &self.state,
+                        &mut self.persistence,
+                        &[error_msg],
+                    );
+                    self.notify_transcript_changed();
+                }
+                self.turn_state = TurnState::Interrupted;
+                self.status_note = Some("provider error — see history".into());
+                self.needs_render = true;
+            }
             Err(error) => {
-                self.prompt = TextBuffer::from_text(&original, false);
+                // Slash-command errors restore the prompt so the user can retry.
+                self.prompt = TextBuffer::from_text(&original, true);
                 self.turn_state = TurnState::Interrupted;
                 self.status_note = Some(format!("error: {error}"));
                 self.needs_render = true;
@@ -3778,7 +3804,7 @@ impl<'a> TuiController<'a> {
             self.needs_render = true;
             return Ok(());
         };
-        self.prompt = TextBuffer::from_text(selection, false);
+        self.prompt = TextBuffer::from_text(selection, true);
         self.turn_state = TurnState::EditingInput;
         self.state.input_mode = InputMode::Prompt;
         self.status_note = Some("history search accepted".into());
@@ -3973,12 +3999,13 @@ impl<'a> TuiController<'a> {
     /// so that the scroll state stays accurate without building a full view.
     pub(super) fn on_terminal_resize(&mut self, width: u16, height: u16) {
         self.last_terminal_size = (width, height);
-        // Estimate prompt height the same way ShellView::prompt_height() does:
-        // number of text lines + 2 border rows.
+        // Compact prompt height: separator row + content rows (no border bottom).
         let prompt_lines = self.prompt.text().lines().count().max(1);
-        let prompt_height = u16::try_from(prompt_lines)
+        let uncapped = u16::try_from(prompt_lines)
             .unwrap_or(u16::MAX)
-            .saturating_add(2);
+            .saturating_add(1);
+        let cap = (height / 3).max(2);
+        let prompt_height = uncapped.min(cap);
         let layout = ShellLayout::split(Rect::new(0, 0, width, height), prompt_height);
         let total = message_lines(&self.state.messages).len();
         self.scroll_state
@@ -4007,9 +4034,11 @@ impl<'a> TuiController<'a> {
             return Rect::new(0, 0, 0, 0);
         }
         let prompt_lines = self.prompt.text().lines().count().max(1);
-        let prompt_height = u16::try_from(prompt_lines)
+        let uncapped = u16::try_from(prompt_lines)
             .unwrap_or(u16::MAX)
-            .saturating_add(2);
+            .saturating_add(1);
+        let cap = (height / 3).max(2);
+        let prompt_height = uncapped.min(cap);
         ShellLayout::split(Rect::new(0, 0, width, height), prompt_height).messages
     }
 

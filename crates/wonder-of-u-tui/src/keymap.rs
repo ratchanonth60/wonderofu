@@ -195,6 +195,12 @@ const NONE: KeyModifiers = KeyModifiers {
     alt: false,
 };
 
+const SHIFT: KeyModifiers = KeyModifiers {
+    shift: true,
+    control: false,
+    alt: false,
+};
+
 const CONTROL: KeyModifiers = KeyModifiers {
     shift: false,
     control: true,
@@ -236,7 +242,7 @@ const RESERVED_BINDINGS: [KeyBinding; 4] = [
     },
 ];
 
-fn prompt_bindings(context: KeyBindingContext) -> [KeyBinding; 12] {
+fn prompt_bindings(context: KeyBindingContext) -> [KeyBinding; 13] {
     [
         bind(
             context,
@@ -309,6 +315,13 @@ fn prompt_bindings(context: KeyBindingContext) -> [KeyBinding; 12] {
             KeyCode::Enter,
             NONE,
             ResolvedKey::Edit(EditAction::InsertNewline),
+        ),
+        // Shift+Enter inserts a literal newline for multiline composition.
+        bind(
+            context,
+            KeyCode::Enter,
+            SHIFT,
+            ResolvedKey::Edit(EditAction::InsertLiteralNewline),
         ),
     ]
 }
@@ -424,6 +437,37 @@ fn bind(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn shift_enter_resolves_to_insert_literal_newline_in_prompt_and_vim_insert() {
+        let resolver = KeyBindingResolver::new();
+        let shift_enter = KeyEvent {
+            code: KeyCode::Enter,
+            modifiers: KeyModifiers {
+                shift: true,
+                control: false,
+                alt: false,
+            },
+        };
+
+        assert_eq!(
+            resolver.resolve(KeyBindingContext::Prompt, shift_enter),
+            Some(ResolvedKey::Edit(EditAction::InsertLiteralNewline))
+        );
+        assert_eq!(
+            resolver.resolve(KeyBindingContext::VimInsert, shift_enter),
+            Some(ResolvedKey::Edit(EditAction::InsertLiteralNewline))
+        );
+        // Plain Enter still submits.
+        let plain_enter = KeyEvent {
+            code: KeyCode::Enter,
+            modifiers: NONE,
+        };
+        assert_eq!(
+            resolver.resolve(KeyBindingContext::Prompt, plain_enter),
+            Some(ResolvedKey::Edit(EditAction::InsertNewline))
+        );
+    }
 
     #[test]
     fn resolver_maps_ctrl_bindings_and_printable_input() {

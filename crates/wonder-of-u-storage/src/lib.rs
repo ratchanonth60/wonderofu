@@ -933,6 +933,8 @@ fn session_memory_text(payload: &MessagePayload) -> Option<(SessionMemorySource,
                 if *approved { "approved" } else { "rejected" }
             ),
         )),
+        // Provider errors are not searchable session memory; skip them.
+        MessagePayload::ProviderError { .. } => None,
     }
 }
 

@@ -609,7 +609,8 @@ fn render_context_summary(state: &AppState) -> String {
             MessagePayload::System { .. }
             | MessagePayload::Progress { .. }
             | MessagePayload::HookResult { .. }
-            | MessagePayload::PlanApproval { .. } => {}
+            | MessagePayload::PlanApproval { .. }
+            | MessagePayload::ProviderError { .. } => {}
         }
     }
     let running_tasks = state

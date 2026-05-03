@@ -226,34 +226,38 @@ pub(super) fn prompt_cursor_position(
     prompt: &str,
     cursor: usize,
 ) -> (u16, u16) {
+    let uncapped_height = ShellView {
+        title: String::new(),
+        messages: Vec::new(),
+        prompt: prompt.into(),
+        history_search: None,
+        status: String::new(),
+        loading: false,
+        loading_verb: None,
+        footer: String::new(),
+        queued_panel: None,
+        task_panel: None,
+        dialog: None,
+        picker_view: None,
+        picker_list: None,
+        notifications: Vec::new(),
+        slash_suggestions: None,
+        scroll: wonder_of_u_tui::TranscriptScrollView::default(),
+    }
+    .prompt_height();
+    // Apply the same 1/3-terminal cap used by the renderer.
+    let cap = (height / 3).max(2);
+    let capped_height = uncapped_height.min(cap);
     let layout = ShellLayout::split(
         wonder_of_u_tui::Rect::new(0, 0, width.max(1), height.max(1)),
-        ShellView {
-            title: String::new(),
-            messages: Vec::new(),
-            prompt: prompt.into(),
-            history_search: None,
-            status: String::new(),
-            loading: false,
-            loading_verb: None,
-            footer: String::new(),
-            queued_panel: None,
-            task_panel: None,
-            dialog: None,
-            picker_view: None,
-            picker_list: None,
-            notifications: Vec::new(),
-            slash_suggestions: None,
-            scroll: wonder_of_u_tui::TranscriptScrollView::default(),
-        }
-        .prompt_height(),
+        capped_height,
     );
-    let inner = wonder_of_u_tui::Rect::new(
-        layout.prompt.x.saturating_add(2),
-        layout.prompt.y.saturating_add(1),
-        layout.prompt.width.saturating_sub(4),
-        layout.prompt.height.saturating_sub(2),
-    );
+    // Compact layout: content starts one row below the separator line.
+    let content_x = layout.prompt.x;
+    let content_y = layout.prompt.y.saturating_add(1);
+    let content_width = layout.prompt.width;
+    let content_height = layout.prompt.height.saturating_sub(1);
+
     let cursor_text = prompt.chars().take(cursor).collect::<String>();
     let mut line = 0u16;
     let mut column = 0u16;
@@ -265,14 +269,13 @@ pub(super) fn prompt_cursor_position(
             column = column.saturating_add(1);
         }
     }
+    // First line has a "› " prefix (2 chars); subsequent lines start at column 0.
+    let x_offset: u16 = if line == 0 { 2 } else { 0 };
     (
-        inner
-            .x
-            .saturating_add(2)
-            .saturating_add(column.min(inner.width.saturating_sub(1))),
-        inner
-            .y
-            .saturating_add(line.min(inner.height.saturating_sub(1))),
+        content_x
+            .saturating_add(x_offset)
+            .saturating_add(column.min(content_width.saturating_sub(1))),
+        content_y.saturating_add(line.min(content_height.saturating_sub(1))),
     )
 }
 
@@ -282,43 +285,43 @@ pub(super) fn history_search_cursor_position(
     view: &HistorySearchView,
     query_cursor: usize,
 ) -> (u16, u16) {
+    let uncapped_height = ShellView {
+        title: String::new(),
+        messages: Vec::new(),
+        prompt: view.match_text.clone().unwrap_or_default(),
+        history_search: Some(view.clone()),
+        status: String::new(),
+        loading: false,
+        loading_verb: None,
+        footer: String::new(),
+        queued_panel: None,
+        task_panel: None,
+        dialog: None,
+        picker_view: None,
+        picker_list: None,
+        notifications: Vec::new(),
+        slash_suggestions: None,
+        scroll: wonder_of_u_tui::TranscriptScrollView::default(),
+    }
+    .prompt_height();
+    let cap = (height / 3).max(2);
+    let capped_height = uncapped_height.min(cap);
     let layout = ShellLayout::split(
         wonder_of_u_tui::Rect::new(0, 0, width.max(1), height.max(1)),
-        ShellView {
-            title: String::new(),
-            messages: Vec::new(),
-            prompt: view.match_text.clone().unwrap_or_default(),
-            history_search: Some(view.clone()),
-            status: String::new(),
-            loading: false,
-            loading_verb: None,
-            footer: String::new(),
-            queued_panel: None,
-            task_panel: None,
-            dialog: None,
-            picker_view: None,
-            picker_list: None,
-            notifications: Vec::new(),
-            slash_suggestions: None,
-            scroll: wonder_of_u_tui::TranscriptScrollView::default(),
-        }
-        .prompt_height(),
+        capped_height,
     );
-    let inner = wonder_of_u_tui::Rect::new(
-        layout.prompt.x.saturating_add(2),
-        layout.prompt.y.saturating_add(1),
-        layout.prompt.width.saturating_sub(4),
-        layout.prompt.height.saturating_sub(2),
-    );
+    // Content starts one row below the separator.
+    let content_x = layout.prompt.x;
+    let content_y = layout.prompt.y.saturating_add(1);
+    let content_width = layout.prompt.width;
     let query_prefix = "search: ".chars().count();
     (
-        inner
-            .x
+        content_x
             .saturating_add(
                 u16::try_from(query_prefix.saturating_add(query_cursor)).unwrap_or(u16::MAX),
             )
-            .min(inner.right().saturating_sub(1)),
-        inner.y,
+            .min(content_x.saturating_add(content_width).saturating_sub(1)),
+        content_y,
     )
 }
 
@@ -1446,6 +1449,82 @@ pub(super) fn provider_form_status_note(stage: &ProviderFormStage) -> String {
 /// - Stage 1 (`PickProvider`): lists all selectable providers.
 /// - Stage 2 (`EnterValue`): the query box holds the staged (masked) value;
 ///   the list shows only the selected provider as context.
+///
+/// Maximum character length for provider errors inserted into transcript history.
+const MAX_ERROR_DISPLAY_LEN: usize = 400;
+
+/// Redacts credential-like patterns from `error` and truncates to
+/// [`MAX_ERROR_DISPLAY_LEN`] characters so that raw provider responses are
+/// safe to persist in the transcript.
+///
+/// Redaction rules (applied in order, case-insensitive):
+/// - `Authorization: Bearer <token>` headers → header name preserved, token replaced
+/// - `sk-<token>` style API keys → replaced with `sk-[REDACTED]`
+/// - Any `Bearer <word>` token literal → token replaced
+///
+/// # Examples
+///
+/// ```ignore
+/// // Keys and bearer tokens are redacted; truncation applies to long strings.
+/// ```
+pub(super) fn sanitize_error_for_display(error: &str) -> String {
+    let redacted = redact_credentials(error);
+    truncate_chars(&redacted, MAX_ERROR_DISPLAY_LEN)
+}
+
+/// Replaces credential-like substrings with placeholder text.
+fn redact_credentials(text: &str) -> String {
+    let mut result = String::with_capacity(text.len());
+    let chars: Vec<char> = text.chars().collect();
+    let len = chars.len();
+    let mut i = 0;
+
+    while i < len {
+        // Match "Bearer " (case-insensitive) and redact the following token.
+        if len.saturating_sub(i) >= 7 {
+            let candidate: String = chars[i..i + 7].iter().collect();
+            if candidate.eq_ignore_ascii_case("bearer ") {
+                result.push_str("Bearer [REDACTED]");
+                i += 7;
+                // Skip the token characters (non-whitespace run).
+                while i < len && !chars[i].is_whitespace() {
+                    i += 1;
+                }
+                continue;
+            }
+        }
+        // Match "sk-" key prefix and redact the following token.
+        if len.saturating_sub(i) >= 3 {
+            let candidate: String = chars[i..i + 3].iter().collect();
+            if candidate == "sk-" {
+                result.push_str("sk-[REDACTED]");
+                i += 3;
+                while i < len && !chars[i].is_whitespace() && chars[i] != '"' {
+                    i += 1;
+                }
+                continue;
+            }
+        }
+        // Match "Authorization:" header key and redact the value portion.
+        if len.saturating_sub(i) >= 14 {
+            let candidate: String = chars[i..i + 14].iter().collect();
+            if candidate.eq_ignore_ascii_case("authorization:") {
+                result.push_str("Authorization: [REDACTED]");
+                i += 14;
+                // Skip to end of line.
+                while i < len && chars[i] != '\n' {
+                    i += 1;
+                }
+                continue;
+            }
+        }
+        result.push(chars[i]);
+        i += 1;
+    }
+
+    result
+}
+
 pub(super) fn provider_form_picker_view(form: &ProviderFormState) -> PickerListView {
     let kind_label = match form.kind {
         ProviderFormKind::ApiKey => "API Key",
