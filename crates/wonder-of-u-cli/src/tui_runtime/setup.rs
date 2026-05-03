@@ -2,9 +2,57 @@
 //!
 //! [`SetupOverlayState`] models the setup menu opened by `/setup`.
 //! [`ProviderFormState`] models the two-stage API-key / API-base form opened
-//! from within that menu.  Both are purely ephemeral and are never persisted.
+//! from within that menu.  [`CopilotOAuthFlowState`] drives the Copilot
+//! device-code OAuth dialog.  All are purely ephemeral and are never persisted.
 
+use std::sync::mpsc;
+
+use wonder_of_u_agent::{CopilotDeviceCode, CopilotOAuthToken};
+use wonder_of_u_core::Result;
 use wonder_of_u_tui::TextBuffer;
+
+// ── Copilot OAuth flow ────────────────────────────────────────────────────────
+
+/// Ephemeral state driving the Copilot device-code OAuth flow.
+///
+/// - `AwaitingConfirmation`: device code fetched; user must press Enter before
+///   the browser is opened and polling begins.
+/// - `Polling`: browser opened; a background thread is calling the GitHub token
+///   endpoint.  The main thread checks the channel on each [`UiEvent::Tick`].
+pub(super) enum CopilotOAuthFlowState {
+    /// Device code fetched; dialog shown; waiting for user confirmation.
+    AwaitingConfirmation {
+        /// Full device-code response.  `device_code` is the ephemeral secret
+        /// used for polling; `user_code` and `verification_uri` are safe to display.
+        device_code: CopilotDeviceCode,
+    },
+    /// Browser opened; background thread is polling for the access token.
+    Polling {
+        /// User-visible code, safe to display.
+        user_code: String,
+        /// Receives the single polling result from the background thread.
+        result_rx: mpsc::Receiver<Result<CopilotOAuthToken>>,
+    },
+}
+
+impl std::fmt::Debug for CopilotOAuthFlowState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::AwaitingConfirmation { device_code } => f
+                .debug_struct("AwaitingConfirmation")
+                .field("user_code", &device_code.user_code)
+                .field("verification_uri", &device_code.verification_uri)
+                // Never print the raw device_code; it is the ephemeral polling secret.
+                .field("device_code", &"<redacted>")
+                .finish(),
+            Self::Polling { user_code, .. } => f
+                .debug_struct("Polling")
+                .field("user_code", user_code)
+                .field("result_rx", &"<channel>")
+                .finish(),
+        }
+    }
+}
 
 /// The kind of value the provider form collects.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -92,6 +140,8 @@ pub(super) enum SetupItemAction {
     Placeholder(String),
     /// Open the two-stage provider form to collect an API key or base URL.
     ProviderForm(ProviderFormKind),
+    /// Open the Copilot device-code OAuth dialog.
+    CopilotOAuth,
 }
 
 /// A single entry in the setup hub menu.
@@ -165,12 +215,8 @@ pub(super) fn action_for_item_id(id: &str, _command: &str) -> SetupItemAction {
         "login" => SetupItemAction::ProviderForm(ProviderFormKind::ApiKey),
         // Opens the two-stage API-base URL override form.
         "api-base" => SetupItemAction::ProviderForm(ProviderFormKind::ApiBase),
-        // Copilot OAuth is deferred to `tui-copilot-oauth`.
-        "copilot-oauth" => SetupItemAction::Placeholder(
-            "Copilot OAuth flow is coming soon.\n\
-             For now, run: wonder-of-u login --provider copilot"
-                .into(),
-        ),
+        // Copilot OAuth uses the built-in device-code flow.
+        "copilot-oauth" => SetupItemAction::CopilotOAuth,
         _ => SetupItemAction::Placeholder(format!("'{id}' setup is not yet available in the TUI.")),
     }
 }

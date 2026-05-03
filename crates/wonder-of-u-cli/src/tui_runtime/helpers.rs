@@ -30,6 +30,20 @@ pub(super) fn launch_external_editor(request: &ExternalEditorRequest) -> Result<
     }
 }
 
+/// Opens `url` in the system browser.
+///
+/// Failure is intentionally silenced: if the browser cannot be launched the
+/// user can still navigate to the URL manually using the code shown in the
+/// dialog.
+pub(super) fn open_browser_url(url: &str) {
+    #[cfg(target_os = "macos")]
+    let _ = ProcessCommand::new("open").arg(url).spawn();
+    #[cfg(target_os = "linux")]
+    let _ = ProcessCommand::new("xdg-open").arg(url).spawn();
+    #[cfg(target_os = "windows")]
+    let _ = ProcessCommand::new("cmd").args(["/c", "start", "", url]).spawn();
+}
+
 pub(super) fn tui_editor_command() -> Option<(String, Vec<String>)> {
     let raw = std::env::var("VISUAL")
         .ok()

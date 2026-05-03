@@ -4541,15 +4541,15 @@ fn controller_setup_overlay_known_items_have_dispatch_action() {
         "api-base should be ProviderForm(ApiBase), got {:?}",
         api_base.action
     );
-    // Copilot OAuth remains a placeholder until its own flow is implemented.
+    // Copilot OAuth now has its own TUI flow.
     let oauth = overlay
         .items
         .iter()
         .find(|i| i.id == "copilot-oauth")
         .expect("copilot-oauth item");
     assert!(
-        matches!(&oauth.action, SetupItemAction::Placeholder(_)),
-        "copilot-oauth should remain Placeholder, got {:?}",
+        matches!(&oauth.action, SetupItemAction::CopilotOAuth),
+        "copilot-oauth should be CopilotOAuth action, got {:?}",
         oauth.action
     );
 }
@@ -4754,8 +4754,12 @@ fn controller_setup_overlay_enter_on_memory_dispatches_memory_picker() {
 fn controller_setup_overlay_enter_on_placeholder_item_shows_notice() {
     let (mut controller, _dir) = open_setup_overlay_controller();
 
-    // "login" now opens the provider form, so use "copilot-oauth" which
-    // remains a Placeholder until its own OAuth flow is implemented.
+    // "copilot-oauth" now opens the real OAuth device-code flow (no longer a Placeholder).
+    // Navigating to that item and pressing Enter triggers `open_copilot_oauth_flow()`.
+    // In a test environment without network access the device-code request fails and
+    // a "Copilot Login Failed" notice is shown; on a live network the confirmation
+    // dialog is shown instead.  Either way, the setup overlay is closed and a dialog
+    // (not a provider form) is displayed.
     let copilot_idx = {
         let overlay = controller
             .pending_setup_overlay
@@ -4776,29 +4780,19 @@ fn controller_setup_overlay_enter_on_placeholder_item_shows_notice() {
         Some(ResolvedKey::Edit(EditAction::InsertNewline)),
     );
 
-    // Setup overlay should be gone.
+    // Setup overlay should be gone — `open_copilot_oauth_flow` clears it.
     assert!(
         controller.pending_setup_overlay.is_none(),
-        "setup overlay should close after selecting placeholder item"
+        "setup overlay should close after selecting copilot-oauth item"
     );
-    // A notice dialog should be shown (not a provider form).
+    // A dialog should be shown (either the confirmation or the error).
     assert!(
         controller.dialog.is_some(),
-        "a notice dialog should appear for a placeholder item"
+        "a dialog should appear when copilot-oauth is selected"
     );
     assert!(
         controller.pending_provider_form.is_none(),
-        "provider form should NOT open for a Placeholder item"
-    );
-    let dialog = controller.dialog.as_ref().unwrap();
-    assert_eq!(dialog.title, "Copilot OAuth");
-    assert!(
-        controller
-            .status_note
-            .as_deref()
-            .unwrap_or_default()
-            .starts_with("setup:"),
-        "status note should start with 'setup:'"
+        "provider form should NOT open for a CopilotOAuth item"
     );
 }
 
@@ -5508,5 +5502,346 @@ fn provider_form_api_key_write_redacts_key_in_status_note() {
     assert!(
         !creds.providers.is_empty(),
         "at least one credential should be stored after API-key form submission"
+    );
+}
+
+// ── Copilot OAuth flow tests ──────────────────────────────────────────────────
+
+#[test]
+fn copilot_oauth_action_for_item_id_returns_copilot_oauth() {
+    use crate::tui_runtime::setup::{SetupItemAction, action_for_item_id};
+
+    let action = action_for_item_id("copilot-oauth", "/setup");
+    assert!(
+        matches!(action, SetupItemAction::CopilotOAuth),
+        "copilot-oauth item should map to CopilotOAuth action, got {action:?}"
+    );
+}
+
+/// Build a controller with `CopilotOAuthFlowState::AwaitingConfirmation` already set,
+/// avoiding a real network call for unit tests.
+fn make_controller_with_copilot_awaiting() -> (TuiController<'static>, tempfile::TempDir) {
+    use wonder_of_u_agent::CopilotDeviceCode;
+    use wonder_of_u_tui::DialogActionView;
+
+    let dir_obj = tempfile::TempDir::new().expect("tempdir");
+    let dir = dir_obj.path().to_path_buf();
+    let registry = Box::new(commands::registry(Some(dir.clone())).expect("registry"));
+    let registry: &'static _ = Box::leak(registry);
+    let mut controller = TuiController::new(
+        test_context(&dir),
+        registry,
+        Some(dir.as_path()),
+        TuiLaunchOptions { session_id: None },
+    )
+    .expect("controller");
+
+    let fake_device_code = CopilotDeviceCode {
+        device_code: "fake-device-secret".into(),
+        user_code: "ABCD-1234".into(),
+        verification_uri: "https://github.com/login/device".into(),
+        expires_in: 900,
+        interval: 5,
+    };
+    let dialog = wonder_of_u_tui::DialogView {
+        title: "GitHub Copilot Login".into(),
+        body: vec![
+            format!("1. Visit:      {}", fake_device_code.verification_uri),
+            format!("2. Enter code: {}", fake_device_code.user_code),
+            String::new(),
+            "Press Enter to open the browser and wait for authorization.".into(),
+            "Press Esc to cancel.".into(),
+        ],
+        actions: vec![
+            DialogActionView::new("Open Browser", true),
+            DialogActionView::new("Cancel", false),
+        ],
+    };
+    controller.dialog = Some(dialog);
+    controller.pending_setup_overlay = None; // real flow clears this; mirror that here
+    controller.pending_copilot_oauth = Some(
+        crate::tui_runtime::setup::CopilotOAuthFlowState::AwaitingConfirmation {
+            device_code: fake_device_code,
+        },
+    );
+
+    (controller, dir_obj)
+}
+
+#[test]
+fn copilot_oauth_awaiting_shows_dialog_with_url_and_code() {
+    let (controller, _dir) = make_controller_with_copilot_awaiting();
+
+    let dialog = controller
+        .dialog
+        .as_ref()
+        .expect("dialog should be set when oauth flow is AwaitingConfirmation");
+    assert_eq!(dialog.title, "GitHub Copilot Login");
+    let body_text = dialog.body.join("\n");
+    assert!(
+        body_text.contains("https://github.com/login/device"),
+        "dialog body must show the verification URL; got: {body_text:?}"
+    );
+    assert!(
+        body_text.contains("ABCD-1234"),
+        "dialog body must show the user code; got: {body_text:?}"
+    );
+    // Raw device_code secret must never appear in the dialog.
+    assert!(
+        !body_text.contains("fake-device-secret"),
+        "dialog body must NOT contain the raw device_code; got: {body_text:?}"
+    );
+}
+
+#[test]
+fn copilot_oauth_esc_cancels_awaiting_confirmation() {
+    let (mut controller, _dir) = make_controller_with_copilot_awaiting();
+
+    send_dialog_key(&mut controller, picker_key(KeyCode::Esc), None);
+
+    assert!(
+        controller.pending_copilot_oauth.is_none(),
+        "AwaitingConfirmation should be cleared after Esc"
+    );
+    assert!(
+        controller.dialog.is_none(),
+        "dialog should be dismissed after Esc"
+    );
+    assert_eq!(
+        controller.status_note.as_deref(),
+        Some("copilot oauth cancelled"),
+        "status note should report cancellation"
+    );
+}
+
+#[test]
+fn copilot_oauth_polling_esc_cancels() {
+    use std::sync::mpsc;
+    use wonder_of_u_agent::CopilotOAuthToken;
+
+    let dir_obj = tempfile::TempDir::new().expect("tempdir");
+    let dir = dir_obj.path().to_path_buf();
+    let registry = Box::new(commands::registry(Some(dir.clone())).expect("registry"));
+    let registry: &'static _ = Box::leak(registry);
+    let mut controller = TuiController::new(
+        test_context(&dir),
+        registry,
+        Some(dir.as_path()),
+        TuiLaunchOptions { session_id: None },
+    )
+    .expect("controller");
+
+    // Channel with nothing sent yet — simulates an in-progress poll.
+    let (_tx, rx) = mpsc::channel::<wonder_of_u_core::Result<CopilotOAuthToken>>();
+    controller.dialog = Some(wonder_of_u_tui::DialogView::notice(
+        "GitHub Copilot Login",
+        ["Waiting for authorization…"],
+    ));
+    controller.pending_setup_overlay = None; // real flow clears this; mirror that here
+    controller.pending_copilot_oauth =
+        Some(crate::tui_runtime::setup::CopilotOAuthFlowState::Polling {
+            user_code: "ABCD-1234".into(),
+            result_rx: rx,
+        });
+
+    send_dialog_key(&mut controller, picker_key(KeyCode::Esc), None);
+
+    assert!(
+        controller.pending_copilot_oauth.is_none(),
+        "Polling state should be cleared after Esc"
+    );
+    assert!(
+        controller.dialog.is_none(),
+        "dialog should be dismissed after Esc"
+    );
+    assert_eq!(
+        controller.status_note.as_deref(),
+        Some("copilot oauth polling cancelled"),
+    );
+}
+
+#[test]
+fn copilot_oauth_tick_stores_token_and_redacts_in_status_note() {
+    use std::sync::mpsc;
+    use wonder_of_u_agent::{AuthMaterial, CopilotOAuthToken};
+
+    let dir_obj = tempfile::TempDir::new().expect("tempdir");
+    let dir = dir_obj.path().to_path_buf();
+    let registry = Box::new(commands::registry(Some(dir.clone())).expect("registry"));
+    let registry: &'static _ = Box::leak(registry);
+    let mut controller = TuiController::new(
+        test_context(&dir),
+        registry,
+        Some(dir.as_path()),
+        TuiLaunchOptions { session_id: None },
+    )
+    .expect("controller");
+
+    let secret_token = "ghu_super_secret_access_token_xyz";
+    let (tx, rx) = mpsc::channel::<wonder_of_u_core::Result<CopilotOAuthToken>>();
+    tx.send(Ok(CopilotOAuthToken {
+        access_token: secret_token.into(),
+        refresh_token: Some("ghu_refresh_token".into()),
+        expires_at: None,
+    }))
+    .expect("send token");
+
+    controller.dialog = Some(wonder_of_u_tui::DialogView::notice(
+        "GitHub Copilot Login",
+        ["Waiting…"],
+    ));
+    controller.pending_setup_overlay = None; // real flow clears this; mirror that here
+    controller.pending_copilot_oauth =
+        Some(crate::tui_runtime::setup::CopilotOAuthFlowState::Polling {
+            user_code: "ABCD-1234".into(),
+            result_rx: rx,
+        });
+
+    controller
+        .tick_copilot_oauth_poll()
+        .expect("tick should succeed");
+
+    assert!(
+        controller.pending_copilot_oauth.is_none(),
+        "flow state should be cleared after successful poll"
+    );
+    assert!(
+        controller.dialog.is_none(),
+        "dialog should be dismissed after successful poll"
+    );
+
+    let note = controller.status_note.clone().unwrap_or_default();
+    // Must confirm success without leaking the token.
+    assert!(
+        !note.contains(secret_token),
+        "status note must NOT contain the raw access token; got: {note:?}"
+    );
+    assert!(
+        note.contains("authorized"),
+        "status note should confirm successful authorization; got: {note:?}"
+    );
+
+    // Token must be persisted to CredentialStore.
+    let creds = CredentialStore::new(dir.as_path())
+        .read()
+        .expect("read credentials");
+    let copilot = creds
+        .providers
+        .get("copilot")
+        .expect("copilot credential must be stored");
+    assert!(
+        matches!(copilot, AuthMaterial::OAuth { access_token: Some(_), .. }),
+        "copilot credential must be OAuth with an access_token; got: {copilot:?}"
+    );
+    if let AuthMaterial::OAuth {
+        access_token: Some(stored),
+        ..
+    } = copilot
+    {
+        assert_eq!(stored, secret_token);
+    }
+}
+
+#[test]
+fn copilot_oauth_tick_on_error_sets_status_note() {
+    use std::sync::mpsc;
+    use wonder_of_u_agent::CopilotOAuthToken;
+    use wonder_of_u_core::WonderError;
+
+    let dir_obj = tempfile::TempDir::new().expect("tempdir");
+    let dir = dir_obj.path().to_path_buf();
+    let registry = Box::new(commands::registry(Some(dir.clone())).expect("registry"));
+    let registry: &'static _ = Box::leak(registry);
+    let mut controller = TuiController::new(
+        test_context(&dir),
+        registry,
+        Some(dir.as_path()),
+        TuiLaunchOptions { session_id: None },
+    )
+    .expect("controller");
+
+    let (tx, rx) = mpsc::channel::<wonder_of_u_core::Result<CopilotOAuthToken>>();
+    tx.send(Err(WonderError::validation("device code expired")))
+        .expect("send error");
+
+    controller.pending_setup_overlay = None; // real flow clears this; mirror that here
+    controller.pending_copilot_oauth =
+        Some(crate::tui_runtime::setup::CopilotOAuthFlowState::Polling {
+            user_code: "ABCD-1234".into(),
+            result_rx: rx,
+        });
+
+    controller
+        .tick_copilot_oauth_poll()
+        .expect("tick should not panic on poll error");
+
+    assert!(
+        controller.pending_copilot_oauth.is_none(),
+        "flow state should be cleared after poll error"
+    );
+    let note = controller.status_note.clone().unwrap_or_default();
+    assert!(
+        note.contains("Copilot OAuth failed"),
+        "status note should report failure; got: {note:?}"
+    );
+}
+
+#[test]
+fn copilot_oauth_tick_noop_when_no_state() {
+    let dir_obj = tempfile::TempDir::new().expect("tempdir");
+    let dir = dir_obj.path().to_path_buf();
+    let registry = Box::new(commands::registry(Some(dir.clone())).expect("registry"));
+    let registry: &'static _ = Box::leak(registry);
+    let mut controller = TuiController::new(
+        test_context(&dir),
+        registry,
+        Some(dir.as_path()),
+        TuiLaunchOptions { session_id: None },
+    )
+    .expect("controller");
+
+    assert!(controller.pending_copilot_oauth.is_none());
+    let note_before = controller.status_note.clone();
+    controller
+        .tick_copilot_oauth_poll()
+        .expect("tick noop should not error");
+    // tick is a no-op when there is no pending oauth state; status note is unchanged.
+    assert!(controller.pending_copilot_oauth.is_none());
+    assert_eq!(controller.status_note, note_before);
+}
+
+#[test]
+fn copilot_oauth_dismiss_dialog_clears_flow() {
+    let (mut controller, _dir) = make_controller_with_copilot_awaiting();
+    assert!(controller.pending_copilot_oauth.is_some());
+    assert!(controller.dialog.is_some());
+
+    controller.dismiss_dialog();
+
+    assert!(
+        controller.pending_copilot_oauth.is_none(),
+        "dismiss_dialog should clear pending_copilot_oauth"
+    );
+    assert!(controller.dialog.is_none());
+}
+
+#[test]
+fn copilot_oauth_setup_overlay_item_has_copilot_oauth_action() {
+    use crate::tui_runtime::setup::SetupItemAction;
+
+    let (controller, _dir) = open_setup_overlay_controller();
+    let overlay = controller
+        .pending_setup_overlay
+        .as_ref()
+        .expect("setup overlay open");
+    let item = overlay
+        .items
+        .iter()
+        .find(|i| i.id == "copilot-oauth")
+        .expect("copilot-oauth item exists");
+    assert!(
+        matches!(item.action, SetupItemAction::CopilotOAuth),
+        "copilot-oauth item must use CopilotOAuth action; got {:?}",
+        item.action
     );
 }
