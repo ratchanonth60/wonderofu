@@ -13,7 +13,7 @@ wonder-of-u
 
 | Area | What you get |
 | --- | --- |
-| Terminal UI | ratatui/crossterm shell with a chat-first transcript, inline error history, multiline prompt input in a rounded bordered box, slash autocomplete, model/theme/memory pickers, Vim mode, history search, notifications, permission dialogs, `/setup` hub, transcript scroll, and a right-side session panel on wide terminals |
+| Terminal UI | ratatui/crossterm shell with a chat-first transcript, inline error history, multiline prompt input in a rounded bordered box, slash autocomplete, model/theme/memory pickers, Vim mode, history search, notifications, permission dialogs, `/setup` hub, transcript scroll, and a toggleable right-side sidebar panel (`Ctrl+B` / `/sidebar`) |
 | Providers | Anthropic, OpenAI, and GitHub Copilot OAuth device-code flow — configurable from the TUI via `/setup` |
 | Sessions | JSONL-backed transcripts, snapshots, resume, export, rename, tag, clear, and compact |
 | Tools | Native file/search/shell-style tool runtime with permission checks and path validation |
@@ -87,12 +87,14 @@ The prompt is a rounded bordered box (`╭─ prompt ─╮`) at the bottom of t
 | --- | --- |
 | `Enter` | Submit the current prompt |
 | `Shift+Enter` | Insert a newline for a multiline prompt |
+| `Ctrl+B` | Toggle the right-side sidebar panel |
 
 Multiline prompts grow only up to a capped height so the transcript remains visible.
 
-On wide terminals (≥ 100 columns) a right-side panel appears showing keyboard shortcuts
-and session metadata (model, auth status, git branch, working directory).  The panel
-never reduces the width of the prompt box.
+On wide terminals (≥ 100 columns) a right-side sidebar appears automatically showing
+session metadata, active model, context, providers, status, and controls.  Toggle it
+with `Ctrl+B` or `/sidebar [on|off|toggle]`.  The sidebar is hidden automatically on
+terminals narrower than 100 columns and its state is not persisted between sessions.
 
 ### Chat transcript scroll
 

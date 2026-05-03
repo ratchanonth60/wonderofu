@@ -1494,7 +1494,10 @@ impl<'a> TuiController<'a> {
     {
         // Handle /sidebar as a TUI-local toggle that never reaches the command registry.
         let trimmed = input.trim();
-        let sub = trimmed.strip_prefix("/sidebar").map(str::trim).unwrap_or("");
+        let sub = trimmed
+            .strip_prefix("/sidebar")
+            .map(str::trim)
+            .unwrap_or("");
         if trimmed == "/sidebar" || trimmed.starts_with("/sidebar ") {
             let enabled = match sub {
                 "on" => Some(true),
@@ -2258,12 +2261,10 @@ impl<'a> TuiController<'a> {
             )];
 
             // Section 6 – Workspace: runtime label, git branch, truncated cwd.
-            let mut workspace_lines =
-                vec![runtime_label(
-                    self.state.provider.as_deref(),
-                    self.state.model.as_deref(),
-                )
-                .to_string()];
+            let mut workspace_lines = vec![
+                runtime_label(self.state.provider.as_deref(), self.state.model.as_deref())
+                    .to_string(),
+            ];
             if let Some(branch) = &self.state.session.git_branch {
                 workspace_lines.push(format!("⎇  {branch}"));
             }
@@ -2395,8 +2396,7 @@ impl<'a> TuiController<'a> {
             let active_model = self.state.model.as_deref().unwrap_or("");
             let mut provider_lines: Vec<String> = Vec::new();
 
-            if let Ok(report) =
-                ProviderResolver::builtin().load_report(self.storage_dir.as_deref())
+            if let Ok(report) = ProviderResolver::builtin().load_report(self.storage_dir.as_deref())
             {
                 for pd in &report.available_providers {
                     // Use the currently active model when this is the active provider;

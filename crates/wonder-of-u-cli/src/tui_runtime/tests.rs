@@ -6194,7 +6194,10 @@ fn sidebar_toggle_method_flips_and_restores() {
     assert!(controller.sidebar_visible, "precondition: starts visible");
 
     controller.toggle_sidebar();
-    assert!(!controller.sidebar_visible, "sidebar must be hidden after first toggle");
+    assert!(
+        !controller.sidebar_visible,
+        "sidebar must be hidden after first toggle"
+    );
     assert_eq!(
         controller.status_note.as_deref(),
         Some("sidebar off"),
@@ -6202,7 +6205,10 @@ fn sidebar_toggle_method_flips_and_restores() {
     );
 
     controller.toggle_sidebar();
-    assert!(controller.sidebar_visible, "sidebar must be visible after second toggle");
+    assert!(
+        controller.sidebar_visible,
+        "sidebar must be visible after second toggle"
+    );
     assert_eq!(
         controller.status_note.as_deref(),
         Some("sidebar on"),
@@ -6244,8 +6250,7 @@ fn sidebar_ctrl_b_toggles_via_key_event() {
     send_prompt_key(&mut controller, ctrl_b);
 
     assert_eq!(
-        controller.sidebar_visible,
-        !was_visible,
+        controller.sidebar_visible, !was_visible,
         "Ctrl+B must flip sidebar_visible"
     );
 }
@@ -6270,8 +6275,7 @@ fn sidebar_slash_command_bare_toggles() {
         .expect("/sidebar must not error");
 
     assert_eq!(
-        controller.sidebar_visible,
-        !original,
+        controller.sidebar_visible, !original,
         "/sidebar bare must flip sidebar_visible"
     );
 }
@@ -6294,7 +6298,10 @@ fn sidebar_slash_on_off_toggle_subcommands() {
     controller
         .execute_slash_command("/sidebar off")
         .expect("/sidebar off must not error");
-    assert!(!controller.sidebar_visible, "/sidebar off must set sidebar_visible=false");
+    assert!(
+        !controller.sidebar_visible,
+        "/sidebar off must set sidebar_visible=false"
+    );
     assert_eq!(
         controller.status_note.as_deref(),
         Some("sidebar off"),
@@ -6305,7 +6312,10 @@ fn sidebar_slash_on_off_toggle_subcommands() {
     controller
         .execute_slash_command("/sidebar on")
         .expect("/sidebar on must not error");
-    assert!(controller.sidebar_visible, "/sidebar on must set sidebar_visible=true");
+    assert!(
+        controller.sidebar_visible,
+        "/sidebar on must set sidebar_visible=true"
+    );
     assert_eq!(
         controller.status_note.as_deref(),
         Some("sidebar on"),
@@ -6316,7 +6326,10 @@ fn sidebar_slash_on_off_toggle_subcommands() {
     controller
         .execute_slash_command("/sidebar toggle")
         .expect("/sidebar toggle must not error");
-    assert!(!controller.sidebar_visible, "/sidebar toggle must flip to false");
+    assert!(
+        !controller.sidebar_visible,
+        "/sidebar toggle must flip to false"
+    );
 }
 
 /// When `sidebar_visible` is false, `view()` must return `sidebar: None` so the

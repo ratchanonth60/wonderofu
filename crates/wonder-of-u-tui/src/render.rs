@@ -184,12 +184,7 @@ impl ShellView {
                 workspace_lines.push(format!("⎇  {branch}"));
             }
             // Use the last path component as a short cwd label.
-            if let Some(cwd) = app
-                .session
-                .cwd
-                .file_name()
-                .and_then(|n| n.to_str())
-            {
+            if let Some(cwd) = app.session.cwd.file_name().and_then(|n| n.to_str()) {
                 workspace_lines.push(format!("  {cwd}"));
             }
 
@@ -2142,10 +2137,7 @@ mod tests {
             prompt: "say hello".into(),
             sidebar: Some(SidebarView {
                 provider_lines: vec!["◈ copilot · gpt-4".into()],
-                control_lines: vec![
-                    "↵ send  ⇧↵ newline".into(),
-                    "⎋ cancel  ? help".into(),
-                ],
+                control_lines: vec!["↵ send  ⇧↵ newline".into(), "⎋ cancel  ? help".into()],
                 status_lines: vec!["✓ ready".into()],
                 ..SidebarView::default()
             }),
@@ -2246,10 +2238,7 @@ mod tests {
         let view = ShellView {
             prompt: "hi".into(),
             sidebar: Some(SidebarView {
-                workspace_lines: vec![
-                    "⎇  feat/my-feature".into(),
-                    "✓ ready".into(),
-                ],
+                workspace_lines: vec!["⎇  feat/my-feature".into(), "✓ ready".into()],
                 ..SidebarView::default()
             }),
             ..ShellView::default()

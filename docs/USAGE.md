@@ -70,6 +70,47 @@ When no overlay is open, the following controls scroll the message transcript:
 > **Note** — scroll controls are suppressed while any overlay is active (picker,
 > dialog, history search).  Those overlays handle their own navigation.
 
+## Sidebar
+
+The sidebar is a right-side panel that shows live session context alongside the chat
+transcript.
+
+| Section | What it shows |
+| --- | --- |
+| **Session** | Session ID, title, and start time |
+| **Context** | Active working directory and git branch |
+| **Providers** | Configured providers and auth state |
+| **Status** | Current agent/tool execution state |
+| **Controls** | Key hint reference |
+| **Workspace** | Workspace root and loaded config |
+| **Tasks** | Running and recently completed background tasks |
+
+The active model is displayed as `model(provider)` with a `◈` prefix, e.g.
+`◈ claude-3-5-sonnet(anthropic)`.
+
+### Toggling the sidebar
+
+| Method | Effect |
+| --- | --- |
+| `Ctrl+B` | Toggle sidebar on / off |
+| `/sidebar` | Toggle sidebar (same as `Ctrl+B`) |
+| `/sidebar on` | Force sidebar visible |
+| `/sidebar off` | Force sidebar hidden |
+| `/sidebar toggle` | Explicit toggle |
+
+When the sidebar is visible the bottom status bar compacts to key hints only to
+preserve vertical space.
+
+### Narrow terminal behaviour
+
+The sidebar is hidden automatically when the terminal is narrower than **100 columns**
+and will not reappear until the terminal is wide enough again.
+
+### Ephemeral state
+
+Sidebar visibility is not persisted.  It resets to the default (auto-shown on wide
+terminals) each time you start a new TUI session.
+
 ## Provider login
 
 GitHub Copilot device flow:
