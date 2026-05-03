@@ -41,6 +41,9 @@ pub(super) struct TuiController<'a> {
     pub(super) active_suggestions: Option<PromptSuggestionState>,
     /// Ephemeral transcript scroll position; never persisted to `AppState`.
     pub(super) scroll_state: TranscriptScrollState,
+    /// Set to `true` when the user explicitly cancels the setup overlay during
+    /// this session, suppressing the autostart re-open logic.
+    pub(super) setup_cancelled_this_session: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -195,11 +198,13 @@ impl<'a> TuiController<'a> {
             slash_suggestions: build_slash_suggestions(registry),
             active_suggestions: None,
             scroll_state: TranscriptScrollState::new(),
+            setup_cancelled_this_session: false,
         };
         controller.hydrate_initial_settings()?;
         controller.refresh_runtime_state()?;
         controller.rebuild_ephemeral_state();
         controller.persist_state_snapshot()?;
+        controller.maybe_auto_open_setup()?;
         Ok(controller)
     }
 
@@ -2978,12 +2983,15 @@ impl<'a> TuiController<'a> {
         Ok(())
     }
 
-    /// Cancels the setup overlay and records a status note.
+    /// Cancels the setup overlay, records a status note, and marks this session
+    /// so that the autostart logic does not re-open the overlay.
     pub(super) fn cancel_setup_overlay(&mut self) -> Result<()> {
         let Some(overlay) = self.pending_setup_overlay.take() else {
             self.dismiss_dialog();
             return Ok(());
         };
+        // Prevent maybe_auto_open_setup from re-opening for the rest of this session.
+        self.setup_cancelled_this_session = true;
         self.dialog = None;
         self.record_command_message(&overlay.original_input, Some("status=setup cancelled"))?;
         self.status_note = Some("setup cancelled".into());
@@ -3026,6 +3034,23 @@ impl<'a> TuiController<'a> {
                 }
             },
         }
+    }
+
+    /// Opens `/setup` automatically when the provider is not yet configured,
+    /// unless the user already dismissed it during this session.
+    ///
+    /// Called once at the end of [`TuiController::new`]. After the first
+    /// successful provider configuration the method becomes a no-op.
+    pub(super) fn maybe_auto_open_setup(&mut self) -> Result<()> {
+        if self.setup_cancelled_this_session {
+            return Ok(());
+        }
+        if self.state.provider_readiness() == ProviderReadiness::Ready {
+            return Ok(());
+        }
+        // Provider is not ready and the user has not cancelled yet â run the
+        // slash command so the normal output-parsing path opens the overlay.
+        self.execute_slash_command_with("/setup", &mut |_| Ok(()))
     }
 
     pub(super) fn dismiss_dialog(&mut self) {
