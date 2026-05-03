@@ -42,8 +42,8 @@ use wonder_of_u_tui::{
     KeyBindingResolver, KeyCode, KeyEvent, NotificationInput, NotificationLifetime,
     NotificationQueue, NotificationSeverity, PermissionSummaryView, PickerListEntry,
     PickerListView, PromptSuggestion, PromptSuggestionState, Rect, ResolvedKey, ShellLayout,
-    ShellView, SlashSuggestionEntry, SlashSuggestionsOverlay, TextBuffer, Theme, TurnState,
-    UiEvent, VimMode, VimState, message_lines,
+    ShellView, SlashSuggestionEntry, SlashSuggestionsOverlay, TextBuffer, Theme, TranscriptScrollView,
+    TurnState, UiEvent, VimMode, VimState, message_lines,
 };
 
 use crate::commands;
