@@ -41,9 +41,9 @@ use wonder_of_u_tui::{
     CrosstermEventSource, DialogView, EditAction, EventLoop, HistorySearchView, KeyBindingContext,
     KeyBindingResolver, KeyCode, KeyEvent, NotificationInput, NotificationLifetime,
     NotificationQueue, NotificationSeverity, PermissionSummaryView, PickerListEntry,
-    PickerListView, PromptSuggestion, PromptSuggestionState, ResolvedKey, ShellLayout, ShellView,
-    SlashSuggestionEntry, SlashSuggestionsOverlay, TextBuffer, Theme, TurnState, UiEvent, VimMode,
-    VimState,
+    PickerListView, PromptSuggestion, PromptSuggestionState, Rect, ResolvedKey, ShellLayout,
+    ShellView, SlashSuggestionEntry, SlashSuggestionsOverlay, TextBuffer, Theme, TurnState,
+    UiEvent, VimMode, VimState, message_lines,
 };
 
 use crate::commands;
@@ -69,6 +69,7 @@ const SHELL_NOTIFICATION_TTL: u32 = 30;
 mod controller;
 mod helpers;
 mod screen;
+mod scroll;
 
 #[cfg(test)]
 mod tests;
@@ -76,6 +77,7 @@ mod tests;
 use controller::*;
 use helpers::*;
 use screen::*;
+use scroll::*;
 
 pub(crate) fn run_tui<W: Write>(
     writer: W,

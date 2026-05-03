@@ -4198,3 +4198,162 @@ fn ratatui_midnight_theme_renders_without_panic() {
     let rows = render_to_test_backend(80, 24, &view, &theme);
     assert_eq!(rows.len(), 24);
 }
+
+// ── TranscriptScrollState controller integration ──────────────────────────────
+
+#[test]
+fn controller_scroll_state_starts_in_follow_tail_mode() {
+    let dir = unique_test_dir("tui-scroll-init");
+    let registry = commands::registry(Some(dir.clone())).expect("registry");
+    let controller = TuiController::new(
+        test_context(&dir),
+        &registry,
+        Some(dir.as_path()),
+        TuiLaunchOptions { session_id: None },
+    )
+    .expect("controller");
+
+    assert!(
+        controller.scroll_state.is_following_tail(),
+        "new controller should start in follow-tail mode"
+    );
+    assert_eq!(controller.scroll_state.offset_from_bottom, 0);
+}
+
+#[test]
+fn controller_scroll_state_updates_total_lines_after_slash_command() {
+    let dir = unique_test_dir("tui-scroll-msg-update");
+    let registry = commands::registry(Some(dir.clone())).expect("registry");
+    let mut controller = TuiController::new(
+        test_context(&dir),
+        &registry,
+        Some(dir.as_path()),
+        TuiLaunchOptions { session_id: None },
+    )
+    .expect("controller");
+
+    // No messages yet; total_lines starts at 0.
+    assert_eq!(controller.scroll_state.last_total_lines, 0);
+
+    // Run a command that appends a message to the transcript.
+    controller
+        .execute_slash_command("/model openai:gpt-4.1")
+        .expect("execute slash");
+
+    // After the command a message was persisted → scroll state updated.
+    assert!(
+        controller.scroll_state.last_total_lines > 0,
+        "total_lines should be > 0 after a message is added"
+    );
+}
+
+#[test]
+fn controller_scroll_state_stays_following_tail_after_messages() {
+    let dir = unique_test_dir("tui-scroll-follow-tail");
+    let registry = commands::registry(Some(dir.clone())).expect("registry");
+    let mut controller = TuiController::new(
+        test_context(&dir),
+        &registry,
+        Some(dir.as_path()),
+        TuiLaunchOptions { session_id: None },
+    )
+    .expect("controller");
+
+    // Send several commands to accumulate messages.
+    for cmd in &["/model openai:gpt-4.1", "/theme default", "/model openai:gpt-4.1"] {
+        controller.execute_slash_command(cmd).expect("slash cmd");
+    }
+
+    // Never scrolled up → still following tail.
+    assert!(
+        controller.scroll_state.is_following_tail(),
+        "should remain in follow-tail mode when no manual scroll has occurred"
+    );
+}
+
+#[test]
+fn controller_scroll_state_preserves_scrolled_offset_after_new_messages() {
+    let dir = unique_test_dir("tui-scroll-preserve");
+    let registry = commands::registry(Some(dir.clone())).expect("registry");
+    let mut controller = TuiController::new(
+        test_context(&dir),
+        &registry,
+        Some(dir.as_path()),
+        TuiLaunchOptions { session_id: None },
+    )
+    .expect("controller");
+
+    // Generate some messages.
+    for _ in 0..3 {
+        controller
+            .execute_slash_command("/model openai:gpt-4.1")
+            .expect("slash cmd");
+    }
+
+    // Simulate a small viewport so max_offset is non-zero.
+    controller.scroll_state.last_visible_lines = 1;
+
+    let initial_total = controller.scroll_state.last_total_lines;
+    if initial_total > 1 {
+        controller.scroll_state.scroll_by(1);
+        assert!(!controller.scroll_state.is_following_tail());
+        let offset_before = controller.scroll_state.offset_from_bottom;
+
+        // Add another message.
+        controller
+            .execute_slash_command("/model openai:gpt-4.1")
+            .expect("slash cmd");
+
+        // Offset is preserved (or clamped to new max), not reset to 0.
+        assert_eq!(
+            controller.scroll_state.offset_from_bottom,
+            offset_before,
+            "scrolled-up offset should be preserved when new messages arrive"
+        );
+    }
+}
+
+#[test]
+fn controller_resize_event_updates_scroll_state_visible_lines() {
+    let dir = unique_test_dir("tui-scroll-resize");
+    let registry = commands::registry(Some(dir.clone())).expect("registry");
+    let mut controller = TuiController::new(
+        test_context(&dir),
+        &registry,
+        Some(dir.as_path()),
+        TuiLaunchOptions { session_id: None },
+    )
+    .expect("controller");
+
+    controller
+        .handle_event(UiEvent::Resize { width: 80, height: 40 }, |_| Ok(()))
+        .expect("handle resize");
+
+    assert!(
+        controller.scroll_state.last_visible_lines > 0,
+        "resize should set last_visible_lines to a positive value (got {})",
+        controller.scroll_state.last_visible_lines
+    );
+}
+
+#[test]
+fn controller_resize_event_preserves_follow_tail_mode() {
+    let dir = unique_test_dir("tui-scroll-resize-tail");
+    let registry = commands::registry(Some(dir.clone())).expect("registry");
+    let mut controller = TuiController::new(
+        test_context(&dir),
+        &registry,
+        Some(dir.as_path()),
+        TuiLaunchOptions { session_id: None },
+    )
+    .expect("controller");
+
+    controller
+        .handle_event(UiEvent::Resize { width: 80, height: 24 }, |_| Ok(()))
+        .expect("handle resize");
+
+    assert!(
+        controller.scroll_state.is_following_tail(),
+        "resize should not exit follow-tail mode when no scroll has occurred"
+    );
+}
