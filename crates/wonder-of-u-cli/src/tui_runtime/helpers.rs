@@ -1346,3 +1346,58 @@ pub(super) fn parse_external_editor_request(
         path: PathBuf::from(path),
     })
 }
+
+/// Parses the `setup_menu=true` / `setup_item=<json>` payload emitted by the
+/// `/setup` command and returns a ready-to-open [`SetupOverlayState`], or
+/// `None` if the payload is absent or `setup_menu=false`.
+pub(super) fn parse_setup_overlay_state(text: &str) -> Option<SetupOverlayState> {
+    let enabled = text
+        .lines()
+        .find_map(|line| line.strip_prefix("setup_menu="))?
+        .trim()
+        == "true";
+    if !enabled {
+        return None;
+    }
+    let provider_label = text
+        .lines()
+        .find_map(|line| line.strip_prefix("provider_selection="))
+        .unwrap_or("unconfigured")
+        .trim()
+        .to_string();
+    let readiness_label = text
+        .lines()
+        .find_map(|line| line.strip_prefix("provider_readiness="))
+        .unwrap_or("unknown")
+        .trim()
+        .to_string();
+    let items: Vec<SetupItem> = text
+        .lines()
+        .filter_map(|line| line.strip_prefix("setup_item="))
+        .filter_map(parse_setup_item)
+        .collect();
+    if items.is_empty() {
+        return None;
+    }
+    Some(SetupOverlayState::new(items, provider_label, readiness_label))
+}
+
+/// Parses a single `setup_item=<json>` value into a [`SetupItem`].
+pub(super) fn parse_setup_item(line: &str) -> Option<SetupItem> {
+    let value: serde_json::Value = serde_json::from_str(line).ok()?;
+    let id = value.get("id")?.as_str()?.to_string();
+    let label = value.get("label")?.as_str()?.to_string();
+    let description = value.get("description")?.as_str()?.to_string();
+    let command = value
+        .get("command")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let action = action_for_item_id(&id, &command);
+    Some(SetupItem {
+        id,
+        label,
+        description,
+        action,
+    })
+}
