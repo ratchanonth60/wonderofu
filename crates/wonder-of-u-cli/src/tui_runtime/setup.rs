@@ -220,3 +220,214 @@ pub(super) fn action_for_item_id(id: &str, _command: &str) -> SetupItemAction {
         _ => SetupItemAction::Placeholder(format!("'{id}' setup is not yet available in the TUI.")),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── action_for_item_id ────────────────────────────────────────────────────
+
+    /// Each known dispatch item must resolve to the expected slash-command.
+    #[test]
+    fn action_for_item_id_dispatch_items() {
+        let cases = [
+            ("model", "/model"),
+            ("theme", "/theme"),
+            ("permissions", "/permissions"),
+            ("memory", "/memory"),
+            ("terminal-setup", "/terminal-setup"),
+            ("keybindings", "/keybindings"),
+        ];
+        for (id, cmd) in cases {
+            let action = action_for_item_id(id, "/setup");
+            assert_eq!(
+                action,
+                SetupItemAction::Dispatch(cmd.into()),
+                "id={id:?} should dispatch {cmd:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn action_for_item_id_login_opens_api_key_form() {
+        let action = action_for_item_id("login", "/setup");
+        assert_eq!(
+            action,
+            SetupItemAction::ProviderForm(ProviderFormKind::ApiKey)
+        );
+    }
+
+    #[test]
+    fn action_for_item_id_api_base_opens_api_base_form() {
+        let action = action_for_item_id("api-base", "/setup");
+        assert_eq!(
+            action,
+            SetupItemAction::ProviderForm(ProviderFormKind::ApiBase)
+        );
+    }
+
+    #[test]
+    fn action_for_item_id_copilot_oauth() {
+        let action = action_for_item_id("copilot-oauth", "/setup");
+        assert_eq!(action, SetupItemAction::CopilotOAuth);
+    }
+
+    #[test]
+    fn action_for_item_id_unknown_id_returns_placeholder() {
+        let action = action_for_item_id("totally-unknown-xyz", "/setup");
+        assert!(
+            matches!(action, SetupItemAction::Placeholder(_)),
+            "unknown id should fall back to Placeholder, got {action:?}"
+        );
+        if let SetupItemAction::Placeholder(msg) = action {
+            assert!(
+                msg.contains("totally-unknown-xyz"),
+                "placeholder message should name the unknown id; got: {msg:?}"
+            );
+        }
+    }
+
+    // ── SetupOverlayState::clamp_selection ────────────────────────────────────
+
+    fn make_overlay(count: usize) -> SetupOverlayState {
+        let items = (0..count)
+            .map(|i| SetupItem {
+                id: format!("item-{i}"),
+                label: format!("Item {i}"),
+                description: String::new(),
+                action: SetupItemAction::Placeholder(String::new()),
+            })
+            .collect();
+        SetupOverlayState::new(items, "provider".into(), "ready".into())
+    }
+
+    #[test]
+    fn clamp_selection_keeps_valid_index_unchanged() {
+        let mut overlay = make_overlay(5);
+        overlay.selected_index = 3;
+        overlay.clamp_selection();
+        assert_eq!(overlay.selected_index, 3);
+    }
+
+    #[test]
+    fn clamp_selection_caps_index_at_last_item() {
+        let mut overlay = make_overlay(3);
+        overlay.selected_index = 10; // out of range
+        overlay.clamp_selection();
+        assert_eq!(
+            overlay.selected_index, 2,
+            "index must be clamped to items.len() - 1"
+        );
+    }
+
+    #[test]
+    fn clamp_selection_resets_to_zero_when_items_empty() {
+        let mut overlay = make_overlay(0);
+        overlay.selected_index = 5;
+        overlay.clamp_selection();
+        assert_eq!(overlay.selected_index, 0, "empty items → index must be 0");
+    }
+
+    // ── ProviderFormState::selected_display_name ──────────────────────────────
+
+    #[test]
+    fn selected_display_name_returns_first_option_by_default() {
+        let form = ProviderFormState::new(
+            ProviderFormKind::ApiKey,
+            vec![
+                ProviderFormOption {
+                    provider_id: "openai".into(),
+                    display_name: "OpenAI".into(),
+                },
+                ProviderFormOption {
+                    provider_id: "anthropic".into(),
+                    display_name: "Anthropic".into(),
+                },
+            ],
+        );
+        assert_eq!(form.selected_display_name(), "OpenAI");
+    }
+
+    #[test]
+    fn selected_display_name_falls_back_when_options_empty() {
+        // No options → must return the sentinel "(none)" rather than panicking.
+        let form = ProviderFormState::new(ProviderFormKind::ApiKey, vec![]);
+        assert_eq!(form.selected_display_name(), "(none)");
+    }
+
+    // ── ProviderFormState::display_value ─────────────────────────────────────
+
+    #[test]
+    fn display_value_masks_api_key_as_bullets() {
+        // The raw key must never appear; each character is replaced with '•'.
+        let mut form = ProviderFormState::new(ProviderFormKind::ApiKey, vec![]);
+        form.input = TextBuffer::from_text("sk-abc123", false);
+
+        let displayed = form.display_value();
+        assert!(
+            !displayed.contains("sk-abc123"),
+            "raw API key must not appear in display_value; got: {displayed:?}"
+        );
+        // Every character → one bullet; length leaks no more than character count.
+        assert_eq!(
+            displayed.chars().count(),
+            "sk-abc123".chars().count(),
+            "bullet count must equal key character count"
+        );
+        assert!(
+            displayed.chars().all(|c| c == '\u{2022}'),
+            "every character must be a bullet; got: {displayed:?}"
+        );
+    }
+
+    #[test]
+    fn display_value_shows_api_base_url_in_plain_text() {
+        let mut form = ProviderFormState::new(ProviderFormKind::ApiBase, vec![]);
+        let url = "https://my-proxy.example.com/v1";
+        form.input = TextBuffer::from_text(url, false);
+
+        let displayed = form.display_value();
+        assert_eq!(
+            displayed, url,
+            "API-base URL must appear verbatim in display_value"
+        );
+    }
+
+    #[test]
+    fn display_value_empty_input_returns_empty_string() {
+        let form_key = ProviderFormState::new(ProviderFormKind::ApiKey, vec![]);
+        assert_eq!(form_key.display_value(), "");
+
+        let form_base = ProviderFormState::new(ProviderFormKind::ApiBase, vec![]);
+        assert_eq!(form_base.display_value(), "");
+    }
+
+    // ── CopilotOAuthFlowState Debug redaction ─────────────────────────────────
+
+    #[test]
+    fn copilot_oauth_debug_redacts_device_code_secret() {
+        use wonder_of_u_agent::CopilotDeviceCode;
+
+        let state = CopilotOAuthFlowState::AwaitingConfirmation {
+            device_code: CopilotDeviceCode {
+                device_code: "do-not-log-this-secret".into(),
+                user_code: "SAFE-CODE".into(),
+                verification_uri: "https://github.com/login/device".into(),
+                expires_in: 900,
+                interval: 5,
+            },
+        };
+        let debug_output = format!("{state:?}");
+
+        // The ephemeral device_code secret must never appear in debug output.
+        assert!(
+            !debug_output.contains("do-not-log-this-secret"),
+            "device_code secret must be redacted in Debug output; got: {debug_output:?}"
+        );
+        // The user-visible code and URI are safe to show.
+        assert!(
+            debug_output.contains("SAFE-CODE"),
+            "user_code should appear in debug output; got: {debug_output:?}"
+        );
+    }
+}

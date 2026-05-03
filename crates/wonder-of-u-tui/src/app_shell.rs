@@ -346,4 +346,104 @@ mod tests {
 
         assert_eq!(line, "[Chat] Tasks [3]");
     }
+
+    // ── ConsoleOAuthFlowView ──────────────────────────────────────────────────
+
+    #[test]
+    fn console_oauth_instructions_without_expiry() {
+        // When `expires_in_seconds` is absent the instruction list has exactly
+        // two lines: URL and code.
+        let view = ConsoleOAuthFlowView {
+            url: "https://github.com/login/device".into(),
+            code: "WXYZ-5678".into(),
+            expires_in_seconds: None,
+        };
+        let lines = view.instructions();
+        assert_eq!(
+            lines.len(),
+            2,
+            "should produce exactly 2 lines without expiry"
+        );
+        assert!(
+            lines[0].contains("https://github.com/login/device"),
+            "first line must contain the URL; got: {:?}",
+            lines[0]
+        );
+        assert!(
+            lines[1].contains("WXYZ-5678"),
+            "second line must contain the user code; got: {:?}",
+            lines[1]
+        );
+    }
+
+    #[test]
+    fn console_oauth_instructions_with_expiry_adds_third_line() {
+        // When the code has an expiry the third line must mention the seconds.
+        let view = ConsoleOAuthFlowView {
+            url: "https://example.invalid/device".into(),
+            code: "ABCD-0000".into(),
+            expires_in_seconds: Some(900),
+        };
+        let lines = view.instructions();
+        assert_eq!(
+            lines.len(),
+            3,
+            "should produce 3 lines when expiry is present"
+        );
+        assert!(
+            lines[2].contains("900"),
+            "third line must mention the expiry duration; got: {:?}",
+            lines[2]
+        );
+    }
+
+    // ── OnboardingView ────────────────────────────────────────────────────────
+
+    #[test]
+    fn onboarding_renders_completed_and_pending_steps() {
+        // Completed steps use '✓'; pending steps use '•'.
+        let view = OnboardingView::new(
+            "Get started",
+            vec![
+                OnboardingStepView::new("Install", "already done").complete(true),
+                OnboardingStepView::new("Configure", "needs action").complete(false),
+            ],
+        );
+        let lines = view.render_lines();
+        // First line is always the title.
+        assert_eq!(lines[0], "Get started");
+        let complete_line = lines.iter().find(|l| l.contains("Install")).unwrap();
+        assert!(
+            complete_line.contains('✓'),
+            "completed step must use '✓'; got: {complete_line:?}"
+        );
+        let pending_line = lines.iter().find(|l| l.contains("Configure")).unwrap();
+        assert!(
+            pending_line.contains('•'),
+            "pending step must use '•'; got: {pending_line:?}"
+        );
+    }
+
+    #[test]
+    fn onboarding_renders_footer_when_present() {
+        use crate::design_system::BylineView;
+        // A footer BylineView with one item should appear as an extra line.
+        let footer = BylineView::from_items(vec!["docs: https://example.com".to_string()]);
+        let view = OnboardingView::new("Title", vec![OnboardingStepView::new("Step", "desc")])
+            .footer(footer);
+        let lines = view.render_lines();
+        // The footer separator blank line and footer content must be present.
+        let joined = lines.join("\n");
+        assert!(
+            joined.contains("docs: https://example.com"),
+            "footer text must appear in rendered output; got: {joined:?}"
+        );
+    }
+
+    #[test]
+    fn onboarding_with_no_steps_renders_only_title() {
+        let view = OnboardingView::new("Empty", vec![]);
+        let lines = view.render_lines();
+        assert_eq!(lines, vec!["Empty".to_string()]);
+    }
 }

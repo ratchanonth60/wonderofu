@@ -3330,7 +3330,9 @@ impl<'a> TuiController<'a> {
                 let cancelled = key.code == KeyCode::Esc
                     || matches!(
                         resolved,
-                        Some(ResolvedKey::System(wonder_of_u_tui::SystemAction::Interrupt))
+                        Some(ResolvedKey::System(
+                            wonder_of_u_tui::SystemAction::Interrupt
+                        ))
                     );
                 if confirmed {
                     // Start polling; browser opens inside this call.
@@ -3341,8 +3343,7 @@ impl<'a> TuiController<'a> {
                     self.status_note = Some("copilot oauth cancelled".into());
                     self.needs_render = true;
                 } else {
-                    self.status_note =
-                        Some("press Enter to open browser, Esc to cancel".into());
+                    self.status_note = Some("press Enter to open browser, Esc to cancel".into());
                     self.needs_render = true;
                 }
                 Ok(())
@@ -3352,7 +3353,9 @@ impl<'a> TuiController<'a> {
                 let cancelled = key.code == KeyCode::Esc
                     || matches!(
                         resolved,
-                        Some(ResolvedKey::System(wonder_of_u_tui::SystemAction::Interrupt))
+                        Some(ResolvedKey::System(
+                            wonder_of_u_tui::SystemAction::Interrupt
+                        ))
                     );
                 if cancelled {
                     // Drop the flow; the background thread result is discarded.
