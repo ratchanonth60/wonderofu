@@ -4260,7 +4260,11 @@ fn controller_scroll_state_stays_following_tail_after_messages() {
     .expect("controller");
 
     // Send several commands to accumulate messages.
-    for cmd in &["/model openai:gpt-4.1", "/theme default", "/model openai:gpt-4.1"] {
+    for cmd in &[
+        "/model openai:gpt-4.1",
+        "/theme default",
+        "/model openai:gpt-4.1",
+    ] {
         controller.execute_slash_command(cmd).expect("slash cmd");
     }
 
@@ -4306,8 +4310,7 @@ fn controller_scroll_state_preserves_scrolled_offset_after_new_messages() {
 
         // Offset is preserved (or clamped to new max), not reset to 0.
         assert_eq!(
-            controller.scroll_state.offset_from_bottom,
-            offset_before,
+            controller.scroll_state.offset_from_bottom, offset_before,
             "scrolled-up offset should be preserved when new messages arrive"
         );
     }
@@ -4326,7 +4329,13 @@ fn controller_resize_event_updates_scroll_state_visible_lines() {
     .expect("controller");
 
     controller
-        .handle_event(UiEvent::Resize { width: 80, height: 40 }, |_| Ok(()))
+        .handle_event(
+            UiEvent::Resize {
+                width: 80,
+                height: 40,
+            },
+            |_| Ok(()),
+        )
         .expect("handle resize");
 
     assert!(
@@ -4349,7 +4358,13 @@ fn controller_resize_event_preserves_follow_tail_mode() {
     .expect("controller");
 
     controller
-        .handle_event(UiEvent::Resize { width: 80, height: 24 }, |_| Ok(()))
+        .handle_event(
+            UiEvent::Resize {
+                width: 80,
+                height: 24,
+            },
+            |_| Ok(()),
+        )
         .expect("handle resize");
 
     assert!(
@@ -4412,7 +4427,10 @@ fn controller_setup_overlay_view_has_picker_list() {
     );
     // Exactly one entry should be selected.
     let selected_count = picker.entries.iter().filter(|e| e.selected).count();
-    assert_eq!(selected_count, 1, "exactly one setup entry should be selected");
+    assert_eq!(
+        selected_count, 1,
+        "exactly one setup entry should be selected"
+    );
 }
 
 #[test]
@@ -4441,12 +4459,18 @@ fn controller_setup_overlay_item_ids() {
         .expect("setup overlay open");
     let ids: Vec<&str> = overlay.items.iter().map(|i| i.id.as_str()).collect();
     assert!(ids.contains(&"login"), "missing 'login' item");
-    assert!(ids.contains(&"copilot-oauth"), "missing 'copilot-oauth' item");
+    assert!(
+        ids.contains(&"copilot-oauth"),
+        "missing 'copilot-oauth' item"
+    );
     assert!(ids.contains(&"model"), "missing 'model' item");
     assert!(ids.contains(&"api-base"), "missing 'api-base' item");
     assert!(ids.contains(&"theme"), "missing 'theme' item");
     assert!(ids.contains(&"permissions"), "missing 'permissions' item");
-    assert!(ids.contains(&"terminal-setup"), "missing 'terminal-setup' item");
+    assert!(
+        ids.contains(&"terminal-setup"),
+        "missing 'terminal-setup' item"
+    );
     assert!(ids.contains(&"memory"), "missing 'memory' item");
     assert!(ids.contains(&"keybindings"), "missing 'keybindings' item");
 }
@@ -4462,7 +4486,14 @@ fn controller_setup_overlay_known_items_have_dispatch_action() {
         .as_ref()
         .expect("setup overlay open");
 
-    let dispatch_ids = ["model", "theme", "permissions", "memory", "terminal-setup", "keybindings"];
+    let dispatch_ids = [
+        "model",
+        "theme",
+        "permissions",
+        "memory",
+        "terminal-setup",
+        "keybindings",
+    ];
     for id in &dispatch_ids {
         let item = overlay
             .items
@@ -4511,7 +4542,10 @@ fn controller_setup_overlay_navigate_down_and_up_wraps() {
         .as_ref()
         .expect("overlay open")
         .selected_index;
-    assert_eq!(idx, 0, "selection should wrap back to 0 after {count} downs");
+    assert_eq!(
+        idx, 0,
+        "selection should wrap back to 0 after {count} downs"
+    );
 
     // Navigate up once: should wrap to the last item.
     send_dialog_key(&mut controller, picker_key(KeyCode::Up), None);
@@ -4557,7 +4591,10 @@ fn controller_setup_overlay_enter_on_model_dispatches_model_picker() {
 
     // Find the "model" item index.
     let model_idx = {
-        let overlay = controller.pending_setup_overlay.as_ref().expect("overlay open");
+        let overlay = controller
+            .pending_setup_overlay
+            .as_ref()
+            .expect("overlay open");
         overlay
             .items
             .iter()
@@ -4593,7 +4630,10 @@ fn controller_setup_overlay_enter_on_theme_dispatches_theme_picker() {
     let (mut controller, _dir) = open_setup_overlay_controller();
 
     let theme_idx = {
-        let overlay = controller.pending_setup_overlay.as_ref().expect("overlay open");
+        let overlay = controller
+            .pending_setup_overlay
+            .as_ref()
+            .expect("overlay open");
         overlay
             .items
             .iter()
@@ -4610,7 +4650,10 @@ fn controller_setup_overlay_enter_on_theme_dispatches_theme_picker() {
     );
 
     assert!(controller.pending_setup_overlay.is_none());
-    assert!(controller.pending_theme_picker.is_some(), "theme picker should open");
+    assert!(
+        controller.pending_theme_picker.is_some(),
+        "theme picker should open"
+    );
 }
 
 #[test]
@@ -4618,7 +4661,10 @@ fn controller_setup_overlay_enter_on_permissions_dispatches_permission_picker() 
     let (mut controller, _dir) = open_setup_overlay_controller();
 
     let perm_idx = {
-        let overlay = controller.pending_setup_overlay.as_ref().expect("overlay open");
+        let overlay = controller
+            .pending_setup_overlay
+            .as_ref()
+            .expect("overlay open");
         overlay
             .items
             .iter()
@@ -4646,7 +4692,10 @@ fn controller_setup_overlay_enter_on_memory_dispatches_memory_picker() {
     let (mut controller, _dir) = open_setup_overlay_controller();
 
     let mem_idx = {
-        let overlay = controller.pending_setup_overlay.as_ref().expect("overlay open");
+        let overlay = controller
+            .pending_setup_overlay
+            .as_ref()
+            .expect("overlay open");
         overlay
             .items
             .iter()
@@ -4663,7 +4712,10 @@ fn controller_setup_overlay_enter_on_memory_dispatches_memory_picker() {
     );
 
     assert!(controller.pending_setup_overlay.is_none());
-    assert!(controller.pending_memory_picker.is_some(), "memory picker should open");
+    assert!(
+        controller.pending_memory_picker.is_some(),
+        "memory picker should open"
+    );
 }
 
 #[test]
@@ -4672,7 +4724,10 @@ fn controller_setup_overlay_enter_on_placeholder_item_shows_notice() {
 
     // Confirm on "login" (a placeholder item).
     let login_idx = {
-        let overlay = controller.pending_setup_overlay.as_ref().expect("overlay open");
+        let overlay = controller
+            .pending_setup_overlay
+            .as_ref()
+            .expect("overlay open");
         overlay
             .items
             .iter()
@@ -4733,11 +4788,7 @@ fn controller_setup_overlay_tab_key_selects_item() {
     let (mut controller, _dir) = open_setup_overlay_controller();
 
     // Tab on first item (index 0: "login" → placeholder).
-    send_dialog_key(
-        &mut controller,
-        picker_key(KeyCode::Tab),
-        None,
-    );
+    send_dialog_key(&mut controller, picker_key(KeyCode::Tab), None);
 
     // Overlay should be dismissed and a dialog shown (placeholder case).
     assert!(
@@ -4750,8 +4801,18 @@ fn controller_setup_overlay_tab_key_selects_item() {
 
 /// Build a controller that has had an initial resize so `last_visible_lines` is
 /// set and page-scroll math works (40-line transcript, 10-line viewport).
-fn controller_with_scroll_dims() -> (super::TuiController, tempfile::TempDir) {
-    let (mut ctrl, dir) = write_provider_config();
+fn controller_with_scroll_dims() -> (TuiController<'static>, PathBuf) {
+    let dir = unique_test_dir("tui-scroll-keys");
+    write_provider_config(&dir, "http://127.0.0.1:1/v1");
+    let registry = Box::new(commands::registry(Some(dir.clone())).expect("registry"));
+    let registry: &'static _ = Box::leak(registry);
+    let mut ctrl = TuiController::new(
+        test_context(&dir),
+        registry,
+        Some(dir.as_path()),
+        TuiLaunchOptions { session_id: None },
+    )
+    .expect("controller");
     ctrl.scroll_state.on_resize(10, 40);
     ctrl.scroll_state.scroll_to_top();
     (ctrl, dir)
@@ -4762,7 +4823,11 @@ fn ctrl_key(code: KeyCode) -> KeyEvent {
     use wonder_of_u_tui::KeyModifiers;
     KeyEvent {
         code,
-        modifiers: KeyModifiers { control: true, shift: false, alt: false },
+        modifiers: KeyModifiers {
+            control: true,
+            shift: false,
+            alt: false,
+        },
     }
 }
 
@@ -4772,7 +4837,13 @@ fn controller_page_up_scrolls_one_page_toward_top() {
     ctrl.scroll_state.scroll_to_bottom();
     let before = ctrl.scroll_state.offset_from_bottom;
 
-    send_prompt_key(&mut ctrl, KeyEvent { code: KeyCode::PageUp, modifiers: Default::default() });
+    send_prompt_key(
+        &mut ctrl,
+        KeyEvent {
+            code: KeyCode::PageUp,
+            modifiers: Default::default(),
+        },
+    );
 
     assert!(
         ctrl.scroll_state.offset_from_bottom > before,
@@ -4786,7 +4857,13 @@ fn controller_page_down_scrolls_one_page_toward_bottom() {
     ctrl.scroll_state.scroll_to_top();
     let before = ctrl.scroll_state.offset_from_bottom;
 
-    send_prompt_key(&mut ctrl, KeyEvent { code: KeyCode::PageDown, modifiers: Default::default() });
+    send_prompt_key(
+        &mut ctrl,
+        KeyEvent {
+            code: KeyCode::PageDown,
+            modifiers: Default::default(),
+        },
+    );
 
     assert!(
         ctrl.scroll_state.offset_from_bottom < before,
@@ -4799,7 +4876,13 @@ fn controller_page_down_from_tail_stays_at_zero() {
     let (mut ctrl, _dir) = controller_with_scroll_dims();
     ctrl.scroll_state.scroll_to_bottom();
 
-    send_prompt_key(&mut ctrl, KeyEvent { code: KeyCode::PageDown, modifiers: Default::default() });
+    send_prompt_key(
+        &mut ctrl,
+        KeyEvent {
+            code: KeyCode::PageDown,
+            modifiers: Default::default(),
+        },
+    );
 
     assert_eq!(
         ctrl.scroll_state.offset_from_bottom, 0,
@@ -4811,7 +4894,9 @@ fn controller_page_down_from_tail_stays_at_zero() {
 fn controller_ctrl_home_jumps_to_top() {
     let (mut ctrl, _dir) = controller_with_scroll_dims();
     ctrl.scroll_state.scroll_to_bottom();
-    let expected = ctrl.scroll_state.last_total_lines
+    let expected = ctrl
+        .scroll_state
+        .last_total_lines
         .saturating_sub(ctrl.scroll_state.last_visible_lines);
 
     send_prompt_key(&mut ctrl, ctrl_key(KeyCode::Home));
@@ -4840,14 +4925,32 @@ fn controller_scroll_keys_no_op_while_dialog_overlay_active() {
     let (mut ctrl, _dir) = controller_with_scroll_dims();
     // Open the model picker — sets self.dialog = Some(...)
     for ch in ['/', 'm', 'o', 'd', 'e', 'l'] {
-        send_prompt_key(&mut ctrl, KeyEvent { code: KeyCode::Char(ch), modifiers: Default::default() });
+        send_prompt_key(
+            &mut ctrl,
+            KeyEvent {
+                code: KeyCode::Char(ch),
+                modifiers: Default::default(),
+            },
+        );
     }
-    send_prompt_key(&mut ctrl, KeyEvent { code: KeyCode::Enter, modifiers: Default::default() });
+    send_prompt_key(
+        &mut ctrl,
+        KeyEvent {
+            code: KeyCode::Enter,
+            modifiers: Default::default(),
+        },
+    );
 
     ctrl.scroll_state.scroll_to_bottom();
     let before = ctrl.scroll_state.offset_from_bottom;
 
-    send_prompt_key(&mut ctrl, KeyEvent { code: KeyCode::PageUp, modifiers: Default::default() });
+    send_prompt_key(
+        &mut ctrl,
+        KeyEvent {
+            code: KeyCode::PageUp,
+            modifiers: Default::default(),
+        },
+    );
 
     if ctrl.dialog.is_some() {
         assert_eq!(
@@ -4862,14 +4965,32 @@ fn controller_scroll_keys_no_op_while_setup_overlay_active() {
     let (mut ctrl, _dir) = controller_with_scroll_dims();
     // Open the setup overlay via /setup.
     for ch in ['/', 's', 'e', 't', 'u', 'p'] {
-        send_prompt_key(&mut ctrl, KeyEvent { code: KeyCode::Char(ch), modifiers: Default::default() });
+        send_prompt_key(
+            &mut ctrl,
+            KeyEvent {
+                code: KeyCode::Char(ch),
+                modifiers: Default::default(),
+            },
+        );
     }
-    send_prompt_key(&mut ctrl, KeyEvent { code: KeyCode::Enter, modifiers: Default::default() });
+    send_prompt_key(
+        &mut ctrl,
+        KeyEvent {
+            code: KeyCode::Enter,
+            modifiers: Default::default(),
+        },
+    );
 
     ctrl.scroll_state.scroll_to_bottom();
     let before = ctrl.scroll_state.offset_from_bottom;
 
-    send_prompt_key(&mut ctrl, KeyEvent { code: KeyCode::PageUp, modifiers: Default::default() });
+    send_prompt_key(
+        &mut ctrl,
+        KeyEvent {
+            code: KeyCode::PageUp,
+            modifiers: Default::default(),
+        },
+    );
 
     if ctrl.pending_setup_overlay.is_some() {
         assert_eq!(
@@ -4883,11 +5004,23 @@ fn controller_scroll_keys_no_op_while_setup_overlay_active() {
 fn controller_plain_home_still_edits_prompt_not_scroll() {
     let (mut ctrl, _dir) = controller_with_scroll_dims();
     for ch in ['h', 'e', 'l', 'l', 'o'] {
-        send_prompt_key(&mut ctrl, KeyEvent { code: KeyCode::Char(ch), modifiers: Default::default() });
+        send_prompt_key(
+            &mut ctrl,
+            KeyEvent {
+                code: KeyCode::Char(ch),
+                modifiers: Default::default(),
+            },
+        );
     }
     ctrl.scroll_state.scroll_to_bottom();
 
-    send_prompt_key(&mut ctrl, KeyEvent { code: KeyCode::Home, modifiers: Default::default() });
+    send_prompt_key(
+        &mut ctrl,
+        KeyEvent {
+            code: KeyCode::Home,
+            modifiers: Default::default(),
+        },
+    );
 
     assert_eq!(
         ctrl.scroll_state.offset_from_bottom, 0,
@@ -4901,10 +5034,178 @@ fn controller_plain_end_still_edits_prompt_not_scroll() {
     ctrl.scroll_state.scroll_to_top();
     let top_offset = ctrl.scroll_state.offset_from_bottom;
 
-    send_prompt_key(&mut ctrl, KeyEvent { code: KeyCode::End, modifiers: Default::default() });
+    send_prompt_key(
+        &mut ctrl,
+        KeyEvent {
+            code: KeyCode::End,
+            modifiers: Default::default(),
+        },
+    );
 
     assert_eq!(
         ctrl.scroll_state.offset_from_bottom, top_offset,
         "Plain End should not alter scroll offset"
+    );
+}
+
+// ── tui-scroll-mouse: mouse-wheel transcript navigation ──────────────────────
+
+fn scroll_mouse_event(kind: wonder_of_u_tui::MouseEventKind, col: u16, row: u16) -> UiEvent {
+    use crossterm::event::{
+        KeyModifiers as CrosstermMods, MouseEvent as CrosstermME, MouseEventKind as CrosstermMEK,
+    };
+    let ct_kind = match kind {
+        wonder_of_u_tui::MouseEventKind::ScrollUp => CrosstermMEK::ScrollUp,
+        wonder_of_u_tui::MouseEventKind::ScrollDown => CrosstermMEK::ScrollDown,
+        wonder_of_u_tui::MouseEventKind::ScrollLeft => CrosstermMEK::ScrollLeft,
+        wonder_of_u_tui::MouseEventKind::ScrollRight => CrosstermMEK::ScrollRight,
+        _ => panic!("scroll_mouse_event: unsupported MouseEventKind"),
+    };
+    UiEvent::Mouse(CrosstermME {
+        kind: ct_kind,
+        column: col,
+        row,
+        modifiers: CrosstermMods::empty(),
+    })
+}
+
+#[test]
+fn controller_mouse_scroll_up_inside_transcript_scrolls_toward_older() {
+    let dir = unique_test_dir("mouse-scroll-up");
+    let registry = commands::registry(Some(dir.clone())).expect("registry");
+    let mut controller = TuiController::new(
+        test_context(&dir),
+        &registry,
+        Some(dir.as_path()),
+        TuiLaunchOptions { session_id: None },
+    )
+    .expect("controller");
+    controller.on_terminal_resize(80, 24);
+    controller.scroll_state.on_resize(20, 100);
+
+    assert_eq!(
+        controller.scroll_state.offset_from_bottom, 0,
+        "starts at tail"
+    );
+    controller.handle_mouse_event(scroll_mouse_event(
+        wonder_of_u_tui::MouseEventKind::ScrollUp,
+        40,
+        5,
+    ));
+    assert_eq!(
+        controller.scroll_state.offset_from_bottom, 3,
+        "ScrollUp must advance 3 lines toward older content"
+    );
+    assert!(controller.needs_render);
+}
+
+#[test]
+fn controller_mouse_scroll_down_inside_transcript_scrolls_toward_newer() {
+    let dir = unique_test_dir("mouse-scroll-down");
+    let registry = commands::registry(Some(dir.clone())).expect("registry");
+    let mut controller = TuiController::new(
+        test_context(&dir),
+        &registry,
+        Some(dir.as_path()),
+        TuiLaunchOptions { session_id: None },
+    )
+    .expect("controller");
+    controller.on_terminal_resize(80, 24);
+    controller.scroll_state.on_resize(20, 100);
+
+    controller.scroll_state.scroll_by(10);
+    controller.handle_mouse_event(scroll_mouse_event(
+        wonder_of_u_tui::MouseEventKind::ScrollDown,
+        40,
+        5,
+    ));
+    assert_eq!(
+        controller.scroll_state.offset_from_bottom, 7,
+        "ScrollDown must retreat 3 lines toward newer content"
+    );
+}
+
+#[test]
+fn controller_mouse_scroll_outside_transcript_area_ignored() {
+    let dir = unique_test_dir("mouse-scroll-outside");
+    let registry = commands::registry(Some(dir.clone())).expect("registry");
+    let mut controller = TuiController::new(
+        test_context(&dir),
+        &registry,
+        Some(dir.as_path()),
+        TuiLaunchOptions { session_id: None },
+    )
+    .expect("controller");
+    controller.on_terminal_resize(80, 24);
+    controller.scroll_state.on_resize(20, 100);
+
+    // row 22 falls in the prompt/chrome zone of an 80×24 terminal
+    controller.handle_mouse_event(scroll_mouse_event(
+        wonder_of_u_tui::MouseEventKind::ScrollUp,
+        40,
+        22,
+    ));
+    assert_eq!(
+        controller.scroll_state.offset_from_bottom, 0,
+        "wheel over the prompt zone must be ignored"
+    );
+}
+
+#[test]
+fn controller_mouse_scroll_ignored_when_overlay_active() {
+    let dir = unique_test_dir("mouse-scroll-overlay");
+    let registry = commands::registry(Some(dir.clone())).expect("registry");
+    let mut controller = TuiController::new(
+        test_context(&dir),
+        &registry,
+        Some(dir.as_path()),
+        TuiLaunchOptions { session_id: None },
+    )
+    .expect("controller");
+    controller.on_terminal_resize(80, 24);
+    controller.scroll_state.on_resize(20, 100);
+
+    controller.dialog = Some(wonder_of_u_tui::DialogView::notice(
+        "Overlay active",
+        ["This dialog prevents scrolling"],
+    ));
+    controller.handle_mouse_event(scroll_mouse_event(
+        wonder_of_u_tui::MouseEventKind::ScrollUp,
+        40,
+        5,
+    ));
+    assert_eq!(
+        controller.scroll_state.offset_from_bottom, 0,
+        "scroll must be suppressed while a dialog is shown"
+    );
+}
+
+#[test]
+fn controller_horizontal_mouse_wheel_ignored() {
+    let dir = unique_test_dir("mouse-scroll-horiz");
+    let registry = commands::registry(Some(dir.clone())).expect("registry");
+    let mut controller = TuiController::new(
+        test_context(&dir),
+        &registry,
+        Some(dir.as_path()),
+        TuiLaunchOptions { session_id: None },
+    )
+    .expect("controller");
+    controller.on_terminal_resize(80, 24);
+    controller.scroll_state.on_resize(20, 100);
+
+    controller.handle_mouse_event(scroll_mouse_event(
+        wonder_of_u_tui::MouseEventKind::ScrollLeft,
+        40,
+        5,
+    ));
+    controller.handle_mouse_event(scroll_mouse_event(
+        wonder_of_u_tui::MouseEventKind::ScrollRight,
+        40,
+        5,
+    ));
+    assert_eq!(
+        controller.scroll_state.offset_from_bottom, 0,
+        "horizontal wheel events must not change the scroll position"
     );
 }

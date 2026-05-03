@@ -1,5 +1,8 @@
 use super::*;
 
+/// Lines scrolled per single mouse-wheel notch in the transcript area.
+const MOUSE_SCROLL_LINES: i32 = 3;
+
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 #[allow(dead_code)]
 pub(super) enum ActiveOverlay {
@@ -41,6 +44,11 @@ pub(super) struct TuiController<'a> {
     pub(super) active_suggestions: Option<PromptSuggestionState>,
     /// Ephemeral transcript scroll position; never persisted to `AppState`.
     pub(super) scroll_state: TranscriptScrollState,
+    /// Last known terminal dimensions `(width, height)` in columns × rows.
+    ///
+    /// Updated on every `UiEvent::Resize` so that mouse hit-testing can
+    /// recompute the transcript area rect without touching ratatui's backend.
+    pub(super) last_terminal_size: (u16, u16),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -195,6 +203,7 @@ impl<'a> TuiController<'a> {
             slash_suggestions: build_slash_suggestions(registry),
             active_suggestions: None,
             scroll_state: TranscriptScrollState::new(),
+            last_terminal_size: (0, 0),
         };
         controller.hydrate_initial_settings()?;
         controller.refresh_runtime_state()?;
@@ -268,7 +277,8 @@ impl<'a> TuiController<'a> {
                 self.on_terminal_resize(width, height);
                 Ok(())
             }
-            UiEvent::Mouse(_) => {
+            UiEvent::Mouse(raw) => {
+                self.handle_mouse_event(UiEvent::Mouse(raw));
                 self.needs_render = true;
                 Ok(())
             }
@@ -3536,6 +3546,7 @@ impl<'a> TuiController<'a> {
     /// Uses a rough prompt-height estimate derived from the current prompt text
     /// so that the scroll state stays accurate without building a full view.
     pub(super) fn on_terminal_resize(&mut self, width: u16, height: u16) {
+        self.last_terminal_size = (width, height);
         // Estimate prompt height the same way ShellView::prompt_height() does:
         // number of text lines + 2 border rows.
         let prompt_lines = self.prompt.text().lines().count().max(1);
@@ -3556,6 +3567,62 @@ impl<'a> TuiController<'a> {
     pub(super) fn notify_transcript_changed(&mut self) {
         let total = message_lines(&self.state.messages).len();
         self.scroll_state.on_messages_changed(total);
+    }
+
+    /// Returns the transcript messages [`Rect`] derived from the last known
+    /// terminal dimensions.
+    ///
+    /// Returns an empty rect until the first `UiEvent::Resize` arrives, so
+    /// mouse wheel events before the terminal reports its size are silently
+    /// ignored.
+    pub(super) fn transcript_messages_rect(&self) -> Rect {
+        let (width, height) = self.last_terminal_size;
+        if width == 0 || height == 0 {
+            return Rect::new(0, 0, 0, 0);
+        }
+        let prompt_lines = self.prompt.text().lines().count().max(1);
+        let prompt_height = u16::try_from(prompt_lines)
+            .unwrap_or(u16::MAX)
+            .saturating_add(2);
+        ShellLayout::split(Rect::new(0, 0, width, height), prompt_height).messages
+    }
+
+    /// Handles a mouse event from the terminal, scrolling the transcript on
+    /// vertical wheel events when the pointer is over the transcript area and
+    /// no overlay is active.
+    ///
+    /// `ScrollLeft` and `ScrollRight` events are silently ignored, as are all
+    /// button and move events.
+    pub(super) fn handle_mouse_event(&mut self, event: UiEvent) {
+        let Some(mouse) = event.normalized_mouse() else {
+            return;
+        };
+
+        // Map vertical wheel to signed line deltas.
+        // `ScrollUp`   → positive → offset_from_bottom grows  → older content.
+        // `ScrollDown` → negative → offset_from_bottom shrinks → newer content.
+        let delta: i32 = match mouse.kind {
+            MouseEventKind::ScrollUp => MOUSE_SCROLL_LINES,
+            MouseEventKind::ScrollDown => -(MOUSE_SCROLL_LINES),
+            // Horizontal wheel and all button/move events are not handled here.
+            _ => return,
+        };
+
+        // Do not scroll while any modal overlay (dialog, picker, history
+        // search) is shown; those overlays own their own navigation.
+        if self.active_overlay() != ActiveOverlay::None {
+            return;
+        }
+
+        // Only apply the scroll when the pointer is inside the transcript
+        // messages area; wheel events over the prompt bar or chrome are
+        // silently ignored.
+        if !self.transcript_messages_rect().contains(mouse.column, mouse.row) {
+            return;
+        }
+
+        self.scroll_state.scroll_by(delta);
+        self.needs_render = true;
     }
 }
 
