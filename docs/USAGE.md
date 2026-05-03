@@ -18,6 +18,43 @@ The TUI includes:
 - Model, theme, memory, and permission pickers
 - Background task and notification panels
 - Permission dialogs for tool execution
+- `/setup` hub for provider and preference configuration
+- Scrollable chat transcript with keyboard and mouse controls
+
+## Setup hub (`/setup`)
+
+Type `/setup` inside the TUI (or press Enter when the auto-open prompt appears on first
+launch) to open the settings hub. The hub lists the following items:
+
+| Item | What it does |
+| --- | --- |
+| **Provider API key** (`login`) | Two-step form: pick a provider (Anthropic, OpenAI, …), then type the API key. The key is masked with bullets while you type. |
+| **API base override** (`api-base`) | Two-step form: pick a provider, then enter a custom base URL (e.g. a proxy or local endpoint). |
+| **Copilot OAuth** (`copilot-oauth`) | Starts the GitHub device-code flow: displays the user code, opens the browser, then polls for the access token. |
+| **Model** (`model`) | Opens the model picker (`/model`). |
+| **Theme** (`theme`) | Opens the theme picker (`/theme`). |
+| **Permissions** (`permissions`) | Opens the permission manager (`/permissions`). |
+| **Memory** (`memory`) | Opens the memory viewer (`/memory`). |
+| **Terminal setup** (`terminal-setup`) | Opens terminal settings (`/terminal-setup`). |
+| **Keybindings** (`keybindings`) | Opens the keybindings viewer (`/keybindings`). |
+
+The overlay closes with `Esc`.  If no provider is configured when the TUI starts,
+the setup hub opens automatically so you can log in without leaving the TUI.
+
+## Chat transcript scroll
+
+When no overlay is open, the following controls scroll the message transcript:
+
+| Key / action | Effect |
+| --- | --- |
+| `PageUp` | Scroll up one viewport page |
+| `PageDown` | Scroll down one viewport page |
+| `Ctrl+Home` | Jump to the very top of the transcript |
+| `Ctrl+End` | Return to live tail (follow-tail mode) |
+| Mouse wheel up / down | Scroll a few lines; only active when the pointer is over the transcript area |
+
+> **Note** — scroll controls are suppressed while any overlay is active (picker,
+> dialog, history search).  Those overlays handle their own navigation.
 
 ## Provider login
 
