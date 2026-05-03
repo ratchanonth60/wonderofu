@@ -56,6 +56,9 @@ pub(super) struct TuiController<'a> {
     /// Set to `true` when the user explicitly cancels the setup overlay during
     /// this session, suppressing the autostart re-open logic.
     pub(super) setup_cancelled_this_session: bool,
+    /// Whether the right-side sidebar companion panel is currently visible.
+    /// Ephemeral per TUI session; never persisted.
+    pub(super) sidebar_visible: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -214,6 +217,7 @@ impl<'a> TuiController<'a> {
             scroll_state: TranscriptScrollState::new(),
             last_terminal_size: (0, 0),
             setup_cancelled_this_session: false,
+            sidebar_visible: true,
         };
         controller.hydrate_initial_settings()?;
         controller.refresh_runtime_state()?;
@@ -368,6 +372,12 @@ impl<'a> TuiController<'a> {
                 }
                 _ => {}
             }
+        }
+
+        // Ctrl+B toggles the sidebar panel.
+        if key.is_ctrl_char('b') {
+            self.toggle_sidebar();
+            return Ok(());
         }
 
         let Some(resolved) = resolved else {
@@ -1482,6 +1492,33 @@ impl<'a> TuiController<'a> {
     where
         F: FnMut(&Self) -> Result<()>,
     {
+        // Handle /sidebar as a TUI-local toggle that never reaches the command registry.
+        let trimmed = input.trim();
+        let sub = trimmed.strip_prefix("/sidebar").map(str::trim).unwrap_or("");
+        if trimmed == "/sidebar" || trimmed.starts_with("/sidebar ") {
+            let enabled = match sub {
+                "on" => Some(true),
+                "off" => Some(false),
+                "toggle" | "" => None,
+                // Unknown subcommand — treat as a plain toggle.
+                _ => None,
+            };
+            match enabled {
+                Some(v) => {
+                    self.sidebar_visible = v;
+                    self.status_note = Some(if v {
+                        "sidebar on".into()
+                    } else {
+                        "sidebar off".into()
+                    });
+                    self.needs_render = true;
+                }
+                None => {
+                    self.toggle_sidebar();
+                }
+            }
+            return Ok(());
+        }
         let invocation = parse_slash_command(input)
             .ok_or_else(|| WonderError::validation("invalid slash command"))?;
         let context = self.command_context();
@@ -2169,6 +2206,9 @@ impl<'a> TuiController<'a> {
             .and_then(|search| current_history_search_match(search, &history_entries))
             .map_or_else(|| self.prompt.text(), ToString::to_string);
         let mut view = ShellView::from_app_state(&self.state, prompt);
+        if !self.sidebar_visible {
+            view.sidebar = None;
+        }
         view.history_search = self
             .history_search
             .as_ref()
@@ -3943,10 +3983,9 @@ impl<'a> TuiController<'a> {
     }
 
     pub(super) fn prompt_cursor(&self, width: u16, height: u16) -> (u16, u16) {
-        // ShellView::from_app_state always includes a sidebar panel; tell the
-        // cursor helpers to apply the same column deduction that render_shell
-        // uses on wide terminals so the cursor never overshoots the │ separator.
-        let sidebar_active = true;
+        // Use the live sidebar_visible flag so cursor placement matches the
+        // actual rendered layout (no sidebar column deduction when toggled off).
+        let sidebar_active = self.sidebar_visible;
         if let Some(search) = &self.history_search {
             let view = HistorySearchView {
                 query: search.query.text(),
@@ -3976,6 +4015,17 @@ impl<'a> TuiController<'a> {
 
     pub(super) fn needs_render(&self) -> bool {
         self.needs_render
+    }
+
+    /// Flips the sidebar panel on or off and sets a transient status note.
+    pub(super) fn toggle_sidebar(&mut self) {
+        self.sidebar_visible = !self.sidebar_visible;
+        self.status_note = Some(if self.sidebar_visible {
+            "sidebar on".into()
+        } else {
+            "sidebar off".into()
+        });
+        self.needs_render = true;
     }
 
     pub(super) fn exit_requested(&self) -> bool {
