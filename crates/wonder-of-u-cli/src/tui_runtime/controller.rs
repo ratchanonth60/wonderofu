@@ -37,6 +37,8 @@ pub(super) struct TuiController<'a> {
     pub(super) pending_setup_overlay: Option<SetupOverlayState>,
     /// Ephemeral provider-login / API-base form opened from the setup hub.  Never persisted.
     pub(super) pending_provider_form: Option<ProviderFormState>,
+    /// Ephemeral Copilot device-code OAuth flow.  Never persisted.
+    pub(super) pending_copilot_oauth: Option<CopilotOAuthFlowState>,
     /// Countdown ticks until the task notification dialog is auto-dismissed.
     pub(super) task_notice_ttl: Option<u8>,
     pub(super) notifications: NotificationQueue,
@@ -204,6 +206,7 @@ impl<'a> TuiController<'a> {
             pending_external_editor: None,
             pending_setup_overlay: None,
             pending_provider_form: None,
+            pending_copilot_oauth: None,
             task_notice_ttl: None,
             notifications: NotificationQueue::new(),
             slash_suggestions: build_slash_suggestions(registry),
@@ -265,6 +268,7 @@ impl<'a> TuiController<'a> {
                     None => {}
                 }
                 self.needs_render |= self.notifications.tick();
+                self.tick_copilot_oauth_poll()?;
                 if self.refresh_runtime_state()? {
                     self.needs_render = true;
                 }
@@ -585,6 +589,9 @@ impl<'a> TuiController<'a> {
         }
         if self.pending_provider_form.is_some() {
             return self.handle_provider_form_key(key, resolved);
+        }
+        if self.pending_copilot_oauth.is_some() {
+            return self.handle_copilot_oauth_dialog_key(key, resolved);
         }
         match self.dialog.as_ref().map(DialogView::kind) {
             Some(wonder_of_u_tui::DialogKind::Permission) => {
@@ -3027,6 +3034,9 @@ impl<'a> TuiController<'a> {
             SetupItemAction::ProviderForm(kind) => {
                 self.open_provider_form(kind);
             }
+            SetupItemAction::CopilotOAuth => {
+                self.open_copilot_oauth_flow();
+            }
         }
         Ok(())
     }
@@ -3245,6 +3255,227 @@ impl<'a> TuiController<'a> {
         Ok(())
     }
 
+    // ── Copilot OAuth device-code flow ────────────────────────────────────────
+
+    /// Opens the Copilot device-code OAuth dialog.
+    ///
+    /// Requests a device code synchronously (a single fast HTTP call), then
+    /// shows a confirmation dialog with the verification URL and user code.
+    /// The browser is **never** opened and polling does **not** begin until
+    /// the user explicitly presses Enter.
+    pub(super) fn open_copilot_oauth_flow(&mut self) {
+        // Clear the setup overlay so the dialog renders instead of the picker.
+        self.pending_setup_overlay = None;
+        self.needs_render = true;
+
+        let device_code = match request_copilot_device_code() {
+            Ok(code) => code,
+            Err(err) => {
+                self.dialog = Some(DialogView::notice(
+                    "Copilot Login Failed",
+                    [format!("Could not start Copilot login: {err}")],
+                ));
+                self.status_note = Some("copilot oauth: device code request failed".into());
+                self.needs_render = true;
+                return;
+            }
+        };
+
+        // Build a confirm-style dialog showing the URL and user code.  The raw
+        // `device_code` secret is kept only in `pending_copilot_oauth`, never in
+        // the dialog body or any logged/displayed text.
+        let dialog = DialogView {
+            title: "GitHub Copilot Login".into(),
+            body: vec![
+                "Authorize Wonder-of-U to use GitHub Copilot.".into(),
+                String::new(),
+                format!("1. Visit:      {}", device_code.verification_uri),
+                format!("2. Enter code: {}", device_code.user_code),
+                String::new(),
+                "Press Enter to open the browser and wait for authorization.".into(),
+                "Press Esc to cancel.".into(),
+            ],
+            actions: vec![
+                DialogActionView::new("Open Browser", true),
+                DialogActionView::new("Cancel", false),
+            ],
+        };
+        self.dialog = Some(dialog);
+        self.pending_copilot_oauth =
+            Some(CopilotOAuthFlowState::AwaitingConfirmation { device_code });
+        self.status_note = Some("copilot oauth: press Enter to open browser".into());
+        self.needs_render = true;
+    }
+
+    /// Handles key events while the Copilot OAuth dialog is visible.
+    ///
+    /// - `AwaitingConfirmation`: Enter / `y` opens the browser and starts
+    ///   polling; Esc cancels.
+    /// - `Polling`: Esc cancels (dropping the background thread result).
+    pub(super) fn handle_copilot_oauth_dialog_key(
+        &mut self,
+        key: KeyEvent,
+        resolved: Option<ResolvedKey>,
+    ) -> Result<()> {
+        let Some(state) = &self.pending_copilot_oauth else {
+            self.dismiss_dialog();
+            return Ok(());
+        };
+        match state {
+            CopilotOAuthFlowState::AwaitingConfirmation { .. } => {
+                let confirmed =
+                    matches!(resolved, Some(ResolvedKey::Edit(EditAction::InsertNewline)))
+                        || matches!(resolved, Some(ResolvedKey::InsertChar('y')))
+                        || matches!(resolved, Some(ResolvedKey::InsertChar('Y')));
+                let cancelled = key.code == KeyCode::Esc
+                    || matches!(
+                        resolved,
+                        Some(ResolvedKey::System(wonder_of_u_tui::SystemAction::Interrupt))
+                    );
+                if confirmed {
+                    // Start polling; browser opens inside this call.
+                    self.start_copilot_oauth_polling();
+                } else if cancelled {
+                    self.pending_copilot_oauth = None;
+                    self.dialog = None;
+                    self.status_note = Some("copilot oauth cancelled".into());
+                    self.needs_render = true;
+                } else {
+                    self.status_note =
+                        Some("press Enter to open browser, Esc to cancel".into());
+                    self.needs_render = true;
+                }
+                Ok(())
+            }
+            CopilotOAuthFlowState::Polling { user_code, .. } => {
+                let user_code = user_code.clone();
+                let cancelled = key.code == KeyCode::Esc
+                    || matches!(
+                        resolved,
+                        Some(ResolvedKey::System(wonder_of_u_tui::SystemAction::Interrupt))
+                    );
+                if cancelled {
+                    // Drop the flow; the background thread result is discarded.
+                    self.pending_copilot_oauth = None;
+                    self.dialog = None;
+                    self.status_note = Some("copilot oauth polling cancelled".into());
+                    self.needs_render = true;
+                } else {
+                    // Remind the user of the code without blocking or advancing.
+                    self.status_note = Some(format!(
+                        "copilot oauth: waiting for authorization (code: {user_code})"
+                    ));
+                    self.needs_render = true;
+                }
+                Ok(())
+            }
+        }
+    }
+
+    /// Transitions from `AwaitingConfirmation` to `Polling`.
+    ///
+    /// Opens the browser (best-effort; failure is non-fatal) and spawns a
+    /// background thread that calls [`poll_copilot_access_token`].  The main
+    /// thread checks the channel on each [`UiEvent::Tick`] via
+    /// [`Self::tick_copilot_oauth_poll`].
+    pub(super) fn start_copilot_oauth_polling(&mut self) {
+        let Some(CopilotOAuthFlowState::AwaitingConfirmation { device_code }) =
+            self.pending_copilot_oauth.take()
+        else {
+            return;
+        };
+
+        // Open browser; failure is non-fatal — the user can navigate manually.
+        open_browser_url(&device_code.verification_uri);
+
+        let user_code = device_code.user_code.clone();
+        let dc_secret = device_code.device_code.clone();
+        let interval = device_code.interval;
+        let timeout = device_code.expires_in.max(1);
+
+        let (tx, rx) = mpsc::channel();
+        std::thread::spawn(move || {
+            let result = poll_copilot_access_token(
+                &dc_secret,
+                interval,
+                std::time::Duration::from_secs(timeout),
+            );
+            // A send error means the receiver was dropped (user cancelled); ignore it.
+            let _ = tx.send(result);
+        });
+
+        // Replace the confirmation dialog with a "polling" notice.
+        self.dialog = Some(DialogView::notice(
+            "GitHub Copilot Login",
+            [
+                "Waiting for authorization in the browser\u{2026}".to_string(),
+                format!("Code: {user_code}  (still valid)"),
+                String::new(),
+                "Approve the request in your browser, then return here.".to_string(),
+                "Press Esc to cancel.".to_string(),
+            ],
+        ));
+        self.pending_copilot_oauth = Some(CopilotOAuthFlowState::Polling {
+            user_code,
+            result_rx: rx,
+        });
+        self.status_note = Some("copilot oauth: waiting for browser authorization\u{2026}".into());
+        self.needs_render = true;
+    }
+
+    /// Checks the polling channel on each [`UiEvent::Tick`].
+    ///
+    /// When the background thread sends a result the OAuth token is stored via
+    /// [`CredentialStore`] and the dialog is dismissed.  The raw token value is
+    /// **never** included in the status note, dialog body, notifications, or
+    /// any logged output.
+    pub(super) fn tick_copilot_oauth_poll(&mut self) -> Result<()> {
+        // Borrow `pending_copilot_oauth` immutably to peek at the channel.
+        let poll_result = if let Some(CopilotOAuthFlowState::Polling { result_rx, .. }) =
+            &self.pending_copilot_oauth
+        {
+            match result_rx.try_recv() {
+                Ok(r) => Some(r),
+                Err(mpsc::TryRecvError::Disconnected) => Some(Err(WonderError::validation(
+                    "copilot oauth polling thread disconnected",
+                ))),
+                // Still waiting — nothing to do this tick.
+                Err(mpsc::TryRecvError::Empty) => None,
+            }
+        } else {
+            None
+        };
+        // The immutable borrow ends here; we can now mutate freely.
+
+        let Some(result) = poll_result else {
+            return Ok(());
+        };
+
+        // Clear the flow state and dismiss the dialog.
+        self.pending_copilot_oauth = None;
+        self.dialog = None;
+        self.needs_render = true;
+
+        match result {
+            Ok(token) => {
+                if let Some(dir) = self.storage_dir.clone() {
+                    CredentialStore::new(&dir).set_oauth_token(
+                        "copilot",
+                        token.access_token,
+                        token.refresh_token,
+                        token.expires_at,
+                    )?;
+                }
+                // Confirm success without ever echoing the token value.
+                self.status_note = Some("GitHub Copilot authorized successfully".into());
+            }
+            Err(err) => {
+                self.status_note = Some(format!("Copilot OAuth failed: {err}"));
+            }
+        }
+        Ok(())
+    }
+
     pub(super) fn dismiss_dialog(&mut self) {
         self.dialog = None;
         self.pending_permission_picker = None;
@@ -3254,6 +3485,7 @@ impl<'a> TuiController<'a> {
         self.pending_model_picker = None;
         self.pending_setup_overlay = None;
         self.pending_provider_form = None;
+        self.pending_copilot_oauth = None;
         if matches!(
             self.state.input_mode,
             InputMode::PermissionPending | InputMode::TaskNotification
@@ -3440,6 +3672,7 @@ impl<'a> TuiController<'a> {
                             SetupItemAction::Dispatch(_) => None,
                             SetupItemAction::Placeholder(_) => Some("coming soon".into()),
                             SetupItemAction::ProviderForm(_) => None,
+                            SetupItemAction::CopilotOAuth => None,
                         },
                         selected: i == overlay.selected_index,
                     })
@@ -3582,6 +3815,7 @@ impl<'a> TuiController<'a> {
         self.pending_external_editor = None;
         self.pending_setup_overlay = None;
         self.pending_provider_form = None;
+        self.pending_copilot_oauth = None;
         match self.state.input_mode {
             InputMode::Prompt => {
                 self.turn_state = if self.prompt.text().trim().is_empty() {

@@ -6,6 +6,7 @@ use std::{
     io::{IsTerminal, Write},
     path::{Path, PathBuf},
     process::Command as ProcessCommand,
+    sync::mpsc,
     time::Duration,
 };
 
@@ -25,6 +26,7 @@ use wonder_of_u_agent::{
     CompletionRequest, CredentialStore, ProviderResolver, ProviderRuntime, ProviderSelection,
     ProviderToolCall, ProviderToolResultMessage, ProviderToolSpec, SettingsStore,
     ToolConversationRound, ToolUseRequest, ToolUseResponse, builtin_tool_registry,
+    poll_copilot_access_token, request_copilot_device_code,
 };
 use wonder_of_u_core::{
     AdditionalWorkingDirectory, AppState, AuthMaterialKind, AuthState, CommandContext,
@@ -38,11 +40,11 @@ use wonder_of_u_core::{
 use wonder_of_u_storage::{TaskStore, TranscriptStore};
 use wonder_of_u_tools::provider_tool_specs;
 use wonder_of_u_tui::{
-    CrosstermEventSource, DialogView, EditAction, EventLoop, HistorySearchView, KeyBindingContext,
-    KeyBindingResolver, KeyCode, KeyEvent, MouseEventKind, NotificationInput, NotificationLifetime,
-    NotificationQueue, NotificationSeverity, PermissionSummaryView, PickerListEntry,
-    PickerListView, PromptSuggestion, PromptSuggestionState, Rect, ResolvedKey, ShellLayout,
-    ShellView, SlashSuggestionEntry, SlashSuggestionsOverlay, TextBuffer, Theme,
+    CrosstermEventSource, DialogActionView, DialogView, EditAction, EventLoop, HistorySearchView,
+    KeyBindingContext, KeyBindingResolver, KeyCode, KeyEvent, MouseEventKind, NotificationInput,
+    NotificationLifetime, NotificationQueue, NotificationSeverity, PermissionSummaryView,
+    PickerListEntry, PickerListView, PromptSuggestion, PromptSuggestionState, Rect, ResolvedKey,
+    ShellLayout, ShellView, SlashSuggestionEntry, SlashSuggestionsOverlay, TextBuffer, Theme,
     TranscriptScrollView, TurnState, UiEvent, VimMode, VimState, message_lines,
 };
 
