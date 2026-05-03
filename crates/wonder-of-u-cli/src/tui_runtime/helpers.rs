@@ -1403,3 +1403,67 @@ pub(super) fn parse_setup_item(line: &str) -> Option<SetupItem> {
         action,
     })
 }
+
+// -- Provider-form helpers ----------------------------------------------------
+
+use super::setup::{ProviderFormKind, ProviderFormStage, ProviderFormState};
+
+/// Returns a status note hint for the given provider form stage.
+pub(super) fn provider_form_status_note(stage: &ProviderFormStage) -> String {
+    match stage {
+        ProviderFormStage::PickProvider => {
+            "\u{2191}\u{2193}\u{a0}navigate\u{a0}\u{a0}Tab/Enter\u{a0}select\u{a0}\u{a0}Esc\u{a0}cancel"
+                .into()
+        }
+        ProviderFormStage::EnterValue => {
+            "type value\u{a0}\u{a0}Enter\u{a0}confirm\u{a0}\u{a0}Esc\u{a0}back".into()
+        }
+    }
+}
+
+/// Builds a [`PickerListView`] for the two-stage provider form.
+///
+/// - Stage 1 (`PickProvider`): lists all selectable providers.
+/// - Stage 2 (`EnterValue`): the query box holds the staged (masked) value;
+///   the list shows only the selected provider as context.
+pub(super) fn provider_form_picker_view(form: &ProviderFormState) -> PickerListView {
+    let kind_label = match form.kind {
+        ProviderFormKind::ApiKey => "API Key",
+        ProviderFormKind::ApiBase => "API Base URL",
+    };
+    match form.stage {
+        ProviderFormStage::PickProvider => PickerListView {
+            title: format!("{kind_label}: Select Provider"),
+            query: String::new(),
+            entries: form
+                .options
+                .iter()
+                .enumerate()
+                .map(|(i, opt)| PickerListEntry {
+                    label: opt.display_name.clone(),
+                    description: opt.provider_id.clone(),
+                    tag: None,
+                    selected: i == form.selected_index,
+                })
+                .collect(),
+            hint: provider_form_status_note(&form.stage),
+        },
+        ProviderFormStage::EnterValue => PickerListView {
+            title: format!("{kind_label}: {}", form.selected_display_name()),
+            // Show the masked value in the query box.
+            query: form.display_value(),
+            entries: form
+                .options
+                .get(form.selected_index)
+                .map(|opt| PickerListEntry {
+                    label: opt.display_name.clone(),
+                    description: opt.provider_id.clone(),
+                    tag: Some("selected".into()),
+                    selected: true,
+                })
+                .into_iter()
+                .collect(),
+            hint: provider_form_status_note(&form.stage),
+        },
+    }
+}

@@ -1,14 +1,87 @@
-//! Ephemeral TUI state for the `/setup` hub overlay.
+//! Ephemeral TUI state for the `/setup` hub overlay and provider login forms.
 //!
-//! [`SetupOverlayState`] models the setup menu that opens when the user
-//! runs `/setup` in the TUI.  It is purely ephemeral: it is never persisted
-//! to [`AppState`] and is cleared whenever the controller navigates away.
-//!
-//! Each [`SetupItem`] maps one-to-one to an entry emitted by the `/setup`
-//! command as a `setup_item=<json>` line.  Items that already have TUI flows
-//! (model, theme, permissions, memory) carry a [`SetupItemAction::Dispatch`]
-//! pointing at the slash-command string to execute.  Items whose full forms
-//! are deferred to future todos carry [`SetupItemAction::Placeholder`].
+//! [`SetupOverlayState`] models the setup menu opened by `/setup`.
+//! [`ProviderFormState`] models the two-stage API-key / API-base form opened
+//! from within that menu.  Both are purely ephemeral and are never persisted.
+
+use wonder_of_u_tui::TextBuffer;
+
+/// The kind of value the provider form collects.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) enum ProviderFormKind {
+    /// Enter an API key for a provider.
+    ApiKey,
+    /// Override the base URL for a provider's API.
+    ApiBase,
+}
+
+/// Which stage the two-step provider form is currently in.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) enum ProviderFormStage {
+    /// Stage 1: the user is choosing which provider to configure.
+    PickProvider,
+    /// Stage 2: the user is typing the value (key or URL).
+    EnterValue,
+}
+
+/// One row in the provider selection list.
+#[derive(Clone, Debug)]
+pub(super) struct ProviderFormOption {
+    /// Matches `ProviderDescriptor::id`.
+    pub(super) provider_id: String,
+    /// Human-readable name shown in the picker.
+    pub(super) display_name: String,
+}
+
+/// Ephemeral state for the provider API-key / API-base-URL overlay.
+#[derive(Debug)]
+pub(super) struct ProviderFormState {
+    /// Which value type this form collects.
+    pub(super) kind: ProviderFormKind,
+    /// Current UI stage.
+    pub(super) stage: ProviderFormStage,
+    /// Selectable providers (filtered by kind at form open time).
+    pub(super) options: Vec<ProviderFormOption>,
+    /// Index of the currently highlighted row.
+    pub(super) selected_index: usize,
+    /// Text input for stage 2 (API key or URL).
+    pub(super) input: TextBuffer,
+}
+
+impl ProviderFormState {
+    /// Creates a new form in stage-1 (provider selection).
+    pub(super) fn new(kind: ProviderFormKind, options: Vec<ProviderFormOption>) -> Self {
+        Self {
+            kind,
+            stage: ProviderFormStage::PickProvider,
+            options,
+            selected_index: 0,
+            input: TextBuffer::new(false),
+        }
+    }
+
+    /// Returns the display name of the currently selected provider.
+    pub(super) fn selected_display_name(&self) -> &str {
+        self.options
+            .get(self.selected_index)
+            .map(|o| o.display_name.as_str())
+            .unwrap_or("(none)")
+    }
+
+    /// Returns a display-safe representation of the staged input value.
+    ///
+    /// API keys are fully masked as bullet characters so they never appear in
+    /// rendered output or test transcripts.
+    pub(super) fn display_value(&self) -> String {
+        match self.kind {
+            // Replace every character with a bullet — length reveals nothing sensitive.
+            ProviderFormKind::ApiKey => "\u{2022}".repeat(self.input.text().chars().count()),
+            ProviderFormKind::ApiBase => self.input.text().to_string(),
+        }
+    }
+}
+
+// ── Setup hub ────────────────────────────────────────────────────────────────
 
 /// The action the controller should take when a setup menu item is confirmed.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -17,6 +90,8 @@ pub(super) enum SetupItemAction {
     Dispatch(String),
     /// Show a placeholder notice while the full form is deferred.
     Placeholder(String),
+    /// Open the two-stage provider form to collect an API key or base URL.
+    ProviderForm(ProviderFormKind),
 }
 
 /// A single entry in the setup hub menu.
@@ -33,10 +108,6 @@ pub(super) struct SetupItem {
 }
 
 /// Ephemeral state for the setup hub overlay.
-///
-/// This is the single picker state that backs the `/setup` TUI menu.
-/// It is created from the `setup_menu=true` + `setup_item=…` lines emitted
-/// by the `SetupCommand` and cleared when the overlay is dismissed.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) struct SetupOverlayState {
     /// The raw command that opened this overlay (always `"/setup"`).
@@ -52,17 +123,16 @@ pub(super) struct SetupOverlayState {
 }
 
 impl SetupOverlayState {
-    /// Builds a `SetupOverlayState` from the fields extracted by the parser.
+    /// Builds a `SetupOverlayState` from the parsed fields.
     pub(super) fn new(
         items: Vec<SetupItem>,
         provider_label: String,
         readiness_label: String,
     ) -> Self {
-        let selected_index = 0;
         Self {
             original_input: "/setup".into(),
             items,
-            selected_index,
+            selected_index: 0,
             provider_label,
             readiness_label,
         }
@@ -80,8 +150,9 @@ impl SetupOverlayState {
 
 /// Maps a setup menu item `id` to its concrete [`SetupItemAction`].
 ///
-/// Items whose flows exist today resolve to `Dispatch("/<command>")`.
-/// Items whose full forms are deferred carry a descriptive placeholder message.
+/// Items with existing TUI flows resolve to `Dispatch("/<command>")`.
+/// Items with native provider forms resolve to `ProviderForm(kind)`.
+/// Deferred items carry a descriptive `Placeholder` message.
 pub(super) fn action_for_item_id(id: &str, _command: &str) -> SetupItemAction {
     match id {
         "model" => SetupItemAction::Dispatch("/model".into()),
@@ -90,25 +161,16 @@ pub(super) fn action_for_item_id(id: &str, _command: &str) -> SetupItemAction {
         "memory" => SetupItemAction::Dispatch("/memory".into()),
         "terminal-setup" => SetupItemAction::Dispatch("/terminal-setup".into()),
         "keybindings" => SetupItemAction::Dispatch("/keybindings".into()),
-        // Provider auth forms are deferred to `tui-provider-forms`.
-        "login" => SetupItemAction::Placeholder(
-            "Provider API-key login form is coming soon.\n\
-             For now, run: wonder-of-u login --provider <name>"
-                .into(),
-        ),
+        // Opens the two-stage API-key entry form.
+        "login" => SetupItemAction::ProviderForm(ProviderFormKind::ApiKey),
+        // Opens the two-stage API-base URL override form.
+        "api-base" => SetupItemAction::ProviderForm(ProviderFormKind::ApiBase),
         // Copilot OAuth is deferred to `tui-copilot-oauth`.
         "copilot-oauth" => SetupItemAction::Placeholder(
             "Copilot OAuth flow is coming soon.\n\
              For now, run: wonder-of-u login --provider copilot"
                 .into(),
         ),
-        // API base override form is deferred to `tui-provider-forms`.
-        "api-base" => SetupItemAction::Placeholder(
-            "API base override form is coming soon.\n\
-             For now, edit the settings file or use: wonder-of-u config set api_base <url>"
-                .into(),
-        ),
-        // Any unknown future items default to a generic placeholder.
         _ => SetupItemAction::Placeholder(format!(
             "'{id}' setup is not yet available in the TUI."
         )),

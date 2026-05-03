@@ -4455,7 +4455,7 @@ fn controller_setup_overlay_item_ids() {
 fn controller_setup_overlay_known_items_have_dispatch_action() {
     let (controller, _dir) = open_setup_overlay_controller();
 
-    use crate::tui_runtime::setup::SetupItemAction;
+    use crate::tui_runtime::setup::{ProviderFormKind, SetupItemAction};
 
     let overlay = controller
         .pending_setup_overlay
@@ -4476,19 +4476,23 @@ fn controller_setup_overlay_known_items_have_dispatch_action() {
         );
     }
 
-    let placeholder_ids = ["login", "copilot-oauth", "api-base"];
-    for id in &placeholder_ids {
-        let item = overlay
-            .items
-            .iter()
-            .find(|i| i.id == *id)
-            .unwrap_or_else(|| panic!("missing item '{id}'"));
-        assert!(
-            matches!(&item.action, SetupItemAction::Placeholder(_)),
-            "item '{id}' should have a Placeholder action, got {:?}",
-            item.action
-        );
-    }
+    // "login" and "api-base" now open the provider form (not a placeholder).
+    let login = overlay.items.iter().find(|i| i.id == "login").expect("login item");
+    assert!(
+        matches!(&login.action, SetupItemAction::ProviderForm(ProviderFormKind::ApiKey)),
+        "login should be ProviderForm(ApiKey), got {:?}", login.action
+    );
+    let api_base = overlay.items.iter().find(|i| i.id == "api-base").expect("api-base item");
+    assert!(
+        matches!(&api_base.action, SetupItemAction::ProviderForm(ProviderFormKind::ApiBase)),
+        "api-base should be ProviderForm(ApiBase), got {:?}", api_base.action
+    );
+    // Copilot OAuth remains a placeholder until its own flow is implemented.
+    let oauth = overlay.items.iter().find(|i| i.id == "copilot-oauth").expect("copilot-oauth item");
+    assert!(
+        matches!(&oauth.action, SetupItemAction::Placeholder(_)),
+        "copilot-oauth should remain Placeholder, got {:?}", oauth.action
+    );
 }
 
 #[test]
@@ -4670,16 +4674,17 @@ fn controller_setup_overlay_enter_on_memory_dispatches_memory_picker() {
 fn controller_setup_overlay_enter_on_placeholder_item_shows_notice() {
     let (mut controller, _dir) = open_setup_overlay_controller();
 
-    // Confirm on "login" (a placeholder item).
-    let login_idx = {
+    // "login" now opens the provider form, so use "copilot-oauth" which
+    // remains a Placeholder until its own OAuth flow is implemented.
+    let copilot_idx = {
         let overlay = controller.pending_setup_overlay.as_ref().expect("overlay open");
         overlay
             .items
             .iter()
-            .position(|i| i.id == "login")
-            .expect("login item present")
+            .position(|i| i.id == "copilot-oauth")
+            .expect("copilot-oauth item present")
     };
-    for _ in 0..login_idx {
+    for _ in 0..copilot_idx {
         send_dialog_key(&mut controller, picker_key(KeyCode::Down), None);
     }
     send_dialog_key(
@@ -4693,13 +4698,17 @@ fn controller_setup_overlay_enter_on_placeholder_item_shows_notice() {
         controller.pending_setup_overlay.is_none(),
         "setup overlay should close after selecting placeholder item"
     );
-    // A notice dialog should be shown.
+    // A notice dialog should be shown (not a provider form).
     assert!(
         controller.dialog.is_some(),
         "a notice dialog should appear for a placeholder item"
     );
+    assert!(
+        controller.pending_provider_form.is_none(),
+        "provider form should NOT open for a Placeholder item"
+    );
     let dialog = controller.dialog.as_ref().unwrap();
-    assert_eq!(dialog.title, "Provider login");
+    assert_eq!(dialog.title, "Copilot OAuth");
     assert!(
         controller
             .status_note
@@ -4743,5 +4752,163 @@ fn controller_setup_overlay_tab_key_selects_item() {
     assert!(
         controller.pending_setup_overlay.is_none(),
         "Tab should confirm and close the setup overlay"
+    );
+}
+
+// -- Provider-form tests ------------------------------------------------------
+
+#[test]
+fn provider_form_opens_via_open_provider_form() {
+    let (mut controller, _dir) = open_setup_overlay_controller();
+
+    controller.open_provider_form(crate::tui_runtime::setup::ProviderFormKind::ApiKey);
+
+    assert!(
+        controller.pending_provider_form.is_some(),
+        "pending_provider_form should be Some after open_provider_form"
+    );
+    assert!(
+        controller.pending_setup_overlay.is_none(),
+        "setup overlay should be cleared when provider form opens"
+    );
+    assert!(
+        controller.has_picker_overlay(),
+        "has_picker_overlay() should be true while provider form is open"
+    );
+}
+
+#[test]
+fn provider_form_opens_on_login_item() {
+    let (mut controller, _dir) = open_setup_overlay_controller();
+
+    let overlay = controller.pending_setup_overlay.as_ref().expect("overlay open");
+    let login_idx = overlay
+        .items
+        .iter()
+        .position(|i| i.id == "login")
+        .expect("login item");
+    for _ in 0..login_idx {
+        send_dialog_key(&mut controller, picker_key(KeyCode::Down), None);
+    }
+    send_dialog_key(
+        &mut controller,
+        picker_key(KeyCode::Enter),
+        Some(ResolvedKey::Edit(EditAction::InsertNewline)),
+    );
+
+    assert!(
+        controller.pending_provider_form.is_some(),
+        "provider form should open after selecting login item"
+    );
+    assert!(
+        controller.pending_setup_overlay.is_none(),
+        "setup overlay should close when provider form opens"
+    );
+}
+
+#[test]
+fn provider_form_esc_cancels_from_stage1() {
+    let (mut controller, _dir) = open_setup_overlay_controller();
+    controller.open_provider_form(crate::tui_runtime::setup::ProviderFormKind::ApiKey);
+
+    send_dialog_key(&mut controller, picker_key(KeyCode::Esc), None);
+
+    assert!(
+        controller.pending_provider_form.is_none(),
+        "Esc in stage-1 should cancel the provider form"
+    );
+    assert_eq!(
+        controller.status_note.as_deref(),
+        Some("provider form cancelled"),
+    );
+}
+
+#[test]
+fn provider_form_esc_in_stage2_goes_back() {
+    use crate::tui_runtime::setup::ProviderFormStage;
+
+    let (mut controller, _dir) = open_setup_overlay_controller();
+    controller.open_provider_form(crate::tui_runtime::setup::ProviderFormKind::ApiBase);
+
+    // Tab advances to stage-2.
+    send_dialog_key(&mut controller, picker_key(KeyCode::Tab), None);
+    {
+        let form = controller.pending_provider_form.as_ref().expect("form open");
+        assert_eq!(form.stage, ProviderFormStage::EnterValue);
+    }
+
+    // Esc goes back to stage-1.
+    send_dialog_key(&mut controller, picker_key(KeyCode::Esc), None);
+    {
+        let form = controller.pending_provider_form.as_ref().expect("form still open");
+        assert_eq!(form.stage, ProviderFormStage::PickProvider);
+    }
+}
+
+#[test]
+fn provider_form_has_picker_list_view() {
+    let (mut controller, _dir) = open_setup_overlay_controller();
+    controller.open_provider_form(crate::tui_runtime::setup::ProviderFormKind::ApiKey);
+
+    let view = controller.current_picker_list_view();
+    assert!(view.is_some(), "picker list view should be present while form is open");
+    let picker = view.unwrap();
+    assert!(!picker.entries.is_empty(), "provider list must have at least one entry");
+    assert!(
+        picker.title.contains("API Key"),
+        "title should mention 'API Key'; got {:?}",
+        picker.title
+    );
+}
+
+#[test]
+fn provider_form_dismiss_clears_form() {
+    let (mut controller, _dir) = open_setup_overlay_controller();
+    controller.open_provider_form(crate::tui_runtime::setup::ProviderFormKind::ApiBase);
+    assert!(controller.has_picker_overlay());
+
+    controller.dismiss_dialog();
+
+    assert!(!controller.has_picker_overlay());
+    assert!(controller.pending_provider_form.is_none());
+}
+
+#[test]
+fn provider_form_api_key_write_redacts_key_in_status_note() {
+    let (mut controller, dir) = open_setup_overlay_controller();
+    controller.open_provider_form(crate::tui_runtime::setup::ProviderFormKind::ApiKey);
+
+    // Advance to stage-2 with Tab.
+    send_dialog_key(&mut controller, picker_key(KeyCode::Tab), None);
+
+    // Type a fake secret.
+    let secret = "sk-testkey9999";
+    for c in secret.chars() {
+        send_dialog_key(
+            &mut controller,
+            picker_key(KeyCode::Char(c)),
+            Some(ResolvedKey::InsertChar(c)),
+        );
+    }
+
+    // Submit.
+    send_dialog_key(
+        &mut controller,
+        picker_key(KeyCode::Enter),
+        Some(ResolvedKey::Edit(EditAction::InsertNewline)),
+    );
+
+    assert!(controller.pending_provider_form.is_none(), "form should close after submit");
+
+    let note = controller.status_note.clone().unwrap_or_default();
+    assert!(
+        !note.contains(secret),
+        "status note must NOT contain the raw API key; got: {note:?}"
+    );
+
+    let creds = CredentialStore::new(dir.as_path()).read().expect("read credentials");
+    assert!(
+        !creds.providers.is_empty(),
+        "at least one credential should be stored after API-key form submission"
     );
 }

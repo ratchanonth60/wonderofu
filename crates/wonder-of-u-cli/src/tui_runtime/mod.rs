@@ -22,18 +22,18 @@ use ratatui::{
     prelude::{Color as RatatuiColor, Modifier, Style as RatatuiStyle},
 };
 use wonder_of_u_agent::{
-    CompletionRequest, ProviderResolver, ProviderRuntime, ProviderSelection, ProviderToolCall,
-    ProviderToolResultMessage, ProviderToolSpec, SettingsStore, ToolConversationRound,
-    ToolUseRequest, ToolUseResponse, builtin_tool_registry,
+    CompletionRequest, CredentialStore, ProviderResolver, ProviderRuntime, ProviderSelection,
+    ProviderToolCall, ProviderToolResultMessage, ProviderToolSpec, SettingsStore,
+    ToolConversationRound, ToolUseRequest, ToolUseResponse, builtin_tool_registry,
 };
 use wonder_of_u_core::{
-    AdditionalWorkingDirectory, AppState, AuthState, CommandContext, CommandOutput, CommandQuery,
-    CommandRegistry, FeatureSet, InputMode, MessageEnvelope, MessagePayload, PendingLocalToolCall,
-    PendingProviderToolCall, PendingProviderToolResult, PendingToolApprovalState,
-    PendingToolConversationRound, PermissionDecision, PermissionMode, PermissionRequest,
-    PermissionRuleSource, ProviderReadiness, QueuePlacement, Result, SessionId, TaskState,
-    TaskStatus, ToolContext, ToolQuery, ToolResult, ToolUseId, WonderError, parse_slash_command,
-    session_footer_text, session_status_text,
+    AdditionalWorkingDirectory, AppState, AuthMaterialKind, AuthState, CommandContext,
+    CommandOutput, CommandQuery, CommandRegistry, FeatureSet, InputMode, MessageEnvelope,
+    MessagePayload, PendingLocalToolCall, PendingProviderToolCall, PendingProviderToolResult,
+    PendingToolApprovalState, PendingToolConversationRound, PermissionDecision, PermissionMode,
+    PermissionRequest, PermissionRuleSource, ProviderReadiness, QueuePlacement, Result, SessionId,
+    TaskState, TaskStatus, ToolContext, ToolQuery, ToolResult, ToolUseId, WonderError,
+    parse_slash_command, session_footer_text, session_status_text,
 };
 use wonder_of_u_storage::{TaskStore, TranscriptStore};
 use wonder_of_u_tools::provider_tool_specs;
