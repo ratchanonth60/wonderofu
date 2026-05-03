@@ -4357,3 +4357,391 @@ fn controller_resize_event_preserves_follow_tail_mode() {
         "resize should not exit follow-tail mode when no scroll has occurred"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Setup overlay tests
+// ---------------------------------------------------------------------------
+
+/// Runs `/setup` on a controller and returns the controller.  The test helper
+/// registers a storage dir so that `SetupCommand` can load a provider report.
+fn open_setup_overlay_controller() -> (TuiController<'static>, PathBuf) {
+    // leak the registry so it has a 'static lifetime for the controller.
+    let dir = unique_test_dir("tui-setup-overlay");
+    let registry = Box::new(commands::registry(Some(dir.clone())).expect("registry"));
+    let registry: &'static _ = Box::leak(registry);
+    let mut controller = TuiController::new(
+        test_context(&dir),
+        registry,
+        Some(dir.as_path()),
+        TuiLaunchOptions { session_id: None },
+    )
+    .expect("controller");
+    controller
+        .execute_slash_command("/setup")
+        .expect("execute /setup");
+    (controller, dir)
+}
+
+#[test]
+fn controller_setup_command_opens_setup_overlay() {
+    let (controller, _dir) = open_setup_overlay_controller();
+
+    assert!(
+        controller.pending_setup_overlay.is_some(),
+        "expected setup overlay to be open after /setup"
+    );
+    assert!(
+        controller.pending_model_picker.is_none(),
+        "model picker should not be open while setup overlay is open"
+    );
+}
+
+#[test]
+fn controller_setup_overlay_view_has_picker_list() {
+    let (controller, _dir) = open_setup_overlay_controller();
+
+    let view = controller.view();
+    let picker = view
+        .picker_list
+        .as_ref()
+        .expect("picker_list should be present while setup overlay is open");
+    assert_eq!(picker.title, "Setup");
+    assert!(
+        !picker.entries.is_empty(),
+        "setup overlay must have at least one entry"
+    );
+    // Exactly one entry should be selected.
+    let selected_count = picker.entries.iter().filter(|e| e.selected).count();
+    assert_eq!(selected_count, 1, "exactly one setup entry should be selected");
+}
+
+#[test]
+fn controller_setup_overlay_has_nine_items() {
+    let (controller, _dir) = open_setup_overlay_controller();
+
+    let overlay = controller
+        .pending_setup_overlay
+        .as_ref()
+        .expect("setup overlay open");
+    assert_eq!(
+        overlay.items.len(),
+        9,
+        "setup overlay should have the 9 first-slice entries, got {}",
+        overlay.items.len()
+    );
+}
+
+#[test]
+fn controller_setup_overlay_item_ids() {
+    let (controller, _dir) = open_setup_overlay_controller();
+
+    let overlay = controller
+        .pending_setup_overlay
+        .as_ref()
+        .expect("setup overlay open");
+    let ids: Vec<&str> = overlay.items.iter().map(|i| i.id.as_str()).collect();
+    assert!(ids.contains(&"login"), "missing 'login' item");
+    assert!(ids.contains(&"copilot-oauth"), "missing 'copilot-oauth' item");
+    assert!(ids.contains(&"model"), "missing 'model' item");
+    assert!(ids.contains(&"api-base"), "missing 'api-base' item");
+    assert!(ids.contains(&"theme"), "missing 'theme' item");
+    assert!(ids.contains(&"permissions"), "missing 'permissions' item");
+    assert!(ids.contains(&"terminal-setup"), "missing 'terminal-setup' item");
+    assert!(ids.contains(&"memory"), "missing 'memory' item");
+    assert!(ids.contains(&"keybindings"), "missing 'keybindings' item");
+}
+
+#[test]
+fn controller_setup_overlay_known_items_have_dispatch_action() {
+    let (controller, _dir) = open_setup_overlay_controller();
+
+    use crate::tui_runtime::setup::SetupItemAction;
+
+    let overlay = controller
+        .pending_setup_overlay
+        .as_ref()
+        .expect("setup overlay open");
+
+    let dispatch_ids = ["model", "theme", "permissions", "memory", "terminal-setup", "keybindings"];
+    for id in &dispatch_ids {
+        let item = overlay
+            .items
+            .iter()
+            .find(|i| i.id == *id)
+            .unwrap_or_else(|| panic!("missing item '{id}'"));
+        assert!(
+            matches!(&item.action, SetupItemAction::Dispatch(_)),
+            "item '{id}' should have a Dispatch action, got {:?}",
+            item.action
+        );
+    }
+
+    let placeholder_ids = ["login", "copilot-oauth", "api-base"];
+    for id in &placeholder_ids {
+        let item = overlay
+            .items
+            .iter()
+            .find(|i| i.id == *id)
+            .unwrap_or_else(|| panic!("missing item '{id}'"));
+        assert!(
+            matches!(&item.action, SetupItemAction::Placeholder(_)),
+            "item '{id}' should have a Placeholder action, got {:?}",
+            item.action
+        );
+    }
+}
+
+#[test]
+fn controller_setup_overlay_navigate_down_and_up_wraps() {
+    let (mut controller, _dir) = open_setup_overlay_controller();
+
+    // Navigate down through all items and back up; selection should wrap.
+    let count = controller
+        .pending_setup_overlay
+        .as_ref()
+        .expect("overlay open")
+        .items
+        .len();
+    for _ in 0..count {
+        send_dialog_key(&mut controller, picker_key(KeyCode::Down), None);
+    }
+    // After `count` downs from index 0, we should be back at 0.
+    let idx = controller
+        .pending_setup_overlay
+        .as_ref()
+        .expect("overlay open")
+        .selected_index;
+    assert_eq!(idx, 0, "selection should wrap back to 0 after {count} downs");
+
+    // Navigate up once: should wrap to the last item.
+    send_dialog_key(&mut controller, picker_key(KeyCode::Up), None);
+    let idx = controller
+        .pending_setup_overlay
+        .as_ref()
+        .expect("overlay open")
+        .selected_index;
+    assert_eq!(
+        idx,
+        count - 1,
+        "one Up from index 0 should wrap to last item ({count}-1)"
+    );
+}
+
+#[test]
+fn controller_setup_overlay_esc_cancels() {
+    let (mut controller, _dir) = open_setup_overlay_controller();
+
+    send_dialog_key(
+        &mut controller,
+        KeyEvent {
+            code: KeyCode::Esc,
+            modifiers: wonder_of_u_tui::KeyModifiers::default(),
+        },
+        None,
+    );
+
+    assert!(
+        controller.pending_setup_overlay.is_none(),
+        "setup overlay should be dismissed after Esc"
+    );
+    assert_eq!(
+        controller.status_note.as_deref(),
+        Some("setup cancelled"),
+        "status note should indicate cancellation"
+    );
+}
+
+#[test]
+fn controller_setup_overlay_enter_on_model_dispatches_model_picker() {
+    let (mut controller, _dir) = open_setup_overlay_controller();
+
+    // Find the "model" item index.
+    let model_idx = {
+        let overlay = controller.pending_setup_overlay.as_ref().expect("overlay open");
+        overlay
+            .items
+            .iter()
+            .position(|i| i.id == "model")
+            .expect("model item present")
+    };
+
+    // Navigate to the model item.
+    for _ in 0..model_idx {
+        send_dialog_key(&mut controller, picker_key(KeyCode::Down), None);
+    }
+
+    // Confirm with Enter.
+    send_dialog_key(
+        &mut controller,
+        picker_key(KeyCode::Enter),
+        Some(ResolvedKey::Edit(EditAction::InsertNewline)),
+    );
+
+    // After confirming model, the setup overlay should be gone and the model picker should open.
+    assert!(
+        controller.pending_setup_overlay.is_none(),
+        "setup overlay should close after selecting an item"
+    );
+    assert!(
+        controller.pending_model_picker.is_some(),
+        "model picker should open after selecting the model item"
+    );
+}
+
+#[test]
+fn controller_setup_overlay_enter_on_theme_dispatches_theme_picker() {
+    let (mut controller, _dir) = open_setup_overlay_controller();
+
+    let theme_idx = {
+        let overlay = controller.pending_setup_overlay.as_ref().expect("overlay open");
+        overlay
+            .items
+            .iter()
+            .position(|i| i.id == "theme")
+            .expect("theme item present")
+    };
+    for _ in 0..theme_idx {
+        send_dialog_key(&mut controller, picker_key(KeyCode::Down), None);
+    }
+    send_dialog_key(
+        &mut controller,
+        picker_key(KeyCode::Enter),
+        Some(ResolvedKey::Edit(EditAction::InsertNewline)),
+    );
+
+    assert!(controller.pending_setup_overlay.is_none());
+    assert!(controller.pending_theme_picker.is_some(), "theme picker should open");
+}
+
+#[test]
+fn controller_setup_overlay_enter_on_permissions_dispatches_permission_picker() {
+    let (mut controller, _dir) = open_setup_overlay_controller();
+
+    let perm_idx = {
+        let overlay = controller.pending_setup_overlay.as_ref().expect("overlay open");
+        overlay
+            .items
+            .iter()
+            .position(|i| i.id == "permissions")
+            .expect("permissions item present")
+    };
+    for _ in 0..perm_idx {
+        send_dialog_key(&mut controller, picker_key(KeyCode::Down), None);
+    }
+    send_dialog_key(
+        &mut controller,
+        picker_key(KeyCode::Enter),
+        Some(ResolvedKey::Edit(EditAction::InsertNewline)),
+    );
+
+    assert!(controller.pending_setup_overlay.is_none());
+    assert!(
+        controller.pending_permission_picker.is_some(),
+        "permission picker should open"
+    );
+}
+
+#[test]
+fn controller_setup_overlay_enter_on_memory_dispatches_memory_picker() {
+    let (mut controller, _dir) = open_setup_overlay_controller();
+
+    let mem_idx = {
+        let overlay = controller.pending_setup_overlay.as_ref().expect("overlay open");
+        overlay
+            .items
+            .iter()
+            .position(|i| i.id == "memory")
+            .expect("memory item present")
+    };
+    for _ in 0..mem_idx {
+        send_dialog_key(&mut controller, picker_key(KeyCode::Down), None);
+    }
+    send_dialog_key(
+        &mut controller,
+        picker_key(KeyCode::Enter),
+        Some(ResolvedKey::Edit(EditAction::InsertNewline)),
+    );
+
+    assert!(controller.pending_setup_overlay.is_none());
+    assert!(controller.pending_memory_picker.is_some(), "memory picker should open");
+}
+
+#[test]
+fn controller_setup_overlay_enter_on_placeholder_item_shows_notice() {
+    let (mut controller, _dir) = open_setup_overlay_controller();
+
+    // Confirm on "login" (a placeholder item).
+    let login_idx = {
+        let overlay = controller.pending_setup_overlay.as_ref().expect("overlay open");
+        overlay
+            .items
+            .iter()
+            .position(|i| i.id == "login")
+            .expect("login item present")
+    };
+    for _ in 0..login_idx {
+        send_dialog_key(&mut controller, picker_key(KeyCode::Down), None);
+    }
+    send_dialog_key(
+        &mut controller,
+        picker_key(KeyCode::Enter),
+        Some(ResolvedKey::Edit(EditAction::InsertNewline)),
+    );
+
+    // Setup overlay should be gone.
+    assert!(
+        controller.pending_setup_overlay.is_none(),
+        "setup overlay should close after selecting placeholder item"
+    );
+    // A notice dialog should be shown.
+    assert!(
+        controller.dialog.is_some(),
+        "a notice dialog should appear for a placeholder item"
+    );
+    let dialog = controller.dialog.as_ref().unwrap();
+    assert_eq!(dialog.title, "Provider login");
+    assert!(
+        controller
+            .status_note
+            .as_deref()
+            .unwrap_or_default()
+            .starts_with("setup:"),
+        "status note should start with 'setup:'"
+    );
+}
+
+#[test]
+fn controller_setup_overlay_does_not_record_command_message_while_open() {
+    let (controller, _dir) = open_setup_overlay_controller();
+
+    // No message for "/setup" should appear while the overlay is open
+    // (it's deferred until the overlay is dismissed).
+    let has_setup_command = controller.state.messages.iter().any(|msg| {
+        matches!(
+            &msg.payload,
+            MessagePayload::Command { input, .. } if input.trim() == "/setup"
+        )
+    });
+    assert!(
+        !has_setup_command,
+        "/setup command message should not be recorded while the overlay is open"
+    );
+}
+
+#[test]
+fn controller_setup_overlay_tab_key_selects_item() {
+    let (mut controller, _dir) = open_setup_overlay_controller();
+
+    // Tab on first item (index 0: "login" → placeholder).
+    send_dialog_key(
+        &mut controller,
+        picker_key(KeyCode::Tab),
+        None,
+    );
+
+    // Overlay should be dismissed and a dialog shown (placeholder case).
+    assert!(
+        controller.pending_setup_overlay.is_none(),
+        "Tab should confirm and close the setup overlay"
+    );
+}

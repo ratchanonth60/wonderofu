@@ -30,6 +30,8 @@ pub(super) struct TuiController<'a> {
     pub(super) pending_permission_picker: Option<PermissionPickerState>,
     pub(super) pending_memory_picker: Option<MemoryPickerState>,
     pub(super) pending_external_editor: Option<ExternalEditorRequest>,
+    /// Ephemeral setup hub overlay opened by `/setup`.  Never persisted.
+    pub(super) pending_setup_overlay: Option<SetupOverlayState>,
     /// Countdown ticks until the task notification dialog is auto-dismissed.
     pub(super) task_notice_ttl: Option<u8>,
     pub(super) notifications: NotificationQueue,
@@ -187,6 +189,7 @@ impl<'a> TuiController<'a> {
             pending_permission_picker: None,
             pending_memory_picker: None,
             pending_external_editor: None,
+            pending_setup_overlay: None,
             task_notice_ttl: None,
             notifications: NotificationQueue::new(),
             slash_suggestions: build_slash_suggestions(registry),
@@ -528,6 +531,9 @@ impl<'a> TuiController<'a> {
         }
         if self.pending_model_picker.is_some() {
             return self.handle_model_picker_key(key, resolved, before_blocking);
+        }
+        if self.pending_setup_overlay.is_some() {
+            return self.handle_setup_overlay_key(key, resolved, before_blocking);
         }
         match self.dialog.as_ref().map(DialogView::kind) {
             Some(wonder_of_u_tui::DialogKind::Permission) => {
@@ -1419,6 +1425,7 @@ impl<'a> TuiController<'a> {
             && self.pending_memory_picker.is_none()
             && self.pending_tag_removal.is_none()
             && self.pending_theme_picker.is_none()
+            && self.pending_setup_overlay.is_none()
         {
             self.record_command_message(input, text.as_deref())?;
         }
@@ -1478,6 +1485,7 @@ impl<'a> TuiController<'a> {
             || self.pending_tag_removal.is_some()
             || self.pending_theme_picker.is_some()
             || self.pending_model_picker.is_some()
+            || self.pending_setup_overlay.is_some()
         {
         } else if self.pending_external_editor.is_some() {
             self.status_note = Some("opening file in editor".into());
@@ -1610,6 +1618,15 @@ impl<'a> TuiController<'a> {
             self.open_model_picker(picker);
         } else {
             self.pending_model_picker = None;
+        }
+        if let Some(overlay) = parse_setup_overlay_state(text) {
+            self.open_setup_overlay(overlay);
+        } else {
+            // Only clear setup overlay if we actually parsed some command output;
+            // avoid clobbering it mid-interaction when unrelated hints fire.
+            if text.lines().any(|line| line.starts_with("setup_menu=")) {
+                self.pending_setup_overlay = None;
+            }
         }
         if let Some(theme) = parse_theme_hint(text) {
             self.state
@@ -2880,6 +2897,131 @@ impl<'a> TuiController<'a> {
         Ok(())
     }
 
+    // -----------------------------------------------------------------------
+    // Setup overlay
+    // -----------------------------------------------------------------------
+
+    /// Opens the setup hub overlay, clearing all other picker overlays first.
+    pub(super) fn open_setup_overlay(&mut self, mut overlay: SetupOverlayState) {
+        if overlay.items.is_empty() {
+            self.status_note = Some("setup menu is empty".into());
+            self.needs_render = true;
+            return;
+        }
+        overlay.clamp_selection();
+        self.pending_permission_picker = None;
+        self.pending_memory_picker = None;
+        self.pending_tag_removal = None;
+        self.pending_theme_picker = None;
+        self.pending_model_picker = None;
+        self.pending_setup_overlay = Some(overlay);
+        self.status_note = Some(picker_status_note("setup"));
+        self.dialog = None;
+        self.needs_render = true;
+    }
+
+    /// Moves the highlighted row by `delta` (+1 down, -1 up).
+    pub(super) fn step_setup_overlay(&mut self, delta: isize) {
+        let Some(overlay) = &mut self.pending_setup_overlay else {
+            return;
+        };
+        if overlay.items.is_empty() {
+            return;
+        }
+        let count = overlay.items.len();
+        let current = overlay.selected_index as isize;
+        overlay.selected_index =
+            (current + delta).rem_euclid(count as isize) as usize;
+        self.needs_render = true;
+    }
+
+    /// Confirms the currently highlighted setup item and dispatches its action.
+    pub(super) fn complete_setup_overlay<F>(&mut self, before_blocking: &mut F) -> Result<()>
+    where
+        F: FnMut(&Self) -> Result<()>,
+    {
+        let Some(overlay) = self.pending_setup_overlay.take() else {
+            self.dismiss_dialog();
+            return Ok(());
+        };
+        self.dialog = None;
+        let Some(item) = overlay.items.get(overlay.selected_index).cloned() else {
+            return Ok(());
+        };
+        match item.action {
+            SetupItemAction::Dispatch(command) => {
+                // Execute the slash command for this item (e.g. "/model", "/theme").
+                self.execute_slash_command_with(&command, before_blocking)?;
+            }
+            SetupItemAction::Placeholder(message) => {
+                // Show a notice dialog while the full form is deferred.
+                let body: Vec<String> = message.lines().map(str::to_string).collect();
+                self.dialog = Some(DialogView::notice(item.label.clone(), body.clone()));
+                self.status_note = Some(format!("setup: {}", item.label.to_ascii_lowercase()));
+                self.push_notification(
+                    format!("setup-placeholder:{}", item.id),
+                    NotificationSeverity::Info,
+                    item.label,
+                    body,
+                    Some(SHELL_NOTIFICATION_TTL),
+                    false,
+                );
+                self.needs_render = true;
+            }
+        }
+        Ok(())
+    }
+
+    /// Cancels the setup overlay and records a status note.
+    pub(super) fn cancel_setup_overlay(&mut self) -> Result<()> {
+        let Some(overlay) = self.pending_setup_overlay.take() else {
+            self.dismiss_dialog();
+            return Ok(());
+        };
+        self.dialog = None;
+        self.record_command_message(&overlay.original_input, Some("status=setup cancelled"))?;
+        self.status_note = Some("setup cancelled".into());
+        self.needs_render = true;
+        Ok(())
+    }
+
+    /// Handles keyboard input while the setup overlay is active.
+    pub(super) fn handle_setup_overlay_key<F>(
+        &mut self,
+        key: KeyEvent,
+        resolved: Option<ResolvedKey>,
+        before_blocking: &mut F,
+    ) -> Result<()>
+    where
+        F: FnMut(&Self) -> Result<()>,
+    {
+        match key.code {
+            KeyCode::Tab => self.complete_setup_overlay(before_blocking),
+            KeyCode::Up => {
+                self.step_setup_overlay(-1);
+                Ok(())
+            }
+            KeyCode::Down => {
+                self.step_setup_overlay(1);
+                Ok(())
+            }
+            KeyCode::Esc => self.cancel_setup_overlay(),
+            _ => match resolved {
+                Some(ResolvedKey::Edit(EditAction::InsertNewline)) => {
+                    self.complete_setup_overlay(before_blocking)
+                }
+                Some(ResolvedKey::System(wonder_of_u_tui::SystemAction::Interrupt)) => {
+                    self.cancel_setup_overlay()
+                }
+                _ => {
+                    self.status_note = Some(picker_status_note("setup"));
+                    self.needs_render = true;
+                    Ok(())
+                }
+            },
+        }
+    }
+
     pub(super) fn dismiss_dialog(&mut self) {
         self.dialog = None;
         self.pending_permission_picker = None;
@@ -2887,6 +3029,7 @@ impl<'a> TuiController<'a> {
         self.pending_tag_removal = None;
         self.pending_theme_picker = None;
         self.pending_model_picker = None;
+        self.pending_setup_overlay = None;
         if matches!(
             self.state.input_mode,
             InputMode::PermissionPending | InputMode::TaskNotification
@@ -2940,6 +3083,7 @@ impl<'a> TuiController<'a> {
             || self.pending_tag_removal.is_some()
             || self.pending_theme_picker.is_some()
             || self.pending_model_picker.is_some()
+            || self.pending_setup_overlay.is_some()
     }
 
     pub(super) fn current_picker_list_view(&self) -> Option<PickerListView> {
@@ -3047,6 +3191,31 @@ impl<'a> TuiController<'a> {
                     })
                     .collect(),
                 hint: PICKER_HINT.into(),
+            });
+        }
+        if let Some(overlay) = &self.pending_setup_overlay {
+            let readiness_hint = format!(
+                "{PICKER_HINT}  ·  provider: {}  readiness: {}",
+                overlay.provider_label, overlay.readiness_label
+            );
+            return Some(PickerListView {
+                title: "Setup".into(),
+                query: String::new(),
+                entries: overlay
+                    .items
+                    .iter()
+                    .enumerate()
+                    .map(|(i, item)| PickerListEntry {
+                        label: item.label.clone(),
+                        description: item.description.clone(),
+                        tag: match &item.action {
+                            SetupItemAction::Dispatch(_) => None,
+                            SetupItemAction::Placeholder(_) => Some("coming soon".into()),
+                        },
+                        selected: i == overlay.selected_index,
+                    })
+                    .collect(),
+                hint: readiness_hint,
             });
         }
         None
@@ -3182,6 +3351,7 @@ impl<'a> TuiController<'a> {
         self.pending_theme_picker = None;
         self.pending_model_picker = None;
         self.pending_external_editor = None;
+        self.pending_setup_overlay = None;
         match self.state.input_mode {
             InputMode::Prompt => {
                 self.turn_state = if self.prompt.text().trim().is_empty() {
