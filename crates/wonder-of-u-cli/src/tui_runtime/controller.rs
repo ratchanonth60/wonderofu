@@ -2219,14 +2219,82 @@ impl<'a> TuiController<'a> {
                 match_index: search.cursor,
                 match_total: search.matches.len(),
             });
-        let mut status = session_status_text(&self.state);
-        status.push_str(" | turn=");
-        status.push_str(turn_state_label(self.turn_state));
-        if let Some(note) = &self.status_note {
-            status.push_str(" | ");
-            status.push_str(note);
+        // Populate sidebar sections with live controller state when the panel is
+        // visible.  The renderer ignores the sidebar entirely when the terminal is
+        // too narrow, so we always fill the data here.
+        if let Some(sb) = view.sidebar.as_mut() {
+            // Section 1 – Session: title (or id prefix), turn state, status note.
+            let mut session_lines = vec![format!(
+                "◈ {}",
+                if self.state.session.title.is_empty() {
+                    self.state
+                        .session
+                        .id
+                        .to_string()
+                        .chars()
+                        .take(8)
+                        .collect::<String>()
+                } else {
+                    self.state.session.title.clone()
+                }
+            )];
+            if let Some(note) = &self.status_note {
+                session_lines.push(format!("  {note}"));
+            }
+            sb.session_lines = session_lines;
+
+            // Section 4 – Status: turn-state indicator + last error summary.
+            let state_icon = match self.turn_state {
+                TurnState::Idle | TurnState::EditingInput => "●",
+                TurnState::ModelRequestActive | TurnState::StreamingResponse => "⟳",
+                TurnState::CommandQueued | TurnState::ToolExecuting => "⚙",
+                TurnState::ToolPermissionPending => "?",
+                TurnState::Interrupted => "⚠",
+                TurnState::Completed => "✓",
+            };
+            sb.status_lines = vec![format!(
+                "{state_icon} {}",
+                turn_state_label(self.turn_state)
+            )];
+
+            // Section 6 – Workspace: runtime label, git branch, truncated cwd.
+            let mut workspace_lines =
+                vec![runtime_label(
+                    self.state.provider.as_deref(),
+                    self.state.model.as_deref(),
+                )
+                .to_string()];
+            if let Some(branch) = &self.state.session.git_branch {
+                workspace_lines.push(format!("⎇  {branch}"));
+            }
+            // Truncate cwd to 20 chars so it fits the narrow sidebar column.
+            if let Some(cwd) = self.state.session.cwd.to_str() {
+                let label: String = if cwd.len() > 20 {
+                    format!("…{}", &cwd[cwd.len() - 19..])
+                } else {
+                    cwd.to_string()
+                };
+                workspace_lines.push(format!("  {label}"));
+            }
+            sb.workspace_lines = workspace_lines;
         }
-        view.status = status;
+
+        // When the sidebar is showing, the bottom bar is reduced to key hints so
+        // the rich turn/session info is not duplicated.  When the sidebar is
+        // hidden, show the full session status line so the user still has context.
+        let view_status = if self.sidebar_visible {
+            "/ commands  ⌃B sidebar  ⌃C exit".to_string()
+        } else {
+            let mut s = session_status_text(&self.state);
+            s.push_str(" | turn=");
+            s.push_str(turn_state_label(self.turn_state));
+            if let Some(note) = &self.status_note {
+                s.push_str(" | ");
+                s.push_str(note);
+            }
+            s
+        };
+        view.status = view_status;
         view.loading = matches!(
             self.turn_state,
             TurnState::ModelRequestActive
@@ -2319,6 +2387,42 @@ impl<'a> TuiController<'a> {
             total_lines: self.scroll_state.last_total_lines,
             visible_lines: self.scroll_state.last_visible_lines,
         };
+
+        // Populate sidebar provider summary with live provider/model info.
+        // Format: "◈ gpt-4.1(copilot)" for the active provider, "  model(id)" for others.
+        if let Some(sb) = view.sidebar.as_mut() {
+            let active_provider = self.state.provider.as_deref().unwrap_or("");
+            let active_model = self.state.model.as_deref().unwrap_or("");
+            let mut provider_lines: Vec<String> = Vec::new();
+
+            if let Ok(report) =
+                ProviderResolver::builtin().load_report(self.storage_dir.as_deref())
+            {
+                for pd in &report.available_providers {
+                    // Use the currently active model when this is the active provider;
+                    // otherwise fall back to the provider's default.
+                    let model = if pd.id == active_provider {
+                        active_model
+                    } else {
+                        pd.default_model.as_str()
+                    };
+                    let label = format!("{}({})", model, pd.id);
+                    if pd.id == active_provider {
+                        provider_lines.push(format!("◈ {label}"));
+                    } else {
+                        provider_lines.push(format!("  {label}"));
+                    }
+                }
+            }
+
+            // Fallback: if no providers loaded, show the active selection as one line.
+            if provider_lines.is_empty() && !active_provider.is_empty() {
+                provider_lines.push(format!("◈ {}({})", active_model, active_provider));
+            }
+
+            sb.provider_lines = provider_lines;
+        }
+
         view
     }
 
