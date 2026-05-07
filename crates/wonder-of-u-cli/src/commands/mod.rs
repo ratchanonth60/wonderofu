@@ -18,6 +18,7 @@ mod doctor;
 mod extras;
 mod features;
 mod help;
+pub(crate) mod hooks;
 mod mcp;
 mod plugin;
 pub(crate) mod project;

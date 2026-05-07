@@ -22,7 +22,12 @@ use wonder_of_u_storage::{
 };
 use wonder_of_u_tools::provider_tool_specs;
 
-use super::{detect_git_branch, parse_command_args, parse_session_id};
+use super::{
+    detect_git_branch,
+    hooks::{HookOutcome, POST_TOOL_USE, POST_TOOL_USE_FAILURE, PRE_TOOL_USE, run_hooks},
+    parse_command_args,
+    parse_session_id,
+};
 
 const MAX_TOOL_LOOP_ITERATIONS: usize = 6;
 
@@ -720,49 +725,80 @@ fn execute_tool_call(
                 format!("tool input validation failed: {error}"),
             )
         } else {
-            match tool.permission_decision(context, &call.provider_call.arguments) {
-                PermissionDecision::Allow { .. } => {
-                    let tool = tool.clone();
-                    let context = context.clone();
-                    let arguments = call.provider_call.arguments.clone();
-                    let use_id = call.use_id;
-                    match std::thread::spawn(move || {
-                        futures::executor::block_on(tool.execute(context, use_id, arguments))
-                    })
-                    .join()
-                    {
-                        Ok(Ok(result)) => result,
-                        Ok(Err(error)) => ToolResult::failure(
-                            call.use_id,
-                            format!("tool execution failed: {error}"),
-                        ),
-                        Err(_) => {
-                            ToolResult::failure(call.use_id, "tool execution thread panicked")
-                        }
-                    }
+            // PreToolUse hooks run before permission checks so they can augment
+            // or block the call before any user interaction.
+            match run_hooks(
+                PRE_TOOL_USE,
+                &call.provider_call.tool_name,
+                &call.provider_call.arguments,
+                &context.cwd,
+                storage_dir,
+            ) {
+                HookOutcome::Block { reason } => {
+                    ToolResult::failure(call.use_id, format!("hook blocked tool: {reason}"))
                 }
-                other => {
-                    let reason = other.reason().to_string();
-                    messages.push(append_contextual_message(
-                        state,
-                        MessagePayload::Permission {
-                            tool: call.provider_call.tool_name.clone(),
-                            decision: permission_decision_label(&other).into(),
-                            reason: reason.clone(),
-                        },
-                    )?);
-                    ToolResult::failure(
-                        call.use_id,
-                        match other {
-                            PermissionDecision::Ask { .. } => {
-                                format!("tool execution blocked pending approval: {reason}")
+                HookOutcome::Allow => {
+                    let tool_result = match tool.permission_decision(context, &call.provider_call.arguments) {
+                        PermissionDecision::Allow { .. } => {
+                            let tool = tool.clone();
+                            let context = context.clone();
+                            let arguments = call.provider_call.arguments.clone();
+                            let use_id = call.use_id;
+                            match std::thread::spawn(move || {
+                                futures::executor::block_on(tool.execute(context, use_id, arguments))
+                            })
+                            .join()
+                            {
+                                Ok(Ok(result)) => result,
+                                Ok(Err(error)) => ToolResult::failure(
+                                    call.use_id,
+                                    format!("tool execution failed: {error}"),
+                                ),
+                                Err(_) => {
+                                    ToolResult::failure(call.use_id, "tool execution thread panicked")
+                                }
                             }
-                            PermissionDecision::Deny { .. } => {
-                                format!("tool execution denied: {reason}")
-                            }
-                            PermissionDecision::Allow { .. } => unreachable!(),
-                        },
-                    )
+                        }
+                        other => {
+                            let reason = other.reason().to_string();
+                            messages.push(append_contextual_message(
+                                state,
+                                MessagePayload::Permission {
+                                    tool: call.provider_call.tool_name.clone(),
+                                    decision: permission_decision_label(&other).into(),
+                                    reason: reason.clone(),
+                                },
+                            )?);
+                            ToolResult::failure(
+                                call.use_id,
+                                match other {
+                                    PermissionDecision::Ask { .. } => {
+                                        format!("tool execution blocked pending approval: {reason}")
+                                    }
+                                    PermissionDecision::Deny { .. } => {
+                                        format!("tool execution denied: {reason}")
+                                    }
+                                    PermissionDecision::Allow { .. } => unreachable!(),
+                                },
+                            )
+                        }
+                    };
+
+                    // PostToolUse / PostToolUseFailure hooks run after execution.
+                    let post_event = if tool_result.success {
+                        POST_TOOL_USE
+                    } else {
+                        POST_TOOL_USE_FAILURE
+                    };
+                    run_hooks(
+                        post_event,
+                        &call.provider_call.tool_name,
+                        &call.provider_call.arguments,
+                        &context.cwd,
+                        storage_dir,
+                    );
+
+                    tool_result
                 }
             }
         }
