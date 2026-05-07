@@ -4,6 +4,10 @@
 /// Provides memdir support
 pub mod memdir;
 
+/// Storage schema migration framework
+pub mod migrations;
+pub use migrations::{Migration, MigrationRunner, StorageVersionFile, default_migration_runner};
+
 use std::{
     collections::BTreeMap,
     ffi::OsStr,
