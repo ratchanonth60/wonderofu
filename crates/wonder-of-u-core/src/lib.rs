@@ -51,6 +51,8 @@ pub mod semver;
 pub mod sequential;
 /// Provides set support
 pub mod set;
+/// Provides shell session support
+pub mod shell_session;
 /// Provides tool support
 pub mod tool;
 /// Provides treeify support
@@ -128,6 +130,8 @@ pub use semver::{Version, VersionParseError, parse_version, version_gte};
 pub use sequential::run_sequential;
 /// Re-exports items from `set`
 pub use set::{difference, intersection, intersects, union};
+/// Re-exports items from `shell_session`
+pub use shell_session::{ShellOutput, ShellSession, ShellSessionStore};
 /// Re-exports items from `tool`
 pub use tool::{
     Tool, ToolContext, ToolKind, ToolProgress, ToolQuery, ToolRegistry, ToolResult, ToolSchema,

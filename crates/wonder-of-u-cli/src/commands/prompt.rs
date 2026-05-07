@@ -698,6 +698,7 @@ fn tool_context(state: &AppState) -> ToolContext {
         additional_working_directories: state.additional_working_directories.clone(),
         permission_rules: Vec::new(),
         features: state.features.clone(),
+        bash_session_store: None,
     }
 }
 
