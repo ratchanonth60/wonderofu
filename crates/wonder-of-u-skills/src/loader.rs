@@ -207,7 +207,10 @@ The actual prompt text starts here.
         let loader = DiskSkillLoader::with_defaults(&dir, None);
         let skills = loader.load_all();
 
-        assert!(skills.is_empty(), "expected no skills from file without frontmatter");
+        assert!(
+            skills.is_empty(),
+            "expected no skills from file without frontmatter"
+        );
     }
 
     #[test]
@@ -220,7 +223,10 @@ The actual prompt text starts here.
         let loader = DiskSkillLoader::with_defaults(&dir, None);
         let skills = loader.load_all();
 
-        assert!(skills.is_empty(), "expected no skills from malformed frontmatter");
+        assert!(
+            skills.is_empty(),
+            "expected no skills from malformed frontmatter"
+        );
     }
 
     #[test]
@@ -232,7 +238,10 @@ The actual prompt text starts here.
         let loader = DiskSkillLoader::with_defaults(&dir, None);
         let skills = loader.load_all();
 
-        assert!(skills.is_empty(), "expected no skills from file without description");
+        assert!(
+            skills.is_empty(),
+            "expected no skills from file without description"
+        );
     }
 
     #[test]
@@ -284,6 +293,9 @@ The actual prompt text starts here.
         assert!(result.is_some());
         let (fm, _) = result.unwrap();
         // Only first `:` is used as separator, so value is "bar baz"
-        assert_eq!(fm.get("description").map(String::as_str), Some("Foo: bar baz"));
+        assert_eq!(
+            fm.get("description").map(String::as_str),
+            Some("Foo: bar baz")
+        );
     }
 }

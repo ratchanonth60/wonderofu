@@ -13,14 +13,13 @@ pub use auth::{
     StoredCredentials, poll_copilot_access_token, refresh_copilot_access_token,
     request_copilot_device_code,
 };
-/// Re-exports items from `permissions`
-pub use permissions::{
-    PermissionsLoader, persist_permission_rule, remove_permission_rule,
-};
+/// Re-exports items from `config`
 pub use config::{
     AgentSettings, CredentialStore, ProviderOverride, SettingsHierarchy, SettingsLayer,
     SettingsStore, detect_shadowed_rules, require_storage_dir,
 };
+/// Re-exports items from `permissions`
+pub use permissions::{PermissionsLoader, persist_permission_rule, remove_permission_rule};
 /// Re-exports items from `provider`
 pub use provider::{
     ModelDescriptor, ProviderDescriptor, ProviderRegistry, ProviderResolver, ProviderSelection,

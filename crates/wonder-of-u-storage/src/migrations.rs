@@ -81,7 +81,9 @@ impl StorageVersionFile {
     pub fn load(base_dir: &Path) -> Result<Self> {
         let path = Self::path(base_dir);
         if !path.exists() {
-            return Ok(Self { schema_version: Self::BASELINE });
+            return Ok(Self {
+                schema_version: Self::BASELINE,
+            });
         }
         let content = fs::read_to_string(&path)?;
         Ok(serde_json::from_str(&content)?)
@@ -117,8 +119,11 @@ mod tests {
     use std::env;
 
     fn tmp_dir(label: &str) -> std::path::PathBuf {
-        let dir = env::temp_dir()
-            .join(format!("wonder_migrations_test_{}_{}", label, std::process::id()));
+        let dir = env::temp_dir().join(format!(
+            "wonder_migrations_test_{}_{}",
+            label,
+            std::process::id()
+        ));
         fs::create_dir_all(&dir).unwrap();
         dir
     }
@@ -135,10 +140,18 @@ mod tests {
     fn run_pending_applies_one_migration() {
         struct BumpTo2;
         impl Migration for BumpTo2 {
-            fn schema_version_from(&self) -> u16 { 1 }
-            fn schema_version_to(&self) -> u16 { 2 }
-            fn description(&self) -> &str { "bump to v2" }
-            fn migrate(&self, _base_dir: &Path) -> Result<()> { Ok(()) }
+            fn schema_version_from(&self) -> u16 {
+                1
+            }
+            fn schema_version_to(&self) -> u16 {
+                2
+            }
+            fn description(&self) -> &str {
+                "bump to v2"
+            }
+            fn migrate(&self, _base_dir: &Path) -> Result<()> {
+                Ok(())
+            }
         }
 
         let dir = tmp_dir("applies_one");
@@ -156,9 +169,15 @@ mod tests {
     fn run_pending_skips_already_applied_migration() {
         struct BumpTo2;
         impl Migration for BumpTo2 {
-            fn schema_version_from(&self) -> u16 { 1 }
-            fn schema_version_to(&self) -> u16 { 2 }
-            fn description(&self) -> &str { "bump to v2" }
+            fn schema_version_from(&self) -> u16 {
+                1
+            }
+            fn schema_version_to(&self) -> u16 {
+                2
+            }
+            fn description(&self) -> &str {
+                "bump to v2"
+            }
             fn migrate(&self, _base_dir: &Path) -> Result<()> {
                 panic!("should not run — already applied");
             }

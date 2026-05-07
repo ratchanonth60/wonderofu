@@ -187,7 +187,10 @@ impl SettingsHierarchy {
             }
             // Providers: first definition per key wins.
             for (k, v) in &s.providers {
-                merged.providers.entry(k.clone()).or_insert_with(|| v.clone());
+                merged
+                    .providers
+                    .entry(k.clone())
+                    .or_insert_with(|| v.clone());
             }
 
             // Convert allow_tools entries to Allow rules.
@@ -449,13 +452,15 @@ mod tests {
             r#"{"selected_provider":"anthropic","allow_tools":["bash"]}"#,
         );
 
-        let hier = SettingsHierarchy::load(None, &user_dir, None)
-            .expect("load hierarchy");
+        let hier = SettingsHierarchy::load(None, &user_dir, None).expect("load hierarchy");
 
         assert_eq!(hier.layers.len(), 1);
         assert_eq!(hier.merged.selected_provider.as_deref(), Some("anthropic"));
         assert_eq!(hier.permission_rules.len(), 1);
-        assert_eq!(hier.permission_rules[0].behavior, PermissionRuleBehavior::Allow);
+        assert_eq!(
+            hier.permission_rules[0].behavior,
+            PermissionRuleBehavior::Allow
+        );
         assert_eq!(hier.permission_rules[0].tool, "bash");
         assert_eq!(hier.permission_rules[0].source, PermissionRuleSource::User);
     }
@@ -489,9 +494,8 @@ mod tests {
             r#"{"selected_model":"claude-3-7-sonnet-20250219"}"#,
         );
 
-        let hier =
-            SettingsHierarchy::load(Some(&policy_dir), &user_dir, Some(&project_dir))
-                .expect("load hierarchy");
+        let hier = SettingsHierarchy::load(Some(&policy_dir), &user_dir, Some(&project_dir))
+            .expect("load hierarchy");
 
         assert_eq!(hier.layers.len(), 3);
 
@@ -537,7 +541,11 @@ mod tests {
     fn detect_shadowed_rules_finds_masked_allow() {
         // Policy deny on "bash" shadows a User allow on "bash".
         let rules = vec![
-            PermissionRule::new("bash", PermissionRuleBehavior::Allow, PermissionRuleSource::User),
+            PermissionRule::new(
+                "bash",
+                PermissionRuleBehavior::Allow,
+                PermissionRuleSource::User,
+            ),
             PermissionRule::new(
                 "bash",
                 PermissionRuleBehavior::Deny,
@@ -579,7 +587,11 @@ mod tests {
                 PermissionRuleBehavior::Allow,
                 PermissionRuleSource::User,
             ),
-            PermissionRule::new("*", PermissionRuleBehavior::Deny, PermissionRuleSource::Policy),
+            PermissionRule::new(
+                "*",
+                PermissionRuleBehavior::Deny,
+                PermissionRuleSource::Policy,
+            ),
         ];
 
         let shadowed = detect_shadowed_rules(&rules);
@@ -590,7 +602,11 @@ mod tests {
     fn detect_shadowed_rules_returns_empty_when_no_shadowing() {
         // Two allow rules from different sources – no shadowing.
         let rules = vec![
-            PermissionRule::new("bash", PermissionRuleBehavior::Allow, PermissionRuleSource::User),
+            PermissionRule::new(
+                "bash",
+                PermissionRuleBehavior::Allow,
+                PermissionRuleSource::User,
+            ),
             PermissionRule::new(
                 "file_read",
                 PermissionRuleBehavior::Allow,

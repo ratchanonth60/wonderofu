@@ -25,8 +25,7 @@ use wonder_of_u_tools::provider_tool_specs;
 use super::{
     detect_git_branch,
     hooks::{HookOutcome, POST_TOOL_USE, POST_TOOL_USE_FAILURE, PRE_TOOL_USE, run_hooks},
-    parse_command_args,
-    parse_session_id,
+    parse_command_args, parse_session_id,
 };
 
 const MAX_TOOL_LOOP_ITERATIONS: usize = 6;
@@ -738,14 +737,18 @@ fn execute_tool_call(
                     ToolResult::failure(call.use_id, format!("hook blocked tool: {reason}"))
                 }
                 HookOutcome::Allow => {
-                    let tool_result = match tool.permission_decision(context, &call.provider_call.arguments) {
+                    let tool_result = match tool
+                        .permission_decision(context, &call.provider_call.arguments)
+                    {
                         PermissionDecision::Allow { .. } => {
                             let tool = tool.clone();
                             let context = context.clone();
                             let arguments = call.provider_call.arguments.clone();
                             let use_id = call.use_id;
                             match std::thread::spawn(move || {
-                                futures::executor::block_on(tool.execute(context, use_id, arguments))
+                                futures::executor::block_on(
+                                    tool.execute(context, use_id, arguments),
+                                )
                             })
                             .join()
                             {
@@ -754,9 +757,10 @@ fn execute_tool_call(
                                     call.use_id,
                                     format!("tool execution failed: {error}"),
                                 ),
-                                Err(_) => {
-                                    ToolResult::failure(call.use_id, "tool execution thread panicked")
-                                }
+                                Err(_) => ToolResult::failure(
+                                    call.use_id,
+                                    "tool execution thread panicked",
+                                ),
                             }
                         }
                         other => {

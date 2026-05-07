@@ -179,7 +179,11 @@ impl ShellSession {
         }
 
         // Drop trailing empty lines injected by the leading \n of the sentinel.
-        while output_lines.last().map(|s: &String| s.is_empty()).unwrap_or(false) {
+        while output_lines
+            .last()
+            .map(|s: &String| s.is_empty())
+            .unwrap_or(false)
+        {
             output_lines.pop();
         }
 

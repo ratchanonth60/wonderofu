@@ -143,13 +143,13 @@ fn settings_dir_for_source(
 ) -> Result<PathBuf> {
     match source {
         PermissionRuleSource::User => Ok(user_dir.to_owned()),
-        PermissionRuleSource::Project | PermissionRuleSource::Local => project_dir
-            .map(Path::to_owned)
-            .ok_or_else(|| {
+        PermissionRuleSource::Project | PermissionRuleSource::Local => {
+            project_dir.map(Path::to_owned).ok_or_else(|| {
                 wonder_of_u_core::WonderError::validation(
                     "project_dir is required for project-level permission rules",
                 )
-            }),
+            })
+        }
         other => Err(wonder_of_u_core::WonderError::validation(format!(
             "cannot persist permission rules for source {other:?}"
         ))),
@@ -219,10 +219,16 @@ mod tests {
         );
         let loader = PermissionsLoader::new(u, None::<PathBuf>, None::<PathBuf>);
         let rules = loader.load_rules().unwrap();
-        assert!(rules.iter().any(|r| r.tool == "bash"
-            && r.behavior == PermissionRuleBehavior::Allow));
-        assert!(rules.iter().any(|r| r.tool == "file_read"
-            && r.behavior == PermissionRuleBehavior::Allow));
+        assert!(
+            rules
+                .iter()
+                .any(|r| r.tool == "bash" && r.behavior == PermissionRuleBehavior::Allow)
+        );
+        assert!(
+            rules
+                .iter()
+                .any(|r| r.tool == "file_read" && r.behavior == PermissionRuleBehavior::Allow)
+        );
     }
 
     #[test]
@@ -236,14 +242,13 @@ mod tests {
                 ..AgentSettings::default()
             },
         );
-        let loader = PermissionsLoader::new(
-            user_dir(&tmp),
-            Some(p),
-            None::<PathBuf>,
-        );
+        let loader = PermissionsLoader::new(user_dir(&tmp), Some(p), None::<PathBuf>);
         let rules = loader.load_rules().unwrap();
-        assert!(rules.iter().any(|r| r.tool == "web_search"
-            && r.behavior == PermissionRuleBehavior::Deny));
+        assert!(
+            rules
+                .iter()
+                .any(|r| r.tool == "web_search" && r.behavior == PermissionRuleBehavior::Deny)
+        );
     }
 
     #[test]
@@ -251,12 +256,14 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let u = user_dir(&tmp);
         fs::create_dir_all(&u).unwrap();
-        let rule = PermissionRule::new("bash", PermissionRuleBehavior::Allow, PermissionRuleSource::User);
+        let rule = PermissionRule::new(
+            "bash",
+            PermissionRuleBehavior::Allow,
+            PermissionRuleSource::User,
+        );
         persist_permission_rule(&rule, &u, None).unwrap();
-        let s: AgentSettings = serde_json::from_str(
-            &fs::read_to_string(u.join("settings.json")).unwrap(),
-        )
-        .unwrap();
+        let s: AgentSettings =
+            serde_json::from_str(&fs::read_to_string(u.join("settings.json")).unwrap()).unwrap();
         assert!(s.allow_tools.contains(&"bash".to_string()));
     }
 
@@ -265,13 +272,15 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let u = user_dir(&tmp);
         fs::create_dir_all(&u).unwrap();
-        let rule = PermissionRule::new("bash", PermissionRuleBehavior::Allow, PermissionRuleSource::User);
+        let rule = PermissionRule::new(
+            "bash",
+            PermissionRuleBehavior::Allow,
+            PermissionRuleSource::User,
+        );
         persist_permission_rule(&rule, &u, None).unwrap();
         persist_permission_rule(&rule, &u, None).unwrap();
-        let s: AgentSettings = serde_json::from_str(
-            &fs::read_to_string(u.join("settings.json")).unwrap(),
-        )
-        .unwrap();
+        let s: AgentSettings =
+            serde_json::from_str(&fs::read_to_string(u.join("settings.json")).unwrap()).unwrap();
         assert_eq!(s.allow_tools.iter().filter(|t| *t == "bash").count(), 1);
     }
 
@@ -286,11 +295,16 @@ mod tests {
                 ..AgentSettings::default()
             },
         );
-        remove_permission_rule("bash", PermissionRuleBehavior::Allow, PermissionRuleSource::User, &u, None).unwrap();
-        let s: AgentSettings = serde_json::from_str(
-            &fs::read_to_string(u.join("settings.json")).unwrap(),
+        remove_permission_rule(
+            "bash",
+            PermissionRuleBehavior::Allow,
+            PermissionRuleSource::User,
+            &u,
+            None,
         )
         .unwrap();
+        let s: AgentSettings =
+            serde_json::from_str(&fs::read_to_string(u.join("settings.json")).unwrap()).unwrap();
         assert!(!s.allow_tools.contains(&"bash".to_string()));
         assert!(s.allow_tools.contains(&"file_read".to_string()));
     }
@@ -300,14 +314,25 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let u = user_dir(&tmp);
         // No settings.json written – should not error.
-        remove_permission_rule("bash", PermissionRuleBehavior::Allow, PermissionRuleSource::User, &u, None).unwrap();
+        remove_permission_rule(
+            "bash",
+            PermissionRuleBehavior::Allow,
+            PermissionRuleSource::User,
+            &u,
+            None,
+        )
+        .unwrap();
     }
 
     #[test]
     fn persist_to_project_requires_project_dir() {
         let tmp = TempDir::new().unwrap();
         let u = user_dir(&tmp);
-        let rule = PermissionRule::new("bash", PermissionRuleBehavior::Deny, PermissionRuleSource::Project);
+        let rule = PermissionRule::new(
+            "bash",
+            PermissionRuleBehavior::Deny,
+            PermissionRuleSource::Project,
+        );
         let result = persist_permission_rule(&rule, &u, None);
         assert!(result.is_err());
     }

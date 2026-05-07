@@ -374,10 +374,7 @@ mod tests {
             parse_block_reason(r#"{"continue": false, "stopReason": "denied"}"#),
             Some("denied".to_string())
         );
-        assert_eq!(
-            parse_block_reason(r#"{"continue": true}"#),
-            None,
-        );
+        assert_eq!(parse_block_reason(r#"{"continue": true}"#), None,);
         assert_eq!(parse_block_reason("not json"), None);
     }
 }
