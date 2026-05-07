@@ -14,7 +14,8 @@ pub use auth::{
 };
 /// Re-exports items from `config`
 pub use config::{
-    AgentSettings, CredentialStore, ProviderOverride, SettingsStore, require_storage_dir,
+    AgentSettings, CredentialStore, ProviderOverride, SettingsHierarchy, SettingsLayer,
+    SettingsStore, detect_shadowed_rules, require_storage_dir,
 };
 /// Re-exports items from `provider`
 pub use provider::{
