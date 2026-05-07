@@ -9,7 +9,7 @@ use wonder_of_u_core::{CommandSpec, ToolSpec};
 use wonder_of_u_plugins::{PluginCatalog, PluginConfig};
 use wonder_of_u_storage::StoragePaths;
 
-use crate::{BundledSkill, SkillManifest, bundled_skills};
+use crate::{BundledSkill, DiskSkillLoader, SkillManifest, bundled_skills};
 
 const SKILL_MANIFEST_FILE: &str = "skill.json";
 /// Enumerates skill source
@@ -218,6 +218,70 @@ impl SkillCatalog {
         self.skills.iter().find(|skill| {
             normalize_lookup(&skill.manifest.name).as_deref() == Some(normalized.as_str())
         })
+    }
+
+    /// Loads skills from disk using a [`DiskSkillLoader`] and registers them as
+    /// [`SkillSource::User`] skills. Returns the count of newly registered skills.
+    ///
+    /// Skills whose `name` or `description` is empty are silently skipped.
+    /// Duplicate names (already present in the catalog) are silently skipped.
+    pub fn load_from_disk(&mut self, loader: &DiskSkillLoader) -> usize {
+        let mut seen_tools: BTreeSet<String> = self
+            .skills
+            .iter()
+            .filter_map(|s| normalize_lookup(&s.tool_spec.name))
+            .collect();
+        let mut seen_commands: BTreeSet<String> = self
+            .skills
+            .iter()
+            .filter_map(|s| s.command_spec.as_ref())
+            .filter_map(|c| normalize_lookup(&c.name))
+            .collect();
+
+        let before = self.skills.len();
+
+        for loaded in loader.load_all() {
+            if loaded.name.trim().is_empty() || loaded.description.trim().is_empty() {
+                continue;
+            }
+
+            // Build a minimal SkillManifest for each loaded skill.
+            let manifest = SkillManifest {
+                schema_version: crate::SKILL_MANIFEST_SCHEMA_VERSION,
+                name: loaded.name,
+                description: loaded.description,
+                prompt: None,
+                prompt_path: Some(loaded.source_path.clone()),
+                allowed_tools: Vec::new(),
+                slash_command: None,
+                slash_aliases: Vec::new(),
+            };
+
+            let tool_spec = manifest.tool_spec();
+            let command_spec = match manifest.command_spec() {
+                Ok(cs) => cs,
+                Err(_) => continue,
+            };
+
+            let result = Ok(SkillRegistration {
+                source: SkillSource::User,
+                trust: SkillTrust::Local,
+                root_dir: loaded
+                    .source_path
+                    .parent()
+                    .map(Path::to_path_buf)
+                    .unwrap_or_else(|| PathBuf::from(".")),
+                manifest_path: Some(loaded.source_path.clone()),
+                prompt: loaded.prompt,
+                tool_spec,
+                command_spec,
+                manifest,
+            });
+
+            self.push(result, &mut seen_tools, &mut seen_commands);
+        }
+
+        self.skills.len() - before
     }
 
     fn push(
@@ -529,9 +593,11 @@ mod tests {
         assert!(catalog.find("workspace-audit").is_some());
         assert!(catalog.find("lint-review").is_some());
         assert!(catalog.find("release-check").is_some());
-        assert_eq!(catalog.bundled_count(), 1);
+        // 14 bundled skills (13 with slash commands + keybindings-help without)
+        assert_eq!(catalog.bundled_count(), 14);
         assert_eq!(catalog.plugin_count(), 1);
-        assert_eq!(catalog.command_count(), 3);
+        // bundled commands (13) + lint-review (1) + release-check (1) = 15
+        assert_eq!(catalog.command_count(), 15);
     }
 
     #[test]
