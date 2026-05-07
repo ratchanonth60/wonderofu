@@ -1,7 +1,7 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
     path::PathBuf,
-    sync::Arc,
+    sync::{Arc, Mutex},
 };
 
 use async_trait::async_trait;
@@ -10,8 +10,8 @@ use serde_json::{Map, Value, json};
 
 use crate::{
     AdditionalWorkingDirectory, FeatureFlag, FeatureSet, PermissionDecision, PermissionMode,
-    PermissionRequest, PermissionRule, Result, SessionId, ToolPermissionContext, ToolUseId,
-    WonderError, evaluate_permission,
+    PermissionRequest, PermissionRule, Result, SessionId, ShellSessionStore, ToolPermissionContext,
+    ToolUseId, WonderError, evaluate_permission,
 };
 /// Enumerates tool kind
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -294,6 +294,12 @@ pub struct ToolContext {
     pub permission_rules: Vec<PermissionRule>,
     /// Stores the features
     pub features: FeatureSet,
+    /// Optional persistent bash session store shared across tool calls.
+    ///
+    /// When present, [`BashTool`] reuses the same bash process between calls,
+    /// preserving `$PWD`, environment variables, and shell functions.
+    /// When `None` the tool falls back to the one-shot subprocess behaviour.
+    pub bash_session_store: Option<Arc<Mutex<ShellSessionStore>>>,
 }
 
 impl ToolContext {
@@ -650,6 +656,7 @@ mod tests {
             additional_working_directories: Vec::new(),
             permission_rules: Vec::new(),
             features: FeatureSet::first_release(),
+            bash_session_store: None,
         }
     }
 

@@ -1931,6 +1931,7 @@ impl<'a> TuiController<'a> {
             additional_working_directories: self.state.additional_working_directories.clone(),
             permission_rules: Vec::new(),
             features: self.state.features.clone(),
+            bash_session_store: None,
         }
     }
 

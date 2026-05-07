@@ -367,6 +367,7 @@ mod tests {
             additional_working_directories: Vec::new(),
             permission_rules: Vec::new(),
             features: FeatureSet::first_release(),
+            bash_session_store: None,
         }
     }
 
