@@ -3,6 +3,7 @@
 
 mod auth;
 mod config;
+mod permissions;
 mod provider;
 mod runtime;
 
@@ -12,7 +13,10 @@ pub use auth::{
     StoredCredentials, poll_copilot_access_token, refresh_copilot_access_token,
     request_copilot_device_code,
 };
-/// Re-exports items from `config`
+/// Re-exports items from `permissions`
+pub use permissions::{
+    PermissionsLoader, persist_permission_rule, remove_permission_rule,
+};
 pub use config::{
     AgentSettings, CredentialStore, ProviderOverride, SettingsHierarchy, SettingsLayer,
     SettingsStore, detect_shadowed_rules, require_storage_dir,
