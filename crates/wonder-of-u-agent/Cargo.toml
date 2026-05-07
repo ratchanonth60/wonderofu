@@ -16,4 +16,5 @@ wonder-of-u-storage.workspace = true
 wonder-of-u-tools.workspace = true
 
 [dev-dependencies]
+tempfile = "3"
 wonder-of-u-test-support.workspace = true
