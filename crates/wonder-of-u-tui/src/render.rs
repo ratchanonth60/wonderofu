@@ -106,6 +106,8 @@ pub struct ShellView {
     pub loading: bool,
     /// Stores the loading verb
     pub loading_verb: Option<String>,
+    /// Stores the animated spinner frame for transcript-local loading rows.
+    pub spinner_frame: u64,
     /// Stores the footer
     pub footer: String,
     /// Stores the queued panel
@@ -216,6 +218,7 @@ impl ShellView {
             status: status_text(app),
             loading: false,
             loading_verb: None,
+            spinner_frame: 0,
             footer: footer_text(app),
             queued_panel: queued_panel_view(app),
             task_panel: task_panel_view(app),
@@ -384,7 +387,7 @@ fn draw_message_view(frame: &mut FrameBuffer, area: Rect, view: &ShellView, them
     let transcript_area = Rect::new(area.x, transcript_y, area.width, transcript_height);
 
     let msg_lines = message_panel_lines(view, theme);
-    if view.messages.is_empty() {
+    if view.messages.is_empty() && !view.loading {
         // Welcome screen: always top-anchored, never windowed.
         draw_lines(frame, transcript_area, &msg_lines);
     } else if view.scroll.is_following_tail() {
@@ -449,7 +452,7 @@ fn draw_prompt_view(frame: &mut FrameBuffer, area: Rect, view: &ShellView, theme
 pub const MIN_SIDEBAR_WIDTH: u16 = 100;
 
 /// Column width of the sidebar panel (excluding the `│` separator).
-pub const SIDEBAR_WIDTH: u16 = 32;
+pub const SIDEBAR_WIDTH: u16 = 38;
 
 /// Returns the effective main-column width used by [`render_shell`].
 ///
@@ -1112,26 +1115,11 @@ fn footer_badges(text: &str) -> String {
 }
 
 fn status_line_text(view: &ShellView) -> String {
-    let base = match (
-        view.loading,
-        view.loading_verb.as_deref(),
-        view.status.is_empty(),
-    ) {
-        (true, Some(verb), false) => format!("{verb}… | {}", view.status),
-        (true, Some(verb), true) => format!("{verb}…"),
-        (true, None, false) => format!(
-            "{} {}",
-            SpinnerView::new(SpinnerMode::Thinking, "")
-                .render_frame()
-                .glyph,
-            view.status
-        ),
-        (true, None, true) => SpinnerView::new(SpinnerMode::Thinking, "")
-            .render_frame()
-            .glyph
-            .to_string(),
-        (false, _, false) => format!("◆ {}", view.status),
-        (false, _, true) => "◆".into(),
+    let indicator = if view.loading { '●' } else { '○' };
+    let base = if view.status.is_empty() {
+        indicator.to_string()
+    } else {
+        format!("{indicator} {}", view.status)
     };
 
     // Append a compact scroll indicator when the user has scrolled up from tail.
@@ -1155,10 +1143,32 @@ fn shell_header_text(title: &str) -> String {
 }
 
 fn message_panel_lines(view: &ShellView, theme: &Theme) -> Vec<StyledLine> {
-    if view.messages.is_empty() {
-        return welcome_panel_lines(theme);
+    let mut lines = if view.messages.is_empty() {
+        welcome_panel_lines(theme)
+    } else {
+        message_lines_to_styled(&view.messages, theme)
+    };
+
+    if view.loading {
+        lines.push(StyledLine {
+            text: loading_spinner_line(view),
+            style: style_for_message(theme, MessageRole::Progress),
+        });
     }
-    message_lines_to_styled(&view.messages, theme)
+
+    lines
+}
+
+fn loading_spinner_line(view: &ShellView) -> String {
+    let mode = match view.loading_verb.as_deref() {
+        Some("running") => SpinnerMode::Requesting,
+        Some("waiting") => SpinnerMode::Stalled,
+        _ => SpinnerMode::Thinking,
+    };
+    let verb = view.loading_verb.as_deref().unwrap_or("thinking");
+    SpinnerView::new(mode, format!("{verb}…"))
+        .frame(view.spinner_frame)
+        .render_line()
 }
 
 fn welcome_panel_lines(theme: &Theme) -> Vec<StyledLine> {
@@ -1312,6 +1322,7 @@ mod tests {
             status: "prompt | 0 messages".into(),
             loading: false,
             loading_verb: None,
+            spinner_frame: 0,
             footer: "ctrl-c interrupt".into(),
             queued_panel: None,
             task_panel: None,
@@ -1336,7 +1347,7 @@ mod tests {
                 "╭─ prompt ───────────────────╮",
                 "│›                           │",
                 "╰────────────────────────────╯",
-                "◆ prompt | 0 messages",
+                "○ prompt | 0 messages",
                 "             ctrl-c interrupt",
             ]
             .join("\n")
@@ -1356,6 +1367,7 @@ mod tests {
             status: "prompt | 2 messages".into(),
             loading: false,
             loading_verb: None,
+            spinner_frame: 0,
             footer: "cwd=/workspace | ctrl-c interrupt".into(),
             queued_panel: None,
             task_panel: Some(TaskPanelView {
@@ -1387,7 +1399,7 @@ mod tests {
                 "╭─ prompt ─────────────────────────────────────╮",
                 "│› /status                                     │",
                 "╰──────────────────────────────────────────────╯",
-                "◆ prompt | 2 messages",
+                "○ prompt | 2 messages",
                 "              cwd=/workspace · ctrl-c interrupt",
             ]
             .join("\n")
@@ -1452,6 +1464,7 @@ mod tests {
             status: "prompt | 1 messages".into(),
             loading: false,
             loading_verb: None,
+            spinner_frame: 0,
             footer: "cwd=/workspace | ctrl-c interrupt".into(),
             queued_panel: Some(TaskPanelView {
                 title: "Queued".into(),
@@ -1486,7 +1499,7 @@ mod tests {
                 "╭─ prompt ───────────────────────────────╮",
                 "│› /plan                                 │",
                 "╰────────────────────────────────────────╯",
-                "◆ prompt | 1 messages",
+                "○ prompt | 1 messages",
                 "        cwd=/workspace · ctrl-c interrupt",
             ]
             .join("\n")
@@ -1503,6 +1516,7 @@ mod tests {
             status: "permission | 1 messages".into(),
             loading: false,
             loading_verb: None,
+            spinner_frame: 0,
             footer: "cwd=/workspace | ctrl-c interrupt".into(),
             queued_panel: None,
             task_panel: None,
@@ -1533,7 +1547,7 @@ mod tests {
                 "╭─ prompt ───────────────────────────────╮",
                 "│› continue?                             │",
                 "╰────────────────────────────────────────╯",
-                "◆ permission | 1 messages",
+                "○ permission | 1 messages",
                 "        cwd=/workspace · ctrl-c interrupt",
             ]
             .join("\n")
@@ -1558,6 +1572,7 @@ mod tests {
             status: "prompt | 1 messages".into(),
             loading: false,
             loading_verb: None,
+            spinner_frame: 0,
             footer: "cwd=/workspace | ctrl-c interrupt".into(),
             queued_panel: None,
             task_panel: None,
@@ -1589,7 +1604,7 @@ mod tests {
                 "│match 2/3                               │",
                 "│draft plan                              │",
                 "╰────────────────────────────────────────╯",
-                "◆ prompt | 1 messages",
+                "○ prompt | 1 messages",
                 "        cwd=/workspace · ctrl-c interrupt",
             ]
             .join("\n")
@@ -1610,6 +1625,7 @@ mod tests {
             status: "prompt | 6 messages".into(),
             loading: false,
             loading_verb: None,
+            spinner_frame: 0,
             footer: "cwd=/workspace | ctrl-c interrupt".into(),
             queued_panel: None,
             task_panel: None,
@@ -1642,6 +1658,7 @@ mod tests {
             status: "prompt | 3 messages".into(),
             loading: false,
             loading_verb: None,
+            spinner_frame: 0,
             footer: "cwd=/workspace | ctrl-c interrupt".into(),
             queued_panel: None,
             task_panel: None,
@@ -1667,7 +1684,7 @@ mod tests {
                 "╭─ prompt ─────────────────────────────────────╮",
                 "│›                                             │",
                 "╰──────────────────────────────────────────────╯",
-                "◆ prompt | 3 messages",
+                "○ prompt | 3 messages",
                 "              cwd=/workspace · ctrl-c interrupt",
             ]
             .join("\n")
@@ -1687,6 +1704,7 @@ mod tests {
             status: "prompt | 1 messages".into(),
             loading: false,
             loading_verb: None,
+            spinner_frame: 0,
             footer: "cwd=/workspace | ctrl-c interrupt".into(),
             queued_panel: None,
             task_panel: None,
@@ -1729,7 +1747,7 @@ mod tests {
                 "╭─ prompt ─────────────────────────────────────╮",
                 "│›                                             │",
                 "╰──────────────────────────────────────────────╯",
-                "◆ prompt | 1 messages",
+                "○ prompt | 1 messages",
                 "              cwd=/workspace · ctrl-c interrupt",
             ]
             .join("\n")
@@ -1749,6 +1767,7 @@ mod tests {
             status: "prompt | 1 messages".into(),
             loading: false,
             loading_verb: None,
+            spinner_frame: 0,
             footer: "cwd=/workspace | ctrl-c interrupt".into(),
             queued_panel: None,
             task_panel: None,
@@ -1798,6 +1817,7 @@ mod tests {
             status: "turn=active".into(),
             loading: true,
             loading_verb: Some("thinking".into()),
+            spinner_frame: 0,
             footer: String::new(),
             queued_panel: None,
             task_panel: None,
@@ -1812,7 +1832,9 @@ mod tests {
 
         let frame = render_snapshot(32, 8, &view, &Theme::default());
 
-        assert!(frame.to_plain_text().contains("thinking… | turn=active"));
+        let text = frame.to_plain_text();
+        assert!(text.contains("· thinking…"));
+        assert!(text.contains("● turn=active"));
     }
 
     // ── scroll rendering ─────────────────────────────────────────────────────
