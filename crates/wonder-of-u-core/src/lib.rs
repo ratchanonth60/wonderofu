@@ -13,6 +13,8 @@ pub mod command;
 pub mod coordinator;
 /// Provides cwd support
 pub mod cwd;
+/// Provides denial tracker and YOLO-mode classifier support
+pub mod denial_tracker;
 /// Provides env support
 pub mod env;
 /// Provides error support
@@ -84,6 +86,10 @@ pub use coordinator::{
 };
 /// Re-exports items from `cwd`
 pub use cwd::get_cwd;
+/// Re-exports items from `denial_tracker`
+pub use denial_tracker::{
+    DEFAULT_DENIAL_THRESHOLD, DenialRecord, DenialTracker, YoloClassifier, YoloVerdict,
+};
 /// Re-exports items from `env`
 pub use env::{EnvVarError, get_bool_env, get_env_var, parse_bool_env_value, require_env_var};
 /// Re-exports items from `error`

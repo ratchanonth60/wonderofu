@@ -634,6 +634,8 @@ pub fn evaluate_permission(
 pub fn check_shell_safety(command: &str) -> Option<ShellSafetyIssue> {
     let normalized = normalize_shell_command(command);
 
+    // ── Blocked patterns ─────────────────────────────────────────────────────
+
     if normalized.contains("rm -rf /") || normalized.contains("rm -fr /") {
         return Some(ShellSafetyIssue {
             verdict: ShellSafetyVerdict::Blocked,
@@ -659,6 +661,29 @@ pub fn check_shell_safety(command: &str) -> Option<ShellSafetyIssue> {
             message: "shell command uses eval-style dynamic execution".into(),
         });
     }
+    // Detect `exec` used as a standalone shell built-in to replace the current
+    // process, which can be used to execute arbitrary commands.
+    if contains_shell_token(&normalized, "exec") {
+        return Some(ShellSafetyIssue {
+            verdict: ShellSafetyVerdict::Blocked,
+            message: "shell command uses exec to replace the shell process".into(),
+        });
+    }
+    // Detect `source` / `.` used to execute a script in the current shell
+    // environment, which bypasses normal sandboxing.  The bare `.` token is
+    // very common as a path component, so only block when it is the *first*
+    // command token.
+    {
+        let first_token = shell_tokens(&normalized).into_iter().next();
+        if first_token.is_some_and(|t| t == "source" || t == ".") {
+            return Some(ShellSafetyIssue {
+                verdict: ShellSafetyVerdict::Blocked,
+                message: "shell command sources a script into the current shell environment".into(),
+            });
+        }
+    }
+
+    // ── Review patterns ───────────────────────────────────────────────────────
 
     if normalized.contains("rm -rf") || normalized.contains("rm -fr") {
         return Some(ShellSafetyIssue {
@@ -691,6 +716,43 @@ pub fn check_shell_safety(command: &str) -> Option<ShellSafetyIssue> {
         return Some(ShellSafetyIssue {
             verdict: ShellSafetyVerdict::Review,
             message: "shell command requires review because it can overwrite raw devices".into(),
+        });
+    }
+    // `chmod` on system paths or with recursive flag warrants review.
+    if contains_shell_token(&normalized, "chmod")
+        && (normalized.contains(" -r")
+            || normalized.contains("/etc/")
+            || normalized.contains("/usr/"))
+    {
+        return Some(ShellSafetyIssue {
+            verdict: ShellSafetyVerdict::Review,
+            message: "shell command requires review because it changes permissions recursively or on system paths".into(),
+        });
+    }
+    // `chown` on system paths warrants review.
+    if contains_shell_token(&normalized, "chown")
+        && (normalized.contains("/etc/") || normalized.contains("/usr/"))
+    {
+        return Some(ShellSafetyIssue {
+            verdict: ShellSafetyVerdict::Review,
+            message: "shell command requires review because it changes ownership on system paths"
+                .into(),
+        });
+    }
+    // Downloading and directly executing content is a classic supply-chain risk.
+    if downloads_and_executes(&normalized) {
+        return Some(ShellSafetyIssue {
+            verdict: ShellSafetyVerdict::Review,
+            message:
+                "shell command requires review because it downloads and executes remote content"
+                    .into(),
+        });
+    }
+    // `crontab -r` silently removes all cron jobs.
+    if normalized.contains("crontab") && normalized.contains("-r") {
+        return Some(ShellSafetyIssue {
+            verdict: ShellSafetyVerdict::Review,
+            message: "shell command requires review because it removes all cron jobs".into(),
         });
     }
 
@@ -802,6 +864,25 @@ fn shell_tokens(command: &str) -> Vec<&str> {
 
 fn contains_shell_token(command: &str, token: &str) -> bool {
     shell_tokens(command).into_iter().any(|part| part == token)
+}
+
+/// Returns `true` when the command downloads remote content and immediately
+/// pipes or redirects it for execution (e.g. `curl … | bash` or
+/// `wget -O- … | sh`).
+fn downloads_and_executes(command: &str) -> bool {
+    let downloader_tokens = ["curl", "wget", "fetch"];
+    let executor_tokens = [
+        "sh", "bash", "dash", "ksh", "zsh", "python", "python3", "ruby", "perl", "node",
+    ];
+
+    // Must contain a pipe and both a downloader and an executor.
+    if !command.contains('|') {
+        return false;
+    }
+    let tokens = shell_tokens(command);
+    let has_downloader = tokens.iter().any(|t| downloader_tokens.contains(t));
+    let has_executor = tokens.iter().any(|t| executor_tokens.contains(t));
+    has_downloader && has_executor
 }
 
 fn pipes_into_shell(command: &str) -> bool {
