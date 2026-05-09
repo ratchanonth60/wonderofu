@@ -289,7 +289,21 @@ fn controller_filters_model_picker_with_visible_query_and_match_count() {
         .as_ref()
         .expect("model picker open");
     let dialog = controller.dialog.as_ref().expect("dialog");
-    let expected_matches = format!("Matches: 1/{}", picker.options.len());
+    // Count how many options actually contain "haiku" — this may be > 1 when
+    // multiple providers (e.g. Anthropic + Bedrock) offer haiku-series models.
+    let haiku_count = picker
+        .options
+        .iter()
+        .filter(|opt| {
+            format!(
+                "{} {} {} {} {}",
+                opt.provider, opt.provider_display, opt.model, opt.model_display, opt.auth
+            )
+            .to_lowercase()
+            .contains("haiku")
+        })
+        .count();
+    let expected_matches = format!("Matches: {haiku_count}/{}", picker.options.len());
     assert_eq!(
         dialog.body.first().map(String::as_str),
         Some("Search: haiku")
