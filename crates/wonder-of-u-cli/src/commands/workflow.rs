@@ -30,6 +30,7 @@ use super::{
         AgentTaskLaunch, ShellTaskLaunch, TaskManager, TaskReconcileReport, task_heartbeat_state,
         task_heartbeat_state_label,
     },
+    try_open_browser,
 };
 
 /// Represents permissions command
@@ -2792,28 +2793,6 @@ fn render_privacy_settings_summary(browser_launch_attempted: bool) -> String {
     .join("\n")
 }
 
-fn try_open_browser(url: &str) -> bool {
-    #[cfg(target_os = "macos")]
-    let command = ("open", vec![url]);
-    #[cfg(target_os = "linux")]
-    let command = ("xdg-open", vec![url]);
-    #[cfg(target_os = "windows")]
-    let command = ("cmd", vec!["/c", "start", "", url]);
-
-    #[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
-    {
-        ProcessCommand::new(command.0)
-            .args(command.1)
-            .spawn()
-            .is_ok()
-    }
-    #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
-    {
-        let _ = url;
-        false
-    }
-}
-
 fn keybindings_open_output(context: &CommandContext, storage_dir: Option<&Path>) -> Result<String> {
     let path = resolve_keybindings_path(storage_dir);
     let existed = path.exists();
@@ -3483,14 +3462,15 @@ mod tests {
     use wonder_of_u_test_support::{EnvVarGuard, unique_test_dir};
 
     use super::{
-        CommitCommand, CommitPushPrCommand, PlanAction, SecurityReviewCommand,
-        TerminalSetupCommand, ensure_hooks_file, ensure_keybindings_file, load_keybinding_resolver,
-        normalize_color_invocation, normalize_effort_invocation, normalize_permissions_invocation,
-        normalize_theme_invocation, normalize_vim_invocation, parse_brief_action,
-        parse_effort_level_name, parse_fast_action, parse_plan_action, parse_session_color_name,
-        render_brief_status, render_brief_transition, render_color_status, render_color_transition,
-        render_commit_enqueue, render_commit_push_pr_enqueue, render_effort_status,
-        render_effort_transition, render_fast_status, render_fast_transition, render_hooks_summary,
+        CommitCommand, CommitPushPrCommand, PlanAction, PrivacySettingsCommand,
+        SecurityReviewCommand, TerminalSetupCommand, ensure_hooks_file, ensure_keybindings_file,
+        load_keybinding_resolver, normalize_color_invocation, normalize_effort_invocation,
+        normalize_permissions_invocation, normalize_theme_invocation, normalize_vim_invocation,
+        parse_brief_action, parse_effort_level_name, parse_fast_action, parse_plan_action,
+        parse_session_color_name, render_brief_status, render_brief_transition,
+        render_color_status, render_color_transition, render_commit_enqueue,
+        render_commit_push_pr_enqueue, render_effort_status, render_effort_transition,
+        render_fast_status, render_fast_transition, render_hooks_summary,
         render_keybindings_summary, render_plan_display, render_privacy_settings_summary,
         render_review_enqueue, render_security_review_enqueue, render_statusline_enqueue,
         render_terminal_setup_notice, render_theme_status, resolve_hooks_path,
@@ -3690,6 +3670,25 @@ mod tests {
         assert!(rendered.contains("status=privacy settings opened"));
         assert!(rendered.contains("browser_launch_attempted=false"));
         assert!(rendered.contains("https://claude.ai/settings/data-privacy-controls"));
+    }
+
+    #[test]
+    fn privacy_settings_command_does_not_launch_browser_under_tests() {
+        let output = block_on(PrivacySettingsCommand::new().execute(
+            test_context(Path::new("/workspace")),
+            CommandInvocation {
+                name: "privacy-settings".into(),
+                args: String::new(),
+                raw: "/privacy-settings".into(),
+            },
+        ))
+        .expect("run privacy settings command");
+
+        let CommandOutput::Text(text) = output else {
+            panic!("expected text output");
+        };
+
+        assert!(text.contains("browser_launch_attempted=false"));
     }
 
     #[test]

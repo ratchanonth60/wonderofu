@@ -118,9 +118,18 @@ pub struct PickerListView {
 
 /// Handles message lines
 pub fn message_lines(messages: &[MessageEnvelope]) -> Vec<MessageLineView> {
+    message_lines_for_width(messages, DEFAULT_MESSAGE_SUMMARY_WIDTH)
+}
+
+/// Handles message lines for a specific summary width.
+#[must_use]
+pub fn message_lines_for_width(
+    messages: &[MessageEnvelope],
+    summary_width: usize,
+) -> Vec<MessageLineView> {
     rich_message_views(messages)
         .into_iter()
-        .flat_map(|view| view.display_lines(DEFAULT_MESSAGE_SUMMARY_WIDTH))
+        .flat_map(|view| view.display_lines(summary_width.max(1)))
         .collect()
 }
 /// Handles status text
@@ -453,11 +462,8 @@ mod tests {
             message_lines(&messages),
             vec![
                 MessageLineView::new("assistant> line one line two", MessageRole::Assistant),
-                MessageLineView::new("tools[bash]> 1 call", MessageRole::Tool),
-                MessageLineView::new(
-                    "  • #00000000 error · no input recorded → permission denied",
-                    MessageRole::Error,
-                ),
+                MessageLineView::new("● Bash", MessageRole::Error,),
+                MessageLineView::new("  └ permission denied", MessageRole::Error,),
             ]
         );
     }
@@ -582,11 +588,8 @@ mod tests {
         assert_eq!(
             message_lines(&messages),
             vec![
-                MessageLineView::new("tools[bash]> 1 call", MessageRole::Tool),
-                MessageLineView::new(
-                    "  • #00000000 ok · command=\"echo hi\" → done",
-                    MessageRole::Tool,
-                ),
+                MessageLineView::new("● Bash(echo hi)", MessageRole::Tool,),
+                MessageLineView::new("  └ echo hi", MessageRole::System),
             ]
         );
     }

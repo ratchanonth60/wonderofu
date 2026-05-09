@@ -23,6 +23,7 @@ pub(super) struct TuiController<'a> {
     pub(super) vim: VimState,
     pub(super) history_search: Option<HistorySearchState>,
     pub(super) turn_state: TurnState,
+    pub(super) loading_frame: u64,
     pub(super) needs_render: bool,
     pub(super) exit_requested: bool,
     pub(super) status_note: Option<String>,
@@ -197,6 +198,7 @@ impl<'a> TuiController<'a> {
             vim: VimState::default(),
             history_search: None,
             turn_state: TurnState::Idle,
+            loading_frame: 0,
             needs_render: true,
             exit_requested: false,
             status_note: None,
@@ -262,6 +264,17 @@ impl<'a> TuiController<'a> {
                 Ok(())
             }
             UiEvent::Tick => {
+                if matches!(
+                    self.turn_state,
+                    TurnState::ModelRequestActive
+                        | TurnState::CommandQueued
+                        | TurnState::ToolPermissionPending
+                ) {
+                    self.loading_frame = self.loading_frame.wrapping_add(1);
+                    self.needs_render = true;
+                } else {
+                    self.loading_frame = 0;
+                }
                 match self.task_notice_ttl {
                     Some(0) => {
                         self.dismiss_task_notice();
@@ -318,6 +331,21 @@ impl<'a> TuiController<'a> {
         }
         if self.history_search.is_some() {
             return self.handle_history_search_key(key, resolved);
+        }
+
+        // Some terminals collapse modified Enter handling inconsistently even when
+        // the keymap contains an explicit Shift+Enter binding, so keep a direct
+        // multiline composition path here as a safety net.
+        if key.code == KeyCode::Enter && key.modifiers.shift && self.vim.mode() != VimMode::Normal {
+            self.prompt
+                .apply_edit_action(EditAction::InsertLiteralNewline);
+            self.turn_state = TurnState::EditingInput;
+            self.state.input_mode = InputMode::Prompt;
+            self.reset_history_recall();
+            self.status_note = None;
+            self.update_slash_suggestions();
+            self.needs_render = true;
+            return Ok(());
         }
 
         // Slash-autocomplete intercepts: Tab accepts, Up/Down navigate, Esc dismisses.
@@ -2213,6 +2241,13 @@ impl<'a> TuiController<'a> {
             .and_then(|search| current_history_search_match(search, &history_entries))
             .map_or_else(|| self.prompt.text(), ToString::to_string);
         let mut view = ShellView::from_app_state(&self.state, prompt);
+        let terminal_width = self.last_terminal_size.0;
+        let summary_width = if terminal_width == 0 {
+            80
+        } else {
+            usize::from(shell_main_area_width(terminal_width, self.sidebar_visible)).max(1)
+        };
+        view.messages = message_lines_for_width(&self.state.messages, summary_width);
         if !self.sidebar_visible {
             view.sidebar = None;
         }
@@ -2272,10 +2307,10 @@ impl<'a> TuiController<'a> {
             if let Some(branch) = &self.state.session.git_branch {
                 workspace_lines.push(format!("⎇  {branch}"));
             }
-            // Truncate cwd to 20 chars so it fits the narrow sidebar column.
+            // Truncate cwd to 30 chars so it fits the sidebar column.
             if let Some(cwd) = self.state.session.cwd.to_str() {
-                let label: String = if cwd.len() > 20 {
-                    format!("…{}", &cwd[cwd.len() - 19..])
+                let label: String = if cwd.len() > 30 {
+                    format!("…{}", &cwd[cwd.len() - 29..])
                 } else {
                     cwd.to_string()
                 };
@@ -2307,9 +2342,21 @@ impl<'a> TuiController<'a> {
                 | TurnState::ToolPermissionPending
         );
         view.loading_verb = match self.turn_state {
-            TurnState::ModelRequestActive => Some("thinking".to_string()),
-            TurnState::CommandQueued => Some("running".to_string()),
-            TurnState::ToolPermissionPending => Some("waiting".to_string()),
+            TurnState::ModelRequestActive => Some(
+                SpinnerView::new(SpinnerMode::Thinking, "thinking")
+                    .frame(self.loading_frame)
+                    .render_line(),
+            ),
+            TurnState::CommandQueued => Some(
+                SpinnerView::new(SpinnerMode::Requesting, "running")
+                    .frame(self.loading_frame)
+                    .render_line(),
+            ),
+            TurnState::ToolPermissionPending => Some(
+                SpinnerView::new(SpinnerMode::Stalled, "waiting")
+                    .frame(self.loading_frame)
+                    .render_line(),
+            ),
             _ => None,
         };
         if self.prompt.is_empty() && !matches!(self.turn_state, TurnState::ModelRequestActive) {

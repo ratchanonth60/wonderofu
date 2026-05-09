@@ -1,6 +1,7 @@
 use wonder_of_u_core::AppState;
 
 use crate::{
+    SpinnerMode, SpinnerView,
     dialog::DialogView,
     frame::{FrameBuffer, Rect},
     layout::ShellLayout,
@@ -448,7 +449,7 @@ fn draw_prompt_view(frame: &mut FrameBuffer, area: Rect, view: &ShellView, theme
 pub const MIN_SIDEBAR_WIDTH: u16 = 100;
 
 /// Column width of the sidebar panel (excluding the `│` separator).
-pub const SIDEBAR_WIDTH: u16 = 22;
+pub const SIDEBAR_WIDTH: u16 = 32;
 
 /// Returns the effective main-column width used by [`render_shell`].
 ///
@@ -1116,10 +1117,19 @@ fn status_line_text(view: &ShellView) -> String {
         view.loading_verb.as_deref(),
         view.status.is_empty(),
     ) {
-        (true, Some(verb), false) => format!("⠿ {verb}… | {}", view.status),
-        (true, Some(verb), true) => format!("⠿ {verb}…"),
-        (true, None, false) => format!("⠿ {}", view.status),
-        (true, None, true) => "⠿".into(),
+        (true, Some(verb), false) => format!("{verb}… | {}", view.status),
+        (true, Some(verb), true) => format!("{verb}…"),
+        (true, None, false) => format!(
+            "{} {}",
+            SpinnerView::new(SpinnerMode::Thinking, "")
+                .render_frame()
+                .glyph,
+            view.status
+        ),
+        (true, None, true) => SpinnerView::new(SpinnerMode::Thinking, "")
+            .render_frame()
+            .glyph
+            .to_string(),
         (false, _, false) => format!("◆ {}", view.status),
         (false, _, true) => "◆".into(),
     };
@@ -1623,15 +1633,13 @@ mod tests {
         let view = ShellView {
             title: "Session: Demo".into(),
             messages: vec![
-                MessageLineView::new("tools[bash]> 1 call", MessageRole::Tool),
-                MessageLineView::new(
-                    "  • #00000000 ok · command=\"echo hi\" → done",
-                    MessageRole::Tool,
-                ),
+                MessageLineView::new("● Run(Tests)", MessageRole::Tool),
+                MessageLineView::new("  └ cargo test -p wonder-of-u-tui", MessageRole::System),
+                MessageLineView::new("  └ tests passed", MessageRole::System),
             ],
             prompt: String::new(),
             history_search: None,
-            status: "prompt | 2 messages".into(),
+            status: "prompt | 3 messages".into(),
             loading: false,
             loading_verb: None,
             footer: "cwd=/workspace | ctrl-c interrupt".into(),
@@ -1646,18 +1654,20 @@ mod tests {
             sidebar: None,
         };
 
-        let frame = render_snapshot(48, 8, &view, &Theme::default());
+        let frame = render_snapshot(48, 10, &view, &Theme::default());
 
         assert_eq!(
             frame.to_plain_text(),
             [
                 "▸ wonder-of-u  Demo",
-                "tools[bash]> 1 call",
-                "  • #00000000 ok · command=\"echo hi\" → done",
+                "● Run(Tests)",
+                "  └ cargo test -p wonder-of-u-tui",
+                "  └ tests passed",
+                "",
                 "╭─ prompt ─────────────────────────────────────╮",
                 "│›                                             │",
                 "╰──────────────────────────────────────────────╯",
-                "◆ prompt | 2 messages",
+                "◆ prompt | 3 messages",
                 "              cwd=/workspace · ctrl-c interrupt",
             ]
             .join("\n")
@@ -1802,7 +1812,7 @@ mod tests {
 
         let frame = render_snapshot(32, 8, &view, &Theme::default());
 
-        assert!(frame.to_plain_text().contains("⠿ thinking… | turn=active"));
+        assert!(frame.to_plain_text().contains("thinking… | turn=active"));
     }
 
     // ── scroll rendering ─────────────────────────────────────────────────────
@@ -2362,7 +2372,7 @@ mod tests {
             ..ShellView::default()
         };
 
-        // width=100 → main_w=77, sidebar=22, sep=1.
+        // width=100 → main_w=67, sidebar=32, sep=1.
         // height=14 → max_prompt=4; prompt_height=5 (3 content+2 border).min(4)=4.
         // Box shows 2 content rows: "first line" and "second line".
         let frame = render_snapshot(100, 14, &view, &Theme::default());

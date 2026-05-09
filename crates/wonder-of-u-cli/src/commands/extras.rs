@@ -2589,7 +2589,7 @@ fn render_oauth_refresh(storage_dir: Option<&Path>) -> Result<String> {
 
 fn open_issue_url() -> String {
     let url = "https://github.com/anthropics/claude-code/issues";
-    if open_url(url).is_ok() {
+    if super::try_open_browser(url) {
         format!("Opened issue tracker: {url}")
     } else {
         format!("Issue tracker: {url}")
@@ -2688,34 +2688,6 @@ fn completion_hint(shell: &str) -> &'static str {
     }
 }
 
-fn open_url(url: &str) -> std::io::Result<()> {
-    #[cfg(target_os = "linux")]
-    let status = ProcessCommand::new("xdg-open").arg(url).status()?;
-
-    #[cfg(target_os = "macos")]
-    let status = ProcessCommand::new("open").arg(url).status()?;
-
-    #[cfg(target_os = "windows")]
-    let status = ProcessCommand::new("cmd")
-        .args(["/C", "start", ""])
-        .arg(url)
-        .status()?;
-
-    #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
-    {
-        let _ = url;
-        return Err(std::io::Error::other("unsupported platform"));
-    }
-
-    if status.success() {
-        Ok(())
-    } else {
-        Err(std::io::Error::other(format!(
-            "open command exited with {status}"
-        )))
-    }
-}
-
 fn parse_proc_status() -> Vec<(String, String)> {
     fs::read_to_string("/proc/self/status")
         .ok()
@@ -2798,6 +2770,25 @@ mod tests {
             session_tags: Vec::new(),
             additional_working_directories: Vec::new(),
         }
+    }
+
+    #[test]
+    fn issue_command_does_not_launch_browser_under_tests() {
+        let output = block_on(IssueCommand::new().execute(
+            test_context(),
+            CommandInvocation {
+                name: "issue".into(),
+                args: String::new(),
+                raw: "/issue".into(),
+            },
+        ))
+        .expect("run issue command");
+
+        let CommandOutput::Text(text) = output else {
+            panic!("expected text output");
+        };
+
+        assert!(text.contains("Issue tracker: https://github.com/anthropics/claude-code/issues"));
     }
 
     #[test]

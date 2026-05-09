@@ -1223,22 +1223,26 @@ pub(super) fn filtered_picker_indices<T>(
     let Some(query) = normalized_picker_query(query) else {
         return (0..options.len()).collect();
     };
-    options
+    let mut filtered = options
         .iter()
         .enumerate()
         .filter_map(|(index, option)| {
-            searchable(option)
-                .to_ascii_lowercase()
-                .contains(&query)
-                .then_some(index)
+            wonder_of_u_tui::prompt::fuzzy_match_score(&query, &searchable(option))
+                .map(|score| (index, score))
         })
-        .collect()
+        .collect::<Vec<_>>();
+    filtered.sort_by(|(left_index, left_score), (right_index, right_score)| {
+        right_score
+            .cmp(left_score)
+            .then_with(|| left_index.cmp(right_index))
+    });
+    filtered.into_iter().map(|(index, _)| index).collect()
 }
 
 pub(super) fn normalized_picker_query(query: &TextBuffer) -> Option<String> {
     let query = query.text();
     let trimmed = query.trim();
-    (!trimmed.is_empty()).then(|| trimmed.to_ascii_lowercase())
+    (!trimmed.is_empty()).then(|| trimmed.to_string())
 }
 
 pub(super) fn picker_query_label(query: &TextBuffer) -> String {
@@ -1307,6 +1311,41 @@ pub(super) fn history_search_status_note(has_match: bool) -> String {
 
 pub(super) fn overlay_closed_status(title: &str) -> String {
     format!("{} closed", title.to_ascii_lowercase())
+}
+
+#[cfg(test)]
+#[allow(clippy::items_after_test_module)]
+mod tests {
+    use wonder_of_u_tui::TextBuffer;
+
+    use super::filtered_picker_indices;
+
+    #[test]
+    fn filtered_picker_indices_supports_fuzzy_matches() {
+        let mut query = TextBuffer::new(true);
+        query.insert_text("ae");
+        let options = [
+            "Default - balanced prompts",
+            "Accept edits - allow workspace changes",
+            "Plan - no edits",
+        ];
+
+        let filtered = filtered_picker_indices(&query, &options, |option| option.to_string());
+
+        assert_eq!(filtered.first().copied(), Some(1));
+        assert!(filtered.contains(&2));
+    }
+
+    #[test]
+    fn filtered_picker_indices_ranks_better_matches_first() {
+        let mut query = TextBuffer::new(true);
+        query.insert_text("st");
+        let options = ["Status", "Terminal setup", "Theme"];
+
+        let filtered = filtered_picker_indices(&query, &options, |option| option.to_string());
+
+        assert_eq!(filtered, vec![0, 1]);
+    }
 }
 
 pub(super) fn parse_known_notice(text: &str) -> Option<(String, Vec<String>, &'static str)> {
