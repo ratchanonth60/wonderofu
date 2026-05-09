@@ -194,6 +194,8 @@ fn compose_conversation_prompt_includes_recent_history() {
 
 #[test]
 fn controller_routes_slash_commands_and_updates_provider_context() {
+    let _api_key = EnvVarGuard::set("ANTHROPIC_API_KEY", "");
+    let _oai_key = EnvVarGuard::set("OPENAI_API_KEY", "");
     let dir = unique_test_dir("tui-slash-model");
     let registry = commands::registry(Some(dir.clone())).expect("registry");
     let mut controller = TuiController::new(
@@ -258,6 +260,8 @@ fn controller_opens_model_picker_for_bare_model_command() {
 
 #[test]
 fn controller_filters_model_picker_with_visible_query_and_match_count() {
+    let _api_key = EnvVarGuard::set("ANTHROPIC_API_KEY", "");
+    let _oai_key = EnvVarGuard::set("OPENAI_API_KEY", "");
     let dir = unique_test_dir("tui-model-picker-filter");
     let registry = commands::registry(Some(dir.clone())).expect("registry");
     let mut controller = TuiController::new(
@@ -305,6 +309,8 @@ fn controller_filters_model_picker_with_visible_query_and_match_count() {
 
 #[test]
 fn controller_selects_model_from_picker() {
+    let _api_key = EnvVarGuard::set("ANTHROPIC_API_KEY", "");
+    let _oai_key = EnvVarGuard::set("OPENAI_API_KEY", "");
     let dir = unique_test_dir("tui-model-picker-select");
     let registry = commands::registry(Some(dir.clone())).expect("registry");
     let mut controller = TuiController::new(
@@ -5326,6 +5332,8 @@ fn make_ready_controller() -> (TuiController<'static>, PathBuf) {
 
 #[test]
 fn controller_auto_opens_setup_when_provider_not_configured() {
+    let _api_key = EnvVarGuard::set("ANTHROPIC_API_KEY", "");
+    let _oai_key = EnvVarGuard::set("OPENAI_API_KEY", "");
     let (controller, _dir) = make_unconfigured_controller();
 
     assert!(
@@ -5350,6 +5358,8 @@ fn controller_does_not_auto_open_setup_when_provider_ready() {
 
 #[test]
 fn controller_cancel_setup_sets_session_flag_and_prevents_reopen() {
+    let _api_key = EnvVarGuard::set("ANTHROPIC_API_KEY", "");
+    let _oai_key = EnvVarGuard::set("OPENAI_API_KEY", "");
     let (mut controller, _dir) = make_unconfigured_controller();
 
     controller

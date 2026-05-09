@@ -7,7 +7,7 @@ use wonder_of_u_core::{
 };
 
 use crate::{
-    auth::{AuthMaterial, DEFAULT_COPILOT_API_BASE, StoredCredentials},
+    auth::{AuthMaterial, AwsCredentials, DEFAULT_COPILOT_API_BASE, StoredCredentials},
     config::{AgentSettings, CredentialStore, SettingsStore},
 };
 /// Represents model descriptor
@@ -75,6 +75,9 @@ fn auth_material_label(material: &AuthMaterial) -> &'static str {
         AuthMaterial::OAuth { .. } => "oauth",
     }
 }
+
+/// Default AWS Bedrock API base URL (us-east-1).
+pub const DEFAULT_BEDROCK_API_BASE: &str = "https://bedrock-runtime.us-east-1.amazonaws.com";
 /// Represents provider selection
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct ProviderSelection {
@@ -105,6 +108,10 @@ enum ResolvedAuthMaterial {
         expires_at: Option<time::OffsetDateTime>,
         source: AuthSource,
     },
+    AwsSigV4 {
+        credentials: AwsCredentials,
+        source: AuthSource,
+    },
 }
 
 impl fmt::Debug for ResolvedAuthMaterial {
@@ -128,6 +135,16 @@ impl fmt::Debug for ResolvedAuthMaterial {
                 .field("has_refresh_token", &refresh_token.is_some())
                 .field("has_expiration", &expires_at.is_some())
                 .finish(),
+            Self::AwsSigV4 {
+                source,
+                credentials,
+            } => formatter
+                .debug_struct("ResolvedAuthMaterial::AwsSigV4")
+                .field("source", source)
+                .field("region", &credentials.region)
+                .field("access_key_id", &"[redacted]")
+                .field("has_session_token", &credentials.session_token.is_some())
+                .finish(),
         }
     }
 }
@@ -138,13 +155,16 @@ impl ResolvedAuthMaterial {
             Self::None => AuthState::not_required(),
             Self::ApiKey { source, .. } => AuthState::ready(AuthMaterialKind::ApiKey, *source),
             Self::OAuth { source, .. } => AuthState::ready(AuthMaterialKind::OAuth, *source),
+            Self::AwsSigV4 { source, .. } => AuthState::ready(AuthMaterialKind::AwsSigV4, *source),
         }
     }
 
     fn source(&self) -> Option<AuthSource> {
         match self {
             Self::None => None,
-            Self::ApiKey { source, .. } | Self::OAuth { source, .. } => Some(*source),
+            Self::ApiKey { source, .. }
+            | Self::OAuth { source, .. }
+            | Self::AwsSigV4 { source, .. } => Some(*source),
         }
     }
 
@@ -172,6 +192,13 @@ impl ResolvedAuthMaterial {
     fn oauth_expires_at(&self) -> Option<time::OffsetDateTime> {
         match self {
             Self::OAuth { expires_at, .. } => *expires_at,
+            _ => None,
+        }
+    }
+
+    fn aws_credentials(&self) -> Option<&AwsCredentials> {
+        match self {
+            Self::AwsSigV4 { credentials, .. } => Some(credentials),
             _ => None,
         }
     }
@@ -254,6 +281,15 @@ impl ResolvedProviderExecution {
     pub(crate) fn oauth_expires_at(&self) -> Option<time::OffsetDateTime> {
         self.auth.oauth_expires_at()
     }
+
+    pub(crate) fn aws_credentials(&self) -> Result<&AwsCredentials> {
+        self.auth.aws_credentials().ok_or_else(|| {
+            WonderError::validation(format!(
+                "provider `{}` is not configured with AWS SigV4 auth",
+                self.provider.id
+            ))
+        })
+    }
 }
 /// Stores provider registry
 #[derive(Clone, Debug, Default)]
@@ -306,6 +342,26 @@ impl ProviderRegistry {
                 ],
                 api_base: Some("https://api.anthropic.com".into()),
                 api_key_env: Some("ANTHROPIC_API_KEY".into()),
+            })
+            .expect("builtin provider");
+        registry
+            .register(ProviderDescriptor {
+                id: "bedrock".into(),
+                display_name: "Amazon Bedrock".into(),
+                auth_kind: AuthMaterialKind::AwsSigV4,
+                default_model: "anthropic.claude-3-7-sonnet-20250219-v1:0".into(),
+                models: vec![
+                    ModelDescriptor::new(
+                        "anthropic.claude-3-7-sonnet-20250219-v1:0",
+                        "Claude 3.7 Sonnet (Bedrock)",
+                    ),
+                    ModelDescriptor::new(
+                        "anthropic.claude-3-5-haiku-20241022-v1:0",
+                        "Claude 3.5 Haiku (Bedrock)",
+                    ),
+                ],
+                api_base: Some(DEFAULT_BEDROCK_API_BASE.into()),
+                api_key_env: None,
             })
             .expect("builtin provider");
         registry
@@ -734,6 +790,7 @@ impl ProviderResolver {
                 None => match provider.auth_kind {
                     AuthMaterialKind::None => AuthState::not_required(),
                     AuthMaterialKind::ApiKey => AuthState::missing(AuthMaterialKind::ApiKey),
+                    AuthMaterialKind::AwsSigV4 => AuthState::missing(AuthMaterialKind::AwsSigV4),
                     AuthMaterialKind::OAuth => match credentials.providers.get(&provider.id) {
                         Some(AuthMaterial::OAuth {
                             access_token,
@@ -786,6 +843,42 @@ impl ProviderResolver {
     ) -> Result<Option<ResolvedAuthMaterial>> {
         match provider.auth_kind {
             AuthMaterialKind::None => Ok(Some(ResolvedAuthMaterial::None)),
+            AuthMaterialKind::AwsSigV4 => {
+                // Resolve AWS credentials: environment variables take precedence
+                // over anything stored in the credential file.
+                let region = env
+                    .get("AWS_REGION")
+                    .or_else(|| env.get("AWS_DEFAULT_REGION"))
+                    .map(|value| value.trim())
+                    .filter(|value| !value.is_empty())
+                    .map(ToString::to_string)
+                    .unwrap_or_else(|| "us-east-1".to_string());
+
+                if let (Some(access_key_id), Some(secret_access_key)) = (
+                    env.get("AWS_ACCESS_KEY_ID")
+                        .map(|v| v.trim())
+                        .filter(|v| !v.is_empty()),
+                    env.get("AWS_SECRET_ACCESS_KEY")
+                        .map(|v| v.trim())
+                        .filter(|v| !v.is_empty()),
+                ) {
+                    let session_token = env
+                        .get("AWS_SESSION_TOKEN")
+                        .map(|v| v.trim())
+                        .filter(|v| !v.is_empty())
+                        .map(ToString::to_string);
+                    return Ok(Some(ResolvedAuthMaterial::AwsSigV4 {
+                        credentials: AwsCredentials {
+                            access_key_id: access_key_id.to_string(),
+                            secret_access_key: secret_access_key.to_string(),
+                            session_token,
+                            region,
+                        },
+                        source: AuthSource::Environment,
+                    }));
+                }
+                Ok(None)
+            }
             AuthMaterialKind::ApiKey => {
                 if let Some(env_var) = &provider.api_key_env {
                     if let Some(value) = env
@@ -844,6 +937,10 @@ impl ProviderResolver {
 
     fn missing_auth_error(&self, provider: &ProviderDescriptor) -> WonderError {
         match provider.auth_kind {
+            AuthMaterialKind::AwsSigV4 => WonderError::validation(format!(
+                "provider `{}` requires AWS SigV4 auth; set AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY (and optionally AWS_SESSION_TOKEN and AWS_REGION)",
+                provider.id
+            )),
             AuthMaterialKind::None => WonderError::validation(format!(
                 "provider `{}` does not require authentication",
                 provider.id
@@ -1198,5 +1295,151 @@ mod tests {
                 .expect("copilot provider")
                 .supports_fast_mode()
         );
+    }
+
+    #[test]
+    fn bedrock_provider_registered_in_builtin_registry() {
+        let registry = ProviderRegistry::builtin();
+        let bedrock = registry.get("bedrock").expect("bedrock provider");
+        assert_eq!(
+            bedrock.auth_kind,
+            wonder_of_u_core::AuthMaterialKind::AwsSigV4
+        );
+        assert_eq!(
+            bedrock.default_model,
+            "anthropic.claude-3-7-sonnet-20250219-v1:0"
+        );
+        assert!(bedrock.models.len() >= 2);
+    }
+
+    #[test]
+    fn bedrock_provider_resolves_from_aws_env_vars() {
+        let resolver = ProviderResolver::builtin();
+        let settings = AgentSettings {
+            selected_provider: Some("bedrock".into()),
+            ..AgentSettings::default()
+        };
+
+        let report = resolver
+            .resolve_with_env(
+                &settings,
+                &StoredCredentials::default(),
+                [
+                    ("AWS_ACCESS_KEY_ID", "AKIAIOSFODNN7EXAMPLE".to_string()),
+                    (
+                        "AWS_SECRET_ACCESS_KEY",
+                        "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY".to_string(),
+                    ),
+                    ("AWS_REGION", "us-west-2".to_string()),
+                ],
+            )
+            .expect("resolve bedrock provider");
+
+        assert_eq!(report.provider.as_deref(), Some("bedrock"));
+        assert_eq!(report.auth.status, wonder_of_u_core::AuthStatus::Ready);
+        assert_eq!(
+            report.auth.kind,
+            wonder_of_u_core::AuthMaterialKind::AwsSigV4
+        );
+        assert_eq!(report.auth.source_label(), Some("environment"));
+        assert_eq!(report.readiness, ProviderReadiness::Ready);
+    }
+
+    #[test]
+    fn bedrock_provider_reports_missing_auth_without_env_vars() {
+        let resolver = ProviderResolver::builtin();
+        let settings = AgentSettings {
+            selected_provider: Some("bedrock".into()),
+            ..AgentSettings::default()
+        };
+
+        let report = resolver
+            .resolve_with_env(
+                &settings,
+                &StoredCredentials::default(),
+                std::iter::empty::<(&str, String)>(),
+            )
+            .expect("resolve bedrock provider");
+
+        assert_eq!(report.auth.status, wonder_of_u_core::AuthStatus::Missing);
+        assert_eq!(report.readiness, ProviderReadiness::MissingAuth);
+    }
+
+    #[test]
+    fn bedrock_provider_resolves_execution_with_sigv4_auth() {
+        let resolver = ProviderResolver::builtin();
+        let settings = AgentSettings {
+            selected_provider: Some("bedrock".into()),
+            ..AgentSettings::default()
+        };
+
+        let resolved = resolver
+            .resolve_execution_with_env(
+                &settings,
+                &StoredCredentials::default(),
+                [
+                    ("AWS_ACCESS_KEY_ID", "AKIAIOSFODNN7EXAMPLE".to_string()),
+                    (
+                        "AWS_SECRET_ACCESS_KEY",
+                        "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY".to_string(),
+                    ),
+                    ("AWS_SESSION_TOKEN", "session-token-xyz".to_string()),
+                    ("AWS_REGION", "eu-west-1".to_string()),
+                ],
+                &ProviderSelection::default(),
+            )
+            .expect("resolve bedrock execution");
+
+        assert_eq!(resolved.provider_id(), "bedrock");
+        let creds = resolved.aws_credentials().expect("aws credentials");
+        assert_eq!(creds.region, "eu-west-1");
+        assert!(creds.session_token.is_some());
+        assert_eq!(resolved.auth_source(), Some(AuthSource::Environment));
+    }
+
+    #[test]
+    fn bedrock_provider_uses_default_region_when_unset() {
+        let resolver = ProviderResolver::builtin();
+        let settings = AgentSettings {
+            selected_provider: Some("bedrock".into()),
+            ..AgentSettings::default()
+        };
+
+        let resolved = resolver
+            .resolve_execution_with_env(
+                &settings,
+                &StoredCredentials::default(),
+                [
+                    ("AWS_ACCESS_KEY_ID", "AKID".to_string()),
+                    ("AWS_SECRET_ACCESS_KEY", "secret".to_string()),
+                ],
+                &ProviderSelection::default(),
+            )
+            .expect("resolve bedrock with default region");
+
+        let creds = resolved.aws_credentials().expect("aws credentials");
+        assert_eq!(creds.region, "us-east-1");
+    }
+
+    #[test]
+    fn bedrock_provider_missing_auth_error_mentions_env_vars() {
+        let resolver = ProviderResolver::builtin();
+        let settings = AgentSettings {
+            selected_provider: Some("bedrock".into()),
+            ..AgentSettings::default()
+        };
+
+        let error = resolver
+            .resolve_execution_with_env(
+                &settings,
+                &StoredCredentials::default(),
+                std::iter::empty::<(&str, String)>(),
+                &ProviderSelection::default(),
+            )
+            .expect_err("should fail without aws creds");
+
+        let message = error.to_string();
+        assert!(message.contains("AWS_ACCESS_KEY_ID"));
+        assert!(message.contains("AWS_SECRET_ACCESS_KEY"));
     }
 }

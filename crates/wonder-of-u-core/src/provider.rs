@@ -10,6 +10,8 @@ pub enum AuthMaterialKind {
     ApiKey,
     /// Represents o auth
     OAuth,
+    /// Represents AWS Signature Version 4 (used by Amazon Bedrock)
+    AwsSigV4,
 }
 /// Enumerates auth status
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
@@ -120,6 +122,7 @@ impl AuthState {
             AuthMaterialKind::None => "none",
             AuthMaterialKind::ApiKey => "api_key",
             AuthMaterialKind::OAuth => "oauth",
+            AuthMaterialKind::AwsSigV4 => "aws_sig_v4",
         }
     }
     /// Constant fn
