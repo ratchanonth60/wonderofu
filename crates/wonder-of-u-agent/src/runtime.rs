@@ -6,6 +6,9 @@ use std::{
     time::Duration,
 };
 
+use hmac::{Hmac, Mac};
+use sha2::{Digest, Sha256};
+
 use percent_encoding::{NON_ALPHANUMERIC, utf8_percent_encode};
 use serde_json::{Value, json};
 use time::OffsetDateTime;
@@ -14,7 +17,7 @@ use wonder_of_u_core::{Result, TokenUsage, WonderError};
 use crate::{
     CredentialStore, ProviderResolver, ProviderSelection, ResolvedProviderExecution,
     auth::{
-        copilot_device_flow_client_id, copilot_standard_headers, copilot_token_url,
+        AwsCredentials, copilot_device_flow_client_id, copilot_standard_headers, copilot_token_url,
         github_device_access_token_url, parse_copilot_oauth_token_response,
     },
 };
@@ -328,15 +331,16 @@ impl ProviderRuntime {
             "openai" => self.complete_openai(resolved, request),
             "anthropic" => self.complete_anthropic(resolved, request),
             "copilot" => self.complete_copilot(resolved, request),
+            "bedrock" => self.complete_bedrock(resolved, request),
             other => Err(WonderError::validation(format!(
-                "provider `{other}` runtime is not implemented yet; supported providers in this slice: openai, anthropic, copilot"
+                "provider `{other}` runtime is not implemented yet; supported providers in this slice: openai, anthropic, copilot, bedrock"
             ))),
         }
     }
     /// Returns whether streaming
     #[must_use]
     pub fn supports_streaming(&self, provider_id: &str) -> bool {
-        matches!(provider_id, "openai" | "anthropic" | "copilot")
+        matches!(provider_id, "openai" | "anthropic" | "copilot" | "bedrock")
     }
     /// Returns whether tool use
     #[must_use]
@@ -346,7 +350,10 @@ impl ProviderRuntime {
     /// Returns whether tool use for
     #[must_use]
     pub fn supports_tool_use_for(&self, resolved: &ResolvedProviderExecution) -> bool {
-        matches!(resolved.provider_id(), "openai" | "anthropic" | "copilot")
+        matches!(
+            resolved.provider_id(),
+            "openai" | "anthropic" | "copilot" | "bedrock"
+        )
     }
 
     /// Handles complete streaming
@@ -367,8 +374,9 @@ impl ProviderRuntime {
             "openai" => self.complete_openai_streaming(resolved, request, &mut on_text_delta),
             "anthropic" => self.complete_anthropic_streaming(resolved, request, &mut on_text_delta),
             "copilot" => self.complete_copilot_streaming(resolved, request, &mut on_text_delta),
+            "bedrock" => self.complete_bedrock_streaming(resolved, request, &mut on_text_delta),
             other => Err(WonderError::validation(format!(
-                "provider `{other}` streaming runtime is not implemented yet; supported providers in this slice: openai, anthropic, copilot"
+                "provider `{other}` streaming runtime is not implemented yet; supported providers in this slice: openai, anthropic, copilot, bedrock"
             ))),
         }
     }
@@ -387,8 +395,9 @@ impl ProviderRuntime {
             "openai" => self.complete_openai_with_tool_use(resolved, request),
             "anthropic" => self.complete_anthropic_with_tool_use(resolved, request),
             "copilot" => self.complete_copilot_with_tool_use(resolved, request),
+            "bedrock" => self.complete_bedrock_with_tool_use(resolved, request),
             other => Err(WonderError::validation(format!(
-                "provider `{other}` tool-use orchestration is not implemented yet; supported providers in this slice: openai, anthropic, copilot"
+                "provider `{other}` tool-use orchestration is not implemented yet; supported providers in this slice: openai, anthropic, copilot, bedrock"
             ))),
         }
     }
@@ -550,6 +559,40 @@ impl ProviderRuntime {
         } else {
             parse_openai_tool_use_response(resolved, &http_response.body)
         }
+    }
+
+    fn complete_bedrock(
+        &self,
+        resolved: &ResolvedProviderExecution,
+        request: &CompletionRequest,
+    ) -> Result<CompletionResponse> {
+        let http_request = build_bedrock_request(resolved, request)?;
+        let http_response = self.transport.execute(&http_request)?;
+        parse_anthropic_response(resolved, &http_response.body)
+    }
+
+    fn complete_bedrock_streaming<F>(
+        &self,
+        resolved: &ResolvedProviderExecution,
+        request: &CompletionRequest,
+        on_text_delta: &mut F,
+    ) -> Result<CompletionResponse>
+    where
+        F: FnMut(&str) -> Result<()>,
+    {
+        let http_request = build_bedrock_stream_request(resolved, request)?;
+        let http_response = self.transport.execute_stream(&http_request)?;
+        parse_anthropic_stream_response(resolved, http_response.reader, on_text_delta)
+    }
+
+    fn complete_bedrock_with_tool_use(
+        &self,
+        resolved: &ResolvedProviderExecution,
+        request: &ToolUseRequest,
+    ) -> Result<ToolUseResponse> {
+        let http_request = build_bedrock_tool_use_request(resolved, request)?;
+        let http_response = self.transport.execute(&http_request)?;
+        parse_anthropic_tool_use_response(resolved, &http_response.body)
     }
 
     fn exchange_copilot_session(
@@ -1295,6 +1338,314 @@ fn build_copilot_anthropic_tool_use_request(
     headers.insert("authorization".into(), format!("Bearer {bearer_token}"));
     headers.insert("content-type".into(), "application/json".into());
     build_anthropic_tool_use_request_with_headers(resolved.model(), api_base, headers, request)
+}
+
+// ─── AWS SigV4 signing ────────────────────────────────────────────────────────
+
+/// Computes an HMAC-SHA256 digest and returns the raw bytes.
+fn hmac_sha256(key: &[u8], data: &[u8]) -> Vec<u8> {
+    let mut mac = Hmac::<Sha256>::new_from_slice(key).expect("HMAC accepts any key length");
+    mac.update(data);
+    mac.finalize().into_bytes().to_vec()
+}
+
+/// Computes a hex-encoded SHA-256 hash of the given bytes.
+fn sha256_hex(data: &[u8]) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(data);
+    hex::encode(hasher.finalize())
+}
+
+/// Derives the SigV4 signing key from the secret access key, date, region, and service.
+fn derive_signing_key(secret: &str, date: &str, region: &str, service: &str) -> Vec<u8> {
+    let k_date = hmac_sha256(format!("AWS4{secret}").as_bytes(), date.as_bytes());
+    let k_region = hmac_sha256(&k_date, region.as_bytes());
+    let k_service = hmac_sha256(&k_region, service.as_bytes());
+    hmac_sha256(&k_service, b"aws4_request")
+}
+
+/// Adds the AWS SigV4 `Authorization`, `x-amz-date`, `x-amz-content-sha256`,
+/// and optional `x-amz-security-token` headers to `headers` in place.
+///
+/// `datetime` must be `YYYYMMDDTHHMMSSZ`.
+fn sign_request_headers(
+    headers: &mut BTreeMap<String, String>,
+    method: &str,
+    url: &str,
+    body_bytes: &[u8],
+    credentials: &AwsCredentials,
+    datetime: &str,
+) -> Result<()> {
+    let date = &datetime[..8]; // YYYYMMDD
+    let service = "bedrock";
+
+    let url_no_scheme = url.split_once("://").map(|(_, r)| r).unwrap_or(url);
+    let (host_and_path, query_str) = url_no_scheme.split_once('?').unwrap_or((url_no_scheme, ""));
+    let host = host_and_path
+        .split_once('/')
+        .map(|(h, _)| h)
+        .unwrap_or(host_and_path);
+    let path = host_and_path
+        .split_once('/')
+        .map(|(_, p)| format!("/{p}"))
+        .unwrap_or_else(|| "/".to_string());
+
+    let payload_hash = sha256_hex(body_bytes);
+
+    headers.insert("host".into(), host.to_string());
+    headers.insert("x-amz-date".into(), datetime.to_string());
+    headers.insert("x-amz-content-sha256".into(), payload_hash.clone());
+    if let Some(token) = &credentials.session_token {
+        headers.insert("x-amz-security-token".into(), token.clone());
+    }
+
+    let mut signed_header_names: Vec<String> =
+        headers.keys().map(|k| k.to_ascii_lowercase()).collect();
+    signed_header_names.sort();
+    let signed_headers_str = signed_header_names.join(";");
+
+    let canonical_headers_str: String = signed_header_names
+        .iter()
+        .map(|name| {
+            let value = headers
+                .iter()
+                .find(|(k, _)| k.to_ascii_lowercase() == *name)
+                .map(|(_, v)| v.trim())
+                .unwrap_or_default();
+            format!("{name}:{value}\n")
+        })
+        .collect();
+
+    let canonical_request = [
+        method,
+        path.as_str(),
+        query_str,
+        canonical_headers_str.as_str(),
+        signed_headers_str.as_str(),
+        payload_hash.as_str(),
+    ]
+    .join("\n");
+
+    let credential_scope = format!("{date}/{}/{service}/aws4_request", credentials.region);
+    let string_to_sign = format!(
+        "AWS4-HMAC-SHA256\n{datetime}\n{credential_scope}\n{}",
+        sha256_hex(canonical_request.as_bytes())
+    );
+
+    let signing_key = derive_signing_key(
+        &credentials.secret_access_key,
+        date,
+        &credentials.region,
+        service,
+    );
+    let signature = hex::encode(hmac_sha256(&signing_key, string_to_sign.as_bytes()));
+
+    headers.insert(
+        "authorization".into(),
+        format!(
+            "AWS4-HMAC-SHA256 Credential={}/{credential_scope}, SignedHeaders={signed_headers_str}, Signature={signature}",
+            credentials.access_key_id,
+        ),
+    );
+
+    Ok(())
+}
+
+/// Formats a `time::OffsetDateTime` as the SigV4 datetime string `YYYYMMDDTHHMMSSZ`.
+fn sigv4_datetime(now: time::OffsetDateTime) -> String {
+    format!(
+        "{:04}{:02}{:02}T{:02}{:02}{:02}Z",
+        now.year(),
+        now.month() as u8,
+        now.day(),
+        now.hour(),
+        now.minute(),
+        now.second(),
+    )
+}
+
+// ─── Bedrock request builders ─────────────────────────────────────────────────
+
+fn build_bedrock_request(
+    resolved: &ResolvedProviderExecution,
+    request: &CompletionRequest,
+) -> Result<HttpRequest> {
+    build_bedrock_request_with_mode(resolved, request, false)
+}
+
+fn build_bedrock_stream_request(
+    resolved: &ResolvedProviderExecution,
+    request: &CompletionRequest,
+) -> Result<HttpRequest> {
+    build_bedrock_request_with_mode(resolved, request, true)
+}
+
+fn build_bedrock_request_with_mode(
+    resolved: &ResolvedProviderExecution,
+    request: &CompletionRequest,
+    stream: bool,
+) -> Result<HttpRequest> {
+    let credentials = resolved.aws_credentials()?;
+
+    let path_suffix = if stream {
+        "invoke-with-response-stream"
+    } else {
+        "invoke"
+    };
+    let url = format!(
+        "{}/model/{}/{}",
+        resolved.api_base().trim_end_matches('/'),
+        resolved.model(),
+        path_suffix,
+    );
+
+    let mut body = json!({
+        "anthropic_version": "bedrock-2023-05-31",
+        "max_tokens": request.max_output_tokens.unwrap_or(DEFAULT_ANTHROPIC_MAX_OUTPUT_TOKENS),
+        "messages": [{"role": "user", "content": request.prompt}],
+    });
+    let body_map = body
+        .as_object_mut()
+        .expect("bedrock request body is an object");
+    if let Some(system_prompt) = request
+        .system_prompt
+        .as_deref()
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+    {
+        body_map.insert("system".into(), json!(system_prompt));
+    }
+    if let Some(temperature) = request.temperature {
+        body_map.insert("temperature".into(), json!(temperature));
+    }
+
+    let body_str = serde_json::to_string(&body)?;
+    let mut headers = BTreeMap::from([
+        ("accept".into(), "application/json".into()),
+        ("content-type".into(), "application/json".into()),
+    ]);
+    let datetime = sigv4_datetime(time::OffsetDateTime::now_utc());
+    sign_request_headers(
+        &mut headers,
+        "POST",
+        &url,
+        body_str.as_bytes(),
+        credentials,
+        &datetime,
+    )?;
+
+    Ok(HttpRequest {
+        method: "POST".into(),
+        url,
+        headers,
+        body: body_str,
+    })
+}
+
+fn build_bedrock_tool_use_request(
+    resolved: &ResolvedProviderExecution,
+    request: &ToolUseRequest,
+) -> Result<HttpRequest> {
+    let credentials = resolved.aws_credentials()?;
+    let url = format!(
+        "{}/model/{}/invoke",
+        resolved.api_base().trim_end_matches('/'),
+        resolved.model(),
+    );
+
+    let mut messages = vec![json!({
+        "role": "user",
+        "content": [{"type": "text", "text": request.prompt.as_str()}],
+    })];
+    for round in &request.rounds {
+        let mut assistant_content = Vec::new();
+        if let Some(text) = round
+            .assistant_text
+            .as_deref()
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+        {
+            assistant_content.push(json!({"type": "text", "text": text}));
+        }
+        assistant_content.extend(round.calls.iter().map(|call| {
+            json!({
+                "type": "tool_use",
+                "id": call.call_id.as_str(),
+                "name": call.tool_name.as_str(),
+                "input": call.arguments.clone(),
+            })
+        }));
+        messages.push(json!({"role": "assistant", "content": assistant_content}));
+        messages.push(json!({
+            "role": "user",
+            "content": round.results.iter().map(|r| json!({
+                "type": "tool_result",
+                "tool_use_id": r.call_id.as_str(),
+                "content": r.content.as_str(),
+            })).collect::<Vec<_>>(),
+        }));
+    }
+
+    let mut body = json!({
+        "anthropic_version": "bedrock-2023-05-31",
+        "max_tokens": request.max_output_tokens.unwrap_or(DEFAULT_ANTHROPIC_MAX_OUTPUT_TOKENS),
+        "messages": messages,
+    });
+    let body_map = body
+        .as_object_mut()
+        .expect("bedrock tool-use body is an object");
+    if !request.tools.is_empty() {
+        body_map.insert(
+            "tools".into(),
+            Value::Array(
+                request
+                    .tools
+                    .iter()
+                    .map(|tool| {
+                        json!({
+                            "name": tool.name.as_str(),
+                            "description": tool.description.as_str(),
+                            "input_schema": tool.input_schema.clone(),
+                        })
+                    })
+                    .collect(),
+            ),
+        );
+        body_map.insert("tool_choice".into(), json!({"type": "auto"}));
+    }
+    if let Some(system_prompt) = request
+        .system_prompt
+        .as_deref()
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+    {
+        body_map.insert("system".into(), json!(system_prompt));
+    }
+    if let Some(temperature) = request.temperature {
+        body_map.insert("temperature".into(), json!(temperature));
+    }
+
+    let body_str = serde_json::to_string(&body)?;
+    let mut headers = BTreeMap::from([
+        ("accept".into(), "application/json".into()),
+        ("content-type".into(), "application/json".into()),
+    ]);
+    let datetime = sigv4_datetime(time::OffsetDateTime::now_utc());
+    sign_request_headers(
+        &mut headers,
+        "POST",
+        &url,
+        body_str.as_bytes(),
+        credentials,
+        &datetime,
+    )?;
+
+    Ok(HttpRequest {
+        method: "POST".into(),
+        url,
+        headers,
+        body: body_str,
+    })
 }
 
 fn parse_openai_response(
@@ -3091,5 +3442,208 @@ mod tests {
             msg.contains("connection refused"),
             "error should include underlying cause; got: {msg}"
         );
+    }
+
+    // ─── SigV4 signing ────────────────────────────────────────────────────────
+
+    #[test]
+    fn sigv4_datetime_formats_correctly() {
+        let dt = time::OffsetDateTime::from_unix_timestamp(1_700_000_000).unwrap();
+        let formatted = sigv4_datetime(dt);
+        // 1700000000 = 2023-11-14T22:13:20Z
+        assert_eq!(formatted, "20231114T221320Z");
+        assert_eq!(formatted.len(), 16);
+    }
+
+    #[test]
+    fn sha256_hex_produces_known_value() {
+        // Empty string SHA-256 is well-known.
+        assert_eq!(
+            sha256_hex(b""),
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        );
+    }
+
+    #[test]
+    fn sign_request_headers_produces_authorization_header() {
+        let credentials = AwsCredentials {
+            access_key_id: "AKIAIOSFODNN7EXAMPLE".into(),
+            secret_access_key: "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY".into(),
+            session_token: None,
+            region: "us-east-1".into(),
+        };
+        let mut headers = BTreeMap::from([
+            ("accept".into(), "application/json".into()),
+            ("content-type".into(), "application/json".into()),
+        ]);
+        let body = br#"{"anthropic_version":"bedrock-2023-05-31"}"#;
+        let datetime = "20231114T221320Z";
+        let url = "https://bedrock-runtime.us-east-1.amazonaws.com/model/anthropic.claude-3-7-sonnet-20250219-v1:0/invoke";
+
+        sign_request_headers(&mut headers, "POST", url, body, &credentials, datetime)
+            .expect("sign headers");
+
+        let auth = headers.get("authorization").expect("authorization header");
+        assert!(auth.starts_with("AWS4-HMAC-SHA256 "), "auth header: {auth}");
+        assert!(
+            auth.contains("Credential=AKIAIOSFODNN7EXAMPLE/"),
+            "auth header: {auth}"
+        );
+        assert!(auth.contains("SignedHeaders="), "auth header: {auth}");
+        assert!(auth.contains("Signature="), "auth header: {auth}");
+        assert!(
+            auth.contains("bedrock"),
+            "auth header should contain service: {auth}"
+        );
+
+        // Standard SigV4 headers should be injected.
+        assert!(headers.contains_key("x-amz-date"));
+        assert!(headers.contains_key("x-amz-content-sha256"));
+        assert!(
+            !headers.contains_key("x-amz-security-token"),
+            "no session token"
+        );
+    }
+
+    #[test]
+    fn sign_request_headers_includes_session_token_when_present() {
+        let credentials = AwsCredentials {
+            access_key_id: "AKID".into(),
+            secret_access_key: "secret".into(),
+            session_token: Some("session-xyz".into()),
+            region: "us-west-2".into(),
+        };
+        let mut headers = BTreeMap::from([("content-type".into(), "application/json".into())]);
+        sign_request_headers(
+            &mut headers,
+            "POST",
+            "https://bedrock-runtime.us-west-2.amazonaws.com/model/x/invoke",
+            b"{}",
+            &credentials,
+            "20231114T221320Z",
+        )
+        .expect("sign headers with session token");
+
+        assert_eq!(
+            headers.get("x-amz-security-token").map(String::as_str),
+            Some("session-xyz")
+        );
+    }
+
+    // ─── Bedrock request builder ──────────────────────────────────────────────
+
+    fn resolved_bedrock_provider(model: Option<&str>) -> ResolvedProviderExecution {
+        let settings = AgentSettings {
+            selected_provider: Some("bedrock".into()),
+            selected_model: model.map(ToString::to_string),
+            ..AgentSettings::default()
+        };
+
+        ProviderResolver::builtin()
+            .resolve_execution_with_env(
+                &settings,
+                &StoredCredentials::default(),
+                [
+                    ("AWS_ACCESS_KEY_ID", "AKIAIOSFODNN7EXAMPLE".to_string()),
+                    (
+                        "AWS_SECRET_ACCESS_KEY",
+                        "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY".to_string(),
+                    ),
+                    ("AWS_REGION", "us-east-1".to_string()),
+                ],
+                &ProviderSelection::default(),
+            )
+            .expect("resolve bedrock provider")
+    }
+
+    #[test]
+    fn bedrock_runtime_builds_invoke_request_with_sigv4_headers() {
+        let transport = RecordingTransport::with_json_body(json!({
+            "content": [{"type": "text", "text": "Hello from Bedrock"}],
+            "stop_reason": "end_turn",
+            "usage": {"input_tokens": 10, "output_tokens": 5}
+        }));
+        let runtime = ProviderRuntime::with_transport(transport.clone() as Arc<dyn HttpTransport>);
+        let resolved = resolved_bedrock_provider(None);
+        let request = CompletionRequest::new("Tell me a joke");
+
+        let response = runtime
+            .complete(&resolved, &request)
+            .expect("bedrock response");
+        let recorded = transport.take_request();
+        let body: serde_json::Value =
+            serde_json::from_str(&recorded.body).expect("bedrock request json");
+
+        assert_eq!(recorded.method, "POST");
+        assert!(
+            recorded.url.contains("/model/"),
+            "URL should contain model path: {}",
+            recorded.url
+        );
+        assert!(
+            recorded.url.ends_with("/invoke"),
+            "URL should end with /invoke: {}",
+            recorded.url
+        );
+
+        // Must have SigV4 headers.
+        assert!(
+            recorded.headers.contains_key("authorization"),
+            "missing authorization header"
+        );
+        assert!(
+            recorded
+                .headers
+                .get("authorization")
+                .unwrap()
+                .starts_with("AWS4-HMAC-SHA256"),
+            "auth header should be SigV4"
+        );
+        assert!(recorded.headers.contains_key("x-amz-date"));
+        assert!(recorded.headers.contains_key("x-amz-content-sha256"));
+
+        // Body must contain Bedrock-specific field.
+        assert_eq!(
+            body.get("anthropic_version")
+                .and_then(serde_json::Value::as_str),
+            Some("bedrock-2023-05-31")
+        );
+
+        assert_eq!(response.output_text, "Hello from Bedrock");
+    }
+
+    #[test]
+    fn bedrock_runtime_builds_invoke_stream_request() {
+        let transport = RecordingTransport::with_stream_body(
+            "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":10,\"output_tokens\":0}}}\n\nevent: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"Streaming!\"}}\n\nevent: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":1}}\n\n",
+        );
+        let runtime = ProviderRuntime::with_transport(transport.clone() as Arc<dyn HttpTransport>);
+        let resolved = resolved_bedrock_provider(None);
+        let request = CompletionRequest::new("Stream this");
+
+        let mut deltas = Vec::new();
+        let response = runtime
+            .complete_streaming(&resolved, &request, |delta| {
+                deltas.push(delta.to_string());
+                Ok(())
+            })
+            .expect("bedrock streaming");
+        let recorded = transport.take_request();
+
+        assert!(
+            recorded.url.ends_with("/invoke-with-response-stream"),
+            "streaming URL should end with /invoke-with-response-stream: {}",
+            recorded.url
+        );
+        assert!(
+            recorded
+                .headers
+                .get("authorization")
+                .unwrap()
+                .starts_with("AWS4-HMAC-SHA256"),
+            "must have SigV4 auth"
+        );
+        assert_eq!(response.output_text, "Streaming!");
+        assert_eq!(deltas, vec!["Streaming!"]);
     }
 }

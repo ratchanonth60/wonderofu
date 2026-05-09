@@ -36,6 +36,8 @@ serde_json = "1"
 serde_yaml = "0.9"
 percent-encoding = "2"
 sha2 = "0.10"
+hmac = "0.12"
+hex = "0.4"
 thiserror = "2"
 time = { version = "0.3", features = ["serde", "serde-well-known", "formatting", "parsing"] }
 uuid = { version = "1", features = ["v4", "serde"] }

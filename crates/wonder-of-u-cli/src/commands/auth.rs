@@ -113,6 +113,12 @@ impl Command for LoginCommand {
                     token.expires_at,
                 )?;
             }
+            AuthMaterialKind::AwsSigV4 => {
+                return Err(WonderError::validation(format!(
+                    "provider `{}` uses AWS SigV4 auth; set AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY environment variables",
+                    args.provider
+                )));
+            }
             AuthMaterialKind::None => {
                 return Err(WonderError::validation(format!(
                     "provider `{}` does not require login",
@@ -677,6 +683,7 @@ fn auth_kind_label(kind: AuthMaterialKind) -> &'static str {
         AuthMaterialKind::None => "none",
         AuthMaterialKind::ApiKey => "api_key",
         AuthMaterialKind::OAuth => "oauth",
+        AuthMaterialKind::AwsSigV4 => "aws_sigv4",
     }
 }
 

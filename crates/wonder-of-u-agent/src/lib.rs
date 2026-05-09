@@ -9,9 +9,9 @@ mod runtime;
 
 /// Re-exports items from `auth`
 pub use auth::{
-    AuthMaterial, CopilotDeviceCode, CopilotOAuthToken, DEFAULT_COPILOT_API_BASE,
+    AuthMaterial, AwsCredentials, CopilotDeviceCode, CopilotOAuthToken, DEFAULT_COPILOT_API_BASE,
     StoredCredentials, poll_copilot_access_token, refresh_copilot_access_token,
-    request_copilot_device_code,
+    request_copilot_device_code, resolve_aws_credentials_from_env,
 };
 /// Re-exports items from `config`
 pub use config::{
@@ -22,8 +22,8 @@ pub use config::{
 pub use permissions::{PermissionsLoader, persist_permission_rule, remove_permission_rule};
 /// Re-exports items from `provider`
 pub use provider::{
-    ModelDescriptor, ProviderDescriptor, ProviderRegistry, ProviderResolver, ProviderSelection,
-    ProviderStatusReport, ResolvedProviderExecution,
+    DEFAULT_BEDROCK_API_BASE, ModelDescriptor, ProviderDescriptor, ProviderRegistry,
+    ProviderResolver, ProviderSelection, ProviderStatusReport, ResolvedProviderExecution,
 };
 /// Re-exports items from `runtime`
 pub use runtime::{

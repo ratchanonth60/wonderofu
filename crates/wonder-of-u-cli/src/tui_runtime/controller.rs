@@ -1689,6 +1689,9 @@ impl<'a> TuiController<'a> {
         let auth = match descriptor.auth_kind {
             wonder_of_u_core::AuthMaterialKind::None => AuthState::not_required(),
             wonder_of_u_core::AuthMaterialKind::ApiKey => AuthState::missing(descriptor.auth_kind),
+            wonder_of_u_core::AuthMaterialKind::AwsSigV4 => {
+                AuthState::missing(descriptor.auth_kind)
+            }
             wonder_of_u_core::AuthMaterialKind::OAuth => AuthState::pending(
                 descriptor.auth_kind,
                 None,

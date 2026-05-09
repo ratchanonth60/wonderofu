@@ -25,6 +25,19 @@ pub const COPILOT_EDITOR_VERSION: &str = "vscode/1.99.3";
 pub const COPILOT_INTEGRATION_ID: &str = "vscode-chat";
 /// Constant copilot user agent
 pub const COPILOT_USER_AGENT: &str = "GitHubCopilotChat/0.26.7";
+/// Stores resolved AWS credentials for SigV4 signing
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AwsCredentials {
+    /// AWS access key ID
+    pub access_key_id: String,
+    /// AWS secret access key
+    pub secret_access_key: String,
+    /// Optional session token (for temporary credentials)
+    pub session_token: Option<String>,
+    /// AWS region (e.g. `us-east-1`)
+    pub region: String,
+}
+
 /// Enumerates auth material
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -303,6 +316,39 @@ pub fn refresh_copilot_access_token(refresh_token: &str) -> Result<CopilotOAuthT
             "GitHub oauth refresh failed: {other}"
         ))),
     }
+}
+
+/// Resolves AWS credentials from the standard environment variables.
+///
+/// Reads `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_SESSION_TOKEN`
+/// (optional), and `AWS_REGION` / `AWS_DEFAULT_REGION`.  Returns `None` when
+/// the mandatory variables are absent or empty.
+pub fn resolve_aws_credentials_from_env() -> Option<AwsCredentials> {
+    let access_key_id = env::var("AWS_ACCESS_KEY_ID")
+        .ok()
+        .filter(|value| !value.trim().is_empty())?;
+    let secret_access_key = env::var("AWS_SECRET_ACCESS_KEY")
+        .ok()
+        .filter(|value| !value.trim().is_empty())?;
+    let session_token = env::var("AWS_SESSION_TOKEN")
+        .ok()
+        .filter(|value| !value.trim().is_empty());
+    let region = env::var("AWS_REGION")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .or_else(|| {
+            env::var("AWS_DEFAULT_REGION")
+                .ok()
+                .filter(|value| !value.trim().is_empty())
+        })
+        .unwrap_or_else(|| "us-east-1".to_string());
+
+    Some(AwsCredentials {
+        access_key_id,
+        secret_access_key,
+        session_token,
+        region,
+    })
 }
 
 pub(crate) fn parse_copilot_oauth_token_response(

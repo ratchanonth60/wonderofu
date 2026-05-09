@@ -1462,6 +1462,8 @@ mod tests {
 
     #[test]
     fn status_reports_storage_counts() {
+        let _api_key = EnvVarGuard::set("ANTHROPIC_API_KEY", "");
+        let _oai_key = EnvVarGuard::set("OPENAI_API_KEY", "");
         let dir = unique_test_dir("cli-status");
         let storage_dir = dir.to_string_lossy().into_owned();
 
@@ -1518,7 +1520,7 @@ mod tests {
         assert!(text.contains("settings_sync_cloud=unsupported"));
         assert!(text.contains("remote_managed_settings=deferred"));
         assert!(text.contains("team_memory_sync=unsupported"));
-        assert!(text.contains("skills=1"));
+        assert!(text.contains("skills=14"));
         assert!(text.contains("mcp_servers=0"));
         assert!(text.contains("active_tasks=0"));
         assert!(text.contains("terminal_tasks=1"));
@@ -2255,7 +2257,7 @@ mod tests {
         .expect("reload plugins");
         let reload_text = String::from_utf8(reload_output).expect("utf8");
         assert!(reload_text.contains("plugins=1"));
-        assert!(reload_text.contains("skills=2"));
+        assert!(reload_text.contains("skills=15"));
 
         let mut slash_output = Vec::new();
         run_from(
