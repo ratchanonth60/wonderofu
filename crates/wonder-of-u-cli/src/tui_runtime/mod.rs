@@ -12,7 +12,7 @@ use std::{
 
 use crossterm::{
     cursor::{Hide, Show},
-    event::{DisableBracketedPaste, EnableBracketedPaste},
+    event::{EnableBracketedPaste, KeyboardEnhancementFlags, PushKeyboardEnhancementFlags},
     execute,
     terminal::{self, EnterAlternateScreen, LeaveAlternateScreen},
 };
@@ -44,8 +44,9 @@ use wonder_of_u_tui::{
     KeyBindingContext, KeyBindingResolver, KeyCode, KeyEvent, MouseEventKind, NotificationInput,
     NotificationLifetime, NotificationQueue, NotificationSeverity, PermissionSummaryView,
     PickerListEntry, PickerListView, PromptSuggestion, PromptSuggestionState, Rect, ResolvedKey,
-    ShellLayout, ShellView, SlashSuggestionEntry, SlashSuggestionsOverlay, TextBuffer, Theme,
-    TranscriptScrollView, TurnState, UiEvent, VimMode, VimState, message_lines,
+    ShellLayout, ShellView, SlashSuggestionEntry, SlashSuggestionsOverlay, SpinnerMode,
+    SpinnerView, TextBuffer, Theme, TranscriptScrollView, TurnState, UiEvent, VimMode, VimState,
+    message_lines, message_lines_for_width, shell_main_area_width,
 };
 
 use crate::commands;
@@ -67,6 +68,11 @@ const HISTORY_SEARCH_CONTROLS_NOTE: &str =
 const TASK_NOTICE_TTL: u8 = 30;
 /// Default lifetime for non-blocking shell overlay notifications.
 const SHELL_NOTIFICATION_TTL: u32 = 30;
+
+fn keyboard_enhancement_flags() -> KeyboardEnhancementFlags {
+    KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
+        | KeyboardEnhancementFlags::REPORT_EVENT_TYPES
+}
 
 mod controller;
 mod helpers;
@@ -133,7 +139,8 @@ pub(crate) fn run_tui<W: Write>(
                     term.backend_mut(),
                     EnterAlternateScreen,
                     Hide,
-                    EnableBracketedPaste
+                    EnableBracketedPaste,
+                    PushKeyboardEnhancementFlags(keyboard_enhancement_flags())
                 )?;
                 term.clear()?;
                 controller.finish_external_editor_request(&request, result);

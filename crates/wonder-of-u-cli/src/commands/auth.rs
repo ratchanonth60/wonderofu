@@ -1,7 +1,6 @@
 use std::{
     collections::BTreeSet,
     path::{Path, PathBuf},
-    process::Command as ProcessCommand,
     time::Duration,
 };
 
@@ -99,7 +98,7 @@ impl Command for LoginCommand {
                     device_code.verification_uri, device_code.user_code
                 );
                 if !args.no_browser {
-                    open_browser(device_code.verification_uri.as_str());
+                    super::open_browser(device_code.verification_uri.as_str());
                 }
                 let token = poll_copilot_access_token(
                     device_code.device_code.as_str(),
@@ -148,39 +147,6 @@ impl Command for LoginCommand {
             report.readiness.label(),
         )))
     }
-}
-
-fn open_browser(url: &str) {
-    if browser_launch_disabled() {
-        return;
-    }
-
-    #[cfg(target_os = "macos")]
-    let command = ("open", vec![url]);
-    #[cfg(target_os = "linux")]
-    let command = ("xdg-open", vec![url]);
-    #[cfg(target_os = "windows")]
-    let command = ("cmd", vec!["/c", "start", "", url]);
-
-    #[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
-    {
-        let _ = ProcessCommand::new(command.0).args(command.1).spawn();
-    }
-}
-
-fn browser_launch_disabled() -> bool {
-    cfg!(test) || env_flag_enabled("WONDER_OF_U_NO_BROWSER")
-}
-
-fn env_flag_enabled(name: &str) -> bool {
-    std::env::var(name)
-        .map(|value| {
-            matches!(
-                value.trim().to_ascii_lowercase().as_str(),
-                "1" | "true" | "yes" | "on"
-            )
-        })
-        .unwrap_or(false)
 }
 
 /// Represents logout command
@@ -689,7 +655,9 @@ fn auth_kind_label(kind: AuthMaterialKind) -> &'static str {
 
 #[cfg(test)]
 mod tests {
-    use super::{browser_launch_disabled, normalize_model_invocation};
+    use crate::commands::browser_launch_disabled;
+
+    use super::normalize_model_invocation;
     use wonder_of_u_core::CommandInvocation;
 
     #[test]

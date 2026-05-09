@@ -145,7 +145,7 @@ impl Tool for TodoTool {
                 "index": ToolSchema::integer("1-indexed todo item position"),
                 "todos": {
                     "type": "array",
-                    "description": "source-compatible todo list replacement payload",
+                    "description": "source-compatible todo list replacement payload; use this instead of action/text/index",
                     "items": {
                         "type": "object",
                         "properties": {
@@ -163,10 +163,6 @@ impl Tool for TodoTool {
                     },
                 },
             },
-            "oneOf": [
-                { "required": ["action"] },
-                { "required": ["todos"] }
-            ],
             "additionalProperties": false,
         });
         spec.aliases.push("TodoWrite".into());

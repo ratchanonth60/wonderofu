@@ -217,10 +217,6 @@ impl Tool for AskUserTool {
                     "description": "source-compatible metadata payload; unsupported in the Rust runtime",
                 }
             },
-            "oneOf": [
-                { "required": ["question"] },
-                { "required": ["questions"] }
-            ],
             "additionalProperties": false
         });
         spec.aliases.push("AskUserQuestion".into());

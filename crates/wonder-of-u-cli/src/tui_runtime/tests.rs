@@ -16,6 +16,7 @@ use wonder_of_u_core::{
     PendingProviderToolCall, PendingToolApprovalState, PendingToolConversationRound,
 };
 use wonder_of_u_test_support::{EnvVarGuard, unique_test_dir};
+use wonder_of_u_tui::KeyModifiers;
 
 use crate::commands;
 
@@ -288,7 +289,21 @@ fn controller_filters_model_picker_with_visible_query_and_match_count() {
         .as_ref()
         .expect("model picker open");
     let dialog = controller.dialog.as_ref().expect("dialog");
-    let expected_matches = format!("Matches: 1/{}", picker.options.len());
+    // Count how many options actually contain "haiku" — this may be > 1 when
+    // multiple providers (e.g. Anthropic + Bedrock) offer haiku-series models.
+    let haiku_count = picker
+        .options
+        .iter()
+        .filter(|opt| {
+            format!(
+                "{} {} {} {} {}",
+                opt.provider, opt.provider_display, opt.model, opt.model_display, opt.auth
+            )
+            .to_lowercase()
+            .contains("haiku")
+        })
+        .count();
+    let expected_matches = format!("Matches: {haiku_count}/{}", picker.options.len());
     assert_eq!(
         dialog.body.first().map(String::as_str),
         Some("Search: haiku")
@@ -497,7 +512,66 @@ fn controller_sets_loading_status_for_active_turns() {
 
     let view = controller.view();
     assert!(view.loading);
-    assert_eq!(view.loading_verb.as_deref(), Some("thinking"));
+    assert!(
+        view.loading_verb
+            .as_deref()
+            .is_some_and(|verb| verb.contains("thinking"))
+    );
+}
+
+#[test]
+fn controller_advances_loading_spinner_on_tick() {
+    let dir = unique_test_dir("tui-loading-spinner-tick");
+    let registry = commands::registry(Some(dir.clone())).expect("registry");
+    let mut controller = TuiController::new(
+        test_context(&dir),
+        &registry,
+        Some(dir.as_path()),
+        TuiLaunchOptions { session_id: None },
+    )
+    .expect("controller");
+
+    controller.turn_state = TurnState::ModelRequestActive;
+    let before = controller.view().loading_verb.expect("loading verb");
+
+    controller
+        .handle_event(UiEvent::Tick, |_| Ok(()))
+        .expect("tick should succeed");
+
+    let after = controller.view().loading_verb.expect("loading verb");
+    assert_ne!(before, after);
+}
+
+#[test]
+fn controller_inserts_newline_on_shift_enter() {
+    let dir = unique_test_dir("tui-shift-enter-newline");
+    let registry = commands::registry(Some(dir.clone())).expect("registry");
+    let mut controller = TuiController::new(
+        test_context(&dir),
+        &registry,
+        Some(dir.as_path()),
+        TuiLaunchOptions { session_id: None },
+    )
+    .expect("controller");
+    controller.pending_setup_overlay = None;
+    controller.dialog = None;
+
+    controller
+        .handle_event(
+            UiEvent::Key(KeyEvent {
+                code: KeyCode::Enter,
+                modifiers: KeyModifiers {
+                    shift: true,
+                    control: false,
+                    alt: false,
+                },
+            }),
+            |_| Ok(()),
+        )
+        .expect("shift+enter should insert newline");
+
+    assert_eq!(controller.prompt.text(), "\n");
+    assert_eq!(controller.turn_state, TurnState::EditingInput);
 }
 
 #[test]
@@ -1285,6 +1359,46 @@ fn controller_keeps_theme_picker_open_when_search_has_no_matches() {
 }
 
 #[test]
+fn controller_filters_theme_picker_with_fuzzy_query() {
+    let dir = unique_test_dir("tui-theme-picker-fuzzy");
+    let registry = commands::registry(Some(dir.clone())).expect("registry");
+    let mut controller = TuiController::new(
+        test_context(&dir),
+        &registry,
+        Some(dir.as_path()),
+        TuiLaunchOptions { session_id: None },
+    )
+    .expect("controller");
+
+    controller
+        .execute_slash_command("/theme")
+        .expect("open theme picker");
+    for ch in ['m', 'd', 'n', 'g', 'h', 't'] {
+        send_dialog_key(
+            &mut controller,
+            picker_key(KeyCode::Char(ch)),
+            Some(ResolvedKey::InsertChar(ch)),
+        );
+    }
+
+    let picker = controller
+        .pending_theme_picker
+        .as_ref()
+        .expect("theme picker still open");
+    let dialog = controller.dialog.as_ref().expect("dialog");
+    let expected_matches = format!("Matches: 1/{}", picker.options.len());
+    assert_eq!(
+        dialog.body.first().map(String::as_str),
+        Some("Search: mdnght")
+    );
+    assert_eq!(
+        dialog.body.get(1).map(String::as_str),
+        Some(expected_matches.as_str())
+    );
+    assert!(dialog.body.iter().any(|line| line.contains("midnight")));
+}
+
+#[test]
 fn controller_filters_memory_picker_with_search_query() {
     let dir = unique_test_dir("tui-memory-picker-filter");
     let registry = commands::registry(Some(dir.clone())).expect("registry");
@@ -1312,7 +1426,7 @@ fn controller_filters_memory_picker_with_search_query() {
         .as_ref()
         .expect("memory picker open");
     let dialog = controller.dialog.as_ref().expect("dialog");
-    let expected_matches = format!("Matches: 1/{}", picker.options.len());
+    let expected_matches = format!("Matches: 2/{}", picker.options.len());
     assert_eq!(
         dialog.body.first().map(String::as_str),
         Some("Search: user")
@@ -1323,7 +1437,55 @@ fn controller_filters_memory_picker_with_search_query() {
     );
     assert!(dialog.body.iter().any(|line| line.contains("User memory")));
     assert!(
-        !dialog
+        dialog
+            .body
+            .iter()
+            .any(|line| line.contains("Project memory"))
+    );
+}
+
+#[test]
+fn controller_filters_memory_picker_with_fuzzy_query() {
+    let dir = unique_test_dir("tui-memory-picker-fuzzy-filter");
+    let registry = commands::registry(Some(dir.clone())).expect("registry");
+    let mut controller = TuiController::new(
+        test_context(&dir),
+        &registry,
+        Some(dir.as_path()),
+        TuiLaunchOptions { session_id: None },
+    )
+    .expect("controller");
+
+    controller
+        .execute_slash_command("/memory")
+        .expect("open memory picker");
+    for ch in ['u', 's', 'r'] {
+        send_dialog_key(
+            &mut controller,
+            picker_key(KeyCode::Char(ch)),
+            Some(ResolvedKey::InsertChar(ch)),
+        );
+    }
+
+    let picker = controller
+        .pending_memory_picker
+        .as_ref()
+        .expect("memory picker open");
+    let dialog = controller.dialog.as_ref().expect("dialog");
+    let expected_matches = format!("Matches: {}/{}", picker.options.len(), picker.options.len());
+    assert_eq!(dialog.body.first().map(String::as_str), Some("Search: usr"));
+    assert_eq!(
+        dialog.body.get(1).map(String::as_str),
+        Some(expected_matches.as_str())
+    );
+    assert!(
+        dialog
+            .body
+            .get(2)
+            .is_some_and(|line| line.contains("User memory"))
+    );
+    assert!(
+        dialog
             .body
             .iter()
             .any(|line| line.contains("Project memory"))
@@ -3478,8 +3640,8 @@ fn controller_filters_history_search_with_substring_query() {
     assert_eq!(controller.prompt.text(), "draft");
     assert_eq!(overlay.query, "sHI");
     assert_eq!(overlay.match_total, 2);
-    assert_eq!(overlay.match_text.as_deref(), Some("Ship checklist"));
-    assert_eq!(view.prompt, "Ship checklist");
+    assert_eq!(overlay.match_text.as_deref(), Some("Ship docs"));
+    assert_eq!(view.prompt, "Ship docs");
 }
 
 #[test]
@@ -6069,11 +6231,11 @@ fn prompt_cursor_position_continuation_line_has_no_marker_offset() {
 /// inside the separator/sidebar area.
 ///
 /// Concrete geometry for width=100, height=24 with sidebar_active=true:
-///   effective_width = 77
-///   prompt box = Rect(0, 19, 77, 3)  →  content_x=1, content_width=75
-///   first-line max cursor x = content_x(1) + x_offset(2) + max_col(72) = 75
-///   separator sits at column 77 (render_shell draws │ there)
-///   → cursor x must be < 77
+///   effective_width = 67
+///   prompt box = Rect(0, 19, 67, 3)  →  content_x=1, content_width=65
+///   first-line max cursor x = content_x(1) + x_offset(2) + max_col(62) = 65
+///   separator sits at column 67 (render_shell draws │ there)
+///   → cursor x must be < 67
 
 #[test]
 fn prompt_cursor_position_wide_terminal_stays_inside_main_area() {
@@ -6082,15 +6244,15 @@ fn prompt_cursor_position_wide_terminal_stays_inside_main_area() {
     let prompt = "a".repeat(80);
     let (x, y) = prompt_cursor_position(100, 24, &prompt, 80, true);
 
-    // main_w = 77; separator at column 77; valid main-area columns = 0..=76.
+    // main_w = 67; separator at column 67; valid main-area columns = 0..=66.
     assert!(
-        x < 77,
-        "cursor x ({x}) must be left of the │ separator at column 77"
+        x < 67,
+        "cursor x ({x}) must be left of the │ separator at column 67"
     );
-    // Max reachable: content_x(1) + x_offset(2) + max_col(72) = 75.
+    // Max reachable: content_x(1) + x_offset(2) + max_col(62) = 65.
     assert_eq!(
         (x, y),
-        (75, 20),
+        (65, 20),
         "wide-terminal cursor must clamp to the rightmost content cell; got ({x}, {y})"
     );
 }
@@ -6099,14 +6261,14 @@ fn prompt_cursor_position_wide_terminal_stays_inside_main_area() {
 /// length (plus the 8-char "search: " prefix) exceeds the content width of the
 /// main area must be clamped to the last valid content column.
 ///
-/// Width=100, sidebar_active=true → effective_width=77 → content_width=75.
-/// max x = content_x(1) + content_width(75) - 1 = 75.
+/// Width=100, sidebar_active=true → effective_width=67 → content_width=65.
+/// max x = content_x(1) + content_width(65) - 1 = 65.
 #[test]
 fn history_search_cursor_wide_terminal_stays_inside_main_area() {
     // query_cursor=90 → prefix(8)+cursor(90)=98.  Before the fix:
     //   content_width = 98 (layout over full 100 cols), x = min(99, 98) = 98 → sidebar!
     // After fix:
-    //   content_width = 75, x = min(99, 75) = 75 → stays in main area.
+    //   content_width = 65, x = min(99, 65) = 65 → stays in main area.
     let view = HistorySearchView {
         query: "a".repeat(90),
         match_text: None,
@@ -6116,12 +6278,12 @@ fn history_search_cursor_wide_terminal_stays_inside_main_area() {
     let (x, y) = history_search_cursor_position(100, 24, &view, 90, true);
 
     assert!(
-        x < 77,
-        "history-search cursor x ({x}) must be left of the │ separator at column 77"
+        x < 67,
+        "history-search cursor x ({x}) must be left of the │ separator at column 67"
     );
     assert_eq!(
         (x, y),
-        (75, 18),
+        (65, 18),
         "wide-terminal history-search cursor must clamp to rightmost content cell; got ({x}, {y})"
     );
 }
@@ -6502,4 +6664,43 @@ fn controller_provider_failure_appends_error_message_and_clears_prompt() {
             );
         }
     }
+}
+
+#[test]
+fn controller_view_sizes_provider_errors_to_main_pane_width() {
+    let dir = unique_test_dir("tui-provider-error-width");
+    let registry = commands::registry(Some(dir.clone())).expect("registry");
+    let mut controller = TuiController::new(
+        test_context(&dir),
+        &registry,
+        Some(dir.as_path()),
+        TuiLaunchOptions { session_id: None },
+    )
+    .expect("controller");
+    controller.last_terminal_size = (120, 30);
+    controller.state.messages.push(MessageEnvelope::new(
+        controller.state.session.id,
+        MessagePayload::ProviderError {
+            kind: "provider".into(),
+            message:
+                "validation failed: provider HTTP request failed with status 400 from remote endpoint"
+                    .into(),
+        },
+    ));
+
+    let view = controller.view();
+    let rows = render_to_test_backend(120, 20, &view, &Theme::default());
+
+    assert!(
+        rows.iter().any(|row| row.contains("status 400 from r")),
+        "provider error headline should keep the full width budget before wrapping; rows: {rows:?}"
+    );
+    assert!(
+        rows.iter().any(|row| row.contains("oint")),
+        "provider error should continue onto the next line instead of truncating with ellipsis; rows: {rows:?}"
+    );
+    assert!(
+        !rows.iter().any(|row| row.contains('…')),
+        "provider error should wrap rather than truncate with ellipsis; rows: {rows:?}"
+    );
 }

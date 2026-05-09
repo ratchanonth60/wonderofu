@@ -3,7 +3,6 @@ use std::{
     fs,
     io::ErrorKind,
     path::{Path, PathBuf},
-    process::Command as ProcessCommand,
 };
 
 use async_trait::async_trait;
@@ -17,9 +16,9 @@ use wonder_of_u_mcp::{McpConfigStore, McpStatusReport};
 use wonder_of_u_storage::{STORAGE_SCHEMA_VERSION, SessionMetadata, TranscriptStore};
 use wonder_of_u_storage::{SessionMemoryIndexStore, SyncStatusReport};
 
-use super::git_command_output;
 use super::plugin::load_catalogs;
 use super::task_runtime::TaskManager;
+use super::{git_command_output, try_open_browser};
 
 /// Represents status command
 pub struct StatusCommand {
@@ -1313,28 +1312,6 @@ fn executable_on_path(name: &str) -> bool {
     std::env::split_paths(&paths).any(|path| path.join(name).is_file())
 }
 
-fn try_open_browser(url: &str) -> bool {
-    #[cfg(target_os = "macos")]
-    let command = ("open", vec![url]);
-    #[cfg(target_os = "linux")]
-    let command = ("xdg-open", vec![url]);
-    #[cfg(target_os = "windows")]
-    let command = ("cmd", vec!["/c", "start", "", url]);
-
-    #[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
-    {
-        ProcessCommand::new(command.0)
-            .args(command.1)
-            .spawn()
-            .is_ok()
-    }
-    #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
-    {
-        let _ = url;
-        false
-    }
-}
-
 fn detect_issues_url(cwd: &Path) -> Option<String> {
     git_command_output(cwd, &["config", "--get", "remote.origin.url"])
         .and_then(|remote| issues_url_from_remote(&remote))
@@ -1643,6 +1620,25 @@ mod tests {
     #[test]
     fn feedback_new_issue_url_encodes_draft() {
         assert_eq!(url_encode("TUI picker: off"), "TUI%20picker%3A%20off");
+    }
+
+    #[test]
+    fn upgrade_command_does_not_launch_browser_under_tests() {
+        let output = block_on(UpgradeCommand::new().execute(
+            command_context(Path::new("/workspace"), SessionId::new()),
+            CommandInvocation {
+                name: "upgrade".into(),
+                args: String::new(),
+                raw: "/upgrade".into(),
+            },
+        ))
+        .expect("run upgrade command");
+
+        let CommandOutput::Text(text) = output else {
+            panic!("expected text output");
+        };
+
+        assert!(text.contains("browser_launch_attempted=false"));
     }
 
     #[test]

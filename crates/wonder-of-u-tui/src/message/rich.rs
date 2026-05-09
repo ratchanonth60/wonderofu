@@ -326,15 +326,19 @@ impl GroupedToolCallView {
     /// Handles display lines
     #[must_use]
     pub fn display_lines(&self, max_width: usize) -> Vec<MessageLineView> {
-        let count = self.calls.len();
-        let noun = if count == 1 { "call" } else { "calls" };
-        let mut lines = push_line(
-            format!("tools[{}]> {count} {noun}", self.tool),
-            MessageRole::Tool,
-            max_width,
-        );
-        for call in &self.calls {
-            push_wrapped_block(&mut lines, "", &[call.label()], call.role(), max_width);
+        let mut lines = Vec::new();
+        for (index, call) in self.calls.iter().enumerate() {
+            if index > 0 {
+                lines.push(MessageLineView::new(String::new(), MessageRole::System));
+            }
+            lines.extend(call.display_lines(&self.tool, max_width));
+        }
+        if lines.is_empty() {
+            lines.extend(push_line(
+                format!("tools[{}]> 0 calls", self.tool),
+                MessageRole::Tool,
+                max_width,
+            ));
         }
         lines
     }
@@ -356,7 +360,47 @@ impl ToolCallView {
         RejectedToolMessageView::from_result(content, success)
     }
 
-    fn label(&self) -> String {
+    fn display_lines(&self, tool: &str, max_width: usize) -> Vec<MessageLineView> {
+        let summary = ToolActivitySummary::from_call(tool, self);
+        let mut lines = push_line(summary.headline, self.role(), max_width);
+        for row in summary.rows {
+            match row {
+                ToolActivityRow::Detail {
+                    label: _,
+                    value,
+                    role,
+                } => push_wrapped_block(&mut lines, "", &[format!("└ {value}")], role, max_width),
+                ToolActivityRow::Preview {
+                    label: _,
+                    lines: preview,
+                } => {
+                    let formatted = preview
+                        .iter()
+                        .enumerate()
+                        .map(|(index, line)| {
+                            if index == 0 {
+                                format!("└ {line}")
+                            } else {
+                                format!("  {line}")
+                            }
+                        })
+                        .collect::<Vec<_>>();
+                    if !formatted.is_empty() {
+                        push_wrapped_block(
+                            &mut lines,
+                            "",
+                            &formatted,
+                            MessageRole::System,
+                            max_width,
+                        );
+                    }
+                }
+            }
+        }
+        lines
+    }
+
+    fn generic_label(&self) -> String {
         let id = short_use_id(self.use_id);
         let input = self
             .input
@@ -376,14 +420,472 @@ impl ToolCallView {
         text
     }
 
+    fn is_success(&self) -> bool {
+        matches!(
+            self.result.as_ref().map(|result| result.status),
+            Some(ToolResultStatus::Success)
+        )
+    }
+
+    fn result_detail(&self) -> Option<&str> {
+        self.result.as_ref().map(|result| result.detail.as_str())
+    }
+
     fn role(&self) -> MessageRole {
         match self.result.as_ref().map(|result| result.status) {
             Some(
                 ToolResultStatus::Error | ToolResultStatus::Rejected | ToolResultStatus::Cancelled,
             ) => MessageRole::Error,
+            Some(ToolResultStatus::Pending) | None => MessageRole::Progress,
             _ => MessageRole::Tool,
         }
     }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct ToolActivitySummary {
+    headline: String,
+    rows: Vec<ToolActivityRow>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum ToolActivityRow {
+    Detail {
+        label: &'static str,
+        value: String,
+        role: MessageRole,
+    },
+    Preview {
+        label: &'static str,
+        lines: Vec<String>,
+    },
+}
+
+impl ToolActivitySummary {
+    fn from_call(tool: &str, call: &ToolCallView) -> Self {
+        match tool {
+            "bash" => summarize_bash_call(call),
+            "file_read" => summarize_file_read_call(call),
+            "file_write" => summarize_file_write_call(call),
+            "glob" => summarize_glob_call(call),
+            "grep" | "rg" | "search" | "find" => summarize_search_call(tool, call),
+            _ => summarize_generic_tool_call(tool, call),
+        }
+    }
+}
+
+fn summarize_bash_call(call: &ToolCallView) -> ToolActivitySummary {
+    let command = call
+        .input
+        .as_ref()
+        .and_then(|input| input.get("command").and_then(Value::as_str))
+        .map(normalize_inline_text)
+        .unwrap_or_default();
+    let headline = if command.is_empty() {
+        "● Bash".to_string()
+    } else {
+        format!("● {}", bash_activity_title(&command))
+    };
+
+    let mut rows = status_rows(call);
+    if !command.is_empty() {
+        rows.push(ToolActivityRow::Detail {
+            label: "command",
+            value: truncate_visible_end(&command, 72),
+            role: MessageRole::System,
+        });
+    }
+    append_result_rows(call, &mut rows);
+
+    ToolActivitySummary { headline, rows }
+}
+
+fn summarize_file_read_call(call: &ToolCallView) -> ToolActivitySummary {
+    let path = call
+        .input
+        .as_ref()
+        .and_then(|input| input.get("path").and_then(Value::as_str))
+        .unwrap_or("unknown");
+    let mut rows = status_rows(call);
+    rows.push(ToolActivityRow::Detail {
+        label: "path",
+        value: truncate_visible_end(path, 72),
+        role: MessageRole::System,
+    });
+    if call.is_success() {
+        if let Some(preview) = preview_lines(call.result_detail(), 3, 72) {
+            rows.push(ToolActivityRow::Preview {
+                label: "preview",
+                lines: preview,
+            });
+        }
+    } else {
+        append_result_rows(call, &mut rows);
+    }
+
+    ToolActivitySummary {
+        headline: format!("● Read({})", compact_target_label(path)),
+        rows,
+    }
+}
+
+fn summarize_file_write_call(call: &ToolCallView) -> ToolActivitySummary {
+    let (path, input_preview) = call
+        .input
+        .as_ref()
+        .map(|input| {
+            (
+                input
+                    .get("path")
+                    .and_then(Value::as_str)
+                    .unwrap_or("unknown")
+                    .to_string(),
+                input.get("content").and_then(Value::as_str),
+            )
+        })
+        .unwrap_or_else(|| ("unknown".into(), None));
+    let mut rows = status_rows(call);
+    rows.push(ToolActivityRow::Detail {
+        label: "path",
+        value: truncate_visible_end(&path, 72),
+        role: MessageRole::System,
+    });
+    if let Some(preview) = input_preview.and_then(|text| preview_lines(Some(text), 3, 72)) {
+        rows.push(ToolActivityRow::Preview {
+            label: "preview",
+            lines: preview,
+        });
+    }
+    if !call.is_success() {
+        append_result_rows(call, &mut rows);
+    } else if let Some(detail) = short_result_detail(call.result_detail()) {
+        rows.push(ToolActivityRow::Detail {
+            label: "result",
+            value: detail,
+            role: MessageRole::System,
+        });
+    }
+
+    ToolActivitySummary {
+        headline: format!("● Edit({})", compact_target_label(&path)),
+        rows,
+    }
+}
+
+fn summarize_glob_call(call: &ToolCallView) -> ToolActivitySummary {
+    let (pattern, path) = call
+        .input
+        .as_ref()
+        .map(|input| {
+            (
+                input.get("pattern").and_then(Value::as_str).unwrap_or("*"),
+                input.get("path").and_then(Value::as_str).unwrap_or("."),
+            )
+        })
+        .unwrap_or(("*", "."));
+    let mut rows = status_rows(call);
+    rows.push(ToolActivityRow::Detail {
+        label: "pattern",
+        value: truncate_visible_end(pattern, 72),
+        role: MessageRole::System,
+    });
+    if path != "." {
+        rows.push(ToolActivityRow::Detail {
+            label: "path",
+            value: truncate_visible_end(path, 72),
+            role: MessageRole::System,
+        });
+    }
+    append_result_rows(call, &mut rows);
+
+    ToolActivitySummary {
+        headline: format!("● List({})", infer_list_target(pattern, path)),
+        rows,
+    }
+}
+
+fn summarize_search_call(tool: &str, call: &ToolCallView) -> ToolActivitySummary {
+    let query = call
+        .input
+        .as_ref()
+        .and_then(|input| {
+            input
+                .get("query")
+                .or_else(|| input.get("pattern"))
+                .or_else(|| input.get("prompt"))
+                .and_then(Value::as_str)
+        })
+        .unwrap_or("*");
+    let mut rows = status_rows(call);
+    rows.push(ToolActivityRow::Detail {
+        label: if tool == "find" { "path" } else { "query" },
+        value: truncate_visible_end(query, 72),
+        role: MessageRole::System,
+    });
+    append_result_rows(call, &mut rows);
+
+    ToolActivitySummary {
+        headline: format!(
+            "● {}({})",
+            if tool == "find" { "List" } else { "Search" },
+            compact_target_label(query)
+        ),
+        rows,
+    }
+}
+
+fn summarize_generic_tool_call(tool: &str, call: &ToolCallView) -> ToolActivitySummary {
+    let mut rows = status_rows(call);
+    rows.push(ToolActivityRow::Detail {
+        label: "summary",
+        value: call.generic_label(),
+        role: MessageRole::System,
+    });
+    if let Some(input) = &call.input {
+        rows.push(ToolActivityRow::Detail {
+            label: "input",
+            value: summarize_tool_input(input),
+            role: MessageRole::System,
+        });
+    }
+    append_result_rows(call, &mut rows);
+
+    ToolActivitySummary {
+        headline: format!("● {tool}"),
+        rows,
+    }
+}
+
+fn status_rows(call: &ToolCallView) -> Vec<ToolActivityRow> {
+    if call.result.is_none() {
+        vec![ToolActivityRow::Detail {
+            label: "status",
+            value: "running…".into(),
+            role: MessageRole::Progress,
+        }]
+    } else {
+        Vec::new()
+    }
+}
+
+fn append_result_rows(call: &ToolCallView, rows: &mut Vec<ToolActivityRow>) {
+    let Some(result) = &call.result else {
+        return;
+    };
+    if let Some(preview) = preview_lines(Some(&result.detail), 3, 72) {
+        if preview.len() > 1 || result.detail.contains('\n') || looks_like_preview(&preview[0]) {
+            rows.push(ToolActivityRow::Preview {
+                label: if call.is_success() {
+                    "output"
+                } else {
+                    "detail"
+                },
+                lines: preview,
+            });
+            return;
+        }
+    }
+    if let Some(detail) = short_result_detail(Some(&result.detail)) {
+        rows.push(ToolActivityRow::Detail {
+            label: if call.is_success() {
+                "result"
+            } else {
+                "detail"
+            },
+            value: detail,
+            role: if call.is_success() {
+                MessageRole::System
+            } else {
+                MessageRole::Error
+            },
+        });
+    }
+}
+
+fn preview_lines(text: Option<&str>, max_lines: usize, max_width: usize) -> Option<Vec<String>> {
+    let text = text?;
+    let lines = text
+        .lines()
+        .map(str::trim_end)
+        .skip_while(|line| line.trim().is_empty())
+        .take(max_lines + 1)
+        .map(|line| truncate_visible_end(line, max_width))
+        .collect::<Vec<_>>();
+    if lines.is_empty() {
+        return None;
+    }
+
+    let overflow = lines.len() > max_lines;
+    let mut lines = lines.into_iter().take(max_lines).collect::<Vec<_>>();
+    if overflow {
+        lines.push("…".into());
+    }
+    Some(lines)
+}
+
+fn short_result_detail(text: Option<&str>) -> Option<String> {
+    let detail = text?.trim();
+    if detail.is_empty() {
+        return None;
+    }
+    if matches!(
+        detail.to_ascii_lowercase().as_str(),
+        "ok" | "done" | "completed" | "success"
+    ) {
+        return None;
+    }
+    Some(truncate_visible_end(
+        detail.lines().next().unwrap_or(detail).trim(),
+        72,
+    ))
+}
+
+fn looks_like_preview(line: &str) -> bool {
+    line.contains('/') || line.contains("::") || line.contains("@@") || line.contains("fn ")
+}
+
+fn compact_target_label(value: &str) -> String {
+    let trimmed = value.trim().trim_matches('"');
+    if trimmed.is_empty() {
+        return "unknown".into();
+    }
+    trimmed
+        .rsplit('/')
+        .next()
+        .filter(|segment| !segment.is_empty() && *segment != ".")
+        .unwrap_or(trimmed)
+        .to_string()
+}
+
+fn normalize_inline_text(text: &str) -> String {
+    text.lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn bash_activity_title(command: &str) -> String {
+    let lower = command.to_ascii_lowercase();
+    if is_list_command(&lower) {
+        return format!("List({})", infer_bash_list_target(command));
+    }
+    if is_test_command(&lower) {
+        return "Run(Tests)".into();
+    }
+    if is_read_command(&lower) {
+        return format!(
+            "Read({})",
+            infer_path_target(command).unwrap_or_else(|| "File".into())
+        );
+    }
+    if is_search_command(&lower) {
+        return format!(
+            "Search({})",
+            infer_search_target(command).unwrap_or_else(|| "Matches".into())
+        );
+    }
+    if lower.starts_with("git diff") || lower.starts_with("diff ") {
+        return format!(
+            "Diff({})",
+            infer_path_target(command).unwrap_or_else(|| "Workspace".into())
+        );
+    }
+    if lower.contains("apply_patch") {
+        return "Edit(Patch)".into();
+    }
+    format!("Bash({})", truncate_visible_end(command, 28))
+}
+
+fn infer_bash_list_target(command: &str) -> String {
+    let lower = command.to_ascii_lowercase();
+    if lower.contains("test") || lower.contains("spec") {
+        return "Tests".into();
+    }
+    if lower.contains("src")
+        || lower.contains("crate")
+        || lower.contains("cargo")
+        || lower.contains("mod")
+    {
+        return "Modules".into();
+    }
+    infer_path_target(command).unwrap_or_else(|| "Files".into())
+}
+
+fn infer_list_target(pattern: &str, path: &str) -> String {
+    let combined = format!("{pattern} {path}");
+    let lower = combined.to_ascii_lowercase();
+    if lower.contains("test") || lower.contains("spec") {
+        return "Tests".into();
+    }
+    if lower.contains("src")
+        || lower.contains("crate")
+        || lower.contains("cargo")
+        || lower.contains("mod")
+    {
+        return "Modules".into();
+    }
+    let path_target = compact_target_label(path);
+    if path_target != "." && path_target != "*" && path_target != "unknown" {
+        return path_target;
+    }
+    compact_target_label(pattern)
+}
+
+fn infer_search_target(command: &str) -> Option<String> {
+    let tokens = command.split_whitespace().collect::<Vec<_>>();
+    tokens
+        .windows(2)
+        .find_map(|pair| (pair[0] == "rg" || pair[0] == "grep").then(|| pair[1]))
+        .map(|token| token.trim_matches('"').trim_matches('\''))
+        .filter(|token| !token.starts_with('-') && !token.is_empty())
+        .map(compact_target_label)
+}
+
+fn infer_path_target(command: &str) -> Option<String> {
+    command
+        .split_whitespace()
+        .rev()
+        .map(|token| token.trim_matches('"').trim_matches('\''))
+        .find(|token| {
+            !token.starts_with('-')
+                && !token.contains('=')
+                && *token != "."
+                && *token != "|"
+                && *token != "&&"
+                && token.chars().any(|ch| ch.is_alphanumeric())
+        })
+        .map(compact_target_label)
+}
+
+fn is_list_command(lower: &str) -> bool {
+    lower.starts_with("ls ")
+        || lower == "ls"
+        || lower.starts_with("find ")
+        || lower.starts_with("fd ")
+        || lower.starts_with("tree ")
+        || lower.contains("rg --files")
+        || lower.starts_with("git ls-files")
+}
+
+fn is_test_command(lower: &str) -> bool {
+    lower.starts_with("cargo test")
+        || lower.starts_with("pytest")
+        || lower.starts_with("npm test")
+        || lower.starts_with("pnpm test")
+        || lower.starts_with("yarn test")
+        || lower.starts_with("go test")
+}
+
+fn is_read_command(lower: &str) -> bool {
+    lower.starts_with("cat ")
+        || lower.starts_with("sed -n")
+        || lower.starts_with("head ")
+        || lower.starts_with("tail ")
+}
+
+fn is_search_command(lower: &str) -> bool {
+    lower.starts_with("rg ") || lower.starts_with("grep ")
 }
 
 /// Summarizes a file edit reference using diff summaries.
@@ -417,9 +919,12 @@ impl FileEditReferenceView {
     #[must_use]
     pub fn display_lines(&self, max_width: usize) -> Vec<MessageLineView> {
         let path = self.path.display_text(max_width).text;
-        let mut lines = push_line(
-            format!("edit> {path} ({})", self.summary.label()),
-            MessageRole::Tool,
+        let mut lines = push_line(format!("● Edit({path})"), MessageRole::Tool, max_width);
+        push_wrapped_block(
+            &mut lines,
+            "",
+            &[format!("└ {}", self.summary.label())],
+            MessageRole::System,
             max_width,
         );
         if let Some(note) = self.note.as_deref() {
@@ -668,12 +1173,12 @@ impl RejectedToolMessageView {
     /// Handles from result
     #[must_use]
     pub fn from_result(detail: impl Into<String>, success: bool) -> Self {
-        let detail = detail.into();
+        let detail = detail.into().trim().to_string();
         if success {
             return Self {
                 kind: RejectedToolMessageKind::Success,
                 status: ToolResultStatus::Success,
-                detail: summarize_detail(&detail),
+                detail,
             };
         }
 
@@ -705,7 +1210,7 @@ impl RejectedToolMessageView {
         Self {
             kind,
             status,
-            detail: summarize_detail(&detail),
+            detail,
         }
     }
 }
@@ -894,10 +1399,31 @@ fn push_line(text: impl Into<String>, role: MessageRole, max_width: usize) -> Ve
 }
 
 fn truncate_existing_lines(lines: &[MessageLineView], max_width: usize) -> Vec<MessageLineView> {
-    lines
-        .iter()
-        .map(|line| MessageLineView::new(truncate_visible_end(&line.text, max_width), line.role))
-        .collect()
+    let width = max_width.max(1);
+    let mut out = Vec::new();
+    for line in lines {
+        if let Some((prefix_head, body)) = line.text.split_once("> ") {
+            push_wrapped_block(
+                &mut out,
+                &format!("{prefix_head}> "),
+                &[body.to_string()],
+                line.role,
+                width,
+            );
+            continue;
+        }
+        let wrapped = wrap_text_hard(&line.text, width);
+        if wrapped.is_empty() {
+            out.push(MessageLineView::new(String::new(), line.role));
+        } else {
+            out.extend(
+                wrapped
+                    .into_iter()
+                    .map(|segment| MessageLineView::new(segment, line.role)),
+            );
+        }
+    }
+    out
 }
 
 fn wrap_summary_lines(
@@ -924,11 +1450,6 @@ fn wrap_summary_lines(
         }
     }
     lines
-}
-
-fn summarize_detail(text: &str) -> String {
-    let first_line = text.lines().next().unwrap_or_default().trim();
-    truncate_visible_end(first_line, 36)
 }
 
 fn role_prefix(role: MessageRole) -> &'static str {
@@ -1158,15 +1679,58 @@ mod tests {
         assert_eq!(
             lines,
             vec![
-                MessageLineView::new("tools[bash]> 2 calls", MessageRole::Tool),
-                MessageLineView::new(
-                    "  • #00000000 ok · command=\"cargo test -p wonder-of…\" → tests passed",
-                    MessageRole::Tool,
-                ),
-                MessageLineView::new(
-                    "  • #00000000 rejected · command=\"rm -rf /tmp/build\" → Tool use rejected by the user",
-                    MessageRole::Error,
-                ),
+                MessageLineView::new("● Run(Tests)", MessageRole::Tool,),
+                MessageLineView::new("  └ cargo test -p wonder-of-u-tui", MessageRole::System,),
+                MessageLineView::new("  └ tests passed", MessageRole::System),
+                MessageLineView::new("", MessageRole::System),
+                MessageLineView::new("● Bash(rm -rf /tmp/build)", MessageRole::Error,),
+                MessageLineView::new("  └ rm -rf /tmp/build", MessageRole::System,),
+                MessageLineView::new("  └ Tool use rejected by the user", MessageRole::Error,),
+            ]
+        );
+    }
+
+    #[test]
+    fn tool_activity_summaries_include_inline_previews_for_read_and_write_tools() {
+        let read = ToolCallView {
+            use_id: use_id("00000000-0000-0000-0000-000000000001"),
+            input: Some(serde_json::json!({ "path": "src/lib.rs" })),
+            result: Some(RejectedToolMessageView::from_result(
+                "pub fn demo() {\n    println!(\"hi\");\n}\n",
+                true,
+            )),
+        };
+        assert_eq!(
+            read.display_lines("file_read", 120),
+            vec![
+                MessageLineView::new("● Read(lib.rs)", MessageRole::Tool),
+                MessageLineView::new("  └ src/lib.rs", MessageRole::System),
+                MessageLineView::new("  └ pub fn demo() {", MessageRole::System),
+                MessageLineView::new("        println!(\"hi\");", MessageRole::System),
+                MessageLineView::new("    }", MessageRole::System),
+            ]
+        );
+
+        let write = ToolCallView {
+            use_id: use_id("00000000-0000-0000-0000-000000000002"),
+            input: Some(serde_json::json!({
+                "path": "src/lib.rs",
+                "content": "pub fn demo() {\n    println!(\"updated\");\n}\n",
+            })),
+            result: Some(RejectedToolMessageView::from_result(
+                "wrote src/lib.rs",
+                true,
+            )),
+        };
+        assert_eq!(
+            write.display_lines("file_write", 120),
+            vec![
+                MessageLineView::new("● Edit(lib.rs)", MessageRole::Tool),
+                MessageLineView::new("  └ src/lib.rs", MessageRole::System),
+                MessageLineView::new("  └ pub fn demo() {", MessageRole::System),
+                MessageLineView::new("        println!(\"updated\");", MessageRole::System),
+                MessageLineView::new("    }", MessageRole::System),
+                MessageLineView::new("  └ wrote src/lib.rs", MessageRole::System),
             ]
         );
     }
@@ -1245,9 +1809,10 @@ mod tests {
             view.display_lines(120),
             vec![
                 MessageLineView::new(
-                    "edit> crates/wonder-of-u-tui/src/message/mod.rs (+12 -1 ~4)",
+                    "● Edit(crates/wonder-of-u-tui/src/message/mod.rs)",
                     MessageRole::Tool,
                 ),
+                MessageLineView::new("  └ +12 -1 ~4", MessageRole::System),
                 MessageLineView::new("  Rich transcript summaries", MessageRole::System),
             ]
         );

@@ -368,8 +368,67 @@ pub(crate) fn detect_git_branch(cwd: &Path) -> Option<String> {
         .filter(|branch| branch != "HEAD")
 }
 
+pub(crate) fn open_browser(url: &str) {
+    let _ = try_open_browser(url);
+}
+
+pub(crate) fn try_open_browser(url: &str) -> bool {
+    if browser_launch_disabled() {
+        return false;
+    }
+
+    #[cfg(target_os = "macos")]
+    let command = ("open", vec![url]);
+    #[cfg(target_os = "linux")]
+    let command = ("xdg-open", vec![url]);
+    #[cfg(target_os = "windows")]
+    let command = ("cmd", vec!["/c", "start", "", url]);
+
+    #[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
+    {
+        ProcessCommand::new(command.0)
+            .args(command.1)
+            .spawn()
+            .is_ok()
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
+    {
+        let _ = url;
+        false
+    }
+}
+
+pub(crate) fn browser_launch_disabled() -> bool {
+    cfg!(test) || env_flag_enabled("WONDER_OF_U_NO_BROWSER")
+}
+
+fn env_flag_enabled(name: &str) -> bool {
+    std::env::var(name)
+        .map(|value| {
+            matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            )
+        })
+        .unwrap_or(false)
+}
+
 pub(crate) fn is_hidden_path(path: &Path) -> bool {
     path.file_name()
         .and_then(|name| name.to_str())
         .is_some_and(|name| name.starts_with('.'))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{browser_launch_disabled, try_open_browser};
+
+    #[test]
+    fn shared_browser_launch_is_disabled_under_tests() {
+        assert!(
+            browser_launch_disabled(),
+            "tests must never spawn a real system browser"
+        );
+        assert!(!try_open_browser("https://example.invalid/browser-guard"));
+    }
 }

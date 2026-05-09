@@ -1,4 +1,5 @@
 use std::{
+    cell::Cell,
     env,
     ffi::OsString,
     fs,
@@ -32,8 +33,16 @@ pub fn unique_test_dir(prefix: &str) -> PathBuf {
 
 static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
+// Per-thread reentrance counter so nested `EnvVarGuard::set` calls within the
+// same test don't deadlock on the non-reentrant `Mutex`.
+thread_local! {
+    static ENV_LOCK_DEPTH: Cell<u32> = const { Cell::new(0) };
+}
+
 pub struct EnvVarGuard {
-    _lock: MutexGuard<'static, ()>,
+    // `Some` only for the outermost guard on this thread; `None` for reentrant
+    // inner guards (which rely on the outermost guard still holding the lock).
+    _lock: Option<MutexGuard<'static, ()>>,
     key: String,
     previous: Option<OsString>,
 }
@@ -42,10 +51,23 @@ impl EnvVarGuard {
     pub fn set(key: impl Into<String>, value: impl Into<OsString>) -> Self {
         let key = key.into();
         let value = value.into();
-        let lock = ENV_LOCK
-            .get_or_init(|| Mutex::new(()))
-            .lock()
-            .expect("lock env guard");
+
+        // Acquire the process-wide env lock only once per thread call stack.
+        // Recover from poison so that one panicking test doesn't cascade
+        // failures into unrelated tests.
+        let depth = ENV_LOCK_DEPTH.get();
+        let lock = if depth == 0 {
+            Some(
+                ENV_LOCK
+                    .get_or_init(|| Mutex::new(()))
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner()),
+            )
+        } else {
+            None
+        };
+        ENV_LOCK_DEPTH.set(depth + 1);
+
         let previous = env::var_os(&key);
         unsafe {
             env::set_var(&key, &value);
@@ -68,6 +90,8 @@ impl Drop for EnvVarGuard {
                 env::remove_var(&self.key);
             },
         }
+        let depth = ENV_LOCK_DEPTH.get();
+        ENV_LOCK_DEPTH.set(depth.saturating_sub(1));
     }
 }
 

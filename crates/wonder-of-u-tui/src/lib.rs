@@ -139,8 +139,8 @@ pub use message::{
     RejectedPermissionSummaryView, RejectedToolMessageKind, RejectedToolMessageView,
     RichMessageView, SystemErrorKind, SystemErrorView, TaskActivityKind, TaskActivitySummaryView,
     TaskPanelView, ThinkingBlockView, ToolCallView, ToolResultCounts, ToolResultStatus,
-    TranscriptBoundaryView, UnknownToolOutputView, footer_text, message_lines, queued_panel_view,
-    rich_message_views, status_text, task_panel_view,
+    TranscriptBoundaryView, UnknownToolOutputView, footer_text, message_lines,
+    message_lines_for_width, queued_panel_view, rich_message_views, status_text, task_panel_view,
 };
 /// Re-exports items from `notification`
 pub use notification::{
