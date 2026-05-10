@@ -269,6 +269,7 @@ pub(super) fn prompt_cursor_position(
         picker_list: None,
         notifications: Vec::new(),
         slash_suggestions: None,
+        global_search: None,
         scroll: wonder_of_u_tui::TranscriptScrollView::default(),
         sidebar: None,
         prompt_warning: None,
@@ -348,6 +349,7 @@ pub(super) fn history_search_cursor_position(
         picker_list: None,
         notifications: Vec::new(),
         slash_suggestions: None,
+        global_search: None,
         scroll: wonder_of_u_tui::TranscriptScrollView::default(),
         sidebar: None,
         prompt_warning: None,
@@ -378,6 +380,41 @@ pub(super) fn history_search_cursor_position(
             )
             .min(content_x.saturating_add(content_width).saturating_sub(1)),
         content_y,
+    )
+}
+
+pub(super) fn global_search_cursor_position(
+    width: u16,
+    height: u16,
+    view: &ShellView,
+    query_cursor: usize,
+) -> (u16, u16) {
+    let main_width = wonder_of_u_tui::shell_main_area_width(width, view.sidebar.is_some());
+    let warning_height = u16::from(view.prompt_warning.is_some());
+    let prompt_height = view
+        .prompt_height()
+        .saturating_add(warning_height)
+        .min((height / 3).max(3).saturating_add(warning_height));
+    let layout = ShellLayout::split(
+        wonder_of_u_tui::Rect::new(0, 0, main_width.max(1), height.max(1)),
+        prompt_height,
+    );
+    let viewport = layout.messages;
+    let overlay_width = (viewport.width.saturating_mul(4) / 5).clamp(40, viewport.width);
+    let overlay_height = (viewport.height.saturating_mul(3) / 5).clamp(8, viewport.height);
+    let overlay_x = viewport.x + viewport.width.saturating_sub(overlay_width) / 2;
+    let overlay_y = viewport.y + viewport.height.saturating_sub(overlay_height) / 2;
+    let inner_x = overlay_x.saturating_add(1);
+    let inner_y = overlay_y.saturating_add(1);
+    let inner_width = overlay_width.saturating_sub(2);
+    let query_prefix = "Query: ".chars().count();
+    (
+        inner_x
+            .saturating_add(
+                u16::try_from(query_prefix.saturating_add(query_cursor)).unwrap_or(u16::MAX),
+            )
+            .min(inner_x.saturating_add(inner_width).saturating_sub(1)),
+        inner_y,
     )
 }
 

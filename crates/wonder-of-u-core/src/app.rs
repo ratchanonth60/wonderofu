@@ -161,6 +161,25 @@ pub enum QueuePlacement {
     /// Represents later
     Later,
 }
+
+/// Configures how much extra reasoning effort the model should spend.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum ThinkingEffort {
+    /// Use the lowest available thinking effort.
+    Low,
+    /// Use the default balanced thinking effort.
+    Medium,
+    /// Use the highest available thinking effort.
+    High,
+}
+
+#[allow(clippy::derivable_impls)]
+impl Default for ThinkingEffort {
+    fn default() -> Self {
+        Self::Medium
+    }
+}
+
 /// Represents queued command
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct QueuedCommand {
@@ -759,6 +778,9 @@ pub struct AppState {
     /// Stores whether extended thinking is enabled for future provider requests.
     #[serde(default)]
     pub thinking_enabled: bool,
+    /// Stores the configured effort level for thinking-capable models.
+    #[serde(default)]
+    pub thinking_effort: ThinkingEffort,
     /// Optional advisor/secondary model for multi-model reasoning.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub advisor_model: Option<String>,
@@ -797,6 +819,7 @@ impl AppState {
             brief_mode: false,
             fast_mode: false,
             thinking_enabled: false,
+            thinking_effort: ThinkingEffort::default(),
             advisor_model: None,
             auth: AuthState::default(),
             pending_tool_approval: None,
@@ -884,6 +907,12 @@ impl AppState {
     /// Handles set thinking enabled
     pub fn set_thinking_enabled(&mut self, thinking_enabled: bool) {
         self.thinking_enabled = thinking_enabled;
+        self.session.updated_at = OffsetDateTime::now_utc();
+    }
+
+    /// Handles set thinking effort
+    pub fn set_thinking_effort(&mut self, effort: ThinkingEffort) {
+        self.thinking_effort = effort;
         self.session.updated_at = OffsetDateTime::now_utc();
     }
 
@@ -1175,10 +1204,20 @@ mod tests {
     fn app_state_defaults_thinking_to_disabled() {
         let mut state = AppState::new(PathBuf::from("/workspace"));
         assert!(!state.thinking_enabled);
+        assert_eq!(state.thinking_effort, ThinkingEffort::Medium);
 
         state.set_thinking_enabled(true);
 
         assert!(state.thinking_enabled);
+    }
+
+    #[test]
+    fn app_state_stores_thinking_effort() {
+        let mut state = AppState::new(PathBuf::from("/workspace"));
+
+        state.set_thinking_effort(ThinkingEffort::High);
+
+        assert_eq!(state.thinking_effort, ThinkingEffort::High);
     }
 
     #[test]

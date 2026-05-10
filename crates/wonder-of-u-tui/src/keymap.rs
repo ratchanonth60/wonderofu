@@ -23,6 +23,8 @@ pub enum SystemAction {
     Redraw,
     /// Represents history search
     HistorySearch,
+    /// Represents opening the workspace search overlay.
+    OpenGlobalSearch,
     /// Represents expanding or collapsing grouped tool output
     ExpandToolOutput,
 }
@@ -209,7 +211,7 @@ const CONTROL: KeyModifiers = KeyModifiers {
     alt: false,
 };
 
-const RESERVED_BINDINGS: [KeyBinding; 4] = [
+const RESERVED_BINDINGS: [KeyBinding; 5] = [
     KeyBinding {
         context: KeyBindingContext::Any,
         event: KeyEvent {
@@ -241,6 +243,14 @@ const RESERVED_BINDINGS: [KeyBinding; 4] = [
             modifiers: CONTROL,
         },
         result: ResolvedKey::System(SystemAction::HistorySearch),
+    },
+    KeyBinding {
+        context: KeyBindingContext::Any,
+        event: KeyEvent {
+            code: KeyCode::Char('f'),
+            modifiers: CONTROL,
+        },
+        result: ResolvedKey::System(SystemAction::OpenGlobalSearch),
     },
 ];
 
@@ -484,6 +494,16 @@ mod tests {
                 }
             ),
             Some(ResolvedKey::System(SystemAction::Interrupt))
+        );
+        assert_eq!(
+            resolver.resolve(
+                KeyBindingContext::Prompt,
+                KeyEvent {
+                    code: KeyCode::Char('f'),
+                    modifiers: CONTROL,
+                }
+            ),
+            Some(ResolvedKey::System(SystemAction::OpenGlobalSearch))
         );
         assert_eq!(
             resolver.resolve(

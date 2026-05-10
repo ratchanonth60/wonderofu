@@ -116,6 +116,17 @@ pub struct HistorySearchView {
     pub match_total: usize,
 }
 
+/// Describes a single workspace search hit.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct SearchMatch {
+    /// Relative file path for the match.
+    pub file: String,
+    /// One-based line number.
+    pub line: u32,
+    /// Full matched line text.
+    pub text: String,
+}
+
 /// Carries the computed preview for the currently highlighted picker option.
 ///
 /// `preview` is `None` when the active filter yields no matches, so the

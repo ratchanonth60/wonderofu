@@ -24,6 +24,7 @@ mod plugin;
 pub(crate) mod project;
 pub(crate) mod prompt;
 mod session;
+pub(crate) mod search;
 mod setup;
 mod skills;
 mod status;

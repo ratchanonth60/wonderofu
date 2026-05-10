@@ -158,8 +158,9 @@ pub use prompt::{
 };
 /// Re-exports items from `render`
 pub use render::{
-    MIN_SIDEBAR_WIDTH, SIDEBAR_WIDTH, ShellView, SidebarView, SlashSuggestionEntry,
-    SlashSuggestionsOverlay, TranscriptScrollView, render_shell, render_snapshot,
+    GlobalSearchOverlayView, MIN_SIDEBAR_WIDTH, SIDEBAR_WIDTH, ShellView, SidebarView,
+    SlashSuggestionEntry, SlashSuggestionsOverlay, TranscriptScrollView, render_shell,
+    render_snapshot,
     shell_main_area_width,
 };
 /// Re-exports items from `security`

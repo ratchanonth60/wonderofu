@@ -3142,6 +3142,8 @@ fn parse_system_action(value: &str) -> std::result::Result<SystemAction, String>
         "interrupt" => Ok(SystemAction::Interrupt),
         "redraw" => Ok(SystemAction::Redraw),
         "history_search" => Ok(SystemAction::HistorySearch),
+        "open_global_search" => Ok(SystemAction::OpenGlobalSearch),
+        "expand_tool_output" => Ok(SystemAction::ExpandToolOutput),
         other => Err(format!("unknown system action `{other}`")),
     }
 }
@@ -3243,6 +3245,7 @@ fn format_resolved_key(result: ResolvedKey) -> String {
         ResolvedKey::System(SystemAction::Interrupt) => "interrupt or exit".into(),
         ResolvedKey::System(SystemAction::Redraw) => "redraw terminal".into(),
         ResolvedKey::System(SystemAction::HistorySearch) => "recall previous prompt".into(),
+        ResolvedKey::System(SystemAction::OpenGlobalSearch) => "search workspace".into(),
         ResolvedKey::System(SystemAction::ExpandToolOutput) => {
             "expand or collapse tool output".into()
         }

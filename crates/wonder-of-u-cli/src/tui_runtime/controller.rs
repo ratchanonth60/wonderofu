@@ -1,4 +1,5 @@
 use super::*;
+use std::time::Instant;
 
 /// Lines scrolled per single mouse-wheel notch in the transcript area.
 const MOUSE_SCROLL_LINES: i32 = 3;
@@ -7,6 +8,7 @@ const MOUSE_SCROLL_LINES: i32 = 3;
 #[allow(dead_code)]
 pub(super) enum ActiveOverlay {
     HistorySearch,
+    GlobalSearch,
     Picker,
     ConfirmDialog,
     NoticeDialog,
@@ -22,6 +24,12 @@ pub(super) struct TuiController<'a> {
     pub(super) keymap: KeyBindingResolver,
     pub(super) vim: VimState,
     pub(super) history_search: Option<HistorySearchState>,
+    pub(super) global_search_open: bool,
+    pub(super) global_search_query: String,
+    pub(super) global_search_results: Vec<SearchMatch>,
+    pub(super) global_search_selected: usize,
+    pub(super) global_search_cursor: usize,
+    pub(super) global_search_dirty_since: Option<Instant>,
     pub(super) turn_state: TurnState,
     pub(super) loading_frame: u64,
     pub(super) needs_render: bool,
@@ -199,6 +207,12 @@ impl<'a> TuiController<'a> {
             keymap: crate::commands::workflow::load_keybinding_resolver(storage_dir)?,
             vim: VimState::default(),
             history_search: None,
+            global_search_open: false,
+            global_search_query: String::new(),
+            global_search_results: Vec::new(),
+            global_search_selected: 0,
+            global_search_cursor: 0,
+            global_search_dirty_since: None,
             turn_state: TurnState::Idle,
             loading_frame: 0,
             needs_render: true,
@@ -253,7 +267,9 @@ impl<'a> TuiController<'a> {
             UiEvent::Key(key) => self.handle_key_event(key, &mut before_blocking),
             UiEvent::Paste(text) => {
                 if !text.is_empty() {
-                    if self.history_search.is_some() {
+                    if self.global_search_open {
+                        self.edit_global_search_query_text(&text);
+                    } else if self.history_search.is_some() {
                         self.edit_history_search_query_text(&text);
                     } else {
                         self.prompt.insert_text(&text);
@@ -289,6 +305,7 @@ impl<'a> TuiController<'a> {
                 }
                 self.needs_render |= self.notifications.tick();
                 self.tick_copilot_oauth_poll()?;
+                self.needs_render |= self.refresh_global_search_if_ready()?;
                 if self.refresh_runtime_state()? {
                     self.needs_render = true;
                 }
@@ -326,6 +343,9 @@ impl<'a> TuiController<'a> {
         F: FnMut(&Self) -> Result<()>,
     {
         let resolved = self.keymap.resolve(KeyBindingContext::Prompt, key);
+        if self.global_search_open {
+            return self.handle_global_search_key(key, resolved);
+        }
         if self.dialog.is_some()
             || self.has_picker_overlay()
             || self.pending_copilot_oauth.is_some()
@@ -555,6 +575,10 @@ impl<'a> TuiController<'a> {
                 Ok(())
             }
             wonder_of_u_tui::SystemAction::HistorySearch => self.open_or_step_history_search(),
+            wonder_of_u_tui::SystemAction::OpenGlobalSearch => {
+                self.toggle_global_search(None);
+                Ok(())
+            }
             wonder_of_u_tui::SystemAction::ExpandToolOutput => {
                 self.toggle_expand_tool_output();
                 Ok(())
@@ -1574,6 +1598,11 @@ impl<'a> TuiController<'a> {
                 .unwrap_or("");
             let output =
                 commands::execute_thinking_command(&self.state, (!arg.is_empty()).then_some(arg))?;
+            let effort = match self.state.thinking_effort {
+                wonder_of_u_core::app::ThinkingEffort::Low => "low",
+                wonder_of_u_core::app::ThinkingEffort::Medium => "medium",
+                wonder_of_u_core::app::ThinkingEffort::High => "high",
+            };
             match arg {
                 "on" => {
                     self.state.set_thinking_enabled(true);
@@ -1583,9 +1612,24 @@ impl<'a> TuiController<'a> {
                     self.state.set_thinking_enabled(false);
                     self.status_note = Some("thinking off".into());
                 }
+                "low" => {
+                    self.state
+                        .set_thinking_effort(wonder_of_u_core::app::ThinkingEffort::Low);
+                    self.status_note = Some("thinking effort low".into());
+                }
+                "medium" => {
+                    self.state
+                        .set_thinking_effort(wonder_of_u_core::app::ThinkingEffort::Medium);
+                    self.status_note = Some("thinking effort medium".into());
+                }
+                "high" => {
+                    self.state
+                        .set_thinking_effort(wonder_of_u_core::app::ThinkingEffort::High);
+                    self.status_note = Some("thinking effort high".into());
+                }
                 "" => {
                     self.status_note = Some(format!(
-                        "thinking {}",
+                        "thinking {} · effort {effort}",
                         if self.state.thinking_enabled {
                             "on"
                         } else {
@@ -1683,6 +1727,14 @@ impl<'a> TuiController<'a> {
                     }
                 }
             }
+        }
+        if trimmed == "/search" || trimmed.starts_with("/search ") {
+            let query = trimmed
+                .strip_prefix("/search")
+                .map(str::trim)
+                .unwrap_or_default();
+            self.open_global_search(query);
+            return Ok(());
         }
         let invocation = parse_slash_command(input)
             .ok_or_else(|| WonderError::validation("invalid slash command"))?;
@@ -2539,6 +2591,11 @@ impl<'a> TuiController<'a> {
                 })
                 .collect();
             SlashSuggestionsOverlay { entries }
+        });
+        view.global_search = self.global_search_open.then(|| GlobalSearchOverlayView {
+            query: self.global_search_query.clone(),
+            results: self.global_search_results.clone(),
+            selected: self.global_search_selected,
         });
         // Wire scroll position so the renderer shows the correct transcript window.
         view.scroll = TranscriptScrollView {
@@ -3856,6 +3913,9 @@ impl<'a> TuiController<'a> {
         if self.history_search.is_some() {
             return ActiveOverlay::HistorySearch;
         }
+        if self.global_search_open {
+            return ActiveOverlay::GlobalSearch;
+        }
         if self.has_picker_overlay() {
             return ActiveOverlay::Picker;
         }
@@ -4140,8 +4200,193 @@ impl<'a> TuiController<'a> {
             .is_some_and(|search| !search.matches.is_empty())
     }
 
+    pub(super) fn open_global_search(&mut self, query: &str) {
+        self.global_search_open = true;
+        self.global_search_query = query.to_string();
+        self.global_search_cursor = self.global_search_query.chars().count();
+        self.global_search_results.clear();
+        self.global_search_selected = 0;
+        self.global_search_dirty_since = None;
+        self.active_suggestions = None;
+        self.status_note = Some("workspace search".into());
+        self.needs_render = true;
+        if !query.trim().is_empty() {
+            self.refresh_global_search_now();
+        }
+    }
+
+    pub(super) fn toggle_global_search(&mut self, query: Option<&str>) {
+        if self.global_search_open {
+            self.close_global_search();
+        } else {
+            self.open_global_search(query.unwrap_or_default());
+        }
+    }
+
+    pub(super) fn close_global_search(&mut self) {
+        self.global_search_open = false;
+        self.global_search_query.clear();
+        self.global_search_results.clear();
+        self.global_search_selected = 0;
+        self.global_search_cursor = 0;
+        self.global_search_dirty_since = None;
+        self.status_note = Some("workspace search closed".into());
+        self.needs_render = true;
+    }
+
+    pub(super) fn handle_global_search_key(
+        &mut self,
+        key: KeyEvent,
+        resolved: Option<ResolvedKey>,
+    ) -> Result<()> {
+        match key.code {
+            KeyCode::Esc => {
+                self.close_global_search();
+                return Ok(());
+            }
+            KeyCode::Up => {
+                self.step_global_search_selection(-1);
+                return Ok(());
+            }
+            KeyCode::Down => {
+                self.step_global_search_selection(1);
+                return Ok(());
+            }
+            _ => {}
+        }
+
+        match resolved {
+            Some(ResolvedKey::Edit(EditAction::InsertNewline)) => {
+                self.accept_global_search_result()
+            }
+            Some(ResolvedKey::System(wonder_of_u_tui::SystemAction::OpenGlobalSearch)) => {
+                self.close_global_search();
+                Ok(())
+            }
+            Some(ResolvedKey::System(wonder_of_u_tui::SystemAction::Redraw)) => {
+                self.needs_render = true;
+                Ok(())
+            }
+            Some(ResolvedKey::System(system)) => self.handle_system_action(system),
+            Some(resolved) if self.edit_global_search_query(resolved) => Ok(()),
+            Some(_) | None => {
+                self.needs_render = true;
+                Ok(())
+            }
+        }
+    }
+
+    pub(super) fn edit_global_search_query_text(&mut self, text: &str) {
+        let mut query = TextBuffer::from_text(&self.global_search_query, false);
+        query.set_cursor(self.global_search_cursor);
+        query.insert_text(text);
+        self.update_global_search_query(query);
+    }
+
+    pub(super) fn edit_global_search_query(&mut self, resolved: ResolvedKey) -> bool {
+        let mut query = TextBuffer::from_text(&self.global_search_query, false);
+        query.set_cursor(self.global_search_cursor);
+        if !apply_picker_query_edit(&mut query, resolved) {
+            return false;
+        }
+        self.update_global_search_query(query);
+        true
+    }
+
+    pub(super) fn update_global_search_query(&mut self, query: TextBuffer) {
+        self.global_search_query = query.text();
+        self.global_search_cursor = query.cursor();
+        self.global_search_selected = 0;
+        if self.global_search_query.trim().is_empty() {
+            self.global_search_results.clear();
+            self.global_search_dirty_since = None;
+            self.status_note = Some("workspace search".into());
+        } else {
+            self.global_search_dirty_since = Some(Instant::now());
+            self.status_note = Some("searching workspace…".into());
+        }
+        self.needs_render = true;
+    }
+
+    pub(super) fn refresh_global_search_if_ready(&mut self) -> Result<bool> {
+        let Some(dirty_since) = self.global_search_dirty_since else {
+            return Ok(false);
+        };
+        if !self.global_search_open || dirty_since.elapsed() < Duration::from_millis(100) {
+            return Ok(false);
+        }
+        self.refresh_global_search_now();
+        Ok(true)
+    }
+
+    pub(super) fn refresh_global_search_now(&mut self) {
+        self.global_search_dirty_since = None;
+        match crate::commands::search::search_workspace(
+            &self.state.session.cwd,
+            &self.global_search_query,
+        ) {
+            Ok(results) => {
+                self.global_search_selected = self
+                    .global_search_selected
+                    .min(results.len().saturating_sub(1));
+                self.global_search_results = results;
+                self.status_note = Some(format!(
+                    "workspace search: {} match{}",
+                    self.global_search_results.len(),
+                    if self.global_search_results.len() == 1 {
+                        ""
+                    } else {
+                        "es"
+                    }
+                ));
+            }
+            Err(error) => {
+                self.global_search_results.clear();
+                self.global_search_selected = 0;
+                self.status_note = Some(format!("workspace search failed: {error}"));
+            }
+        }
+        self.needs_render = true;
+    }
+
+    pub(super) fn step_global_search_selection(&mut self, delta: isize) {
+        if !self.global_search_results.is_empty() {
+            self.global_search_selected = (self.global_search_selected as isize + delta)
+                .rem_euclid(self.global_search_results.len() as isize)
+                as usize;
+        }
+        self.needs_render = true;
+    }
+
+    pub(super) fn accept_global_search_result(&mut self) -> Result<()> {
+        if self.global_search_dirty_since.is_some() {
+            self.refresh_global_search_now();
+        }
+        let Some(result) = self
+            .global_search_results
+            .get(self.global_search_selected)
+            .cloned()
+        else {
+            return Ok(());
+        };
+        self.prompt
+            .insert_text(&format!("{}:{} ", result.file, result.line));
+        self.turn_state = TurnState::EditingInput;
+        self.state.input_mode = InputMode::Prompt;
+        self.close_global_search();
+        self.status_note = Some(format!("inserted {}:{}", result.file, result.line));
+        self.needs_render = true;
+        Ok(())
+    }
+
     pub(super) fn rebuild_ephemeral_state(&mut self) {
         self.history_search = None;
+        self.global_search_open = false;
+        self.global_search_query.clear();
+        self.global_search_results.clear();
+        self.global_search_selected = 0;
+        self.global_search_cursor = 0;
+        self.global_search_dirty_since = None;
         self.dialog = None;
         self.pending_permission_picker = None;
         self.pending_memory_picker = None;
@@ -4248,6 +4493,14 @@ impl<'a> TuiController<'a> {
         // Use the live sidebar_visible flag so cursor placement matches the
         // actual rendered layout (no sidebar column deduction when toggled off).
         let sidebar_active = self.sidebar_visible;
+        if self.global_search_open {
+            return global_search_cursor_position(
+                width,
+                height,
+                &self.view(),
+                self.global_search_cursor,
+            );
+        }
         if let Some(search) = &self.history_search {
             let view = HistorySearchView {
                 query: search.query.text(),
