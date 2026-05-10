@@ -1,4 +1,10 @@
-use std::{collections::BTreeMap, env, thread, time::Duration};
+use std::{
+    collections::BTreeMap,
+    env,
+    path::{Path, PathBuf},
+    thread,
+    time::Duration,
+};
 
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
@@ -36,6 +42,45 @@ pub struct AwsCredentials {
     pub session_token: Option<String>,
     /// AWS region (e.g. `us-east-1`)
     pub region: String,
+}
+
+/// Short-lived bearer token for Bedrock, sourced from `AWS_BEARER_TOKEN_BEDROCK`.
+///
+/// No SigV4 signing is required when this credential kind is present; the
+/// token is passed directly as a `Bearer` authorization header.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AwsBearerCredentials {
+    /// The bearer token value
+    pub token: String,
+    /// AWS region (defaults to `us-east-1`)
+    pub region: String,
+}
+
+/// AWS credentials resolved from a named profile in `~/.aws/credentials`.
+///
+/// The profile name comes from `AWS_PROFILE` (default `"default"`); the file
+/// path can be overridden with `AWS_SHARED_CREDENTIALS_FILE`.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AwsProfileCredentials {
+    /// The profile name that was resolved (e.g. `"default"`, `"prod"`)
+    pub profile: String,
+    /// The AWS credentials extracted from the profile section
+    pub credentials: AwsCredentials,
+}
+
+/// Readiness descriptor for GCP Vertex AI credentials.
+///
+/// Returned when `VERTEXAI_PROJECT`, `VERTEXAI_LOCATION`, **and**
+/// `GOOGLE_APPLICATION_CREDENTIALS` are all present and non-empty.
+/// Actual token exchange is deferred to the runtime stage.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct GcpReadiness {
+    /// GCP project ID (`VERTEXAI_PROJECT`)
+    pub project: String,
+    /// Vertex AI location (e.g. `us-central1`) from `VERTEXAI_LOCATION`
+    pub location: String,
+    /// Path to the service-account JSON key file (`GOOGLE_APPLICATION_CREDENTIALS`)
+    pub credentials_source: String,
 }
 
 /// Enumerates auth material
@@ -333,19 +378,178 @@ pub fn resolve_aws_credentials_from_env() -> Option<AwsCredentials> {
     let session_token = env::var("AWS_SESSION_TOKEN")
         .ok()
         .filter(|value| !value.trim().is_empty());
-    let region = env::var("AWS_REGION")
-        .ok()
-        .filter(|value| !value.trim().is_empty())
-        .or_else(|| {
-            env::var("AWS_DEFAULT_REGION")
-                .ok()
-                .filter(|value| !value.trim().is_empty())
-        })
-        .unwrap_or_else(|| "us-east-1".to_string());
+    let region = resolve_aws_region_from_env();
 
     Some(AwsCredentials {
         access_key_id,
         secret_access_key,
+        session_token,
+        region,
+    })
+}
+
+/// Resolves a short-lived AWS bearer token from `AWS_BEARER_TOKEN_BEDROCK`.
+///
+/// This is the highest-priority auth path for Amazon Bedrock: when the token
+/// is present no SigV4 request signing is required.  The region defaults to
+/// `us-east-1` if neither `AWS_REGION` nor `AWS_DEFAULT_REGION` is set.
+///
+/// Returns `None` when `AWS_BEARER_TOKEN_BEDROCK` is absent or blank.
+pub fn resolve_aws_bearer_from_env() -> Option<AwsBearerCredentials> {
+    let token = env::var("AWS_BEARER_TOKEN_BEDROCK")
+        .ok()
+        .filter(|value| !value.trim().is_empty())?;
+    let region = resolve_aws_region_from_env();
+    Some(AwsBearerCredentials { token, region })
+}
+
+/// Resolves AWS credentials from a named profile in `~/.aws/credentials`.
+///
+/// Resolution order:
+/// 1. Profile name: `AWS_PROFILE` env var, falling back to `"default"`.
+/// 2. Credentials file: `AWS_SHARED_CREDENTIALS_FILE` env var, falling back
+///    to `$HOME/.aws/credentials`.
+/// 3. Region within the profile section (if present), then `AWS_REGION` /
+///    `AWS_DEFAULT_REGION` env vars, then `"us-east-1"`.
+///
+/// Returns `None` when the credentials file cannot be read or the requested
+/// profile section does not contain the mandatory keys.
+///
+/// # Examples
+///
+/// ```no_run
+/// if let Some(creds) = wonder_of_u_agent::resolve_aws_profile_from_env() {
+///     println!("profile={} region={}", creds.profile, creds.credentials.region);
+/// }
+/// ```
+pub fn resolve_aws_profile_from_env() -> Option<AwsProfileCredentials> {
+    let profile = env::var("AWS_PROFILE")
+        .ok()
+        .filter(|v| !v.trim().is_empty())
+        .unwrap_or_else(|| "default".to_string());
+
+    let creds_path = resolve_aws_credentials_file_path()?;
+    let content = std::fs::read_to_string(&creds_path).ok()?;
+    let credentials = parse_aws_credentials_file(&content, &profile)?;
+
+    Some(AwsProfileCredentials {
+        profile,
+        credentials,
+    })
+}
+
+/// Resolves GCP Vertex AI readiness from environment variables.
+///
+/// Returns `Some(GcpReadiness)` only when **all three** of the following
+/// variables are present and non-empty:
+/// - `VERTEXAI_PROJECT` — the GCP project ID
+/// - `VERTEXAI_LOCATION` — the Vertex AI location (e.g. `us-central1`)
+/// - `GOOGLE_APPLICATION_CREDENTIALS` — filesystem path to a service-account
+///   key JSON file
+///
+/// No network calls or `gcloud` subprocess are made.  Actual OAuth 2 token
+/// exchange is deferred to a later runtime stage.
+pub fn resolve_gcp_credentials_from_env() -> Option<GcpReadiness> {
+    let project = env::var("VERTEXAI_PROJECT")
+        .ok()
+        .filter(|v| !v.trim().is_empty())?;
+    let location = env::var("VERTEXAI_LOCATION")
+        .ok()
+        .filter(|v| !v.trim().is_empty())?;
+    let credentials_source = env::var("GOOGLE_APPLICATION_CREDENTIALS")
+        .ok()
+        .filter(|v| !v.trim().is_empty())?;
+
+    Some(GcpReadiness {
+        project,
+        location,
+        credentials_source,
+    })
+}
+
+// ── internal helpers ─────────────────────────────────────────────────────────
+
+/// Returns the effective AWS region, checking `AWS_REGION` then
+/// `AWS_DEFAULT_REGION`, defaulting to `"us-east-1"`.
+fn resolve_aws_region_from_env() -> String {
+    env::var("AWS_REGION")
+        .ok()
+        .filter(|v| !v.trim().is_empty())
+        .or_else(|| {
+            env::var("AWS_DEFAULT_REGION")
+                .ok()
+                .filter(|v| !v.trim().is_empty())
+        })
+        .unwrap_or_else(|| "us-east-1".to_string())
+}
+
+/// Returns the path to the AWS credentials file, honouring
+/// `AWS_SHARED_CREDENTIALS_FILE` and then `$HOME/.aws/credentials`.
+pub(crate) fn resolve_aws_credentials_file_path() -> Option<PathBuf> {
+    if let Ok(path) = env::var("AWS_SHARED_CREDENTIALS_FILE") {
+        let path = path.trim().to_string();
+        if !path.is_empty() {
+            return Some(PathBuf::from(path));
+        }
+    }
+    let home = env::var("HOME").ok().filter(|v| !v.trim().is_empty())?;
+    Some(Path::new(&home).join(".aws").join("credentials"))
+}
+
+/// Parses an INI-style AWS credentials file and extracts the named profile.
+///
+/// Only `aws_access_key_id` and `aws_secret_access_key` are mandatory; all
+/// other keys are optional.  Region within the profile takes precedence over
+/// environment variables.
+pub(crate) fn parse_aws_credentials_file(content: &str, profile: &str) -> Option<AwsCredentials> {
+    let mut in_section = false;
+    let mut access_key_id: Option<String> = None;
+    let mut secret_access_key: Option<String> = None;
+    let mut session_token: Option<String> = None;
+    let mut region_in_file: Option<String> = None;
+
+    for line in content.lines() {
+        let line = line.trim();
+
+        // Section header
+        if let Some(inner) = line.strip_prefix('[').and_then(|l| l.strip_suffix(']')) {
+            if in_section {
+                // We just left our section — stop parsing.
+                break;
+            }
+            in_section = inner.trim() == profile;
+            continue;
+        }
+
+        if !in_section || line.starts_with('#') || line.starts_with(';') || line.is_empty() {
+            continue;
+        }
+
+        if let Some((key, value)) = line.split_once('=') {
+            let key = key.trim();
+            // Strip inline comments from value.
+            let value = value
+                .split_once('#')
+                .map(|(v, _)| v)
+                .unwrap_or(value)
+                .trim()
+                .to_string();
+
+            match key {
+                "aws_access_key_id" if !value.is_empty() => access_key_id = Some(value),
+                "aws_secret_access_key" if !value.is_empty() => secret_access_key = Some(value),
+                "aws_session_token" if !value.is_empty() => session_token = Some(value),
+                "region" if !value.is_empty() => region_in_file = Some(value),
+                _ => {}
+            }
+        }
+    }
+
+    let region = region_in_file.unwrap_or_else(resolve_aws_region_from_env);
+
+    Some(AwsCredentials {
+        access_key_id: access_key_id?,
+        secret_access_key: secret_access_key?,
         session_token,
         region,
     })
@@ -404,4 +608,219 @@ fn required_string(json: &serde_json::Value, pointer: &str, context: &str) -> Re
         .filter(|value| !value.trim().is_empty())
         .map(ToString::to_string)
         .ok_or_else(|| WonderError::validation(format!("{context} missing {pointer}")))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── parse_aws_credentials_file ───────────────────────────────────────────
+
+    #[test]
+    fn parse_credentials_file_default_profile() {
+        let content = "\
+[default]
+aws_access_key_id = AKIAIOSFODNN7EXAMPLE
+aws_secret_access_key = wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY
+region = us-west-2
+";
+        let creds = parse_aws_credentials_file(content, "default").expect("parse default");
+        assert_eq!(creds.access_key_id, "AKIAIOSFODNN7EXAMPLE");
+        assert_eq!(
+            creds.secret_access_key,
+            "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+        );
+        assert_eq!(creds.region, "us-west-2");
+        assert!(creds.session_token.is_none());
+    }
+
+    #[test]
+    fn parse_credentials_file_named_profile() {
+        let content = "\
+[default]
+aws_access_key_id = DEFAULTKEY
+aws_secret_access_key = DEFAULTSECRET
+
+[prod]
+aws_access_key_id = PRODKEY
+aws_secret_access_key = PRODSECRET
+aws_session_token = PRODSESSION
+region = eu-west-1
+";
+        let creds = parse_aws_credentials_file(content, "prod").expect("parse prod");
+        assert_eq!(creds.access_key_id, "PRODKEY");
+        assert_eq!(creds.secret_access_key, "PRODSECRET");
+        assert_eq!(creds.session_token.as_deref(), Some("PRODSESSION"));
+        assert_eq!(creds.region, "eu-west-1");
+    }
+
+    #[test]
+    fn parse_credentials_file_missing_profile_returns_none() {
+        let content = "[default]\naws_access_key_id = KEY\naws_secret_access_key = SECRET\n";
+        assert!(parse_aws_credentials_file(content, "nonexistent").is_none());
+    }
+
+    #[test]
+    fn parse_credentials_file_missing_mandatory_key_returns_none() {
+        // Only access_key_id, no secret → None
+        let content = "[default]\naws_access_key_id = KEY\n";
+        assert!(parse_aws_credentials_file(content, "default").is_none());
+    }
+
+    #[test]
+    fn parse_credentials_file_strips_inline_comments() {
+        let content = "\
+[default]
+aws_access_key_id = MYKEY # trailing comment
+aws_secret_access_key = MYSECRET
+";
+        let creds = parse_aws_credentials_file(content, "default").expect("parse");
+        assert_eq!(creds.access_key_id, "MYKEY");
+    }
+
+    // ── resolve_aws_bearer_from_env ──────────────────────────────────────────
+
+    #[test]
+    fn bearer_env_absent_returns_none() {
+        // Use a temp env scope by checking without setting the var (relies on
+        // test isolation; do not call env::set_var in parallel tests).
+        // We simply assert the shape when the var is not set.
+        let result = {
+            // Ensure the var is unset for this sub-scope.
+            let _guard = EnvGuard::unset("AWS_BEARER_TOKEN_BEDROCK");
+            resolve_aws_bearer_from_env()
+        };
+        assert!(result.is_none(), "expected None when bearer token absent");
+    }
+
+    #[test]
+    fn bearer_env_present_returns_credentials() {
+        let _g1 = EnvGuard::set("AWS_BEARER_TOKEN_BEDROCK", "my-bearer-token");
+        let _g2 = EnvGuard::set("AWS_REGION", "ap-southeast-1");
+        let result = resolve_aws_bearer_from_env().expect("bearer token present");
+        assert_eq!(result.token, "my-bearer-token");
+        assert_eq!(result.region, "ap-southeast-1");
+    }
+
+    #[test]
+    fn bearer_env_blank_returns_none() {
+        let _g = EnvGuard::set("AWS_BEARER_TOKEN_BEDROCK", "   ");
+        assert!(resolve_aws_bearer_from_env().is_none());
+    }
+
+    // ── resolve_aws_profile_from_env (via AWS_SHARED_CREDENTIALS_FILE) ───────
+
+    #[test]
+    fn profile_resolver_reads_credentials_file() {
+        let content = "\
+[default]
+aws_access_key_id = FILEKEY
+aws_secret_access_key = FILESECRET
+region = us-east-2
+";
+        // Write the credentials to a temp file path using a real tempdir approach
+        // by setting AWS_SHARED_CREDENTIALS_FILE to a known path.
+        let dir = std::env::temp_dir().join("wou_auth_test_profile_resolver");
+        std::fs::create_dir_all(&dir).ok();
+        let creds_path = dir.join("credentials");
+        std::fs::write(&creds_path, content).expect("write test creds");
+
+        let _g1 = EnvGuard::set(
+            "AWS_SHARED_CREDENTIALS_FILE",
+            creds_path.to_str().expect("path"),
+        );
+        let _g2 = EnvGuard::unset("AWS_PROFILE");
+
+        let result = resolve_aws_profile_from_env().expect("profile resolved");
+        assert_eq!(result.profile, "default");
+        assert_eq!(result.credentials.access_key_id, "FILEKEY");
+        assert_eq!(result.credentials.region, "us-east-2");
+
+        std::fs::remove_file(&creds_path).ok();
+    }
+
+    #[test]
+    fn profile_resolver_missing_file_returns_none() {
+        let _g = EnvGuard::set(
+            "AWS_SHARED_CREDENTIALS_FILE",
+            "/nonexistent/path/credentials",
+        );
+        assert!(resolve_aws_profile_from_env().is_none());
+    }
+
+    // ── resolve_gcp_credentials_from_env ─────────────────────────────────────
+
+    #[test]
+    fn gcp_env_all_absent_returns_none() {
+        let _g1 = EnvGuard::unset("VERTEXAI_PROJECT");
+        let _g2 = EnvGuard::unset("VERTEXAI_LOCATION");
+        let _g3 = EnvGuard::unset("GOOGLE_APPLICATION_CREDENTIALS");
+        assert!(resolve_gcp_credentials_from_env().is_none());
+    }
+
+    #[test]
+    fn gcp_env_partially_set_returns_none() {
+        let _g1 = EnvGuard::set("VERTEXAI_PROJECT", "my-project");
+        let _g2 = EnvGuard::unset("VERTEXAI_LOCATION");
+        let _g3 = EnvGuard::unset("GOOGLE_APPLICATION_CREDENTIALS");
+        assert!(resolve_gcp_credentials_from_env().is_none());
+    }
+
+    #[test]
+    fn gcp_env_all_present_returns_readiness() {
+        let _g1 = EnvGuard::set("VERTEXAI_PROJECT", "my-gcp-project");
+        let _g2 = EnvGuard::set("VERTEXAI_LOCATION", "us-central1");
+        let _g3 = EnvGuard::set("GOOGLE_APPLICATION_CREDENTIALS", "/sa/key.json");
+        let result = resolve_gcp_credentials_from_env().expect("GCP readiness present");
+        assert_eq!(result.project, "my-gcp-project");
+        assert_eq!(result.location, "us-central1");
+        assert_eq!(result.credentials_source, "/sa/key.json");
+    }
+
+    // ── test helpers ─────────────────────────────────────────────────────────
+
+    /// RAII guard that sets/restores a single environment variable for the
+    /// duration of a test.  Must be used with `--test-threads=1` to avoid
+    /// races when multiple tests touch the same var.
+    struct EnvGuard {
+        key: String,
+        previous: Option<String>,
+    }
+
+    impl EnvGuard {
+        fn set(key: &str, value: &str) -> Self {
+            let previous = std::env::var(key).ok();
+            // SAFETY: single-threaded test context only (--test-threads=1).
+            unsafe { std::env::set_var(key, value) };
+            Self {
+                key: key.to_string(),
+                previous,
+            }
+        }
+
+        fn unset(key: &str) -> Self {
+            let previous = std::env::var(key).ok();
+            // SAFETY: single-threaded test context only (--test-threads=1).
+            unsafe { std::env::remove_var(key) };
+            Self {
+                key: key.to_string(),
+                previous,
+            }
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            match &self.previous {
+                Some(val) => {
+                    // SAFETY: single-threaded test context only (--test-threads=1).
+                    unsafe { std::env::set_var(&self.key, val) };
+                }
+                None => {
+                    // SAFETY: single-threaded test context only (--test-threads=1).
+                    unsafe { std::env::remove_var(&self.key) };
+                }
+            }
+        }
+    }
 }

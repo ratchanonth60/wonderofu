@@ -1941,6 +1941,15 @@ impl<'a> TuiController<'a> {
             wonder_of_u_core::AuthMaterialKind::AwsSigV4 => {
                 AuthState::missing(descriptor.auth_kind)
             }
+            wonder_of_u_core::AuthMaterialKind::AwsBearer => {
+                AuthState::missing(descriptor.auth_kind)
+            }
+            wonder_of_u_core::AuthMaterialKind::AwsProfile => {
+                AuthState::missing(descriptor.auth_kind)
+            }
+            wonder_of_u_core::AuthMaterialKind::GcpOAuth2 => {
+                AuthState::missing(descriptor.auth_kind)
+            }
             wonder_of_u_core::AuthMaterialKind::OAuth => AuthState::pending(
                 descriptor.auth_kind,
                 None,

@@ -114,7 +114,25 @@ impl Command for LoginCommand {
             }
             AuthMaterialKind::AwsSigV4 => {
                 return Err(WonderError::validation(format!(
-                    "provider `{}` uses AWS SigV4 auth; set AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY environment variables",
+                    "provider `{}` uses AWS SigV4 auth; set AWS_BEARER_TOKEN_BEDROCK, or AWS_ACCESS_KEY_ID + AWS_SECRET_ACCESS_KEY, or AWS_PROFILE",
+                    args.provider
+                )));
+            }
+            AuthMaterialKind::AwsBearer => {
+                return Err(WonderError::validation(format!(
+                    "provider `{}` uses AWS bearer-token auth; set AWS_BEARER_TOKEN_BEDROCK",
+                    args.provider
+                )));
+            }
+            AuthMaterialKind::AwsProfile => {
+                return Err(WonderError::validation(format!(
+                    "provider `{}` uses AWS profile auth; set AWS_PROFILE and configure ~/.aws/credentials",
+                    args.provider
+                )));
+            }
+            AuthMaterialKind::GcpOAuth2 => {
+                return Err(WonderError::validation(format!(
+                    "provider `{}` uses GCP OAuth2; set VERTEXAI_PROJECT, VERTEXAI_LOCATION, and GOOGLE_APPLICATION_CREDENTIALS",
                     args.provider
                 )));
             }
@@ -650,6 +668,9 @@ fn auth_kind_label(kind: AuthMaterialKind) -> &'static str {
         AuthMaterialKind::ApiKey => "api_key",
         AuthMaterialKind::OAuth => "oauth",
         AuthMaterialKind::AwsSigV4 => "aws_sigv4",
+        AuthMaterialKind::AwsBearer => "aws_bearer",
+        AuthMaterialKind::AwsProfile => "aws_profile",
+        AuthMaterialKind::GcpOAuth2 => "gcp_oauth2",
     }
 }
 
