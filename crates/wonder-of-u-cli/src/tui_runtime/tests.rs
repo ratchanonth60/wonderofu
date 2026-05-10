@@ -581,6 +581,41 @@ fn controller_view_footer_is_compact_with_permission_and_keybind_hint() {
 }
 
 #[test]
+fn controller_uses_resize_width_for_wide_message_wrapping() {
+    let dir = unique_test_dir("tui-wide-wrap");
+    let registry = commands::registry(Some(dir.clone())).expect("registry");
+    let mut controller = TuiController::new(
+        test_context(&dir),
+        &registry,
+        Some(dir.as_path()),
+        TuiLaunchOptions { session_id: None },
+    )
+    .expect("controller");
+    controller.on_terminal_resize(160, 30);
+    controller.state.messages.push(MessageEnvelope::new(
+        controller.state.session.id,
+        MessagePayload::AssistantText {
+            content: "one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen sixteen seventeen eighteen nineteen twenty"
+                .into(),
+        },
+    ));
+
+    let view = controller.view();
+    let widest = view
+        .messages
+        .iter()
+        .map(|line| line.text.chars().count())
+        .max()
+        .unwrap_or_default();
+
+    assert!(
+        widest > 90,
+        "wide terminal should not use the 80-column fallback; widest={widest}, lines={:?}",
+        view.messages
+    );
+}
+
+#[test]
 fn controller_view_loading_elapsed_secs_increases_with_ticks() {
     let dir = unique_test_dir("tui-loading-elapsed");
     let registry = commands::registry(Some(dir.clone())).expect("registry");
