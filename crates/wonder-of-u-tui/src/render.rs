@@ -1961,6 +1961,44 @@ mod tests {
     use super::*;
     use crate::{dialog::DialogView, message::MessageLineView};
 
+    /// Guard against accidentally lowering `MIN_SIDEBAR_WIDTH` back to 100.
+    ///
+    /// The threshold was raised to 120 so that common 100-column terminals keep
+    /// the full main area.  A regression here would reintroduce the narrow-render
+    /// issue reported in the visual parity audit.
+    #[test]
+    fn sidebar_threshold_is_120_columns() {
+        assert_eq!(
+            MIN_SIDEBAR_WIDTH, 120,
+            "MIN_SIDEBAR_WIDTH must be 120; raising or lowering this changes sidebar activation"
+        );
+    }
+
+    /// At exactly `MIN_SIDEBAR_WIDTH` the sidebar activates and the main area
+    /// shrinks by `SIDEBAR_WIDTH + 1`.  One column below the threshold the
+    /// sidebar must NOT activate even when `has_sidebar = true`.
+    #[test]
+    fn shell_main_area_width_activates_at_threshold_boundary() {
+        // Exactly at threshold → sidebar deduction applies.
+        assert_eq!(
+            shell_main_area_width(MIN_SIDEBAR_WIDTH, true),
+            MIN_SIDEBAR_WIDTH - SIDEBAR_WIDTH - 1,
+            "sidebar must activate at exactly MIN_SIDEBAR_WIDTH={MIN_SIDEBAR_WIDTH}"
+        );
+        // One below threshold → full width even with sidebar flag set.
+        assert_eq!(
+            shell_main_area_width(MIN_SIDEBAR_WIDTH - 1, true),
+            MIN_SIDEBAR_WIDTH - 1,
+            "sidebar must NOT activate one column below the threshold"
+        );
+        // Threshold without sidebar flag → full width.
+        assert_eq!(
+            shell_main_area_width(MIN_SIDEBAR_WIDTH, false),
+            MIN_SIDEBAR_WIDTH,
+            "sidebar flag=false must never deduct columns"
+        );
+    }
+
     #[test]
     fn global_search_result_format_includes_location_and_truncates_preview() {
         let formatted = format_global_search_result(

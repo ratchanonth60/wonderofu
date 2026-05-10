@@ -191,4 +191,20 @@ mod tests {
         assert_ne!(theme.status.fg, theme.footer.fg);
         assert!(theme.title.bold);
     }
+
+    /// The default theme must not force an explicit background colour.
+    ///
+    /// Setting `background.bg` to Black or White produces an opaque rectangle
+    /// that clashes with translucent or custom-coloured terminal windows.  Ink
+    /// and Claude Code deliberately leave the background transparent so the
+    /// terminal emulator's own colour shows through.
+    #[test]
+    fn default_theme_background_is_transparent() {
+        let theme = Theme::default();
+        assert!(
+            theme.background.bg.is_none(),
+            "default theme must not set an explicit bg colour (got {:?})",
+            theme.background.bg,
+        );
+    }
 }

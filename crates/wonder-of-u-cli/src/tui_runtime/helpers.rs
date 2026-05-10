@@ -1369,7 +1369,36 @@ pub(super) fn overlay_closed_status(title: &str) -> String {
 mod tests {
     use wonder_of_u_tui::TextBuffer;
 
-    use super::filtered_picker_indices;
+    use super::{filtered_picker_indices, theme_for_state};
+
+    /// All named themes must leave `background.bg = None` so the terminal
+    /// emulator's own background colour shows through (Ink/Claude Code parity).
+    /// Forcing an explicit black or white background produces opaque rectangles
+    /// that look wrong in translucent or custom-coloured terminal windows.
+    #[test]
+    fn named_themes_have_no_explicit_background_colour() {
+        for name in &[Some("default"), Some("midnight"), Some("light"), None] {
+            let theme = theme_for_state(*name, None);
+            assert!(
+                theme.background.bg.is_none(),
+                "theme {name:?} must not set an explicit background colour (got {:?})",
+                theme.background.bg,
+            );
+        }
+    }
+
+    /// Named themes must each produce a distinct border colour so users can
+    /// visually distinguish them.  This is a regression guard: if two themes
+    /// collapse to the same border colour the `/theme` picker becomes useless.
+    #[test]
+    fn midnight_and_light_themes_have_distinct_border_colours() {
+        let midnight = theme_for_state(Some("midnight"), None);
+        let light = theme_for_state(Some("light"), None);
+        assert_ne!(
+            midnight.border.fg, light.border.fg,
+            "midnight and light themes must have different border colours"
+        );
+    }
 
     #[test]
     fn filtered_picker_indices_supports_fuzzy_matches() {

@@ -7006,8 +7006,15 @@ fn controller_view_sizes_provider_errors_to_main_pane_width() {
         rows.iter().any(|row| row.contains("status 400 ")),
         "provider error headline should keep the wider main-column budget before wrapping; rows: {rows:?}"
     );
+    // wrap_text_hard is a strict character-boundary splitter: at width=120 with
+    // sidebar active, the main area is 83 cols and the "error[provider]> " prefix
+    // consumes 17, leaving 66 chars for the body.  The word "from" straddles that
+    // boundary ("fr" ends line 1, "om remote endpoint" starts line 2).  We check
+    // for "remote endpoint" — which is entirely on the continuation line — rather
+    // than "from remote endpoint", so the assertion does not depend on word-boundary
+    // alignment.  The intent is to verify the message wraps rather than truncates.
     assert!(
-        rows.iter().any(|row| row.contains("from remote endpoint")),
+        rows.iter().any(|row| row.contains("remote endpoint")),
         "provider error should continue onto the next line instead of truncating; rows: {rows:?}"
     );
 }
