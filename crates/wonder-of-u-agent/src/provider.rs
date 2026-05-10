@@ -65,6 +65,12 @@ pub struct ProviderDescriptor {
     /// dynamically-routed or custom deployments).
     #[serde(default)]
     pub strict_model_validation: bool,
+    /// When set, the API base URL is read from this environment variable at
+    /// resolution time.  Takes precedence over [`Self::api_base`] if both
+    /// are provided.  Enables providers like Azure OpenAI whose endpoint URL
+    /// is user/deployment-specific (e.g. `"AZURE_OPENAI_API_ENDPOINT"`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub endpoint_env: Option<String>,
 }
 
 impl ProviderDescriptor {
@@ -141,10 +147,18 @@ enum ResolvedAuthMaterial {
         source: AuthSource,
     },
     /// GCP Vertex AI readiness (project + location + credentials path).
+    ///
+    /// `access_token` is populated when `GOOGLE_BEARER_TOKEN` is set in the
+    /// environment, allowing tests and CI to inject a pre-obtained token
+    /// without a full service-account key-file exchange.
     GcpOAuth2 {
         project: String,
         location: String,
+        /// Path to service-account key file (`GOOGLE_APPLICATION_CREDENTIALS`).
+        /// May be empty when `access_token` is present.
         credentials_source: String,
+        /// Pre-obtained OAuth2 bearer token (`GOOGLE_BEARER_TOKEN`), if set.
+        access_token: Option<String>,
         source: AuthSource,
     },
 }
@@ -373,9 +387,6 @@ impl ResolvedProviderExecution {
     /// Returns `(token, region)` when the provider resolved via an AWS bearer
     /// token.  Returns an error for callers that expect this credential kind
     /// but encounter a different (or absent) material.
-    ///
-    /// Intentionally exposed for the Bedrock runtime stage; unused in v1.
-    #[allow(dead_code)]
     pub(crate) fn aws_bearer_token(&self) -> Result<(&str, &str)> {
         match &self.auth {
             ResolvedAuthMaterial::AwsBearer { token, region, .. } => {
@@ -385,6 +396,32 @@ impl ResolvedProviderExecution {
                 "provider `{}` is not configured with AWS bearer-token auth",
                 self.provider.id
             ))),
+        }
+    }
+
+    /// Returns the GCP project and location from `GcpOAuth2` auth material.
+    ///
+    /// Used by the Vertex AI runtime to construct the endpoint URL.
+    pub(crate) fn gcp_project_location(&self) -> Result<(&str, &str)> {
+        match &self.auth {
+            ResolvedAuthMaterial::GcpOAuth2 {
+                project, location, ..
+            } => Ok((project.as_str(), location.as_str())),
+            _ => Err(WonderError::validation(format!(
+                "provider `{}` is not configured with GCP OAuth2 auth",
+                self.provider.id
+            ))),
+        }
+    }
+
+    /// Returns the pre-obtained GCP OAuth2 access token, if present.
+    ///
+    /// Set by providing `GOOGLE_BEARER_TOKEN` in the environment; `None`
+    /// when only a service-account key file was configured.
+    pub(crate) fn gcp_access_token(&self) -> Option<&str> {
+        match &self.auth {
+            ResolvedAuthMaterial::GcpOAuth2 { access_token, .. } => access_token.as_deref(),
+            _ => None,
         }
     }
 }
@@ -413,6 +450,7 @@ impl ProviderRegistry {
                 api_key_env: None,
                 wire_protocol: WireProtocol::Copilot,
                 strict_model_validation: true,
+                endpoint_env: None,
             })
             .expect("builtin provider");
         registry
@@ -429,6 +467,7 @@ impl ProviderRegistry {
                 api_key_env: Some("OPENAI_API_KEY".into()),
                 wire_protocol: WireProtocol::OpenAiCompat,
                 strict_model_validation: true,
+                endpoint_env: None,
             })
             .expect("builtin provider");
         registry
@@ -445,6 +484,7 @@ impl ProviderRegistry {
                 api_key_env: Some("ANTHROPIC_API_KEY".into()),
                 wire_protocol: WireProtocol::AnthropicCompat,
                 strict_model_validation: true,
+                endpoint_env: None,
             })
             .expect("builtin provider");
         registry
@@ -467,6 +507,53 @@ impl ProviderRegistry {
                 api_key_env: None,
                 wire_protocol: WireProtocol::BedrockAnthropic,
                 strict_model_validation: true,
+                endpoint_env: None,
+            })
+            .expect("builtin provider");
+        registry
+            .register(ProviderDescriptor {
+                id: "gemini".into(),
+                display_name: "Google Gemini".into(),
+                auth_kind: AuthMaterialKind::ApiKey,
+                default_model: "gemini-2.0-flash".into(),
+                models: vec![],
+                api_base: Some("https://generativelanguage.googleapis.com".into()),
+                api_key_env: Some("GEMINI_API_KEY".into()),
+                wire_protocol: WireProtocol::GeminiNative,
+                strict_model_validation: false,
+                endpoint_env: None,
+            })
+            .expect("builtin provider");
+        registry
+            .register(ProviderDescriptor {
+                id: "vertex".into(),
+                display_name: "Google Vertex AI".into(),
+                auth_kind: AuthMaterialKind::GcpOAuth2,
+                default_model: "gemini-2.0-flash".into(),
+                models: vec![],
+                // Vertex endpoints are location-specific; the runtime computes
+                // the real URL from project + location in the resolved auth.
+                // This placeholder satisfies the api_base requirement.
+                api_base: Some("https://aiplatform.googleapis.com".into()),
+                api_key_env: None,
+                wire_protocol: WireProtocol::VertexGemini,
+                strict_model_validation: false,
+                endpoint_env: None,
+            })
+            .expect("builtin provider");
+        registry
+            .register(ProviderDescriptor {
+                id: "azure".into(),
+                display_name: "Azure OpenAI".into(),
+                auth_kind: AuthMaterialKind::ApiKey,
+                default_model: "gpt-4o".into(),
+                models: vec![],
+                // api_base is resolved from AZURE_OPENAI_API_ENDPOINT at runtime.
+                api_base: None,
+                api_key_env: Some("AZURE_OPENAI_API_KEY".into()),
+                wire_protocol: WireProtocol::AzureOpenAi,
+                strict_model_validation: false,
+                endpoint_env: Some("AZURE_OPENAI_API_ENDPOINT".into()),
             })
             .expect("builtin provider");
         registry
@@ -741,7 +828,7 @@ impl ProviderResolver {
             selection.provider.as_deref(),
             selection.model.as_deref(),
         )?;
-        let api_base = self.resolve_api_base(descriptor, settings)?;
+        let api_base = self.resolve_api_base(descriptor, settings, &env)?;
         let auth = self
             .resolve_auth_material(descriptor, credentials, &env)?
             .ok_or_else(|| self.missing_auth_error(descriptor))?;
@@ -855,17 +942,32 @@ impl ProviderResolver {
         &self,
         provider: &ProviderDescriptor,
         settings: &AgentSettings,
+        env: &BTreeMap<String, String>,
     ) -> Result<String> {
         settings
             .providers
             .get(&provider.id)
             .and_then(|config| config.api_base.clone())
             .or_else(|| provider.api_base.clone())
+            .or_else(|| {
+                // Fall back to the env var named by `endpoint_env` (e.g.
+                // `AZURE_OPENAI_API_ENDPOINT` for Azure OpenAI).
+                provider.endpoint_env.as_deref().and_then(|var| {
+                    env.get(var)
+                        .map(|v| v.trim().to_string())
+                        .filter(|v| !v.is_empty())
+                })
+            })
             .filter(|api_base| !api_base.trim().is_empty())
             .ok_or_else(|| {
+                let hint = provider
+                    .endpoint_env
+                    .as_deref()
+                    .map(|var| format!("; set the `{var}` environment variable or configure `api_base` in settings"))
+                    .unwrap_or_default();
                 WonderError::validation(format!(
-                    "provider `{}` does not declare an API base URL",
-                    provider.id
+                    "provider `{}` does not declare an API base URL{hint}",
+                    provider.id,
                 ))
             })
     }
@@ -1060,7 +1162,9 @@ impl ProviderResolver {
                 }
             }
             AuthMaterialKind::GcpOAuth2 => {
-                // All three GCP vars must be present for readiness.
+                // All three GCP vars must be present for readiness,
+                // OR: VERTEXAI_PROJECT + VERTEXAI_LOCATION + GOOGLE_BEARER_TOKEN
+                // (pre-obtained token, no key file required).
                 let project = env
                     .get("VERTEXAI_PROJECT")
                     .map(|v| v.trim())
@@ -1071,18 +1175,28 @@ impl ProviderResolver {
                     .map(|v| v.trim())
                     .filter(|v| !v.is_empty())
                     .map(ToString::to_string);
+
+                // Pre-obtained bearer token takes priority over key-file path.
+                let access_token = env
+                    .get("GOOGLE_BEARER_TOKEN")
+                    .map(|v| v.trim())
+                    .filter(|v| !v.is_empty())
+                    .map(ToString::to_string);
                 let credentials_source = env
                     .get("GOOGLE_APPLICATION_CREDENTIALS")
                     .map(|v| v.trim())
                     .filter(|v| !v.is_empty())
                     .map(ToString::to_string);
 
-                match (project, location, credentials_source) {
-                    (Some(project), Some(location), Some(credentials_source)) => {
+                match (project, location) {
+                    (Some(project), Some(location))
+                        if access_token.is_some() || credentials_source.is_some() =>
+                    {
                         Ok(Some(ResolvedAuthMaterial::GcpOAuth2 {
                             project,
                             location,
-                            credentials_source,
+                            credentials_source: credentials_source.unwrap_or_default(),
+                            access_token,
                             source: AuthSource::Environment,
                         }))
                     }
@@ -1736,11 +1850,26 @@ mod tests {
 
     #[test]
     fn all_builtin_providers_have_strict_model_validation_enabled() {
+        // Providers with a curated model catalogue enforce strict validation.
+        // Gemini, Vertex, and Azure have open model sets (arbitrary deployment
+        // names or rapidly-changing model IDs), so they are intentionally
+        // non-strict.
+        let strict_providers = ["copilot", "openai", "anthropic", "bedrock"];
         let registry = ProviderRegistry::builtin();
-        for provider in registry.providers() {
+        for id in strict_providers {
+            let provider = registry.get(id).unwrap_or_else(|| panic!("missing builtin: {id}"));
             assert!(
                 provider.strict_model_validation,
                 "builtin provider `{}` should have strict_model_validation=true",
+                provider.id
+            );
+        }
+        let open_providers = ["gemini", "vertex", "azure"];
+        for id in open_providers {
+            let provider = registry.get(id).unwrap_or_else(|| panic!("missing builtin: {id}"));
+            assert!(
+                !provider.strict_model_validation,
+                "open-catalog provider `{}` should have strict_model_validation=false",
                 provider.id
             );
         }
@@ -1787,6 +1916,7 @@ mod tests {
                 models: vec![],
                 api_base: Some("https://custom.example.com/v1".into()),
                 api_key_env: None,
+                endpoint_env: None,
                 wire_protocol: WireProtocol::OpenAiCompat,
                 strict_model_validation: false,
             })
@@ -1822,6 +1952,7 @@ mod tests {
                 models: vec![],
                 api_base: Some("https://lenient.example.com/v1".into()),
                 api_key_env: None,
+                endpoint_env: None,
                 wire_protocol: WireProtocol::OpenAiCompat,
                 strict_model_validation: false,
             })

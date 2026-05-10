@@ -15,9 +15,12 @@
 //! descriptor.
 
 mod anthropic;
+mod azure;
 mod bedrock;
 mod copilot;
+mod gemini;
 mod openai;
+mod vertex;
 
 use std::{
     collections::BTreeMap,
@@ -465,9 +468,23 @@ impl ProviderRuntime {
                 let http_response = self.transport.execute(&http_request)?;
                 anthropic::parse_anthropic_response(resolved, &http_response.body)
             }
+            WireProtocol::GeminiNative => {
+                let http_request = gemini::build_gemini_request(resolved, request)?;
+                let http_response = self.transport.execute(&http_request)?;
+                gemini::parse_gemini_response(resolved, &http_response.body)
+            }
+            WireProtocol::VertexGemini => {
+                let http_request = vertex::build_vertex_request(resolved, request)?;
+                let http_response = self.transport.execute(&http_request)?;
+                vertex::parse_vertex_response(resolved, &http_response.body)
+            }
+            WireProtocol::AzureOpenAi => {
+                let http_request = azure::build_azure_request(resolved, request)?;
+                let http_response = self.transport.execute(&http_request)?;
+                azure::parse_azure_response(resolved, &http_response.body)
+            }
             proto => Err(WonderError::validation(format!(
-                "wire protocol `{proto:?}` is not supported yet; \
-                 supported protocols: open_ai_compat, anthropic_compat, copilot, bedrock_anthropic"
+                "wire protocol `{proto:?}` is not supported yet"
             ))),
         }
     }
@@ -489,6 +506,7 @@ impl ProviderRuntime {
                         | WireProtocol::AnthropicCompat
                         | WireProtocol::Copilot
                         | WireProtocol::BedrockAnthropic
+                        | WireProtocol::AzureOpenAi
                 )
             })
             .unwrap_or(false)
@@ -504,7 +522,12 @@ impl ProviderRuntime {
         self.resolver
             .registry()
             .get(provider_id)
-            .map(|desc| matches!(desc.wire_protocol, WireProtocol::OpenAiCompat))
+            .map(|desc| {
+                matches!(
+                    desc.wire_protocol,
+                    WireProtocol::OpenAiCompat | WireProtocol::AzureOpenAi
+                )
+            })
             .unwrap_or(false)
     }
 
@@ -520,6 +543,7 @@ impl ProviderRuntime {
                 | WireProtocol::AnthropicCompat
                 | WireProtocol::Copilot
                 | WireProtocol::BedrockAnthropic
+                | WireProtocol::AzureOpenAi
         )
     }
 
@@ -567,9 +591,15 @@ impl ProviderRuntime {
                     &mut on_text_delta,
                 )
             }
+            WireProtocol::AzureOpenAi => {
+                let http_request = azure::build_azure_stream_request(resolved, request)?;
+                let http_response = self.transport.execute_stream(&http_request)?;
+                azure::parse_azure_stream_response(resolved, http_response, &mut on_text_delta)
+            }
+            WireProtocol::GeminiNative => Err(gemini::gemini_streaming_unsupported()),
+            WireProtocol::VertexGemini => Err(vertex::vertex_streaming_unsupported()),
             proto => Err(WonderError::validation(format!(
-                "wire protocol `{proto:?}` streaming is not supported yet; \
-                 supported protocols: open_ai_compat, anthropic_compat, copilot, bedrock_anthropic"
+                "wire protocol `{proto:?}` streaming is not supported"
             ))),
         }
     }
@@ -604,9 +634,15 @@ impl ProviderRuntime {
                 let http_response = self.transport.execute(&http_request)?;
                 anthropic::parse_anthropic_tool_use_response(resolved, &http_response.body)
             }
+            WireProtocol::AzureOpenAi => {
+                let http_request = azure::build_azure_tool_use_request(resolved, request)?;
+                let http_response = self.transport.execute(&http_request)?;
+                azure::parse_azure_tool_use_response(resolved, &http_response.body)
+            }
+            WireProtocol::GeminiNative => Err(gemini::gemini_tool_use_unsupported()),
+            WireProtocol::VertexGemini => Err(vertex::vertex_tool_use_unsupported()),
             proto => Err(WonderError::validation(format!(
-                "wire protocol `{proto:?}` tool-use is not supported yet; \
-                 supported protocols: open_ai_compat, anthropic_compat, copilot, bedrock_anthropic"
+                "wire protocol `{proto:?}` tool-use is not supported"
             ))),
         }
     }
@@ -2318,5 +2354,462 @@ mod tests {
         );
         assert_eq!(response.output_text, "Streaming!");
         assert_eq!(deltas, vec!["Streaming!"]);
+    }
+
+    // ─── Bedrock AwsBearer ────────────────────────────────────────────────────
+
+    fn resolved_bedrock_bearer_provider(model: Option<&str>) -> ResolvedProviderExecution {
+        let settings = AgentSettings {
+            selected_provider: Some("bedrock".into()),
+            selected_model: model.map(ToString::to_string),
+            ..AgentSettings::default()
+        };
+
+        ProviderResolver::builtin()
+            .resolve_execution_with_env(
+                &settings,
+                &StoredCredentials::default(),
+                [
+                    (
+                        "AWS_BEARER_TOKEN_BEDROCK",
+                        "my-bedrock-bearer-token".to_string(),
+                    ),
+                    ("AWS_REGION", "us-west-2".to_string()),
+                ],
+                &ProviderSelection::default(),
+            )
+            .expect("resolve bedrock bearer provider")
+    }
+
+    #[test]
+    fn bedrock_runtime_uses_bearer_auth_when_aws_bearer_token_is_set() {
+        let transport = RecordingTransport::with_json_body(serde_json::json!({
+            "content": [{"type": "text", "text": "Bearer response"}],
+            "stop_reason": "end_turn",
+            "usage": {"input_tokens": 4, "output_tokens": 3}
+        }));
+        let runtime = ProviderRuntime::with_transport(transport.clone() as Arc<dyn HttpTransport>);
+        let resolved = resolved_bedrock_bearer_provider(None);
+        let request = CompletionRequest::new("Hello via bearer");
+
+        let response = runtime
+            .complete(&resolved, &request)
+            .expect("bedrock bearer response");
+        let recorded = transport.take_request();
+
+        assert_eq!(recorded.method, "POST");
+        assert!(
+            recorded.url.ends_with("/invoke"),
+            "URL should end with /invoke: {}",
+            recorded.url
+        );
+        // Must use Bearer auth, NOT SigV4.
+        assert_eq!(
+            recorded.headers.get("authorization").map(String::as_str),
+            Some("Bearer my-bedrock-bearer-token"),
+            "authorization header should be a Bearer token"
+        );
+        assert!(
+            !recorded.headers.contains_key("x-amz-date"),
+            "bearer auth must not include SigV4 date header"
+        );
+        assert!(
+            !recorded.headers.contains_key("x-amz-content-sha256"),
+            "bearer auth must not include SigV4 hash header"
+        );
+        assert_eq!(response.output_text, "Bearer response");
+    }
+
+    // ─── Gemini ───────────────────────────────────────────────────────────────
+
+    fn resolved_gemini_provider(model: Option<&str>) -> ResolvedProviderExecution {
+        let settings = AgentSettings {
+            selected_provider: Some("gemini".into()),
+            selected_model: model.map(ToString::to_string),
+            ..AgentSettings::default()
+        };
+
+        ProviderResolver::builtin()
+            .resolve_execution_with_env(
+                &settings,
+                &StoredCredentials::default(),
+                [("GEMINI_API_KEY", "gemini-secret".to_string())],
+                &ProviderSelection::default(),
+            )
+            .expect("resolve gemini provider")
+    }
+
+    #[test]
+    fn gemini_runtime_builds_generate_content_request() {
+        let transport = RecordingTransport::with_json_body(serde_json::json!({
+            "candidates": [{
+                "content": {
+                    "parts": [{"text": "Gemini reply"}],
+                    "role": "model"
+                },
+                "finishReason": "STOP"
+            }],
+            "usageMetadata": {
+                "promptTokenCount": 6,
+                "candidatesTokenCount": 3
+            }
+        }));
+        let runtime = ProviderRuntime::with_transport(transport.clone() as Arc<dyn HttpTransport>);
+        let resolved = resolved_gemini_provider(Some("gemini-2.0-flash"));
+        let request = CompletionRequest {
+            prompt: "Hello Gemini".into(),
+            system_prompt: Some("Be brief".into()),
+            max_output_tokens: Some(256),
+            temperature: Some(0.5),
+            effort_level: None,
+        };
+
+        let response = runtime
+            .complete(&resolved, &request)
+            .expect("gemini response");
+        let recorded = transport.take_request();
+        let body: serde_json::Value = serde_json::from_str(&recorded.body).expect("request json");
+
+        assert_eq!(recorded.method, "POST");
+        // URL must point at Gemini generateContent with key in query string.
+        assert!(
+            recorded.url.contains("generativelanguage.googleapis.com"),
+            "URL should target Gemini: {}",
+            recorded.url
+        );
+        assert!(
+            recorded.url.contains(":generateContent"),
+            "URL should contain :generateContent: {}",
+            recorded.url
+        );
+        assert!(
+            recorded.url.contains("key=gemini-secret"),
+            "URL should include API key: {}",
+            recorded.url
+        );
+        // No Authorization header – key is in query param.
+        assert!(
+            !recorded.headers.contains_key("authorization"),
+            "Gemini native must not use Authorization header"
+        );
+        // System instruction in body.
+        assert_eq!(
+            body.pointer("/systemInstruction/parts/0/text")
+                .and_then(serde_json::Value::as_str),
+            Some("Be brief"),
+        );
+        // User content.
+        assert_eq!(
+            body.pointer("/contents/0/parts/0/text")
+                .and_then(serde_json::Value::as_str),
+            Some("Hello Gemini"),
+        );
+        // generationConfig fields.
+        assert_eq!(
+            body.pointer("/generationConfig/maxOutputTokens")
+                .and_then(serde_json::Value::as_u64),
+            Some(256),
+        );
+        let temp = body
+            .pointer("/generationConfig/temperature")
+            .and_then(serde_json::Value::as_f64)
+            .expect("temperature");
+        assert!((temp - 0.5).abs() < 1e-6);
+
+        assert_eq!(response.output_text, "Gemini reply");
+        assert_eq!(response.stop_reason.as_deref(), Some("STOP"));
+        assert_eq!(response.usage.input_tokens, 6);
+        assert_eq!(response.usage.output_tokens, 3);
+    }
+
+    #[test]
+    fn gemini_streaming_returns_validation_error() {
+        let runtime = ProviderRuntime::with_transport(Arc::new(RecordingTransport::default()));
+        let resolved = resolved_gemini_provider(None);
+
+        let err = runtime
+            .complete_streaming(&resolved, &CompletionRequest::new("ping"), |_| Ok(()))
+            .expect_err("gemini streaming should fail");
+        assert!(
+            err.to_string().contains("gemini_native"),
+            "error should mention protocol: {err}"
+        );
+    }
+
+    #[test]
+    fn gemini_tool_use_returns_validation_error() {
+        let runtime = ProviderRuntime::with_transport(Arc::new(RecordingTransport::default()));
+        let resolved = resolved_gemini_provider(None);
+
+        let err = runtime
+            .complete_with_tool_use(
+                &resolved,
+                &ToolUseRequest {
+                    prompt: "use a tool".into(),
+                    ..ToolUseRequest::default()
+                },
+            )
+            .expect_err("gemini tool use should fail");
+        assert!(
+            err.to_string().contains("gemini_native"),
+            "error should mention protocol: {err}"
+        );
+    }
+
+    // ─── Vertex AI ────────────────────────────────────────────────────────────
+
+    fn resolved_vertex_provider(model: Option<&str>) -> ResolvedProviderExecution {
+        let settings = AgentSettings {
+            selected_provider: Some("vertex".into()),
+            selected_model: model.map(ToString::to_string),
+            ..AgentSettings::default()
+        };
+
+        ProviderResolver::builtin()
+            .resolve_execution_with_env(
+                &settings,
+                &StoredCredentials::default(),
+                [
+                    ("VERTEXAI_PROJECT", "my-gcp-project".to_string()),
+                    ("VERTEXAI_LOCATION", "us-central1".to_string()),
+                    ("GOOGLE_BEARER_TOKEN", "gcp-oauth-token".to_string()),
+                ],
+                &ProviderSelection::default(),
+            )
+            .expect("resolve vertex provider")
+    }
+
+    #[test]
+    fn vertex_runtime_builds_generate_content_request_with_bearer_auth() {
+        let transport = RecordingTransport::with_json_body(serde_json::json!({
+            "candidates": [{
+                "content": {
+                    "parts": [{"text": "Vertex reply"}],
+                    "role": "model"
+                },
+                "finishReason": "STOP"
+            }],
+            "usageMetadata": {
+                "promptTokenCount": 8,
+                "candidatesTokenCount": 4
+            }
+        }));
+        let runtime = ProviderRuntime::with_transport(transport.clone() as Arc<dyn HttpTransport>);
+        let resolved = resolved_vertex_provider(Some("gemini-2.0-flash"));
+        let request = CompletionRequest::new("Hello Vertex");
+
+        let response = runtime
+            .complete(&resolved, &request)
+            .expect("vertex response");
+        let recorded = transport.take_request();
+        let body: serde_json::Value = serde_json::from_str(&recorded.body).expect("request json");
+
+        assert_eq!(recorded.method, "POST");
+        // URL must be location-specific Vertex AI endpoint.
+        assert!(
+            recorded
+                .url
+                .contains("us-central1-aiplatform.googleapis.com"),
+            "URL should be location-specific: {}",
+            recorded.url
+        );
+        assert!(
+            recorded.url.contains("/projects/my-gcp-project/"),
+            "URL should contain project: {}",
+            recorded.url
+        );
+        assert!(
+            recorded.url.contains("/locations/us-central1/"),
+            "URL should contain location: {}",
+            recorded.url
+        );
+        assert!(
+            recorded.url.contains(":generateContent"),
+            "URL should end with :generateContent: {}",
+            recorded.url
+        );
+        // Bearer auth header.
+        assert_eq!(
+            recorded.headers.get("authorization").map(String::as_str),
+            Some("Bearer gcp-oauth-token"),
+            "Vertex must use Bearer auth"
+        );
+        // Body has standard generateContent shape.
+        assert_eq!(
+            body.pointer("/contents/0/parts/0/text")
+                .and_then(serde_json::Value::as_str),
+            Some("Hello Vertex"),
+        );
+        assert_eq!(response.output_text, "Vertex reply");
+        assert_eq!(response.usage.input_tokens, 8);
+        assert_eq!(response.usage.output_tokens, 4);
+    }
+
+    #[test]
+    fn vertex_streaming_returns_validation_error() {
+        let runtime = ProviderRuntime::with_transport(Arc::new(RecordingTransport::default()));
+        let resolved = resolved_vertex_provider(None);
+
+        let err = runtime
+            .complete_streaming(&resolved, &CompletionRequest::new("ping"), |_| Ok(()))
+            .expect_err("vertex streaming should fail");
+        assert!(
+            err.to_string().contains("vertex_gemini"),
+            "error should mention protocol: {err}"
+        );
+    }
+
+    // ─── Azure OpenAI ─────────────────────────────────────────────────────────
+
+    fn resolved_azure_provider(model: Option<&str>) -> ResolvedProviderExecution {
+        let settings = AgentSettings {
+            selected_provider: Some("azure".into()),
+            selected_model: model.map(ToString::to_string),
+            // Override api_base via settings since the env-based endpoint is not
+            // injectable through the standard env map in unit tests.
+            providers: std::collections::BTreeMap::from([(
+                "azure".into(),
+                crate::ProviderOverride {
+                    api_base: Some("https://my-resource.openai.azure.com".into()),
+                    ..crate::ProviderOverride::default()
+                },
+            )]),
+            ..AgentSettings::default()
+        };
+
+        ProviderResolver::builtin()
+            .resolve_execution_with_env(
+                &settings,
+                &StoredCredentials::default(),
+                [("AZURE_OPENAI_API_KEY", "azure-secret".to_string())],
+                &ProviderSelection::default(),
+            )
+            .expect("resolve azure provider")
+    }
+
+    #[test]
+    fn azure_runtime_builds_chat_completions_request_with_api_key_header() {
+        let transport = RecordingTransport::with_json_body(serde_json::json!({
+            "choices": [{
+                "finish_reason": "stop",
+                "message": {"content": "Azure reply"}
+            }],
+            "usage": {
+                "prompt_tokens": 5,
+                "completion_tokens": 3
+            }
+        }));
+        let runtime = ProviderRuntime::with_transport(transport.clone() as Arc<dyn HttpTransport>);
+        let resolved = resolved_azure_provider(Some("gpt-4o"));
+        let request = CompletionRequest {
+            prompt: "Hello Azure".into(),
+            system_prompt: Some("Be concise".into()),
+            max_output_tokens: Some(128),
+            temperature: Some(0.3),
+            effort_level: None,
+        };
+
+        let response = runtime
+            .complete(&resolved, &request)
+            .expect("azure response");
+        let recorded = transport.take_request();
+        let body: serde_json::Value = serde_json::from_str(&recorded.body).expect("request json");
+
+        assert_eq!(recorded.method, "POST");
+        // URL must use Azure deployment format.
+        assert!(
+            recorded
+                .url
+                .contains("my-resource.openai.azure.com/openai/deployments/gpt-4o/"),
+            "URL should be Azure deployment path: {}",
+            recorded.url
+        );
+        assert!(
+            recorded.url.contains("api-version="),
+            "URL should include api-version: {}",
+            recorded.url
+        );
+        // Auth uses api-key header, NOT Authorization Bearer.
+        assert_eq!(
+            recorded.headers.get("api-key").map(String::as_str),
+            Some("azure-secret"),
+            "Azure must use api-key header"
+        );
+        assert!(
+            !recorded.headers.contains_key("authorization"),
+            "Azure must not use Authorization header"
+        );
+        // System message in body.
+        assert_eq!(
+            body.pointer("/messages/0/role")
+                .and_then(serde_json::Value::as_str),
+            Some("system")
+        );
+        assert_eq!(
+            body.pointer("/messages/0/content")
+                .and_then(serde_json::Value::as_str),
+            Some("Be concise")
+        );
+        // User content.
+        assert_eq!(
+            body.pointer("/messages/1/content")
+                .and_then(serde_json::Value::as_str),
+            Some("Hello Azure")
+        );
+        assert_eq!(response.output_text, "Azure reply");
+        assert_eq!(response.stop_reason.as_deref(), Some("stop"));
+        assert_eq!(response.usage.input_tokens, 5);
+        assert_eq!(response.usage.output_tokens, 3);
+    }
+
+    #[test]
+    fn azure_runtime_streaming_builds_stream_request() {
+        let transport = RecordingTransport::with_stream_body(concat!(
+            "data: {\"choices\":[{\"delta\":{\"content\":\"Azure\"},\"finish_reason\":null}]}\n\n",
+            "data: {\"choices\":[{\"delta\":{\"content\":\" stream\"},\"finish_reason\":null}]}\n\n",
+            "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":5,\"completion_tokens\":2}}\n\n",
+            "data: [DONE]\n\n",
+        ));
+        let runtime = ProviderRuntime::with_transport(transport.clone() as Arc<dyn HttpTransport>);
+        let resolved = resolved_azure_provider(Some("gpt-4o"));
+        let mut streamed = String::new();
+
+        let response = runtime
+            .complete_streaming(&resolved, &CompletionRequest::new("stream"), |delta| {
+                streamed.push_str(delta);
+                Ok(())
+            })
+            .expect("azure stream");
+        let recorded = transport.take_request();
+
+        assert!(
+            recorded
+                .url
+                .contains("my-resource.openai.azure.com/openai/deployments/gpt-4o/"),
+            "streaming URL should be Azure deployment path: {}",
+            recorded.url
+        );
+        assert_eq!(
+            recorded.headers.get("api-key").map(String::as_str),
+            Some("azure-secret")
+        );
+        assert_eq!(streamed, "Azure stream");
+        assert_eq!(response.output_text, "Azure stream");
+    }
+
+    #[test]
+    fn azure_supports_streaming_and_tool_use() {
+        let runtime = ProviderRuntime::new();
+        assert!(runtime.supports_streaming("azure"));
+        assert!(runtime.supports_tool_use("azure"));
+    }
+
+    #[test]
+    fn gemini_and_vertex_do_not_support_streaming_or_tool_use() {
+        let runtime = ProviderRuntime::new();
+        assert!(!runtime.supports_streaming("gemini"));
+        assert!(!runtime.supports_tool_use("gemini"));
+        assert!(!runtime.supports_streaming("vertex"));
+        assert!(!runtime.supports_tool_use("vertex"));
     }
 }

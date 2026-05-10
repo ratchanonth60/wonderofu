@@ -165,8 +165,6 @@ fn build_bedrock_request_with_mode(
     request: &CompletionRequest,
     stream: bool,
 ) -> Result<HttpRequest> {
-    let credentials = resolved.aws_credentials()?;
-
     let path_suffix = if stream {
         "invoke-with-response-stream"
     } else {
@@ -200,6 +198,22 @@ fn build_bedrock_request_with_mode(
     }
 
     let body_str = serde_json::to_string(&body)?;
+
+    // Priority: AwsBearer token (no signing) → AwsSigV4/AwsProfile (signing).
+    if let Ok((token, _region)) = resolved.aws_bearer_token() {
+        return Ok(HttpRequest {
+            method: "POST".into(),
+            url,
+            headers: BTreeMap::from([
+                ("accept".into(), "application/json".into()),
+                ("authorization".into(), format!("Bearer {token}")),
+                ("content-type".into(), "application/json".into()),
+            ]),
+            body: body_str,
+        });
+    }
+
+    let credentials = resolved.aws_credentials()?;
     let mut headers = BTreeMap::from([
         ("accept".into(), "application/json".into()),
         ("content-type".into(), "application/json".into()),
@@ -226,7 +240,6 @@ pub(super) fn build_bedrock_tool_use_request(
     resolved: &ResolvedProviderExecution,
     request: &ToolUseRequest,
 ) -> Result<HttpRequest> {
-    let credentials = resolved.aws_credentials()?;
     let url = format!(
         "{}/model/{}/invoke",
         resolved.api_base().trim_end_matches('/'),
@@ -281,6 +294,22 @@ pub(super) fn build_bedrock_tool_use_request(
     }
 
     let body_str = serde_json::to_string(&body)?;
+
+    // Prefer bearer token when available (no signing required).
+    if let Ok((token, _region)) = resolved.aws_bearer_token() {
+        return Ok(HttpRequest {
+            method: "POST".into(),
+            url,
+            headers: BTreeMap::from([
+                ("accept".into(), "application/json".into()),
+                ("authorization".into(), format!("Bearer {token}")),
+                ("content-type".into(), "application/json".into()),
+            ]),
+            body: body_str,
+        });
+    }
+
+    let credentials = resolved.aws_credentials()?;
     let mut headers = BTreeMap::from([
         ("accept".into(), "application/json".into()),
         ("content-type".into(), "application/json".into()),
