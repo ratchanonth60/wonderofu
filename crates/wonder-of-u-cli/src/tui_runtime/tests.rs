@@ -628,7 +628,8 @@ fn controller_selects_theme_from_picker() {
     assert!(controller.pending_theme_picker.is_none());
     assert!(controller.dialog.is_none());
     assert_eq!(controller.state.theme.as_deref(), Some("midnight"));
-    assert!(controller.view().footer.contains("theme:midnight"));
+    // Compact footer no longer carries verbose "theme:midnight" metadata; just verify it renders.
+    assert!(controller.view().footer.contains("▸▸"));
     assert!(matches!(
         controller.state.messages.last().map(|message| &message.payload),
         Some(MessagePayload::Command { input, output })
@@ -749,9 +750,8 @@ fn controller_hydrates_persisted_fast_and_effort_on_launch() {
     assert_eq!(controller.state.theme.as_deref(), Some("midnight"));
     assert_eq!(controller.state.effort_level.as_deref(), Some("high"));
     assert!(controller.state.fast_mode);
-    assert!(controller.view().footer.contains("theme:midnight"));
-    assert!(controller.view().footer.contains("effort:high"));
-    assert!(controller.view().footer.contains("fast:on"));
+    // Compact footer shows only permission/vim hints; verbose metadata (theme/effort/fast) removed.
+    assert!(controller.view().footer.contains("▸▸"));
 }
 
 #[test]
@@ -773,11 +773,12 @@ fn controller_hydrates_persisted_vim_mode_setting() {
     .expect("controller");
 
     assert!(!controller.vim_enabled);
-    assert!(controller.view().footer.contains("vim:off"));
+    // Compact footer only shows vim hint when vim is *on*; "vim:off" is intentionally absent.
+    assert!(controller.view().footer.contains("▸▸"));
 
     send_prompt_key(&mut controller, picker_key(KeyCode::Esc));
     assert_eq!(controller.vim.mode(), VimMode::Insert);
-    assert!(controller.view().footer.contains("vim:off"));
+    assert!(controller.view().footer.contains("▸▸"));
 }
 
 #[test]
@@ -798,7 +799,7 @@ fn controller_sets_session_color_from_command() {
 
     assert_eq!(controller.state.session_color.as_deref(), Some("purple"));
     assert_eq!(controller.status_note.as_deref(), Some("color purple"));
-    assert!(controller.view().footer.contains("color:purple"));
+    assert!(controller.view().footer.contains("▸▸"));
     assert!(matches!(
         controller.state.messages.last().map(|message| &message.payload),
         Some(MessagePayload::Command { input, output })
@@ -858,7 +859,7 @@ fn controller_toggles_brief_mode_from_command() {
 
     assert!(controller.state.brief_mode);
     assert_eq!(controller.status_note.as_deref(), Some("brief on"));
-    assert!(controller.view().footer.contains("brief:on"));
+    assert!(controller.view().footer.contains("▸▸"));
     assert!(matches!(
         controller.state.messages.last().map(|message| &message.payload),
         Some(MessagePayload::Command { input, output })
@@ -918,7 +919,7 @@ fn controller_toggles_fast_mode_from_command() {
 
     assert!(controller.state.fast_mode);
     assert_eq!(controller.status_note.as_deref(), Some("fast on"));
-    assert!(controller.view().footer.contains("fast:on"));
+    assert!(controller.view().footer.contains("▸▸"));
     assert!(matches!(
         controller.state.messages.last().map(|message| &message.payload),
         Some(MessagePayload::Command { input, output })
@@ -978,7 +979,7 @@ fn controller_sets_effort_from_command() {
 
     assert_eq!(controller.state.effort_level.as_deref(), Some("high"));
     assert_eq!(controller.status_note.as_deref(), Some("effort high"));
-    assert!(controller.view().footer.contains("effort:high"));
+    assert!(controller.view().footer.contains("▸▸"));
     assert!(matches!(
         controller.state.messages.last().map(|message| &message.payload),
         Some(MessagePayload::Command { input, output })
@@ -4238,7 +4239,8 @@ fn controller_restores_status_note_from_snapshot_resume() {
     assert_eq!(controller.state.session_color.as_deref(), Some("purple"));
     assert_eq!(controller.status_note.as_deref(), Some("color purple"));
     assert!(controller.view().dialog.is_none());
-    assert!(controller.view().footer.contains("color:purple"));
+    // Compact footer does not carry verbose metadata; verify compact marker is present.
+    assert!(controller.view().footer.contains("▸▸"));
 }
 
 #[test]
@@ -4272,7 +4274,8 @@ fn controller_preserves_restored_permission_mode_on_resume() {
     .expect("controller");
 
     assert_eq!(controller.state.permission_mode, PermissionMode::Plan);
-    assert!(controller.view().footer.contains("permission=plan"));
+    // "plan" appears verbatim in the compact footer's permission label slot.
+    assert!(controller.view().footer.contains("plan"));
 }
 
 #[test]
@@ -4341,15 +4344,16 @@ fn controller_preserves_restored_provider_selection_on_resume() {
         Some("claude-3-7-sonnet-latest")
     );
     assert!(controller.state.auth.is_ready());
-    assert!(controller.view().footer.contains("runtime=tool-loop"));
+    // Compact footer carries the permission-mode hint; provider info lives in sidebar.
+    assert!(controller.view().footer.contains("▸▸"));
 }
 
 #[test]
 fn prompt_cursor_tracks_edit_position_inside_prompt_panel() {
-    // Box layout (40×10): prompt at y=5, height=3 → content at x=1, y=6.
-    // cursor=2 → after "ab" → line=0, col=2, x_offset=2 → (1+2+2, 6) = (5, 6).
+    // CHROME_HEIGHT=1: available=9, prompt at y=6, height=3 → content at x=1, y=7.
+    // cursor=2 → after "ab" → line=0, col=2, x_offset=2 → (1+2+2, 7) = (5, 7).
     let (x, y) = prompt_cursor_position(40, 10, "abc", 2, false, false);
-    assert_eq!((x, y), (5, 6));
+    assert_eq!((x, y), (5, 7));
 }
 
 /// Verify that enabling brief mode injects the hint into the system prompt
@@ -4490,6 +4494,7 @@ fn ratatui_empty_repl_renders_header_and_status() {
     let theme = wonder_of_u_tui::Theme::default();
     let rows = render_to_test_backend(60, 20, &view, &theme);
 
+    // Status row is removed (CHROME_HEIGHT=1); the compact footer row renders the footer field.
     // There must be at least one row containing the session title.
     let has_title = rows.iter().any(|r| r.contains("Test Session"));
     assert!(
@@ -4497,11 +4502,9 @@ fn ratatui_empty_repl_renders_header_and_status() {
         "title 'Test Session' not found in rendered output"
     );
 
-    // Status line must contain the model/mode text.
-    let has_status = rows
-        .iter()
-        .any(|r| r.contains("claude") || r.contains("default"));
-    assert!(has_status, "status text not found in rendered output");
+    // The single compact footer row must contain the footer text set in the view.
+    let has_footer = rows.iter().any(|r| r.contains("Ctrl+C"));
+    assert!(has_footer, "footer text not found in rendered output");
 }
 
 #[test]
@@ -6359,24 +6362,25 @@ fn sanitize_error_plain_message_passes_through_unchanged() {
 // ── prompt / history-search cursor at small terminal height ──────────────────
 
 /// Box-layout cap sanity: at height=6 the renderer uses `(h/3).max(3) = 3`.
-/// A 3-line prompt has uncapped box height = 5, capped to 3.  The prompt rect
-/// lands at y=1 so the first content row is y=2.
+/// A 3-line prompt has uncapped box height = 5, capped to 3.  With
+/// CHROME_HEIGHT=1 the prompt rect lands at y=2 so the first content row is y=3.
 #[test]
 fn prompt_cursor_position_small_terminal_respects_renderer_cap() {
     // 3-line prompt: uncapped box height = 5.  At height=6, cap = max(2, 3) = 3.
     let (x, y) = prompt_cursor_position(40, 6, "line1\nline2\nline3", 5, false, false);
     // cursor=5 → "line1" (no newline seen) → line=0, col=5, first-line x_offset=2.
-    // layout.prompt = Rect(0, 1, 40, 3), content_x=1, content_y=2, content_height=1.
+    // CHROME_HEIGHT=1: available=5, messages=2, prompt=(0,2,40,3),
+    // content_x=1, content_y=3, content_height=1.
     assert_eq!(
         (x, y),
-        (8, 2),
+        (8, 3),
         "cursor row must land inside the prompt area rendered at the correct cap; got ({x}, {y})"
     );
 }
 
 /// Same cap-formula check for `history_search_cursor_position`.  At height=6
-/// (box cap=3) a history-search view with no match has uncapped height=5 which
-/// gets capped to 3, placing content_y=2.
+/// (box cap=3, CHROME_HEIGHT=1) a history-search view with no match has uncapped
+/// height=5 which gets capped to 3, placing content_y=3.
 #[test]
 fn history_search_cursor_position_small_terminal_respects_renderer_cap() {
     let view = HistorySearchView {
@@ -6386,10 +6390,11 @@ fn history_search_cursor_position_small_terminal_respects_renderer_cap() {
         match_total: 0,
     };
     // query_cursor=3 → x = content_x(1) + "search: ".len()(8) + 3 = 12
+    // CHROME_HEIGHT=1: available=5, messages=2, prompt=(0,2,40,3), content_y=3.
     let (x, y) = history_search_cursor_position(40, 6, &view, 3, false, false);
     assert_eq!(
         (x, y),
-        (12, 2),
+        (12, 3),
         "history-search cursor must use the renderer's box cap; got ({x}, {y})"
     );
 }
@@ -6403,32 +6408,31 @@ fn prompt_cursor_position_continuation_line_has_no_marker_offset() {
     // "abc\ndef" with cursor=6 points to 'f' on the second line.
     // Processing "abc\nde" → a(col=1), b(col=2), c(col=3), \n(line=1, col=0),
     // d(col=1), e(col=2) → line=1, col=2.
-    // On 40×16 (no cap): prompt_height("abc\ndef")=4 (2 lines + 2 borders).
-    //   cap = max(5, 3) = 5; capped = 4 (uncapped fits).
-    //   layout.prompt = Rect(0, 10, 40, 4) → content_x=1, content_y=11.
-    //   content_height = 2 (4 − 2 borders).
-    // line=1 is within content_height − the continuation path applies.
+    // On 40×16 (CHROME_HEIGHT=1): available=15, cap=max(5,3)=5.
+    //   prompt_height("abc\ndef")=4 (2 lines + 2 borders); capped=4 (fits).
+    //   message_height=15-4=11; prompt = Rect(0, 11, 40, 4).
+    //   content_x=1, content_y=12, content_height=2.
+    // line=1 is within content_height — the continuation path applies.
     //   x = content_x(1) + x_offset(0) + col(2) = 3
-    //   y = content_y(11) + line(1) = 12
+    //   y = content_y(12) + line(1) = 13
     let (x, y) = prompt_cursor_position(40, 16, "abc\ndef", 6, false, false);
     assert_eq!(
         (x, y),
-        (3, 12),
+        (3, 13),
         "continuation-line cursor must use x_offset=0 (no marker); got ({x}, {y})"
     );
 }
 
 // ── wide-terminal cursor regression (sidebar column deduction) ────────────────
 
-/// On a 100-column terminal the renderer carves out a 22-col sidebar plus a
-/// 1-col `│` separator, leaving `main_w = 77` for the prompt box.  Before the
-/// fix, both cursor helpers used the raw terminal width (100) for layout, so a
-/// prompt/query long enough to push the cursor past column 76 would land on or
-/// inside the separator/sidebar area.
+/// On a 100-column terminal the renderer carves out SIDEBAR_WIDTH+1 columns,
+/// leaving `effective_width = 61` for the prompt box.  Before the fix, both
+/// cursor helpers used the raw terminal width (100) for layout, so a prompt/query
+/// long enough to push the cursor past column 60 would land inside the sidebar.
 ///
-/// Concrete geometry for width=100, height=24 with sidebar_active=true:
+/// Concrete geometry for width=100, height=24, CHROME_HEIGHT=1, sidebar_active=true:
 ///   effective_width = 61
-///   prompt box = Rect(0, 19, 61, 3)  →  content_x=1, content_width=59
+///   prompt box = Rect(0, 20, 61, 3)  →  content_x=1, content_width=59
 ///   first-line max cursor x = content_x(1) + x_offset(2) + max_col(56) = 59
 ///   separator sits at column 61 (render_shell draws │ there)
 ///   → cursor x must be < 61
@@ -6436,7 +6440,7 @@ fn prompt_cursor_position_continuation_line_has_no_marker_offset() {
 #[test]
 fn prompt_cursor_position_wide_terminal_stays_inside_main_area() {
     // 80-char single-line prompt; cursor at the very end.  Before the fix the
-    // unclamped x would be 1+2+80 = 83, well inside the sidebar (78..99).
+    // unclamped x would be 1+2+80 = 83, well inside the sidebar (61..99).
     let prompt = "a".repeat(80);
     let (x, y) = prompt_cursor_position(100, 24, &prompt, 80, true, false);
 
@@ -6446,9 +6450,10 @@ fn prompt_cursor_position_wide_terminal_stays_inside_main_area() {
         "cursor x ({x}) must be left of the │ separator at column 61"
     );
     // Max reachable: content_x(1) + x_offset(2) + max_col(56) = 59.
+    // CHROME_HEIGHT=1: content_y = 20 + 1 = 21.
     assert_eq!(
         (x, y),
-        (59, 20),
+        (59, 21),
         "wide-terminal cursor must clamp to the rightmost content cell; got ({x}, {y})"
     );
 }
@@ -6477,9 +6482,11 @@ fn history_search_cursor_wide_terminal_stays_inside_main_area() {
         x < 61,
         "history-search cursor x ({x}) must be left of the │ separator at column 61"
     );
+    // CHROME_HEIGHT=1: history search (3-line box → 5 rows capped) places
+    // prompt at y=18; content_y=19.
     assert_eq!(
         (x, y),
-        (59, 18),
+        (59, 19),
         "wide-terminal history-search cursor must clamp to rightmost content cell; got ({x}, {y})"
     );
 }
@@ -6491,11 +6498,12 @@ fn history_search_cursor_wide_terminal_stays_inside_main_area() {
 fn prompt_cursor_position_just_below_sidebar_threshold_uses_full_width() {
     // At width=99 shell_main_area_width returns 99 regardless of sidebar_active.
     // 10-char prompt, cursor at end → line=0, col=10, x_offset=2.
-    // effective_width=99 → content_width=97 → max_col=94 → x=1+2+10=13.
+    // effective_width=99; CHROME_HEIGHT=1: available=19, messages=16, prompt at y=16.
+    // content_y=17, x=1+2+10=13.
     let (x, y) = prompt_cursor_position(99, 20, &"a".repeat(10), 10, true, false);
     assert_eq!(
         (x, y),
-        (13, 16),
+        (13, 17),
         "terminal just below sidebar threshold must use full width; got ({x}, {y})"
     );
 }
