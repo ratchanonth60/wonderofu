@@ -32,6 +32,7 @@ mod setup;
 mod skills;
 mod status;
 mod summary;
+pub mod tag;
 mod task_runtime;
 mod tui;
 pub(crate) mod workflow;
@@ -64,7 +65,6 @@ use prompt::PromptCommand;
 use rewind::RewindCommand;
 use session::{
     ClearCommand, CompactCommand, ExportCommand, RenameCommand, ResumeCommand, SessionCommand,
-    TagCommand,
 };
 use setup::SetupCommand;
 use skills::SkillsCommand;
@@ -74,6 +74,7 @@ use status::{
     UpgradeCommand, UsageCommand, VersionCommand,
 };
 use summary::SummaryCommand;
+use tag::TagCommand;
 use tui::TuiCommand;
 use workflow::{
     AgentsCommand, BriefCommand, ColorCommand, CommitCommand, CommitPushPrCommand, EffortCommand,

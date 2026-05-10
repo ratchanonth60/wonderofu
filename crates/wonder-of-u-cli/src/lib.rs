@@ -162,6 +162,21 @@ pub enum Commands {
         /// Stores the session id
         session_id: String,
     },
+    /// Add or manage tags on persisted sessions.
+    Tag {
+        #[arg()]
+        /// Tag name to add or remove.
+        name: Option<String>,
+        #[arg(long)]
+        /// Stores the session id.
+        session: Option<String>,
+        #[arg(long)]
+        /// Remove the tag instead of adding it.
+        remove: bool,
+        #[arg(long)]
+        /// List all sessions grouped by tag.
+        list: bool,
+    },
     /// Print a summary of a conversation session.
     Summary {
         #[arg(long)]
@@ -979,6 +994,28 @@ fn to_invocation(command: Commands) -> Result<CommandInvocation> {
             }
         }
         Commands::Resume { session_id } => commands::invocation_from_tokens("resume", [session_id]),
+        Commands::Tag {
+            name,
+            session,
+            remove,
+            list,
+        } => {
+            let mut tokens = Vec::new();
+            if let Some(session) = session {
+                tokens.push("--session".into());
+                tokens.push(session);
+            }
+            if remove {
+                tokens.push("--remove".into());
+            }
+            if list {
+                tokens.push("--list".into());
+            }
+            if let Some(name) = name {
+                tokens.push(name);
+            }
+            commands::invocation_from_tokens("tag", tokens)
+        }
         Commands::Summary { session, format } => {
             let mut tokens = Vec::new();
             if let Some(session) = session {
@@ -2930,6 +2967,76 @@ mod tests {
         assert!(exported.contains("\"transcript\""));
         assert!(exported.contains("\"resume\""));
         assert!(exported.contains("\"source\": \"snapshot\""));
+    }
+
+    #[test]
+    fn tag_command_round_trips_through_cli() {
+        let dir = unique_test_dir("cli-tag");
+        let storage_dir = dir.to_string_lossy().into_owned();
+
+        let mut created = Vec::new();
+        run_from(
+            vec![
+                "wonder-of-u".to_string(),
+                "--storage-dir".to_string(),
+                storage_dir.clone(),
+                "session".to_string(),
+                "new".to_string(),
+                "--title".to_string(),
+                "Tagged Session".to_string(),
+            ],
+            &mut created,
+        )
+        .expect("create session");
+        let created = String::from_utf8(created).expect("utf8");
+        let session_id = extract_value(&created, "session_id=").to_string();
+
+        let mut tagged = Vec::new();
+        run_from(
+            vec![
+                "wonder-of-u".to_string(),
+                "--storage-dir".to_string(),
+                storage_dir.clone(),
+                "tag".to_string(),
+                "bugfix".to_string(),
+            ],
+            &mut tagged,
+        )
+        .expect("tag session");
+        let tagged = String::from_utf8(tagged).expect("utf8");
+        assert!(tagged.contains(&format!("session_id={session_id}")));
+        assert!(tagged.contains("session_tags=bugfix"));
+
+        let mut listed = Vec::new();
+        run_from(
+            vec![
+                "wonder-of-u".to_string(),
+                "--storage-dir".to_string(),
+                storage_dir.clone(),
+                "session".to_string(),
+                "list".to_string(),
+            ],
+            &mut listed,
+        )
+        .expect("list sessions");
+        let listed = String::from_utf8(listed).expect("utf8");
+        assert!(listed.contains("session[0].tags=#bugfix"));
+
+        let mut tag_list = Vec::new();
+        run_from(
+            vec![
+                "wonder-of-u".to_string(),
+                "--storage-dir".to_string(),
+                storage_dir,
+                "tag".to_string(),
+                "--list".to_string(),
+            ],
+            &mut tag_list,
+        )
+        .expect("list tags");
+        let tag_list = String::from_utf8(tag_list).expect("utf8");
+        assert!(tag_list.contains("tag[0].name=bugfix"));
+        assert!(tag_list.contains(&format!("tag[0].session[0].id={session_id}")));
     }
 
     #[test]
