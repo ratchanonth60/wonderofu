@@ -72,8 +72,8 @@ pub use app::{
     PendingProviderToolCall, PendingProviderToolResult, PendingToolApprovalState,
     PendingToolConversationRound, QueuePlacement, QueuedCommand, RemoteTaskMetadata,
     RemoteTaskState, RemoteTaskType, SessionState, StateStore, TaskBackendFlow, TaskBackendState,
-    TaskBackendSupport, TaskKind, TaskState, TaskStatus, TokenUsage, input_mode_label,
-    permission_mode_label, session_footer_text, session_status_text,
+    TaskBackendSupport, TaskKind, TaskState, TaskStatus, ThinkingEffort, TokenUsage,
+    input_mode_label, permission_mode_label, session_footer_text, session_status_text,
 };
 /// Re-exports items from `command`
 pub use command::{
