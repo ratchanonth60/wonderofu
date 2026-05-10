@@ -1663,6 +1663,7 @@ fn append_ellipsis(text: &str, max_width: usize) -> String {
 
 #[cfg(test)]
 mod tests {
+    use ::time::{Duration, OffsetDateTime};
     use wonder_of_u_core::{MessagePayload, SessionId};
 
     use super::*;
@@ -1725,7 +1726,7 @@ mod tests {
     #[test]
     fn rich_message_views_group_tool_uses_and_results() {
         let session_id = SessionId::new();
-        let messages = vec![
+        let mut messages = vec![
             MessageEnvelope::new(
                 session_id,
                 MessagePayload::AssistantToolUse {
@@ -1761,50 +1762,66 @@ mod tests {
                 },
             ),
         ];
+        let base = OffsetDateTime::UNIX_EPOCH;
+        messages[0].timestamp = base;
+        messages[1].timestamp = base + Duration::seconds(1);
+        messages[2].timestamp = base + Duration::seconds(2);
+        messages[3].timestamp = base + Duration::seconds(4);
 
+        let views = rich_message_views(&messages, false);
+        assert_eq!(views.len(), 1);
+        let RichMessageView::ToolGroup(group) = &views[0] else {
+            panic!("expected grouped tool view, got {views:?}");
+        };
+        assert_eq!(group.tool, "bash");
+        assert_eq!(group.calls.len(), 2);
         assert_eq!(
-            rich_message_views(&messages, false),
-            vec![RichMessageView::ToolGroup(GroupedToolCallView {
-                tool: "bash".into(),
-                calls: vec![
-                    ToolCallView {
-                        use_id: use_id("00000000-0000-0000-0000-000000000001"),
-                        input: Some(
-                            serde_json::json!({ "command": "cargo test -p wonder-of-u-tui" })
-                        ),
-                        result: Some(RejectedToolMessageView {
-                            kind: RejectedToolMessageKind::Success,
-                            status: ToolResultStatus::Success,
-                            detail: "tests passed".into(),
-                        }),
-                        elapsed_secs: None,
-                    },
-                    ToolCallView {
-                        use_id: use_id("00000000-0000-0000-0000-000000000002"),
-                        input: Some(serde_json::json!({ "command": "rm -rf /tmp/build" })),
-                        result: Some(RejectedToolMessageView {
-                            kind: RejectedToolMessageKind::Rejected,
-                            status: ToolResultStatus::Rejected,
-                            detail: "Tool use rejected by the user".into(),
-                        }),
-                        elapsed_secs: None,
-                    },
-                ],
-            })]
+            group.calls[0].use_id,
+            use_id("00000000-0000-0000-0000-000000000001")
         );
+        assert_eq!(
+            group.calls[0].input,
+            Some(serde_json::json!({ "command": "cargo test -p wonder-of-u-tui" }))
+        );
+        assert_eq!(
+            group.calls[0].result,
+            Some(RejectedToolMessageView {
+                kind: RejectedToolMessageKind::Success,
+                status: ToolResultStatus::Success,
+                detail: "tests passed".into(),
+            })
+        );
+        assert_eq!(group.calls[0].elapsed_secs, Some(2.0));
+        assert_eq!(
+            group.calls[1].use_id,
+            use_id("00000000-0000-0000-0000-000000000002")
+        );
+        assert_eq!(
+            group.calls[1].input,
+            Some(serde_json::json!({ "command": "rm -rf /tmp/build" }))
+        );
+        assert_eq!(
+            group.calls[1].result,
+            Some(RejectedToolMessageView {
+                kind: RejectedToolMessageKind::Rejected,
+                status: ToolResultStatus::Rejected,
+                detail: "Tool use rejected by the user".into(),
+            })
+        );
+        assert_eq!(group.calls[1].elapsed_secs, Some(3.0));
 
-        let lines = rich_message_views(&messages, false)
+        let lines = views
             .into_iter()
             .flat_map(|view| view.display_lines(120, false))
             .collect::<Vec<_>>();
         assert_eq!(
             lines,
             vec![
-                MessageLineView::new("● Run(Tests)", MessageRole::Tool,),
+                MessageLineView::new("● Run(Tests) · 2.0s", MessageRole::Tool,),
                 MessageLineView::new("  └ cargo test -p wonder-of-u-tui", MessageRole::System,),
                 MessageLineView::new("  └ tests passed", MessageRole::System),
                 MessageLineView::new("", MessageRole::System),
-                MessageLineView::new("● Bash(rm -rf /tmp/build)", MessageRole::Error,),
+                MessageLineView::new("● Bash(rm -rf /tmp/build) · 3.0s", MessageRole::Error,),
                 MessageLineView::new("  └ rm -rf /tmp/build", MessageRole::System,),
                 MessageLineView::new("  └ Tool use rejected by the user", MessageRole::Error,),
             ]
@@ -1869,6 +1886,23 @@ mod tests {
                 MessageLineView::new("attachment> image diagram.png", MessageRole::User),
                 MessageLineView::new("  file:///workspace/assets/diagram.png", MessageRole::User,),
             ]
+        );
+    }
+
+    #[test]
+    fn elapsed_time_appended_to_tool_headline() {
+        let call = ToolCallView {
+            use_id: use_id("00000000-0000-0000-0000-000000000001"),
+            input: None,
+            result: None,
+            elapsed_secs: Some(2.5),
+        };
+
+        let summary = ToolActivitySummary::from_call("bash", &call, false);
+        assert!(
+            summary.headline.contains("2.5s"),
+            "expected elapsed in headline: {}",
+            summary.headline
         );
     }
 
