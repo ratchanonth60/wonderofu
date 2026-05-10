@@ -2319,4 +2319,89 @@ mod tests {
         assert_eq!(response.output_text, "Streaming!");
         assert_eq!(deltas, vec!["Streaming!"]);
     }
+
+    // ── provider-local-models: runtime ────────────────────────────────────────
+
+    fn resolved_local_provider(model: Option<&str>) -> ResolvedProviderExecution {
+        let settings = AgentSettings {
+            selected_provider: Some("local".into()),
+            selected_model: model.map(ToString::to_string),
+            ..AgentSettings::default()
+        };
+        ProviderResolver::builtin()
+            .resolve_execution_with_env(
+                &settings,
+                &StoredCredentials::default(),
+                std::iter::empty::<(&str, String)>(),
+                &ProviderSelection::default(),
+            )
+            .expect("resolve local provider")
+    }
+
+    #[test]
+    fn local_provider_request_omits_authorization_header() {
+        let transport = RecordingTransport::with_json_body(serde_json::json!({
+            "choices": [{"finish_reason": "stop", "message": {"content": "hi"}}],
+            "usage": {"prompt_tokens": 5, "completion_tokens": 1}
+        }));
+        let runtime = ProviderRuntime::with_transport(transport.clone() as Arc<dyn HttpTransport>);
+        let resolved = resolved_local_provider(Some("llama3.2"));
+        let request = CompletionRequest::new("Hello");
+
+        runtime
+            .complete(&resolved, &request)
+            .expect("local completion");
+        let recorded = transport.take_request();
+
+        assert!(
+            !recorded.headers.contains_key("authorization"),
+            "local provider must not send an Authorization header; got: {:?}",
+            recorded.headers
+        );
+    }
+
+    #[test]
+    fn local_provider_request_targets_ollama_default_base() {
+        let transport = RecordingTransport::with_json_body(serde_json::json!({
+            "choices": [{"finish_reason": "stop", "message": {"content": "ok"}}],
+            "usage": {"prompt_tokens": 3, "completion_tokens": 1}
+        }));
+        let runtime = ProviderRuntime::with_transport(transport.clone() as Arc<dyn HttpTransport>);
+        let resolved = resolved_local_provider(Some("llama3.2"));
+        let request = CompletionRequest::new("Ping");
+
+        runtime
+            .complete(&resolved, &request)
+            .expect("local completion");
+        let recorded = transport.take_request();
+
+        assert_eq!(
+            recorded.url, "http://localhost:11434/v1/chat/completions",
+            "local provider should default to Ollama base URL"
+        );
+        assert_eq!(recorded.method, "POST");
+    }
+
+    #[test]
+    fn local_provider_request_uses_arbitrary_model_id() {
+        let transport = RecordingTransport::with_json_body(serde_json::json!({
+            "choices": [{"finish_reason": "stop", "message": {"content": "ok"}}],
+            "usage": {"prompt_tokens": 3, "completion_tokens": 1}
+        }));
+        let runtime = ProviderRuntime::with_transport(transport.clone() as Arc<dyn HttpTransport>);
+        let resolved = resolved_local_provider(Some("phi4:14b-q4_K_M"));
+        let request = CompletionRequest::new("Ping");
+
+        runtime
+            .complete(&resolved, &request)
+            .expect("local completion");
+        let recorded = transport.take_request();
+        let body: serde_json::Value = serde_json::from_str(&recorded.body).expect("parse body");
+
+        assert_eq!(
+            body.pointer("/model").and_then(serde_json::Value::as_str),
+            Some("phi4:14b-q4_K_M"),
+            "arbitrary model id must be forwarded verbatim"
+        );
+    }
 }

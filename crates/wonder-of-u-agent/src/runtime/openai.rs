@@ -82,14 +82,18 @@ fn build_openai_request_with_mode(
     Ok(HttpRequest {
         method: "POST".into(),
         url: join_url(resolved.api_base(), "/chat/completions"),
-        headers: BTreeMap::from([
-            ("accept".into(), "application/json".into()),
-            (
-                "authorization".into(),
-                format!("Bearer {}", resolved.api_key()?),
-            ),
-            ("content-type".into(), "application/json".into()),
-        ]),
+        headers: {
+            let mut headers = BTreeMap::from([
+                ("accept".into(), "application/json".into()),
+                ("content-type".into(), "application/json".into()),
+            ]);
+            // Auth-free providers (e.g. local/Ollama) do not require an
+            // Authorization header; omit it rather than sending a blank value.
+            if let Some(key) = resolved.optional_api_key() {
+                headers.insert("authorization".into(), format!("Bearer {key}"));
+            }
+            headers
+        },
         body: serde_json::to_string(&body)?,
     })
 }
@@ -144,14 +148,16 @@ pub(super) fn build_openai_tool_use_request(
     Ok(HttpRequest {
         method: "POST".into(),
         url: join_url(resolved.api_base(), "/chat/completions"),
-        headers: BTreeMap::from([
-            ("accept".into(), "application/json".into()),
-            (
-                "authorization".into(),
-                format!("Bearer {}", resolved.api_key()?),
-            ),
-            ("content-type".into(), "application/json".into()),
-        ]),
+        headers: {
+            let mut headers = BTreeMap::from([
+                ("accept".into(), "application/json".into()),
+                ("content-type".into(), "application/json".into()),
+            ]);
+            if let Some(key) = resolved.optional_api_key() {
+                headers.insert("authorization".into(), format!("Bearer {key}"));
+            }
+            headers
+        },
         body: serde_json::to_string(&body)?,
     })
 }
