@@ -84,9 +84,9 @@ use tag::TagCommand;
 use tui::TuiCommand;
 use workflow::{
     AgentsCommand, BriefCommand, ColorCommand, CommitCommand, CommitPushPrCommand, EffortCommand,
-    ExitCommand, FastCommand, HooksCommand, KeybindingsCommand, PermissionsCommand, PlanCommand,
-    PrivacySettingsCommand, ReviewCommand, SecurityReviewCommand, StatuslineCommand, TasksCommand,
-    TerminalSetupCommand, ThemeCommand, VimCommand,
+    ExitCommand, FastCommand, HooksCommand, KeybindingsCommand, OptimizeTonkenCommand,
+    PermissionsCommand, PlanCommand, PrivacySettingsCommand, ReviewCommand, SecurityReviewCommand,
+    StatuslineCommand, TasksCommand, TerminalSetupCommand, ThemeCommand, VimCommand,
 };
 
 /// Builds the registry
@@ -150,6 +150,7 @@ pub fn registry(storage_dir: Option<PathBuf>) -> Result<CommandRegistry> {
         PrivacySettingsCommand::command_spec(),
         ColorCommand::command_spec(),
         BriefCommand::command_spec(),
+        OptimizeTonkenCommand::command_spec(),
         FastCommand::command_spec(),
         CommitCommand::command_spec(),
         CommitPushPrCommand::command_spec(),
@@ -270,6 +271,7 @@ pub fn registry(storage_dir: Option<PathBuf>) -> Result<CommandRegistry> {
     registry.register(Arc::new(PrivacySettingsCommand::new()))?;
     registry.register(Arc::new(ColorCommand::new()))?;
     registry.register(Arc::new(BriefCommand::new()))?;
+    registry.register(Arc::new(OptimizeTonkenCommand::new()))?;
     registry.register(Arc::new(FastCommand::new(storage_dir.clone())))?;
     registry.register(Arc::new(CommitCommand::new()))?;
     registry.register(Arc::new(CommitPushPrCommand::new()))?;

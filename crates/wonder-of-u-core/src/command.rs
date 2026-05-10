@@ -218,6 +218,8 @@ pub struct CommandContext {
     pub brief_mode: bool,
     /// Stores the fast mode
     pub fast_mode: bool,
+    /// Stores whether token-optimisation mode is enabled for the session.
+    pub optimize_token_mode: bool,
     /// Stores the session tags
     pub session_tags: Vec<String>,
     /// Stores the additional working directories

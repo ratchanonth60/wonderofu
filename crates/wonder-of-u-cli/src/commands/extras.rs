@@ -2074,6 +2074,11 @@ const HELP_SLASH_COMMANDS: &[(&str, &str)] = &[
     ("/clear", "Clear conversation history"),
     ("/compact", "Compact conversation context"),
     ("/thinking", "Toggle extended thinking on/off"),
+    ("/brief", "Toggle concise-response mode"),
+    (
+        "/optimize-tonken",
+        "Toggle token-optimisation mode (alias: /optimize-token)",
+    ),
     ("/stats", "Show session statistics"),
     ("/login", "Authenticate with a provider"),
     ("/logout", "Sign out"),
@@ -2815,6 +2820,7 @@ mod tests {
             effort_level: None,
             brief_mode: false,
             fast_mode: false,
+            optimize_token_mode: false,
             session_tags: Vec::new(),
             additional_working_directories: Vec::new(),
         }

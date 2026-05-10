@@ -125,6 +125,7 @@ fn test_context(cwd: &Path) -> CommandContext {
         effort_level: None,
         brief_mode: false,
         fast_mode: false,
+        optimize_token_mode: false,
         session_tags: Vec::new(),
         additional_working_directories: Vec::new(),
     }
@@ -7263,5 +7264,108 @@ fn binary_on_path_returns_false_for_nonexistent() {
     assert!(
         !binary_on_path("__wonder_of_u_definitely_not_a_real_binary__"),
         "nonexistent binary must not be found on PATH"
+    );
+}
+
+#[test]
+fn controller_toggles_optimize_token_mode_from_command() {
+    let dir = unique_test_dir("tui-optimize-tonken-toggle");
+    let registry = commands::registry(Some(dir.clone())).expect("registry");
+    let mut controller = TuiController::new(
+        test_context(&dir),
+        &registry,
+        Some(dir.as_path()),
+        TuiLaunchOptions { session_id: None },
+    )
+    .expect("controller");
+
+    controller
+        .execute_slash_command("/optimize-tonken")
+        .expect("toggle optimize-tonken");
+
+    assert!(controller.state.optimize_token_mode);
+    assert_eq!(controller.status_note.as_deref(), Some("optimize token on"));
+    assert!(matches!(
+        controller.state.messages.last().map(|message| &message.payload),
+        Some(MessagePayload::Command { input, output })
+            if input == "/optimize-tonken"
+                && output
+                    .as_deref()
+                    .is_some_and(|text| text.contains("optimize_token_mode=true"))
+    ));
+}
+
+#[test]
+fn controller_toggles_optimize_token_mode_via_alias() {
+    let dir = unique_test_dir("tui-optimize-token-alias-toggle");
+    let registry = commands::registry(Some(dir.clone())).expect("registry");
+    let mut controller = TuiController::new(
+        test_context(&dir),
+        &registry,
+        Some(dir.as_path()),
+        TuiLaunchOptions { session_id: None },
+    )
+    .expect("controller");
+
+    controller
+        .execute_slash_command("/optimize-token")
+        .expect("toggle via alias");
+
+    assert!(controller.state.optimize_token_mode);
+    assert_eq!(controller.status_note.as_deref(), Some("optimize token on"));
+}
+
+#[test]
+fn controller_shows_optimize_token_notice_dialog() {
+    let dir = unique_test_dir("tui-optimize-tonken-notice");
+    let registry = commands::registry(Some(dir.clone())).expect("registry");
+    let mut controller = TuiController::new(
+        test_context(&dir),
+        &registry,
+        Some(dir.as_path()),
+        TuiLaunchOptions { session_id: None },
+    )
+    .expect("controller");
+
+    controller
+        .execute_slash_command("/optimize-tonken show")
+        .expect("show optimize-tonken");
+
+    assert_eq!(controller.status_note.as_deref(), Some("optimize token"));
+    assert!(matches!(
+        controller.dialog.as_ref(),
+        Some(dialog) if dialog.title == "Optimize Token"
+    ));
+    assert!(matches!(
+        controller.state.messages.last().map(|message| &message.payload),
+        Some(MessagePayload::Command { input, output })
+            if input == "/optimize-tonken show"
+                && output
+                    .as_deref()
+                    .is_some_and(|text| text.contains("## Optimize Token"))
+    ));
+}
+
+#[test]
+fn controller_optimize_token_flag_persists_across_clear() {
+    let dir = unique_test_dir("tui-optimize-tonken-persist");
+    let registry = commands::registry(Some(dir.clone())).expect("registry");
+    let mut controller = TuiController::new(
+        test_context(&dir),
+        &registry,
+        Some(dir.as_path()),
+        TuiLaunchOptions { session_id: None },
+    )
+    .expect("controller");
+
+    controller
+        .execute_slash_command("/optimize-tonken")
+        .expect("enable");
+    assert!(controller.state.optimize_token_mode);
+
+    controller.execute_slash_command("/clear").expect("clear");
+    assert!(
+        controller.state.optimize_token_mode,
+        "optimize_token_mode should survive /clear"
     );
 }
