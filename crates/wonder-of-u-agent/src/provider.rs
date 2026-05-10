@@ -695,6 +695,15 @@ impl ProviderRegistry {
                 "OPENCODE_API_KEY",
                 "gpt-4o",
             ),
+            // Synthetic AI – OpenAI-compatible gateway; base URL is approximate.
+            // Authenticates with SYNTHETIC_API_KEY.
+            (
+                "synthetic",
+                "Synthetic AI",
+                "https://api.synthetic.ai/v1",
+                "SYNTHETIC_API_KEY",
+                "synthetic-1",
+            ),
         ];
         for &(id, display_name, api_base, api_key_env, default_model) in gateways {
             registry
@@ -2958,5 +2967,385 @@ mod tests {
             ollama_host_to_openai_base("http://localhost:11434/v1/"),
             "http://localhost:11434/v1"
         );
+    }
+
+    // ── provider-matrix-tests ─────────────────────────────────────────────────
+    //
+    // Each entry drives auto-provider selection from a single injected env var.
+    // The resolver must pick exactly the documented provider when that variable
+    // is the only key present (all other providers remain unconfigured).
+    //
+    // Providers that require multiple env vars (Bedrock, Vertex, Azure) are
+    // covered by dedicated execution tests below rather than the matrix sweep.
+
+    /// Verifies that every single-env-var API-key provider auto-selects itself
+    /// when its advertised env var is the sole key present in the environment.
+    #[test]
+    fn provider_matrix_every_api_key_env_var_auto_selects_correct_provider() {
+        // (env_var, dummy_value, expected_provider_id)
+        // The dummy value is arbitrary — we only need the key to be non-empty
+        // so the resolver considers auth ready.
+        let cases: &[(&str, &str, &str)] = &[
+            ("HYPER_API_KEY", "test-hyper-key", "hyper"),
+            ("ANTHROPIC_API_KEY", "test-ant-key", "anthropic"),
+            ("OPENAI_API_KEY", "test-oai-key", "openai"),
+            ("VERCEL_API_KEY", "test-vercel-key", "vercel"),
+            ("GEMINI_API_KEY", "test-gemini-key", "gemini"),
+            ("SYNTHETIC_API_KEY", "test-syn-key", "synthetic"),
+            ("ZAI_API_KEY", "test-zai-key", "zai"),
+            ("MINIMAX_API_KEY", "test-mm-key", "minimax"),
+            ("HF_TOKEN", "test-hf-token", "huggingface"),
+            ("CEREBRAS_API_KEY", "test-cbr-key", "cerebras"),
+            ("OPENROUTER_API_KEY", "test-or-key", "openrouter"),
+            ("IONET_API_KEY", "test-ionet-key", "ionet"),
+            ("GROQ_API_KEY", "test-groq-key", "groq"),
+            ("AVIAN_API_KEY", "test-avian-key", "avian"),
+            ("OPENCODE_API_KEY", "test-opencode-key", "opencode"),
+        ];
+
+        let resolver = ProviderResolver::builtin();
+
+        for &(env_var, key_value, expected_provider) in cases {
+            let report = resolver
+                .resolve_with_env(
+                    &AgentSettings::default(),
+                    &StoredCredentials::default(),
+                    // Inject only this one key — all other providers stay unauthenticated.
+                    [(env_var, key_value.to_string())],
+                )
+                .unwrap_or_else(|e| panic!("resolve_with_env failed for env var `{env_var}`: {e}"));
+
+            assert_eq!(
+                report.provider.as_deref(),
+                Some(expected_provider),
+                "env var `{env_var}` should auto-select provider `{expected_provider}`"
+            );
+            assert_eq!(
+                report.readiness,
+                ProviderReadiness::Ready,
+                "provider `{expected_provider}` must be Ready when `{env_var}` is set"
+            );
+            assert_eq!(
+                report.auth.source_label(),
+                Some("environment"),
+                "auth for `{expected_provider}` must be sourced from environment"
+            );
+        }
+    }
+
+    /// Azure requires two env vars (endpoint + key); verify readiness when both are present.
+    #[test]
+    fn azure_readiness_requires_api_key_env_var() {
+        let resolver = ProviderResolver::builtin();
+        let settings = AgentSettings {
+            selected_provider: Some("azure".into()),
+            ..AgentSettings::default()
+        };
+
+        // Without key — must be MissingAuth.
+        let missing = resolver
+            .resolve_with_env(
+                &settings,
+                &StoredCredentials::default(),
+                std::iter::empty::<(&str, String)>(),
+            )
+            .expect("azure resolve without key should succeed");
+        assert_eq!(
+            missing.readiness,
+            ProviderReadiness::MissingAuth,
+            "azure should be MissingAuth when AZURE_OPENAI_API_KEY is absent"
+        );
+
+        // With key — must be Ready.
+        let ready = resolver
+            .resolve_with_env(
+                &settings,
+                &StoredCredentials::default(),
+                [("AZURE_OPENAI_API_KEY", "azure-test-key".to_string())],
+            )
+            .expect("azure resolve with key should succeed");
+        assert_eq!(
+            ready.readiness,
+            ProviderReadiness::Ready,
+            "azure should be Ready when AZURE_OPENAI_API_KEY is present"
+        );
+        assert_eq!(ready.auth.source_label(), Some("environment"));
+    }
+
+    /// The `AZURE_OPENAI_API_ENDPOINT` env var is the only way to supply
+    /// Azure's api_base at runtime (the descriptor has `api_base: None`).
+    #[test]
+    fn azure_resolves_api_base_from_endpoint_env_var() {
+        let resolver = ProviderResolver::builtin();
+        let settings = AgentSettings {
+            selected_provider: Some("azure".into()),
+            ..AgentSettings::default()
+        };
+
+        let resolved = resolver
+            .resolve_execution_with_env(
+                &settings,
+                &StoredCredentials::default(),
+                [
+                    (
+                        "AZURE_OPENAI_API_ENDPOINT",
+                        "https://my-azure.openai.azure.com".to_string(),
+                    ),
+                    ("AZURE_OPENAI_API_KEY", "azure-test-key".to_string()),
+                ],
+                &ProviderSelection::default(),
+            )
+            .expect("azure should resolve api_base from AZURE_OPENAI_API_ENDPOINT");
+
+        assert_eq!(
+            resolved.api_base(),
+            "https://my-azure.openai.azure.com",
+            "api_base must come from AZURE_OPENAI_API_ENDPOINT"
+        );
+        assert_eq!(resolved.provider_id(), "azure");
+        assert_eq!(resolved.auth_source(), Some(AuthSource::Environment));
+    }
+
+    /// Azure fails to produce an execution when `AZURE_OPENAI_API_ENDPOINT` is
+    /// absent and no settings override fills the gap.
+    #[test]
+    fn azure_execution_fails_without_endpoint_env_var() {
+        let resolver = ProviderResolver::builtin();
+        let settings = AgentSettings {
+            selected_provider: Some("azure".into()),
+            ..AgentSettings::default()
+        };
+
+        let error = resolver
+            .resolve_execution_with_env(
+                &settings,
+                &StoredCredentials::default(),
+                // Provide the key but not the endpoint.
+                [("AZURE_OPENAI_API_KEY", "azure-test-key".to_string())],
+                &ProviderSelection::default(),
+            )
+            .expect_err("azure without endpoint env var must fail");
+
+        let message = error.to_string();
+        assert!(
+            message.contains("AZURE_OPENAI_API_ENDPOINT"),
+            "error should mention AZURE_OPENAI_API_ENDPOINT; got: {message}"
+        );
+    }
+
+    /// Bedrock can source the AWS region from `AWS_DEFAULT_REGION` as an
+    /// alternative to `AWS_REGION`.
+    #[test]
+    fn bedrock_region_sourced_from_aws_default_region_env_var() {
+        let resolver = ProviderResolver::builtin();
+        let settings = AgentSettings {
+            selected_provider: Some("bedrock".into()),
+            ..AgentSettings::default()
+        };
+
+        let resolved = resolver
+            .resolve_execution_with_env(
+                &settings,
+                &StoredCredentials::default(),
+                [
+                    ("AWS_ACCESS_KEY_ID", "AKID".to_string()),
+                    ("AWS_SECRET_ACCESS_KEY", "SECRET".to_string()),
+                    // Use the fallback env var, not AWS_REGION.
+                    ("AWS_DEFAULT_REGION", "ap-southeast-1".to_string()),
+                ],
+                &ProviderSelection::default(),
+            )
+            .expect("bedrock should resolve with AWS_DEFAULT_REGION");
+
+        let creds = resolved.aws_credentials().expect("aws credentials");
+        assert_eq!(
+            creds.region, "ap-southeast-1",
+            "region should be sourced from AWS_DEFAULT_REGION"
+        );
+    }
+
+    /// Vertex AI resolves when a service-account key file path is supplied via
+    /// `GOOGLE_APPLICATION_CREDENTIALS` instead of a pre-obtained bearer token.
+    #[test]
+    fn vertex_resolves_from_google_application_credentials_without_bearer_token() {
+        let resolver = ProviderResolver::builtin();
+        let settings = AgentSettings {
+            selected_provider: Some("vertex".into()),
+            ..AgentSettings::default()
+        };
+
+        let resolved = resolver
+            .resolve_execution_with_env(
+                &settings,
+                &StoredCredentials::default(),
+                [
+                    ("VERTEXAI_PROJECT", "my-gcp-project".to_string()),
+                    ("VERTEXAI_LOCATION", "europe-west4".to_string()),
+                    // No GOOGLE_BEARER_TOKEN; supply a credentials file path instead.
+                    (
+                        "GOOGLE_APPLICATION_CREDENTIALS",
+                        "/etc/gcp/service-account.json".to_string(),
+                    ),
+                ],
+                &ProviderSelection::default(),
+            )
+            .expect("vertex should resolve from GOOGLE_APPLICATION_CREDENTIALS");
+
+        assert_eq!(resolved.provider_id(), "vertex");
+        assert_eq!(
+            resolved.auth_state().status,
+            wonder_of_u_core::AuthStatus::Ready
+        );
+        // No pre-obtained token — gcp_access_token() must return None.
+        assert!(
+            resolved.gcp_access_token().is_none(),
+            "access_token must be None when only GOOGLE_APPLICATION_CREDENTIALS is set"
+        );
+        let (project, location) = resolved
+            .gcp_project_location()
+            .expect("gcp project and location");
+        assert_eq!(project, "my-gcp-project");
+        assert_eq!(location, "europe-west4");
+    }
+
+    /// Vertex requires project + location in addition to at least one of
+    /// GOOGLE_BEARER_TOKEN / GOOGLE_APPLICATION_CREDENTIALS; missing all three
+    /// must fail.
+    #[test]
+    fn vertex_fails_without_credential_env_vars() {
+        let resolver = ProviderResolver::builtin();
+        let settings = AgentSettings {
+            selected_provider: Some("vertex".into()),
+            ..AgentSettings::default()
+        };
+
+        let error = resolver
+            .resolve_execution_with_env(
+                &settings,
+                &StoredCredentials::default(),
+                // Provide project + location but no credentials source.
+                [
+                    ("VERTEXAI_PROJECT", "my-project".to_string()),
+                    ("VERTEXAI_LOCATION", "us-central1".to_string()),
+                ],
+                &ProviderSelection::default(),
+            )
+            .expect_err("vertex without credentials must fail");
+
+        let message = error.to_string();
+        assert!(
+            message.contains("GOOGLE_APPLICATION_CREDENTIALS"),
+            "error should mention GOOGLE_APPLICATION_CREDENTIALS; got: {message}"
+        );
+    }
+
+    /// Verify that the synthetic provider is registered with the correct env var,
+    /// protocol, and auth kind following the same pattern as other gateways.
+    #[test]
+    fn synthetic_provider_registered_with_expected_metadata() {
+        let registry = ProviderRegistry::builtin();
+        let synthetic = registry
+            .get("synthetic")
+            .expect("synthetic provider must be registered");
+
+        assert_eq!(synthetic.display_name, "Synthetic AI");
+        assert_eq!(
+            synthetic.auth_kind,
+            AuthMaterialKind::ApiKey,
+            "synthetic must use ApiKey auth"
+        );
+        assert_eq!(
+            synthetic.api_key_env.as_deref(),
+            Some("SYNTHETIC_API_KEY"),
+            "synthetic must read auth from SYNTHETIC_API_KEY"
+        );
+        assert_eq!(
+            synthetic.wire_protocol,
+            WireProtocol::OpenAiCompat,
+            "synthetic must use OpenAiCompat protocol"
+        );
+        assert!(
+            synthetic.api_base.is_some(),
+            "synthetic must declare an api_base"
+        );
+        assert!(
+            !synthetic.strict_model_validation,
+            "synthetic must not enforce strict model validation"
+        );
+    }
+
+    /// Verify the local model env/base resolution priority chain in a single
+    /// parameterised sweep.  Each row isolates one source to confirm the
+    /// documented priority:
+    ///   WONDER_OF_U_LOCAL_API_BASE > OLLAMA_HOST > LMSTUDIO_API_BASE > descriptor default
+    #[test]
+    fn local_model_api_base_resolution_priority_matrix() {
+        let resolver = ProviderResolver::builtin();
+        let settings = AgentSettings {
+            selected_provider: Some("local".into()),
+            ..AgentSettings::default()
+        };
+
+        // (env vars to inject, expected api_base, description)
+        let cases: &[(&[(&str, &str)], &str, &str)] = &[
+            (
+                &[("WONDER_OF_U_LOCAL_API_BASE", "http://primary:9000/v1")],
+                "http://primary:9000/v1",
+                "WONDER_OF_U_LOCAL_API_BASE should win",
+            ),
+            (
+                &[("OLLAMA_HOST", "http://gpu-box:11434")],
+                "http://gpu-box:11434/v1",
+                "OLLAMA_HOST without /v1 suffix should gain /v1",
+            ),
+            (
+                &[("OLLAMA_HOST", "http://gpu-box:11434/v1")],
+                "http://gpu-box:11434/v1",
+                "OLLAMA_HOST already ending in /v1 must not duplicate suffix",
+            ),
+            (
+                &[("LMSTUDIO_API_BASE", "http://localhost:1234/v1")],
+                "http://localhost:1234/v1",
+                "LMSTUDIO_API_BASE should be used when OLLAMA_HOST absent",
+            ),
+            (
+                &[],
+                DEFAULT_LOCAL_API_BASE,
+                "descriptor default used when no env vars set",
+            ),
+            (
+                &[
+                    ("WONDER_OF_U_LOCAL_API_BASE", "http://primary:9999/v1"),
+                    ("OLLAMA_HOST", "http://secondary:11434"),
+                    ("LMSTUDIO_API_BASE", "http://tertiary:1234/v1"),
+                ],
+                "http://primary:9999/v1",
+                "WONDER_OF_U_LOCAL_API_BASE must beat OLLAMA_HOST and LMSTUDIO_API_BASE",
+            ),
+            (
+                &[
+                    ("OLLAMA_HOST", "http://secondary:11434"),
+                    ("LMSTUDIO_API_BASE", "http://tertiary:1234/v1"),
+                ],
+                "http://secondary:11434/v1",
+                "OLLAMA_HOST must beat LMSTUDIO_API_BASE",
+            ),
+        ];
+
+        for &(env_pairs, expected_base, description) in cases {
+            let resolved = resolver
+                .resolve_execution_with_env(
+                    &settings,
+                    &StoredCredentials::default(),
+                    env_pairs
+                        .iter()
+                        .map(|&(k, v)| (k, v.to_string()))
+                        .collect::<Vec<_>>(),
+                    &ProviderSelection::default(),
+                )
+                .unwrap_or_else(|e| panic!("local resolve failed ({description}): {e}"));
+
+            assert_eq!(resolved.api_base(), expected_base, "case: {description}");
+        }
     }
 }

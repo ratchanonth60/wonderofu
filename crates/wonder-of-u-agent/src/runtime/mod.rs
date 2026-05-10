@@ -2897,4 +2897,107 @@ mod tests {
         assert!(!runtime.supports_streaming("vertex"));
         assert!(!runtime.supports_tool_use("vertex"));
     }
+
+    // ── provider-matrix-tests: protocol dispatch per family ───────────────────
+
+    /// Validates that an OpenAI-compatible *gateway* provider (groq used as
+    /// representative) dispatches through the OpenAI chat-completions path.
+    ///
+    /// This complements the `openai_runtime_builds_chat_completions_request` test
+    /// which uses the first-party `openai` provider.  Both share
+    /// `WireProtocol::OpenAiCompat`, but a gateway uses a different base URL and
+    /// carries its own API key — explicitly exercising the gateway code-path.
+    #[test]
+    fn openai_compat_gateway_runtime_dispatches_via_openai_protocol() {
+        let transport = RecordingTransport::with_json_body(serde_json::json!({
+            "choices": [{
+                "finish_reason": "stop",
+                "message": {"content": "Groq gateway reply"}
+            }],
+            "usage": {
+                "prompt_tokens": 8,
+                "completion_tokens": 4
+            }
+        }));
+        let runtime = ProviderRuntime::with_transport(transport.clone() as Arc<dyn HttpTransport>);
+        // Use the groq gateway as a representative OpenAI-compat gateway provider.
+        let resolved = resolved_provider("groq", None);
+        let request = CompletionRequest::new("Hello via gateway");
+
+        let response = runtime
+            .complete(&resolved, &request)
+            .expect("groq gateway response");
+        let recorded = transport.take_request();
+        let body: serde_json::Value = serde_json::from_str(&recorded.body).expect("request json");
+
+        assert_eq!(recorded.method, "POST");
+        // URL must target the groq-specific base, not api.openai.com.
+        assert!(
+            recorded.url.contains("api.groq.com"),
+            "URL should target groq base: {}",
+            recorded.url
+        );
+        assert!(
+            recorded.url.ends_with("/chat/completions"),
+            "URL should end with /chat/completions: {}",
+            recorded.url
+        );
+        // Auth follows standard Bearer pattern.
+        assert!(
+            recorded
+                .headers
+                .get("authorization")
+                .map(|v| v.starts_with("Bearer "))
+                .unwrap_or(false),
+            "gateway must send Authorization: Bearer <key>"
+        );
+        // Body must include the model field.
+        assert!(
+            body.pointer("/model")
+                .and_then(serde_json::Value::as_str)
+                .is_some(),
+            "request body must include a model field"
+        );
+        assert_eq!(response.output_text, "Groq gateway reply");
+    }
+
+    /// Validates the local auth-free provider dispatches via OpenAI-compat
+    /// protocol and explicitly targets the resolved Ollama-style base URL.
+    #[test]
+    fn local_provider_runtime_dispatches_to_openai_compat_with_custom_host() {
+        let transport = RecordingTransport::with_json_body(serde_json::json!({
+            "choices": [{"finish_reason": "stop", "message": {"content": "local reply"}}],
+            "usage": {"prompt_tokens": 4, "completion_tokens": 2}
+        }));
+        let runtime = ProviderRuntime::with_transport(transport.clone() as Arc<dyn HttpTransport>);
+
+        // Resolve local provider with an OLLAMA_HOST env override.
+        let settings = AgentSettings {
+            selected_provider: Some("local".into()),
+            selected_model: Some("phi4:14b".into()),
+            ..AgentSettings::default()
+        };
+        let resolved = ProviderResolver::builtin()
+            .resolve_execution_with_env(
+                &settings,
+                &StoredCredentials::default(),
+                [("OLLAMA_HOST", "http://gpu-server:11434".to_string())],
+                &ProviderSelection::default(),
+            )
+            .expect("local provider resolves with OLLAMA_HOST");
+
+        runtime
+            .complete(&resolved, &CompletionRequest::new("Hello local"))
+            .expect("local completion");
+        let recorded = transport.take_request();
+
+        assert_eq!(
+            recorded.url, "http://gpu-server:11434/v1/chat/completions",
+            "local must route to OLLAMA_HOST-derived base"
+        );
+        assert!(
+            !recorded.headers.contains_key("authorization"),
+            "local provider must not send an Authorization header"
+        );
+    }
 }
