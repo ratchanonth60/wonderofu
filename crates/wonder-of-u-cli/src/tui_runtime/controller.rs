@@ -2533,19 +2533,23 @@ impl<'a> TuiController<'a> {
         view.loading = is_loading_turn_state(self.turn_state);
         view.loading_verb = loading_verb_label(self.turn_state).map(str::to_string);
 
-        // Compact Claude-style footer: one concise hint row instead of verbose metadata.
-        // The permission mode is the most actionable piece; keybinding reminders follow.
-        // Detailed metadata (cwd, provider, vim mode, theme, etc.) lives in the sidebar.
-        let perm_label = permission_mode_label(self.state.permission_mode);
+        // Elapsed seconds: tick interval is 500 ms, so divide frame count by 2.
+        view.loading_elapsed_secs = self.loading_frame / 2;
+        // Cumulative token count from costs tracking (0 when no API calls yet).
+        view.loading_total_tokens = self.state.costs.usage.total_tokens();
+
+        // Compact Claude-style footer; verbose cwd/provider/model metadata lives in the sidebar.
+        let permission_label = permission_mode_output_label(self.state.permission_mode);
         let vim_hint = if self.vim_enabled {
             match self.vim.mode() {
-                VimMode::Insert => " | vim:insert",
-                VimMode::Normal => " | vim:normal",
+                VimMode::Insert => " · vim:insert",
+                VimMode::Normal => " · vim:normal",
             }
         } else {
             ""
         };
-        view.footer = format!("▸▸ {perm_label}{vim_hint} | ⌃B sidebar | ⌃C exit | ? help");
+        view.footer =
+            format!("▸▸ {permission_label}{vim_hint} (shift+tab to cycle) · ⌃B sidebar · ⌃C exit");
         let picker_list = self.current_picker_list_view();
         view.dialog = if picker_list.is_some() {
             None

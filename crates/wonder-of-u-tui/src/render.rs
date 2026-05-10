@@ -166,6 +166,14 @@ pub struct ShellView {
     pub loading_verb: Option<String>,
     /// Stores the animated spinner frame for transcript-local loading rows.
     pub spinner_frame: u64,
+    /// Elapsed seconds since loading started; `0` when not loading.
+    ///
+    /// Shown in the Claude-style progress row as `· 27s` when non-zero.
+    pub loading_elapsed_secs: u64,
+    /// Current cumulative token count to show inside the loading progress row.
+    ///
+    /// `0` suppresses the token segment entirely.
+    pub loading_total_tokens: u64,
     /// Stores the footer
     pub footer: String,
     /// Stores the queued panel
@@ -290,6 +298,8 @@ impl ShellView {
             loading: false,
             loading_verb: None,
             spinner_frame: 0,
+            loading_elapsed_secs: 0,
+            loading_total_tokens: 0,
             footer: footer_text(app),
             queued_panel: queued_panel_view(app),
             task_panel: task_panel_view(app),
@@ -370,7 +380,39 @@ pub fn render_shell(frame: &mut FrameBuffer, view: &ShellView, theme: &Theme) {
         .min(max_prompt);
     let layout = ShellLayout::split(main_area, prompt_height);
 
-    draw_message_view(frame, layout.messages, view, theme);
+    // When loading, reserve the bottom row of the message area for the Claude-style
+    // progress row (e.g. `✱ thinking… · 05s · esc to interrupt`).  This keeps the
+    // loading indicator visually close to the prompt without cluttering the transcript.
+    let (messages_render_area, loading_row_area) = if view.loading && layout.messages.height >= 1 {
+        // Reduce the transcript area by one row and carve out the loading row just
+        // above the prompt box (at layout.messages.bottom() - 1).
+        let transcript_h = layout.messages.height.saturating_sub(1);
+        let loading_y = layout.messages.y.saturating_add(transcript_h);
+        (
+            Rect::new(
+                layout.messages.x,
+                layout.messages.y,
+                layout.messages.width,
+                transcript_h,
+            ),
+            Some(Rect::new(
+                layout.messages.x,
+                loading_y,
+                layout.messages.width,
+                1,
+            )),
+        )
+    } else {
+        (layout.messages, None)
+    };
+
+    draw_message_view(frame, messages_render_area, view, theme);
+
+    // Draw the dedicated loading progress row, if active.
+    if let Some(loading_area) = loading_row_area {
+        draw_loading_progress_row(frame, loading_area, view, theme);
+    }
+
     let prompt_area = if let Some(warning) = view
         .prompt_warning
         .as_ref()
@@ -1502,32 +1544,68 @@ fn shell_header_text(title: &str) -> String {
 }
 
 fn message_panel_lines(view: &ShellView, theme: &Theme) -> Vec<StyledLine> {
-    let mut lines = if view.messages.is_empty() {
+    if view.messages.is_empty() {
         welcome_panel_lines(theme)
     } else {
         message_lines_to_styled(&view.messages, theme)
-    };
-
-    if view.loading {
-        lines.push(StyledLine::plain(
-            loading_spinner_line(view),
-            style_for_message(theme, MessageRole::Progress),
-        ));
     }
-
-    lines
 }
 
-fn loading_spinner_line(view: &ShellView) -> String {
+/// Renders the Claude-style progress row directly above the prompt box.
+///
+/// Format: `{spinner} {verb}… · {elapsed} · {tokens} tokens · esc to interrupt`
+///
+/// # Layout
+///
+/// The row is a single terminal line carved from the bottom of the message area
+/// by [`render_shell`] whenever `view.loading` is `true`.  It degrades gracefully
+/// on narrow terminals — the text is simply clipped at `area.width`.
+fn draw_loading_progress_row(frame: &mut FrameBuffer, area: Rect, view: &ShellView, theme: &Theme) {
+    if area.is_empty() {
+        return;
+    }
+
+    let text = build_loading_progress_text(view);
+    frame.fill_rect(area, ' ', theme.background);
+    // Dim progress style — matches the transcript-level progress role colour.
+    let style = {
+        let mut s = theme.status;
+        s.dim = true;
+        s
+    };
+    frame.write_str(area.x, area.y, &text, style, area.width);
+}
+
+/// Builds the plain-text content of the loading progress row.
+///
+/// Produces a spinner-animated string of the form:
+/// `{glyph} {verb}… · {elapsed} · {tokens} tokens · esc to interrupt`
+///
+/// The elapsed and token segments are omitted when their values are zero.
+fn build_loading_progress_text(view: &ShellView) -> String {
     let mode = match view.loading_verb.as_deref() {
         Some("running") => SpinnerMode::Requesting,
         Some("waiting") => SpinnerMode::Stalled,
         _ => SpinnerMode::Thinking,
     };
     let verb = view.loading_verb.as_deref().unwrap_or("thinking");
-    SpinnerView::new(mode, format!("{verb}…"))
+    let mut spinner = SpinnerView::new(mode, format!("{verb}…"))
         .frame(view.spinner_frame)
-        .render_line()
+        .suffix("esc to interrupt");
+
+    // Include elapsed time when loading has been active for at least 1 second.
+    if view.loading_elapsed_secs > 0 {
+        spinner = spinner.elapsed_ms(view.loading_elapsed_secs.saturating_mul(1_000));
+    }
+
+    // Include cumulative token count when non-zero.
+    if view.loading_total_tokens > 0 {
+        #[allow(clippy::cast_possible_truncation)]
+        let token_count = view.loading_total_tokens.min(usize::MAX as u64) as usize;
+        spinner = spinner.token_count(token_count);
+    }
+
+    spinner.render_line()
 }
 
 fn welcome_panel_lines(theme: &Theme) -> Vec<StyledLine> {
@@ -1842,6 +1920,8 @@ mod tests {
             loading: false,
             loading_verb: None,
             spinner_frame: 0,
+            loading_elapsed_secs: 0,
+            loading_total_tokens: 0,
             footer: "ctrl-c interrupt".into(),
             queued_panel: None,
             task_panel: None,
@@ -1889,6 +1969,8 @@ mod tests {
             loading: false,
             loading_verb: None,
             spinner_frame: 0,
+            loading_elapsed_secs: 0,
+            loading_total_tokens: 0,
             footer: "cwd=/workspace | ctrl-c interrupt".into(),
             queued_panel: None,
             task_panel: Some(TaskPanelView {
@@ -1985,6 +2067,8 @@ mod tests {
             loading: false,
             loading_verb: None,
             spinner_frame: 0,
+            loading_elapsed_secs: 0,
+            loading_total_tokens: 0,
             footer: "cwd=/workspace | ctrl-c interrupt".into(),
             queued_panel: Some(TaskPanelView {
                 title: "Queued".into(),
@@ -2039,6 +2123,8 @@ mod tests {
             loading: false,
             loading_verb: None,
             spinner_frame: 0,
+            loading_elapsed_secs: 0,
+            loading_total_tokens: 0,
             footer: "cwd=/workspace | ctrl-c interrupt".into(),
             queued_panel: None,
             task_panel: None,
@@ -2094,6 +2180,8 @@ mod tests {
             loading: false,
             loading_verb: None,
             spinner_frame: 0,
+            loading_elapsed_secs: 0,
+            loading_total_tokens: 0,
             footer: "cwd=/workspace | ctrl-c interrupt".into(),
             queued_panel: None,
             task_panel: None,
@@ -2147,6 +2235,8 @@ mod tests {
             loading: false,
             loading_verb: None,
             spinner_frame: 0,
+            loading_elapsed_secs: 0,
+            loading_total_tokens: 0,
             footer: "cwd=/workspace | ctrl-c interrupt".into(),
             queued_panel: None,
             task_panel: None,
@@ -2182,6 +2272,8 @@ mod tests {
             loading: false,
             loading_verb: None,
             spinner_frame: 0,
+            loading_elapsed_secs: 0,
+            loading_total_tokens: 0,
             footer: "cwd=/workspace | ctrl-c interrupt".into(),
             queued_panel: None,
             task_panel: None,
@@ -2227,6 +2319,8 @@ mod tests {
             loading: false,
             loading_verb: None,
             spinner_frame: 0,
+            loading_elapsed_secs: 0,
+            loading_total_tokens: 0,
             footer: "cwd=/workspace | ctrl-c interrupt".into(),
             queued_panel: None,
             task_panel: None,
@@ -2289,6 +2383,8 @@ mod tests {
             loading: false,
             loading_verb: None,
             spinner_frame: 0,
+            loading_elapsed_secs: 0,
+            loading_total_tokens: 0,
             footer: "cwd=/workspace | ctrl-c interrupt".into(),
             queued_panel: None,
             task_panel: None,
@@ -2341,6 +2437,8 @@ mod tests {
             loading: true,
             loading_verb: Some("thinking".into()),
             spinner_frame: 0,
+            loading_elapsed_secs: 0,
+            loading_total_tokens: 0,
             footer: String::new(),
             queued_panel: None,
             task_panel: None,
@@ -2360,6 +2458,112 @@ mod tests {
         let text = frame.to_plain_text();
         // The spinner prefix still appears in the transcript (status row removed with CHROME_HEIGHT=1).
         assert!(text.contains("· thinking…"));
+    }
+
+    #[test]
+    fn loading_progress_row_appears_above_prompt_when_loading() {
+        // The loading row should be rendered in the message area, directly above
+        // the prompt box — separate from the transcript content.
+        let view = ShellView {
+            title: "Session: Loading".into(),
+            messages: vec![MessageLineView::new("hello", MessageRole::Assistant)],
+            prompt: String::new(),
+            history_search: None,
+            status: "turn=active".into(),
+            loading: true,
+            loading_verb: Some("thinking".into()),
+            spinner_frame: 4,
+            loading_elapsed_secs: 3,
+            loading_total_tokens: 150,
+            footer: "▸▸ default (shift+tab to cycle) · ⌃C exit".into(),
+            queued_panel: None,
+            task_panel: None,
+            dialog: None,
+            picker_view: None,
+            picker_list: None,
+            notifications: Vec::new(),
+            slash_suggestions: None,
+            global_search: None,
+            scroll: TranscriptScrollView::default(),
+            sidebar: None,
+            prompt_warning: None,
+        };
+
+        let frame = render_snapshot(60, 10, &view, &Theme::default());
+        let text = frame.to_plain_text();
+
+        // Loading progress row must contain the spinner verb and "esc to interrupt".
+        assert!(
+            text.contains("thinking"),
+            "loading row must contain verb: {text}"
+        );
+        assert!(
+            text.contains("esc to interrupt"),
+            "loading row must contain suffix: {text}"
+        );
+        // Loading row must NOT appear inside the transcript (spinner moved out of messages).
+        // The transcript message "hello" must still appear.
+        assert!(
+            text.contains("hello"),
+            "transcript message must still appear"
+        );
+        // Compact footer hint must appear.
+        assert!(
+            text.contains("shift+tab to cycle"),
+            "compact footer hint must appear: {text}"
+        );
+        assert!(
+            !text.contains("storage="),
+            "verbose footer fields must not appear: {text}"
+        );
+    }
+
+    #[test]
+    fn loading_progress_row_includes_elapsed_and_tokens_when_nonzero() {
+        let view = ShellView {
+            loading: true,
+            loading_verb: Some("thinking".into()),
+            spinner_frame: 2,
+            loading_elapsed_secs: 7,
+            loading_total_tokens: 512,
+            ..ShellView::default()
+        };
+
+        let text = build_loading_progress_text(&view);
+        // Elapsed must appear (7 seconds → "00:07" mm:ss format).
+        assert!(
+            text.contains("00:07"),
+            "elapsed seconds must appear in loading row text: {text}"
+        );
+        // Token count must appear.
+        assert!(
+            text.contains("512"),
+            "token count must appear in loading row text: {text}"
+        );
+    }
+
+    #[test]
+    fn loading_progress_row_omits_elapsed_and_tokens_when_zero() {
+        let view = ShellView {
+            loading: true,
+            loading_verb: None,
+            spinner_frame: 0,
+            loading_elapsed_secs: 0,
+            loading_total_tokens: 0,
+            ..ShellView::default()
+        };
+
+        let text = build_loading_progress_text(&view);
+        // Neither elapsed nor token data should appear.
+        assert!(
+            !text.contains("tok"),
+            "token count must not appear when zero: {text}"
+        );
+        // The "esc to interrupt" suffix must always appear.
+        assert!(
+            text.contains("esc to interrupt"),
+            "suffix must always appear: {text}"
+        );
     }
 
     // ── scroll rendering ─────────────────────────────────────────────────────

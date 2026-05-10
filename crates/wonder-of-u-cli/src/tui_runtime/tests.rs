@@ -543,6 +543,73 @@ fn controller_advances_loading_spinner_on_tick() {
 }
 
 #[test]
+fn controller_view_footer_is_compact_with_permission_and_keybind_hint() {
+    let dir = unique_test_dir("tui-compact-footer");
+    let registry = commands::registry(Some(dir.clone())).expect("registry");
+    let controller = TuiController::new(
+        test_context(&dir),
+        &registry,
+        Some(dir.as_path()),
+        TuiLaunchOptions { session_id: None },
+    )
+    .expect("controller");
+
+    let footer = controller.view().footer;
+
+    // Compact format: "▸▸ {mode} (shift+tab to cycle) · ⌃C exit"
+    assert!(
+        footer.contains("shift+tab to cycle"),
+        "compact footer must contain shift+tab hint: {footer}"
+    );
+    assert!(
+        footer.contains("⌃C exit"),
+        "compact footer must contain Ctrl-C exit hint: {footer}"
+    );
+    // Verbose fields must NOT appear in the compact footer.
+    assert!(
+        !footer.contains("storage="),
+        "compact footer must not contain verbose storage field: {footer}"
+    );
+    assert!(
+        !footer.contains("theme:"),
+        "compact footer must not contain verbose theme field: {footer}"
+    );
+    assert!(
+        !footer.contains("cwd="),
+        "compact footer must not contain cwd field: {footer}"
+    );
+}
+
+#[test]
+fn controller_view_loading_elapsed_secs_increases_with_ticks() {
+    let dir = unique_test_dir("tui-loading-elapsed");
+    let registry = commands::registry(Some(dir.clone())).expect("registry");
+    let mut controller = TuiController::new(
+        test_context(&dir),
+        &registry,
+        Some(dir.as_path()),
+        TuiLaunchOptions { session_id: None },
+    )
+    .expect("controller");
+
+    controller.turn_state = TurnState::ModelRequestActive;
+
+    // Fire 4 ticks — each advances loading_frame by 1; elapsed_secs = frame / 2.
+    for _ in 0..4 {
+        controller
+            .handle_event(UiEvent::Tick, |_| Ok(()))
+            .expect("tick");
+    }
+
+    let view = controller.view();
+    assert!(view.loading, "view must be in loading state");
+    assert_eq!(
+        view.loading_elapsed_secs, 2,
+        "4 ticks at 500ms each → 2 elapsed seconds"
+    );
+}
+
+#[test]
 fn controller_inserts_newline_on_shift_enter() {
     let dir = unique_test_dir("tui-shift-enter-newline");
     let registry = commands::registry(Some(dir.clone())).expect("registry");
@@ -628,8 +695,7 @@ fn controller_selects_theme_from_picker() {
     assert!(controller.pending_theme_picker.is_none());
     assert!(controller.dialog.is_none());
     assert_eq!(controller.state.theme.as_deref(), Some("midnight"));
-    // Compact footer no longer carries verbose "theme:midnight" metadata; just verify it renders.
-    assert!(controller.view().footer.contains("▸▸"));
+    assert!(controller.view().footer.contains("shift+tab to cycle"));
     assert!(matches!(
         controller.state.messages.last().map(|message| &message.payload),
         Some(MessagePayload::Command { input, output })
@@ -750,8 +816,8 @@ fn controller_hydrates_persisted_fast_and_effort_on_launch() {
     assert_eq!(controller.state.theme.as_deref(), Some("midnight"));
     assert_eq!(controller.state.effort_level.as_deref(), Some("high"));
     assert!(controller.state.fast_mode);
-    // Compact footer shows only permission/vim hints; verbose metadata (theme/effort/fast) removed.
-    assert!(controller.view().footer.contains("▸▸"));
+    // State already verified above; confirm compact footer is in use.
+    assert!(controller.view().footer.contains("shift+tab to cycle"));
 }
 
 #[test]
@@ -773,12 +839,12 @@ fn controller_hydrates_persisted_vim_mode_setting() {
     .expect("controller");
 
     assert!(!controller.vim_enabled);
-    // Compact footer only shows vim hint when vim is *on*; "vim:off" is intentionally absent.
-    assert!(controller.view().footer.contains("▸▸"));
+    // Compact footer is always active; vim mode details live in AppState/vim field.
+    assert!(controller.view().footer.contains("shift+tab to cycle"));
 
     send_prompt_key(&mut controller, picker_key(KeyCode::Esc));
     assert_eq!(controller.vim.mode(), VimMode::Insert);
-    assert!(controller.view().footer.contains("▸▸"));
+    assert!(controller.view().footer.contains("shift+tab to cycle"));
 }
 
 #[test]
@@ -799,7 +865,7 @@ fn controller_sets_session_color_from_command() {
 
     assert_eq!(controller.state.session_color.as_deref(), Some("purple"));
     assert_eq!(controller.status_note.as_deref(), Some("color purple"));
-    assert!(controller.view().footer.contains("▸▸"));
+    assert!(controller.view().footer.contains("shift+tab to cycle"));
     assert!(matches!(
         controller.state.messages.last().map(|message| &message.payload),
         Some(MessagePayload::Command { input, output })
@@ -859,7 +925,7 @@ fn controller_toggles_brief_mode_from_command() {
 
     assert!(controller.state.brief_mode);
     assert_eq!(controller.status_note.as_deref(), Some("brief on"));
-    assert!(controller.view().footer.contains("▸▸"));
+    assert!(controller.view().footer.contains("shift+tab to cycle"));
     assert!(matches!(
         controller.state.messages.last().map(|message| &message.payload),
         Some(MessagePayload::Command { input, output })
@@ -919,7 +985,7 @@ fn controller_toggles_fast_mode_from_command() {
 
     assert!(controller.state.fast_mode);
     assert_eq!(controller.status_note.as_deref(), Some("fast on"));
-    assert!(controller.view().footer.contains("▸▸"));
+    assert!(controller.view().footer.contains("shift+tab to cycle"));
     assert!(matches!(
         controller.state.messages.last().map(|message| &message.payload),
         Some(MessagePayload::Command { input, output })
@@ -979,7 +1045,7 @@ fn controller_sets_effort_from_command() {
 
     assert_eq!(controller.state.effort_level.as_deref(), Some("high"));
     assert_eq!(controller.status_note.as_deref(), Some("effort high"));
-    assert!(controller.view().footer.contains("▸▸"));
+    assert!(controller.view().footer.contains("shift+tab to cycle"));
     assert!(matches!(
         controller.state.messages.last().map(|message| &message.payload),
         Some(MessagePayload::Command { input, output })
@@ -3769,7 +3835,7 @@ fn controller_executes_vim_normal_mode_edits() {
         .expect("insert after append");
     assert_eq!(controller.prompt.text(), "abz");
     assert_eq!(controller.status_note, None);
-    assert!(controller.view().footer.contains("vim:insert"));
+    assert_eq!(controller.vim.mode(), VimMode::Insert);
 }
 
 #[test]
@@ -4239,8 +4305,7 @@ fn controller_restores_status_note_from_snapshot_resume() {
     assert_eq!(controller.state.session_color.as_deref(), Some("purple"));
     assert_eq!(controller.status_note.as_deref(), Some("color purple"));
     assert!(controller.view().dialog.is_none());
-    // Compact footer does not carry verbose metadata; verify compact marker is present.
-    assert!(controller.view().footer.contains("▸▸"));
+    assert!(controller.view().footer.contains("shift+tab to cycle"));
 }
 
 #[test]
@@ -4274,8 +4339,12 @@ fn controller_preserves_restored_permission_mode_on_resume() {
     .expect("controller");
 
     assert_eq!(controller.state.permission_mode, PermissionMode::Plan);
-    // "plan" appears verbatim in the compact footer's permission label slot.
-    assert!(controller.view().footer.contains("plan"));
+    // Compact footer always shows the active permission mode label.
+    assert!(
+        controller.view().footer.contains("plan"),
+        "compact footer must contain permission mode label: {}",
+        controller.view().footer,
+    );
 }
 
 #[test]
@@ -4344,8 +4413,8 @@ fn controller_preserves_restored_provider_selection_on_resume() {
         Some("claude-3-7-sonnet-latest")
     );
     assert!(controller.state.auth.is_ready());
-    // Compact footer carries the permission-mode hint; provider info lives in sidebar.
-    assert!(controller.view().footer.contains("▸▸"));
+    // Provider/runtime details now live in state rather than the compact footer.
+    assert!(controller.view().footer.contains("shift+tab to cycle"));
 }
 
 #[test]
