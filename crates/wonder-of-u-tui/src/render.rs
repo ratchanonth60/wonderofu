@@ -256,8 +256,7 @@ pub fn render_shell(frame: &mut FrameBuffer, view: &ShellView, theme: &Theme) {
             // left ╭/│/╰ aligns exactly where the separator used to be.
             let main_w = area.width.saturating_sub(SIDEBAR_WIDTH + 1);
             let sep_x = area.x.saturating_add(main_w);
-            let sidebar_area =
-                Rect::new(sep_x, area.y, SIDEBAR_WIDTH + 1, area.height);
+            let sidebar_area = Rect::new(sep_x, area.y, SIDEBAR_WIDTH + 1, area.height);
             draw_shell_sidebar(frame, sidebar_area, sidebar, theme);
             Rect::new(area.x, area.y, main_w, area.height)
         } else {
@@ -1272,16 +1271,13 @@ fn plain_lines(lines: &[String], style: TextStyle) -> Vec<StyledLine> {
 
 fn style_for_message(theme: &Theme, role: MessageRole) -> TextStyle {
     match role {
-        MessageRole::User => {
-            let mut style = theme.prompt;
-            style.bold = true;
-            style
-        }
+        MessageRole::User => theme.prompt,
         MessageRole::Assistant => theme.messages,
         MessageRole::System => theme.footer,
         MessageRole::Tool => {
-            let mut style = theme.status;
-            style.bold = false;
+            let mut style = theme.status.fg(Color::Green);
+            style.bold = true;
+            style.dim = false;
             style
         }
         MessageRole::Progress => {
@@ -1368,7 +1364,7 @@ mod tests {
             title: "Session: Demo".into(),
             messages: vec![
                 MessageLineView::new("system> ready", MessageRole::System),
-                MessageLineView::new("assistant> hello", MessageRole::Assistant),
+                MessageLineView::new("hello", MessageRole::Assistant),
             ],
             prompt: "/status".into(),
             history_search: None,
@@ -1401,7 +1397,7 @@ mod tests {
             [
                 "▸ wonder-of-u  Demo",
                 "system> ready",
-                "assistant> hello",
+                "hello",
                 "Tasks",
                 "[running] shell: index workspace",
                 "╭─ prompt ─────────────────────────────────────╮",
@@ -1463,10 +1459,7 @@ mod tests {
     fn shell_snapshot_renders_queued_commands_overlay() {
         let view = ShellView {
             title: "Session: Demo".into(),
-            messages: vec![MessageLineView::new(
-                "assistant> ready",
-                MessageRole::Assistant,
-            )],
+            messages: vec![MessageLineView::new("ready", MessageRole::Assistant)],
             prompt: "/plan".into(),
             history_search: None,
             status: "prompt | 1 messages".into(),
@@ -1498,7 +1491,7 @@ mod tests {
             frame.to_plain_text(),
             [
                 "▸ wonder-of-u  Demo",
-                "assistant> ready",
+                "ready",
                 "",
                 "Queued",
                 "1. /status",
@@ -1566,10 +1559,7 @@ mod tests {
     fn history_search_snapshot_renders_overlay_and_preview() {
         let view = ShellView {
             title: "Session: Search".into(),
-            messages: vec![MessageLineView::new(
-                "assistant> ready",
-                MessageRole::Assistant,
-            )],
+            messages: vec![MessageLineView::new("ready", MessageRole::Assistant)],
             prompt: "draft".into(),
             history_search: Some(HistorySearchView {
                 query: "pla".into(),
@@ -1599,7 +1589,7 @@ mod tests {
             frame.to_plain_text(),
             [
                 "▸ wonder-of-u  Search",
-                "assistant> ready",
+                "ready",
                 "",
                 "",
                 "",
@@ -1624,9 +1614,7 @@ mod tests {
         let view = ShellView {
             title: "Session: Tail".into(),
             messages: (1..=6)
-                .map(|index| {
-                    MessageLineView::new(format!("assistant> line {index}"), MessageRole::Assistant)
-                })
+                .map(|index| MessageLineView::new(format!("line {index}"), MessageRole::Assistant))
                 .collect(),
             prompt: "tail".into(),
             history_search: None,
@@ -1648,8 +1636,8 @@ mod tests {
 
         let frame = render_snapshot(32, 9, &view, &Theme::default());
 
-        assert!(!frame.to_plain_text().contains("assistant> line 1"));
-        assert!(frame.to_plain_text().contains("assistant> line 6"));
+        assert!(!frame.to_plain_text().contains("line 1"));
+        assert!(frame.to_plain_text().contains("line 6"));
     }
 
     #[test]
@@ -1703,10 +1691,7 @@ mod tests {
     fn shell_snapshot_renders_notification_stack_overlay() {
         let view = ShellView {
             title: "Session: Demo".into(),
-            messages: vec![MessageLineView::new(
-                "assistant> ready",
-                MessageRole::Assistant,
-            )],
+            messages: vec![MessageLineView::new("ready", MessageRole::Assistant)],
             prompt: String::new(),
             history_search: None,
             status: "prompt | 1 messages".into(),
@@ -1746,7 +1731,7 @@ mod tests {
             frame.to_plain_text(),
             [
                 "▸ wonder-of-u  Demo",
-                "assistant> ready   ╭─info Source status────────╮",
+                "ready              ╭─info Source status────────╮",
                 "                   │workspace index refreshed  │",
                 "                   ╰───────────────────────────╯",
                 "                      ╭─ok Task update • focus─╮",
@@ -1766,10 +1751,7 @@ mod tests {
     fn shell_snapshot_renders_picker_list_overlay() {
         let view = ShellView {
             title: "Session: Picker".into(),
-            messages: vec![MessageLineView::new(
-                "assistant> ready",
-                MessageRole::Assistant,
-            )],
+            messages: vec![MessageLineView::new("ready", MessageRole::Assistant)],
             prompt: String::new(),
             history_search: None,
             status: "prompt | 1 messages".into(),
@@ -2056,10 +2038,7 @@ mod tests {
             .join("\n");
         let view = ShellView {
             title: "Session: Cap".into(),
-            messages: vec![MessageLineView::new(
-                "assistant> hello",
-                MessageRole::Assistant,
-            )],
+            messages: vec![MessageLineView::new("hello", MessageRole::Assistant)],
             prompt: ten_line_prompt,
             status: "prompt".into(),
             ..ShellView::default()
@@ -2070,7 +2049,7 @@ mod tests {
         let frame = render_snapshot(40, 9, &view, &Theme::default());
         let text = frame.to_plain_text();
         assert!(
-            text.contains("assistant> hello"),
+            text.contains("hello"),
             "transcript must survive tall prompt; rendered:\n{text}"
         );
     }

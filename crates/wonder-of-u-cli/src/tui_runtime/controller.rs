@@ -1585,8 +1585,7 @@ impl<'a> TuiController<'a> {
                             self.open_provider_form(ProviderFormKind::ApiKey);
                         } else {
                             // Unknown provider — open the setup hub and let the user pick.
-                            return self
-                                .execute_slash_command_with("/setup", before_blocking);
+                            return self.execute_slash_command_with("/setup", before_blocking);
                         }
                         return Ok(());
                     }
