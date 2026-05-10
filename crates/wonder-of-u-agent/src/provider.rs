@@ -9,6 +9,7 @@ use wonder_of_u_core::{
 use crate::{
     auth::{AuthMaterial, AwsCredentials, DEFAULT_COPILOT_API_BASE, StoredCredentials},
     config::{AgentSettings, CredentialStore, SettingsStore},
+    protocol::WireProtocol,
 };
 /// Represents model descriptor
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -48,6 +49,19 @@ pub struct ProviderDescriptor {
     /// Stores the api key env
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub api_key_env: Option<String>,
+    /// The HTTP wire-protocol shape this provider uses.
+    ///
+    /// Defaults to [`WireProtocol::OpenAiCompat`] when deserialising older
+    /// persisted descriptors that predate this field.
+    #[serde(default)]
+    pub wire_protocol: WireProtocol,
+    /// When `true`, the resolver validates that the requested model id exists
+    /// in [`Self::models`] and rejects unknown ids.  When `false`, any
+    /// non-empty model id string is accepted, enabling pass-through to
+    /// providers whose model catalogues are not enumerated here (e.g.
+    /// dynamically-routed or custom deployments).
+    #[serde(default)]
+    pub strict_model_validation: bool,
 }
 
 impl ProviderDescriptor {
@@ -314,6 +328,8 @@ impl ProviderRegistry {
                 ],
                 api_base: Some(DEFAULT_COPILOT_API_BASE.into()),
                 api_key_env: None,
+                wire_protocol: WireProtocol::Copilot,
+                strict_model_validation: true,
             })
             .expect("builtin provider");
         registry
@@ -328,6 +344,8 @@ impl ProviderRegistry {
                 ],
                 api_base: Some("https://api.openai.com/v1".into()),
                 api_key_env: Some("OPENAI_API_KEY".into()),
+                wire_protocol: WireProtocol::OpenAiCompat,
+                strict_model_validation: true,
             })
             .expect("builtin provider");
         registry
@@ -342,6 +360,8 @@ impl ProviderRegistry {
                 ],
                 api_base: Some("https://api.anthropic.com".into()),
                 api_key_env: Some("ANTHROPIC_API_KEY".into()),
+                wire_protocol: WireProtocol::AnthropicCompat,
+                strict_model_validation: true,
             })
             .expect("builtin provider");
         registry
@@ -362,6 +382,8 @@ impl ProviderRegistry {
                 ],
                 api_base: Some(DEFAULT_BEDROCK_API_BASE.into()),
                 api_key_env: None,
+                wire_protocol: WireProtocol::BedrockAnthropic,
+                strict_model_validation: true,
             })
             .expect("builtin provider");
         registry
@@ -727,12 +749,21 @@ impl ProviderResolver {
             };
         }
 
-        provider.model(&configured).ok_or_else(|| {
-            WonderError::validation(format!(
-                "unknown model `{configured}` for provider `{}`",
+        if provider.strict_model_validation {
+            // Reject model ids not listed in the provider's model catalogue.
+            provider.model(&configured).ok_or_else(|| {
+                WonderError::validation(format!(
+                    "unknown model `{configured}` for provider `{}`",
+                    provider.id
+                ))
+            })?;
+        } else if configured.trim().is_empty() {
+            // Non-strict providers still must not receive an empty model id.
+            return Err(WonderError::validation(format!(
+                "model id for provider `{}` must not be empty",
                 provider.id
-            ))
-        })?;
+            )));
+        }
 
         Ok(configured)
     }
@@ -1441,5 +1472,168 @@ mod tests {
         let message = error.to_string();
         assert!(message.contains("AWS_ACCESS_KEY_ID"));
         assert!(message.contains("AWS_SECRET_ACCESS_KEY"));
+    }
+
+    // ── Stage-1: protocol metadata ─────────────────────────────────────────
+
+    #[test]
+    fn builtin_copilot_has_copilot_protocol() {
+        let registry = ProviderRegistry::builtin();
+        let provider = registry.get("copilot").expect("copilot provider");
+        assert_eq!(provider.wire_protocol, WireProtocol::Copilot);
+    }
+
+    #[test]
+    fn builtin_openai_has_openai_compat_protocol() {
+        let registry = ProviderRegistry::builtin();
+        let provider = registry.get("openai").expect("openai provider");
+        assert_eq!(provider.wire_protocol, WireProtocol::OpenAiCompat);
+    }
+
+    #[test]
+    fn builtin_anthropic_has_anthropic_compat_protocol() {
+        let registry = ProviderRegistry::builtin();
+        let provider = registry.get("anthropic").expect("anthropic provider");
+        assert_eq!(provider.wire_protocol, WireProtocol::AnthropicCompat);
+    }
+
+    #[test]
+    fn builtin_bedrock_has_bedrock_anthropic_protocol() {
+        let registry = ProviderRegistry::builtin();
+        let provider = registry.get("bedrock").expect("bedrock provider");
+        assert_eq!(provider.wire_protocol, WireProtocol::BedrockAnthropic);
+    }
+
+    #[test]
+    fn all_builtin_providers_have_strict_model_validation_enabled() {
+        let registry = ProviderRegistry::builtin();
+        for provider in registry.providers() {
+            assert!(
+                provider.strict_model_validation,
+                "builtin provider `{}` should have strict_model_validation=true",
+                provider.id
+            );
+        }
+    }
+
+    // ── Stage-1: strict vs. lenient model validation ───────────────────────
+
+    #[test]
+    fn strict_provider_rejects_unknown_model() {
+        // The existing builtin providers are all strict; use openai as a proxy.
+        let resolver = ProviderResolver::builtin();
+        let settings = AgentSettings {
+            selected_provider: Some("openai".into()),
+            selected_model: Some("gpt-99-turbo-fantasy".into()),
+            ..AgentSettings::default()
+        };
+
+        let error = resolver
+            .resolve_with_env(
+                &settings,
+                &StoredCredentials::default(),
+                std::iter::empty::<(&str, String)>(),
+            )
+            .expect_err("unknown model must be rejected by strict provider");
+
+        assert!(
+            error
+                .to_string()
+                .contains("unknown model `gpt-99-turbo-fantasy`"),
+            "error message should identify the bad model; got: {error}"
+        );
+    }
+
+    #[test]
+    fn non_strict_provider_accepts_arbitrary_non_empty_model() {
+        // Build a custom provider with strict_model_validation=false.
+        let mut registry = ProviderRegistry::builtin();
+        registry
+            .register(ProviderDescriptor {
+                id: "custom".into(),
+                display_name: "Custom".into(),
+                auth_kind: AuthMaterialKind::None,
+                default_model: "any-model".into(),
+                models: vec![],
+                api_base: Some("https://custom.example.com/v1".into()),
+                api_key_env: None,
+                wire_protocol: WireProtocol::OpenAiCompat,
+                strict_model_validation: false,
+            })
+            .expect("register custom provider");
+
+        let resolver = ProviderResolver { registry };
+        let settings = AgentSettings {
+            selected_provider: Some("custom".into()),
+            selected_model: Some("whatever-the-operator-wants".into()),
+            ..AgentSettings::default()
+        };
+
+        let report = resolver
+            .resolve_with_env(
+                &settings,
+                &StoredCredentials::default(),
+                std::iter::empty::<(&str, String)>(),
+            )
+            .expect("non-strict provider should accept arbitrary model id");
+
+        assert_eq!(report.model.as_deref(), Some("whatever-the-operator-wants"));
+    }
+
+    #[test]
+    fn non_strict_provider_rejects_empty_model_id() {
+        let mut registry = ProviderRegistry::builtin();
+        registry
+            .register(ProviderDescriptor {
+                id: "lenient".into(),
+                display_name: "Lenient".into(),
+                auth_kind: AuthMaterialKind::None,
+                default_model: "   ".into(), // blank default — should trigger the guard
+                models: vec![],
+                api_base: Some("https://lenient.example.com/v1".into()),
+                api_key_env: None,
+                wire_protocol: WireProtocol::OpenAiCompat,
+                strict_model_validation: false,
+            })
+            .expect("register lenient provider");
+
+        let resolver = ProviderResolver { registry };
+        let settings = AgentSettings {
+            selected_provider: Some("lenient".into()),
+            ..AgentSettings::default()
+        };
+
+        let error = resolver
+            .resolve_with_env(
+                &settings,
+                &StoredCredentials::default(),
+                std::iter::empty::<(&str, String)>(),
+            )
+            .expect_err("blank model id must be rejected even in lenient mode");
+
+        assert!(
+            error.to_string().contains("must not be empty"),
+            "error should mention empty model id; got: {error}"
+        );
+    }
+
+    #[test]
+    fn provider_descriptor_serde_back_compat_missing_new_fields() {
+        // A JSON blob that predates wire_protocol / strict_model_validation
+        // must still deserialise cleanly, picking up the serde defaults.
+        let legacy_json = serde_json::json!({
+            "id": "legacy",
+            "display_name": "Legacy",
+            "auth_kind": "api_key",
+            "default_model": "model-x",
+            "models": [],
+            "api_base": "https://legacy.example.com"
+        });
+
+        let descriptor: ProviderDescriptor =
+            serde_json::from_value(legacy_json).expect("deserialise legacy descriptor");
+
+        assert_eq!(descriptor.wire_protocol, WireProtocol::OpenAiCompat);
+        assert!(!descriptor.strict_model_validation);
     }
 }

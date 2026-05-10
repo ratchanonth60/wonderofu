@@ -4,6 +4,7 @@
 mod auth;
 mod config;
 mod permissions;
+mod protocol;
 mod provider;
 mod runtime;
 
@@ -20,6 +21,8 @@ pub use config::{
 };
 /// Re-exports items from `permissions`
 pub use permissions::{PermissionsLoader, persist_permission_rule, remove_permission_rule};
+/// Re-exports items from `protocol`
+pub use protocol::WireProtocol;
 /// Re-exports items from `provider`
 pub use provider::{
     DEFAULT_BEDROCK_API_BASE, ModelDescriptor, ProviderDescriptor, ProviderRegistry,
