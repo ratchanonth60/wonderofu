@@ -88,16 +88,45 @@ pub struct SidebarView {
     pub session_lines: Vec<String>,
     /// Section 2 – Context: token/cost usage summary.
     pub context_lines: Vec<String>,
-    /// Section 3 – Providers: one entry per line, active model marked with `◈`.
+    /// Section 3 – Suggestions: proactive context-saving hints.
+    pub suggestions: Vec<ContextSuggestion>,
+    /// Section 4 – Providers: one entry per line, active model marked with `◈`.
     pub provider_lines: Vec<String>,
-    /// Section 4 – Status: turn detail, loading verb, error snippets.
+    /// Section 5 – Status: turn detail, loading verb, error snippets.
     pub status_lines: Vec<String>,
-    /// Section 5 – Controls: compact keybindings.
+    /// Section 6 – Controls: compact keybindings.
     pub control_lines: Vec<String>,
-    /// Section 6 – Workspace: cwd, git, storage, runtime labels.
+    /// Section 7 – Workspace: cwd, git, storage, runtime labels.
     pub workspace_lines: Vec<String>,
-    /// Section 7 – Tasks: background task count + hints.
+    /// Section 8 – Tasks: background task count + hints.
     pub task_lines: Vec<String>,
+}
+
+/// Context-saving suggestions shown below the context visualization bar.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct ContextSuggestionsView {
+    /// Suggestions shown in the panel.
+    pub suggestions: Vec<ContextSuggestion>,
+}
+
+/// A single context-saving suggestion for the sidebar.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ContextSuggestion {
+    /// Severity used for icon and color treatment.
+    pub severity: SuggestionSeverity,
+    /// Short suggestion title.
+    pub title: String,
+    /// Follow-up detail explaining the action.
+    pub detail: String,
+}
+
+/// Severity used when rendering a context suggestion.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SuggestionSeverity {
+    /// The context window is nearing its limit.
+    Warning,
+    /// The context window is moderately full.
+    Info,
 }
 
 /// Severity for the context warning banner above the prompt.
@@ -203,23 +232,26 @@ impl ShellView {
             let context_lines =
                 context_sidebar_lines(app.costs.usage.total_tokens(), app.context_window_size);
 
-            // Section 3 – Providers: one line combining provider and model.
+            // Section 3 – Suggestions: proactive context-saving hints.
+            let suggestions = context_suggestions(app);
+
+            // Section 4 – Providers: one line combining provider and model.
             let provider_lines = match (&app.provider, &app.model) {
                 (Some(provider), Some(model)) => vec![format!("{provider} · {model}")],
                 _ => Vec::new(),
             };
 
-            // Section 4 – Status: stub idle line; controller overwrites this each frame.
+            // Section 5 – Status: stub idle line; controller overwrites this each frame.
             let status_lines = vec!["● idle".into()];
 
-            // Section 5 – Controls: compact keybinding reference.
+            // Section 6 – Controls: compact keybinding reference.
             let control_lines = vec![
                 "↵ send  ⇧↵ newline".into(),
                 "⎋ cancel  ? help".into(),
                 "⌃B sidebar  ⌃C exit".into(),
             ];
 
-            // Section 6 – Workspace: git branch and short cwd label.
+            // Section 7 – Workspace: git branch and short cwd label.
             let mut workspace_lines: Vec<String> = Vec::new();
             if let Some(branch) = &app.session.git_branch {
                 workspace_lines.push(format!("⎇  {branch}"));
@@ -229,7 +261,7 @@ impl ShellView {
                 workspace_lines.push(format!("  {cwd}"));
             }
 
-            // Section 7 – Tasks: background task count (omitted when none).
+            // Section 8 – Tasks: background task count (omitted when none).
             let task_lines = if app.background_tasks.is_empty() {
                 Vec::new()
             } else {
@@ -241,6 +273,7 @@ impl ShellView {
             SidebarView {
                 session_lines,
                 context_lines,
+                suggestions,
                 provider_lines,
                 status_lines,
                 control_lines,
@@ -619,48 +652,132 @@ fn sidebar_section_lines(sidebar: &SidebarView, theme: &Theme) -> Vec<StyledLine
     let dim = theme.footer;
     let accent = theme.prompt;
 
-    // (header text, section body lines)
-    let sections: &[(&str, &[String])] = &[
-        ("─ Session ─", &sidebar.session_lines),
-        ("─ Providers ─", &sidebar.provider_lines),
-        ("─ Context ─", &sidebar.context_lines),
-        ("─ Status ─", &sidebar.status_lines),
-        ("─ Controls ─", &sidebar.control_lines),
-        ("─ Workspace ─", &sidebar.workspace_lines),
-        ("─ Tasks ─", &sidebar.task_lines),
-    ];
-
     let mut out: Vec<StyledLine> = Vec::new();
 
-    for (header, body) in sections {
-        if body.is_empty() {
-            continue;
-        }
-
-        // Blank separator before each section (except at the very top).
-        if !out.is_empty() {
-            out.push(StyledLine::plain(String::new(), dim));
-        }
-
-        // Section header row.
-        out.push(StyledLine::plain((*header).to_owned(), theme.title));
-
-        // Body lines with prefix-driven colouring.
-        for line in *body {
-            let style = if line.starts_with('✓') {
-                TextStyle::default().fg(Color::Green)
-            } else if line.starts_with('⚠') {
-                TextStyle::default().fg(Color::Yellow)
-            } else if line.starts_with('◈') {
-                accent
-            } else {
-                dim
-            };
-            out.push(StyledLine::plain(line.clone(), style));
-        }
-    }
+    push_sidebar_text_section(
+        &mut out,
+        "─ Session ─",
+        &sidebar.session_lines,
+        dim,
+        accent,
+        theme,
+    );
+    push_sidebar_text_section(
+        &mut out,
+        "─ Providers ─",
+        &sidebar.provider_lines,
+        dim,
+        accent,
+        theme,
+    );
+    push_sidebar_text_section(
+        &mut out,
+        "─ Context ─",
+        &sidebar.context_lines,
+        dim,
+        accent,
+        theme,
+    );
+    push_sidebar_suggestions_section(&mut out, &sidebar.suggestions, theme);
+    push_sidebar_text_section(
+        &mut out,
+        "─ Status ─",
+        &sidebar.status_lines,
+        dim,
+        accent,
+        theme,
+    );
+    push_sidebar_text_section(
+        &mut out,
+        "─ Controls ─",
+        &sidebar.control_lines,
+        dim,
+        accent,
+        theme,
+    );
+    push_sidebar_text_section(
+        &mut out,
+        "─ Workspace ─",
+        &sidebar.workspace_lines,
+        dim,
+        accent,
+        theme,
+    );
+    push_sidebar_text_section(
+        &mut out,
+        "─ Tasks ─",
+        &sidebar.task_lines,
+        dim,
+        accent,
+        theme,
+    );
 
     out
+}
+
+fn push_sidebar_text_section(
+    out: &mut Vec<StyledLine>,
+    header: &str,
+    body: &[String],
+    dim: TextStyle,
+    accent: TextStyle,
+    theme: &Theme,
+) {
+    if body.is_empty() {
+        return;
+    }
+
+    if !out.is_empty() {
+        out.push(StyledLine::plain(String::new(), dim));
+    }
+
+    out.push(StyledLine::plain(header.to_owned(), theme.title));
+    for line in body {
+        let style = if line.starts_with('✓') {
+            TextStyle::default().fg(Color::Green)
+        } else if line.starts_with('⚠') {
+            TextStyle::default().fg(Color::Yellow)
+        } else if line.starts_with('◈') {
+            accent
+        } else {
+            dim
+        };
+        out.push(StyledLine::plain(line.clone(), style));
+    }
+}
+
+fn push_sidebar_suggestions_section(
+    out: &mut Vec<StyledLine>,
+    suggestions: &[ContextSuggestion],
+    theme: &Theme,
+) {
+    let Some(suggestion) = suggestions.first() else {
+        return;
+    };
+
+    if !out.is_empty() {
+        out.push(StyledLine::plain(String::new(), theme.footer));
+    }
+
+    out.push(StyledLine::plain("─ Suggestions ─".to_owned(), theme.title));
+    out.push(StyledLine {
+        text: String::new(),
+        style: TextStyle::default(),
+        spans: vec![
+            StyledSpan {
+                text: format!("{} ", suggestion_icon(suggestion.severity)),
+                style: suggestion_icon_style(suggestion.severity, theme),
+            },
+            StyledSpan {
+                text: suggestion.title.clone(),
+                style: suggestion_title_style(suggestion.severity, theme),
+            },
+        ],
+    });
+    out.push(StyledLine::plain(
+        format!("  {}", suggestion.detail),
+        theme.footer,
+    ));
 }
 
 fn docked_panel_lines(view: &ShellView, theme: &Theme) -> Vec<StyledLine> {
@@ -1490,6 +1607,31 @@ fn context_sidebar_lines(used_tokens: u64, max_tokens: Option<u64>) -> Vec<Strin
     ]
 }
 
+fn context_suggestions(state: &AppState) -> Vec<ContextSuggestion> {
+    let Some(context) =
+        context_usage_view(state.costs.usage.total_tokens(), state.context_window_size)
+    else {
+        return Vec::new();
+    };
+
+    let percentage = context.percentage.min(100);
+    if percentage > 70 {
+        vec![ContextSuggestion {
+            severity: SuggestionSeverity::Warning,
+            title: "Context nearing limit".into(),
+            detail: "Run /compact to reduce context usage".into(),
+        }]
+    } else if percentage > 50 {
+        vec![ContextSuggestion {
+            severity: SuggestionSeverity::Info,
+            title: "Consider /compact to free up context".into(),
+            detail: "Run /compact to reduce context usage".into(),
+        }]
+    } else {
+        Vec::new()
+    }
+}
+
 fn context_warning_banner(used_tokens: u64, max_tokens: Option<u64>) -> Option<PromptWarningView> {
     let context = context_usage_view(used_tokens, max_tokens)?;
     let percentage = context.percentage.min(100);
@@ -1520,6 +1662,27 @@ fn format_token_count(value: u64) -> String {
         formatted.push(digit);
     }
     formatted
+}
+
+fn suggestion_icon(severity: SuggestionSeverity) -> &'static str {
+    match severity {
+        SuggestionSeverity::Warning => "⚠",
+        SuggestionSeverity::Info => "→",
+    }
+}
+
+fn suggestion_icon_style(severity: SuggestionSeverity, theme: &Theme) -> TextStyle {
+    match severity {
+        SuggestionSeverity::Warning => TextStyle::default().fg(Color::Yellow).bold(),
+        SuggestionSeverity::Info => theme.prompt,
+    }
+}
+
+fn suggestion_title_style(severity: SuggestionSeverity, theme: &Theme) -> TextStyle {
+    match severity {
+        SuggestionSeverity::Warning => TextStyle::default().fg(Color::Yellow).bold(),
+        SuggestionSeverity::Info => theme.title,
+    }
 }
 
 fn history_match_label(search: &HistorySearchView) -> String {
@@ -2706,6 +2869,11 @@ mod tests {
             "context_lines must show token totals; got: {:?}",
             sidebar.context_lines
         );
+        assert!(
+            sidebar.suggestions.is_empty(),
+            "suggestions must stay hidden below threshold; got: {:?}",
+            sidebar.suggestions
+        );
     }
 
     #[test]
@@ -2731,6 +2899,49 @@ mod tests {
                 .any(|l| l.contains("myproject")),
             "workspace_lines must contain the last cwd component; got: {:?}",
             sidebar.workspace_lines
+        );
+    }
+
+    #[test]
+    fn context_suggestions_shown_above_threshold() {
+        let mut state = AppState::new(PathBuf::from("/workspace"));
+        state.set_context_window_size(Some(100_000));
+        state.record_cost_usage(
+            TokenUsage {
+                input_tokens: 60_000,
+                output_tokens: 15_000,
+                cache_creation_tokens: 0,
+                cache_read_tokens: 0,
+            },
+            None,
+        );
+
+        let suggestions = context_suggestions(&state);
+
+        assert!(
+            suggestions
+                .iter()
+                .any(|suggestion| suggestion.detail.contains("/compact")),
+            "expected /compact guidance, got: {suggestions:?}"
+        );
+    }
+
+    #[test]
+    fn context_suggestions_hidden_when_context_window_unknown() {
+        let mut state = AppState::new(PathBuf::from("/workspace"));
+        state.record_cost_usage(
+            TokenUsage {
+                input_tokens: 60_000,
+                output_tokens: 15_000,
+                cache_creation_tokens: 0,
+                cache_read_tokens: 0,
+            },
+            None,
+        );
+
+        assert!(
+            context_suggestions(&state).is_empty(),
+            "suggestions must be hidden when the context window is unknown"
         );
     }
 
@@ -2971,6 +3182,42 @@ mod tests {
         assert!(
             text.contains("[#####-------------------] 22%"),
             "missing progress bar:\n{text}"
+        );
+    }
+
+    #[test]
+    fn shell_snapshot_renders_context_suggestions_in_sidebar() {
+        let view = ShellView {
+            prompt: "hi".into(),
+            sidebar: Some(SidebarView {
+                context_lines: vec![
+                    "160,000 / 200,000 tokens".into(),
+                    "[###################-----] 80%".into(),
+                ],
+                suggestions: vec![ContextSuggestion {
+                    severity: SuggestionSeverity::Warning,
+                    title: "Context nearing limit".into(),
+                    detail: "Run /compact to reduce context usage".into(),
+                }],
+                ..SidebarView::default()
+            }),
+            ..ShellView::default()
+        };
+
+        let frame = render_snapshot(100, 12, &view, &Theme::default());
+        let text = frame.to_plain_text();
+
+        assert!(
+            text.contains("─ Suggestions ─"),
+            "missing suggestions header:\n{text}"
+        );
+        assert!(
+            text.contains("Context nearing limit"),
+            "missing suggestion title:\n{text}"
+        );
+        assert!(
+            text.contains("/compact"),
+            "missing suggestion detail:\n{text}"
         );
     }
 
