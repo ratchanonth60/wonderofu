@@ -240,16 +240,16 @@ pub struct ShellView {
 impl ShellView {
     /// Returns the height the prompt area should occupy.
     ///
-    /// Bordered-box layout: 1 top-border row + content rows + 1 bottom-border row.
+    /// Ink-style borderless layout: the area is exactly `line_count` rows tall
+    /// (minimum 1 so the cursor always has a home row).  No border rows are
+    /// added since `draw_prompt_view` no longer renders a rounded box.
     #[must_use]
     pub fn prompt_height(&self) -> u16 {
         let line_count = match &self.history_search {
             Some(search) => history_search_line_count(search),
             None => text_line_count(&self.prompt),
         };
-        u16::try_from(line_count)
-            .unwrap_or(u16::MAX.saturating_sub(2))
-            .saturating_add(2)
+        u16::try_from(line_count).unwrap_or(u16::MAX).max(1)
     }
     /// Handles from app state
     #[must_use]
@@ -624,32 +624,11 @@ fn draw_prompt_view(frame: &mut FrameBuffer, area: Rect, view: &ShellView, theme
 
     frame.fill_rect(area, ' ', theme.background);
 
-    // Narrow / short fallback: skip the box chrome and write lines directly.
-    if area.width < 3 || area.height < 3 {
-        draw_lines(frame, area, &prompt_panel_lines(view, theme));
-        return;
-    }
-
-    // Bordered-box layout: rounded corners with a " prompt " label on the top
-    // border, matching the pre-compact UX.
-    draw_rounded_border(frame, area, theme.border);
-    frame.write_str(
-        area.x.saturating_add(2),
-        area.y,
-        " prompt ",
-        theme.footer,
-        area.width.saturating_sub(4),
-    );
-
-    // Prompt content fills the full inner width — the sidebar (when shown) lives
-    // in its own column at shell level, so nothing shrinks the typing area.
-    let content = Rect::new(
-        area.x.saturating_add(1),
-        area.y.saturating_add(1),
-        area.width.saturating_sub(2),
-        area.height.saturating_sub(2),
-    );
-    draw_lines(frame, content, &prompt_panel_lines(view, theme));
+    // Ink-style borderless prompt: render content lines directly into the full
+    // area with no rounded-box chrome or " prompt " title.  The `› ` prefix on
+    // the first line (added by `prompt_panel_lines`) provides the only visual
+    // indicator of the input region, matching the Claude Code/Ink flow layout.
+    draw_lines(frame, area, &prompt_panel_lines(view, theme));
 }
 
 fn draw_prompt_warning(
@@ -672,12 +651,13 @@ fn draw_prompt_warning(
 
 /// Minimum total terminal width required to activate the shell-level sidebar.
 ///
-/// Below this threshold all content occupies the full terminal width,
-/// preserving readability on narrow terminals.
-pub const MIN_SIDEBAR_WIDTH: u16 = 100;
+/// Raised from 100 to 120 so common 100-column terminals keep the full
+/// transcript width (Ink/Claude Code visual parity on standard terminals).
+/// Below this threshold all content occupies the full terminal width.
+pub const MIN_SIDEBAR_WIDTH: u16 = 120;
 
 /// Column width of the sidebar panel (excluding the `│` separator).
-pub const SIDEBAR_WIDTH: u16 = 38;
+pub const SIDEBAR_WIDTH: u16 = 36;
 
 /// Returns the effective main-column width used by [`render_shell`].
 ///
@@ -695,10 +675,10 @@ pub const SIDEBAR_WIDTH: u16 = 38;
 /// assert_eq!(shell_main_area_width(80, true), 80);
 ///
 /// // Wide terminal with sidebar: subtracts sidebar + separator.
-/// assert_eq!(shell_main_area_width(100, true), 100 - SIDEBAR_WIDTH - 1);
+/// assert_eq!(shell_main_area_width(120, true), 120 - SIDEBAR_WIDTH - 1);
 ///
 /// // Wide terminal without sidebar: no deduction.
-/// assert_eq!(shell_main_area_width(100, false), 100);
+/// assert_eq!(shell_main_area_width(120, false), 120);
 /// ```
 pub fn shell_main_area_width(terminal_width: u16, has_sidebar: bool) -> u16 {
     if has_sidebar && terminal_width >= MIN_SIDEBAR_WIDTH {
@@ -1981,6 +1961,44 @@ mod tests {
     use super::*;
     use crate::{dialog::DialogView, message::MessageLineView};
 
+    /// Guard against accidentally lowering `MIN_SIDEBAR_WIDTH` back to 100.
+    ///
+    /// The threshold was raised to 120 so that common 100-column terminals keep
+    /// the full main area.  A regression here would reintroduce the narrow-render
+    /// issue reported in the visual parity audit.
+    #[test]
+    fn sidebar_threshold_is_120_columns() {
+        assert_eq!(
+            MIN_SIDEBAR_WIDTH, 120,
+            "MIN_SIDEBAR_WIDTH must be 120; raising or lowering this changes sidebar activation"
+        );
+    }
+
+    /// At exactly `MIN_SIDEBAR_WIDTH` the sidebar activates and the main area
+    /// shrinks by `SIDEBAR_WIDTH + 1`.  One column below the threshold the
+    /// sidebar must NOT activate even when `has_sidebar = true`.
+    #[test]
+    fn shell_main_area_width_activates_at_threshold_boundary() {
+        // Exactly at threshold → sidebar deduction applies.
+        assert_eq!(
+            shell_main_area_width(MIN_SIDEBAR_WIDTH, true),
+            MIN_SIDEBAR_WIDTH - SIDEBAR_WIDTH - 1,
+            "sidebar must activate at exactly MIN_SIDEBAR_WIDTH={MIN_SIDEBAR_WIDTH}"
+        );
+        // One below threshold → full width even with sidebar flag set.
+        assert_eq!(
+            shell_main_area_width(MIN_SIDEBAR_WIDTH - 1, true),
+            MIN_SIDEBAR_WIDTH - 1,
+            "sidebar must NOT activate one column below the threshold"
+        );
+        // Threshold without sidebar flag → full width.
+        assert_eq!(
+            shell_main_area_width(MIN_SIDEBAR_WIDTH, false),
+            MIN_SIDEBAR_WIDTH,
+            "sidebar flag=false must never deduct columns"
+        );
+    }
+
     #[test]
     fn global_search_result_format_includes_location_and_truncates_preview() {
         let formatted = format_global_search_result(
@@ -2033,9 +2051,9 @@ mod tests {
                 "   ██╗    ██╗  ██████╗  ██╗",
                 "   ██║    ██║ ██╔═══██╗ ██║",
                 "   ██║ █╗ ██║ ██║   ██║ ██║",
-                "╭─ prompt ───────────────────╮",
-                "│›                           │",
-                "╰────────────────────────────╯",
+                "   ██║███╗██║ ██║   ██║ ╚██╗ █",
+                "   ╚███╔███╔╝ ╚██████╔╝  ╚████",
+                "›",
                 "             ctrl-c interrupt",
             ]
             .join("\n")
@@ -2087,11 +2105,11 @@ mod tests {
                 "hello",
                 "",
                 "",
+                "",
+                "",
                 "Tasks",
                 "[running] shell: index workspace",
-                "╭─ prompt ─────────────────────────────────────╮",
-                "│› /status                                     │",
-                "╰──────────────────────────────────────────────╯",
+                "› /status",
                 "              cwd=/workspace · ctrl-c interrupt",
             ]
             .join("\n")
@@ -2186,13 +2204,13 @@ mod tests {
                 "",
                 "",
                 "",
+                "",
+                "",
                 "Queued",
                 "1. /status",
                 "2. draft migration plan",
                 "+2 more queued",
-                "╭─ prompt ───────────────────────────────╮",
-                "│› /plan                                 │",
-                "╰────────────────────────────────────────╯",
+                "› /plan",
                 "        cwd=/workspace · ctrl-c interrupt",
             ]
             .join("\n")
@@ -2235,6 +2253,7 @@ mod tests {
             frame.to_plain_text(),
             [
                 "",
+                "",
                 " ╭─Confirm action───────────────────────╮",
                 " │Approve command execution             │",
                 " │This cannot be undone                 │",
@@ -2242,9 +2261,8 @@ mod tests {
                 " ╰──────────────────────────────────────╯",
                 "",
                 "",
-                "╭─ prompt ───────────────────────────────╮",
-                "│› continue?                             │",
-                "╰────────────────────────────────────────╯",
+                "",
+                "› continue?",
                 "        cwd=/workspace · ctrl-c interrupt",
             ]
             .join("\n")
@@ -2298,11 +2316,11 @@ mod tests {
                 "",
                 "",
                 "",
-                "╭─ prompt ───────────────────────────────╮",
-                "│search: pla                             │",
-                "│match 2/3                               │",
-                "│draft plan                              │",
-                "╰────────────────────────────────────────╯",
+                "",
+                "",
+                "search: pla",
+                "match 2/3",
+                "draft plan",
                 "        cwd=/workspace · ctrl-c interrupt",
             ]
             .join("\n")
@@ -2311,14 +2329,17 @@ mod tests {
 
     #[test]
     fn transcript_snapshot_keeps_latest_visible_lines() {
+        // height=9, CHROME_HEIGHT=1 → available=8, prompt_height=1 (borderless),
+        // messages_height=7.  With 8 messages only the tail 7 are visible, so
+        // "line 1" is pushed off the top.
         let view = ShellView {
             title: "Session: Tail".into(),
-            messages: (1..=6)
+            messages: (1..=8)
                 .map(|index| MessageLineView::new(format!("line {index}"), MessageRole::Assistant))
                 .collect(),
             prompt: "tail".into(),
             history_search: None,
-            status: "prompt | 6 messages".into(),
+            status: "prompt | 8 messages".into(),
             loading: false,
             loading_verb: None,
             spinner_frame: 0,
@@ -2386,9 +2407,9 @@ mod tests {
                 "",
                 "",
                 "",
-                "╭─ prompt ─────────────────────────────────────╮",
-                "│›                                             │",
-                "╰──────────────────────────────────────────────╯",
+                "",
+                "",
+                "›",
                 "              cwd=/workspace · ctrl-c interrupt",
             ]
             .join("\n")
@@ -2450,9 +2471,9 @@ mod tests {
                 "                      │tests passed            │",
                 "                      ╰────────────────────────╯",
                 "",
-                "╭─ prompt ─────────────────────────────────────╮",
-                "│›                                             │",
-                "╰──────────────────────────────────────────────╯",
+                "",
+                "",
+                "›",
                 "              cwd=/workspace · ctrl-c interrupt",
             ]
             .join("\n")
@@ -2686,18 +2707,18 @@ mod tests {
 
     #[test]
     fn transcript_scrolled_up_shows_earlier_window() {
-        // 10 lines, render_snapshot(20, 10) → 6 visible transcript rows (CHROME_HEIGHT=1:
-        // available=9, prompt=3, messages=6, title=0 for non-empty messages).
-        // offset_from_bottom = 3 → start = (10 - 6) - 3 = 1 → shows lines 02–07.
+        // height=10, CHROME_HEIGHT=1 → available=9, prompt_height=1 (borderless),
+        // messages_height=8.  offset_from_bottom=1:
+        //   start = (10-8).saturating_sub(1) = 1 → shows lines 02–09.
         let view = ShellView {
             title: "Session: Scrolled".into(),
             messages: make_long_transcript(10),
             prompt: String::new(),
             status: "scrolled".into(),
             scroll: TranscriptScrollView {
-                offset_from_bottom: 3,
+                offset_from_bottom: 1,
                 total_lines: 10,
-                visible_lines: 6,
+                visible_lines: 8,
             },
             ..ShellView::default()
         };
@@ -2705,7 +2726,7 @@ mod tests {
         let frame = render_snapshot(20, 10, &view, &Theme::default());
         let text = frame.to_plain_text();
         assert!(text.contains("line 02"), "window start must be visible");
-        assert!(text.contains("line 07"), "window end must be visible");
+        assert!(text.contains("line 09"), "window end must be visible");
         assert!(
             !text.contains("line 01"),
             "line before window must be hidden"
@@ -2825,33 +2846,33 @@ mod tests {
     // ── prompt height and cap ────────────────────────────────────────────────
 
     #[test]
-    fn prompt_height_single_line_is_box_row_count() {
-        // Box layout: 1 top border + 1 content row + 1 bottom border = 3.
+    fn prompt_height_single_line_is_line_count() {
+        // Ink-style borderless: a single-line prompt occupies exactly 1 row.
         let view = ShellView {
             prompt: "hello".into(),
             ..ShellView::default()
         };
-        assert_eq!(view.prompt_height(), 3);
+        assert_eq!(view.prompt_height(), 1);
     }
 
     #[test]
     fn prompt_height_multiline_counts_all_lines() {
-        // 3-line prompt → 1 top border + 3 content rows + 1 bottom border = 5.
+        // 3-line prompt → exactly 3 rows (no border overhead).
         let view = ShellView {
             prompt: "line one\nline two\nline three".into(),
             ..ShellView::default()
         };
-        assert_eq!(view.prompt_height(), 5);
+        assert_eq!(view.prompt_height(), 3);
     }
 
     #[test]
-    fn prompt_height_empty_prompt_returns_three() {
-        // An empty prompt has 1 content row (the › marker) → 1 + 2 borders = 3.
+    fn prompt_height_empty_prompt_returns_one() {
+        // An empty prompt still needs 1 row for the › cursor row.
         let view = ShellView {
             prompt: String::new(),
             ..ShellView::default()
         };
-        assert_eq!(view.prompt_height(), 3);
+        assert_eq!(view.prompt_height(), 1);
     }
 
     #[test]
@@ -2885,9 +2906,8 @@ mod tests {
 
     #[test]
     fn multiline_prompt_first_line_has_marker_continuation_lines_do_not() {
-        // Box prompt for 3 lines → prompt_height() = 5 (top border + 3 content +
-        // bottom border).  At height=16 the one-third cap = max(16/3, 3) = 5,
-        // which exactly fits all three content lines inside the box.
+        // Ink-style borderless: prompt_height = 3 (3 content lines, no borders).
+        // At height=16 the one-third cap = max(16/3, 3) = 5, which fits all 3 rows.
         let view = ShellView {
             title: "Session: ML".into(),
             messages: Vec::new(),
@@ -2952,7 +2972,7 @@ mod tests {
 
     #[test]
     fn sidebar_absent_on_narrow_terminal_below_min_width() {
-        // Width 99 is one below the MIN_SIDEBAR_WIDTH threshold — the sidebar
+        // Width 119 is one below the MIN_SIDEBAR_WIDTH threshold — the sidebar
         // must not appear even when `view.sidebar` is Some.
         let view = ShellView {
             prompt: "hello".into(),
@@ -2964,7 +2984,7 @@ mod tests {
             ..ShellView::default()
         };
 
-        let frame = render_snapshot(99, 8, &view, &Theme::default());
+        let frame = render_snapshot(119, 8, &view, &Theme::default());
         let text = frame.to_plain_text();
 
         // Sidebar section headers must not appear on a narrow terminal.
@@ -2976,7 +2996,7 @@ mod tests {
 
     #[test]
     fn sidebar_renders_on_wide_terminal_at_min_width() {
-        // Width == MIN_SIDEBAR_WIDTH (100) must activate the sidebar.
+        // Width == MIN_SIDEBAR_WIDTH (120) must activate the sidebar.
         // The sidebar spans the full terminal height so a single-line prompt is
         // sufficient — no need for a tall prompt to expose sidebar rows.
         let view = ShellView {
@@ -2993,7 +3013,7 @@ mod tests {
         // Use a taller terminal so the rounded-border box has enough inner rows
         // to show all three sidebar sections (Providers, Status, Controls).
         // The rounded border takes 2 rows (top + bottom), leaving 12 inner rows.
-        let frame = render_snapshot(100, 14, &view, &Theme::default());
+        let frame = render_snapshot(120, 14, &view, &Theme::default());
         let text = frame.to_plain_text();
 
         assert!(
@@ -3033,7 +3053,7 @@ mod tests {
             ..ShellView::default()
         };
 
-        let frame = render_snapshot(100, 6, &view, &Theme::default());
+        let frame = render_snapshot(120, 6, &view, &Theme::default());
         let text = frame.to_plain_text();
 
         assert!(
@@ -3054,7 +3074,7 @@ mod tests {
             ..ShellView::default()
         };
 
-        let frame = render_snapshot(100, 8, &view, &Theme::default());
+        let frame = render_snapshot(120, 8, &view, &Theme::default());
         let text = frame.to_plain_text();
 
         assert!(
@@ -3078,7 +3098,7 @@ mod tests {
             ..ShellView::default()
         };
 
-        let frame = render_snapshot(100, 8, &view, &Theme::default());
+        let frame = render_snapshot(120, 8, &view, &Theme::default());
         let text = frame.to_plain_text();
 
         assert!(
@@ -3098,7 +3118,7 @@ mod tests {
             ..ShellView::default()
         };
 
-        let frame = render_snapshot(100, 10, &view, &Theme::default());
+        let frame = render_snapshot(120, 10, &view, &Theme::default());
         let text = frame.to_plain_text();
 
         assert!(
@@ -3118,7 +3138,7 @@ mod tests {
             ..ShellView::default()
         };
 
-        let frame = render_snapshot(100, 10, &view, &Theme::default());
+        let frame = render_snapshot(120, 10, &view, &Theme::default());
         let text = frame.to_plain_text();
 
         assert!(
@@ -3138,7 +3158,7 @@ mod tests {
             ..ShellView::default()
         };
 
-        let frame = render_snapshot(100, 10, &view, &Theme::default());
+        let frame = render_snapshot(120, 10, &view, &Theme::default());
         let text = frame.to_plain_text();
 
         assert!(
@@ -3270,7 +3290,7 @@ mod tests {
 
     #[test]
     fn sidebar_multiline_prompt_uses_full_main_column_width() {
-        // The sidebar lives at shell level; the prompt box takes the entire
+        // The sidebar lives at shell level; the prompt takes the entire
         // main-column width — no internal split should compress the typing area.
         let view = ShellView {
             prompt: "first line\nsecond line\nthird line".into(),
@@ -3282,10 +3302,10 @@ mod tests {
             ..ShellView::default()
         };
 
-        // width=100 → main_w=67, sidebar=32, sep=1.
-        // height=14 → max_prompt=4; prompt_height=5 (3 content+2 border).min(4)=4.
-        // Box shows 2 content rows: "first line" and "second line".
-        let frame = render_snapshot(100, 14, &view, &Theme::default());
+        // width=120 → main_w=83, sidebar=36, sep=1.
+        // height=14 → max_prompt=max(4,3)=4; prompt_height=3 (3 content lines).min(4)=3.
+        // Shows all 3 content rows: "first line", "second line", "third line".
+        let frame = render_snapshot(120, 14, &view, &Theme::default());
         let text = frame.to_plain_text();
 
         assert!(
@@ -3303,9 +3323,9 @@ mod tests {
     }
 
     #[test]
-    fn prompt_box_spans_full_terminal_width_on_narrow_terminal() {
-        // Width 99 is one below MIN_SIDEBAR_WIDTH.  Even when `sidebar` is Some,
-        // no column is carved out — the prompt box must use the full 99 columns.
+    fn prompt_spans_full_terminal_width_on_narrow_terminal() {
+        // Width 119 is one below MIN_SIDEBAR_WIDTH=120.  Even when `sidebar` is Some,
+        // no column is carved out — the prompt must use the full 119 columns.
         let view = ShellView {
             prompt: "hello".into(),
             sidebar: Some(SidebarView {
@@ -3315,52 +3335,50 @@ mod tests {
             ..ShellView::default()
         };
 
-        let frame = render_snapshot(99, 6, &view, &Theme::default());
+        let frame = render_snapshot(119, 6, &view, &Theme::default());
         let text = frame.to_plain_text();
 
-        // The bottom border line starts with '╰' and ends with '╯'.
-        // to_plain_text trims trailing spaces, so '╯' is preserved as the last char.
-        let bottom_border = text
+        // Prompt marker must appear — content starts at column 0 with no sidebar offset.
+        let prompt_line = text
             .lines()
-            .find(|l| l.starts_with('╰'))
-            .expect("bottom border line must be present");
+            .find(|l| l.starts_with('›'))
+            .expect("prompt marker must be present");
 
+        // Sidebar must be suppressed on narrow terminal.
         assert!(
-            bottom_border.ends_with('╯'),
-            "prompt box right corner must be at column 98; got: {bottom_border:?}"
+            !text.contains("─ Providers ─"),
+            "sidebar must be suppressed below MIN_SIDEBAR_WIDTH; rendered:\n{text}"
         );
-        // The border line must span all 99 columns — no sidebar column was carved out.
-        let col_count = bottom_border.chars().count();
-        assert_eq!(
-            col_count, 99,
-            "prompt box border must be 99 cols wide on narrow terminal; got {col_count}"
+        // The prompt marker must be at the start of the line (no sidebar indentation).
+        assert!(
+            prompt_line.starts_with('›'),
+            "prompt must start at column 0 on narrow terminal; got: {prompt_line:?}"
         );
     }
 
     #[test]
     fn prompt_view_does_not_panic_on_tiny_terminal() {
-        // When the prompt area is width < 3 or height < 3, draw_prompt_view falls back
-        // to writing content lines directly without box chrome.  Verify no panic and
-        // that the '›' marker still appears (content is written to the area).
+        // With a borderless prompt there is no fallback path: content is always
+        // rendered directly.  Verify no panic and that the '›' marker appears.
         let view = ShellView {
             prompt: "hi".into(),
             ..ShellView::default()
         };
 
-        // height=3 → chrome=2, available=1, prompt_height capped to 1 → area.height=1
-        // which is < 3, so the no-box fallback path is taken.
+        // height=3 → chrome=1, available=2, prompt_height=1, messages=1.
+        // The prompt area is height=1, which draws directly without any box chrome.
         let frame = render_snapshot(10, 3, &view, &Theme::default());
         let text = frame.to_plain_text();
 
         // Must not panic; the prompt marker '›' must still appear.
         assert!(
             text.contains('›'),
-            "prompt marker must appear even without box chrome; rendered:\n{text}"
+            "prompt marker must appear on tiny terminal; rendered:\n{text}"
         );
-        // No rounded-box corners should be present in the fallback path.
+        // No rounded-box corners should ever appear with the borderless prompt.
         assert!(
             !text.contains('╭'),
-            "box corners must be absent in tiny-terminal fallback; rendered:\n{text}"
+            "box corners must never appear with Ink-style borderless prompt; rendered:\n{text}"
         );
     }
 
@@ -3379,7 +3397,7 @@ mod tests {
             ..ShellView::default()
         };
 
-        let frame = render_snapshot(100, 10, &view, &Theme::default());
+        let frame = render_snapshot(120, 10, &view, &Theme::default());
         let text = frame.to_plain_text();
 
         assert!(
@@ -3400,7 +3418,7 @@ mod tests {
             ..ShellView::default()
         };
 
-        let frame = render_snapshot(100, 10, &view, &Theme::default());
+        let frame = render_snapshot(120, 10, &view, &Theme::default());
         let text = frame.to_plain_text();
 
         assert!(
@@ -3414,8 +3432,8 @@ mod tests {
     }
 
     #[test]
-    fn sidebar_absent_on_narrow_terminal_below_100_cols() {
-        // Narrow terminal (width < MIN_SIDEBAR_WIDTH = 100): sidebar must be
+    fn sidebar_absent_on_narrow_terminal_below_120_cols() {
+        // Narrow terminal (width < MIN_SIDEBAR_WIDTH = 120): sidebar must be
         // completely suppressed even when `sidebar` field is `Some`.
         let view = ShellView {
             prompt: "narrow".into(),
@@ -3427,12 +3445,12 @@ mod tests {
             ..ShellView::default()
         };
 
-        let frame = render_snapshot(99, 8, &view, &Theme::default());
+        let frame = render_snapshot(119, 8, &view, &Theme::default());
         let text = frame.to_plain_text();
 
         assert!(
             !text.contains("─ Providers ─"),
-            "Providers header must NOT appear on narrow (99-col) terminal; rendered:\n{text}"
+            "Providers header must NOT appear on narrow (119-col) terminal; rendered:\n{text}"
         );
         assert!(
             !text.contains("─ Controls ─"),
@@ -3453,7 +3471,7 @@ mod tests {
             ..ShellView::default()
         };
 
-        let frame = render_snapshot(100, 10, &view, &Theme::default());
+        let frame = render_snapshot(120, 10, &view, &Theme::default());
         let text = frame.to_plain_text();
 
         assert!(
@@ -3496,7 +3514,7 @@ mod tests {
             ..ShellView::default()
         };
 
-        let frame = render_snapshot(100, 10, &view, &Theme::default());
+        let frame = render_snapshot(120, 10, &view, &Theme::default());
         let text = frame.to_plain_text();
 
         assert!(
@@ -3532,7 +3550,7 @@ mod tests {
             ..ShellView::default()
         };
 
-        let frame = render_snapshot(100, 12, &view, &Theme::default());
+        let frame = render_snapshot(120, 12, &view, &Theme::default());
         let text = frame.to_plain_text();
 
         assert!(
@@ -3571,9 +3589,10 @@ mod tests {
             .lines()
             .position(|line| line.contains("⚠ Context window 80% full"))
             .expect("warning row");
+        // Ink-style borderless: prompt area starts with '›' marker directly.
         let prompt_row = text
             .lines()
-            .position(|line| line.starts_with('╭'))
+            .position(|line| line.starts_with('›'))
             .expect("prompt row");
         assert_eq!(warning_row.saturating_add(1), prompt_row);
     }
@@ -3788,19 +3807,20 @@ mod tests {
         let text = frame.to_plain_text();
         let lines: Vec<&str> = text.lines().collect();
 
-        // The loading indicator must appear above the prompt border.
+        // The loading indicator must appear above the prompt marker.
         let spinner_row = lines
             .iter()
             .position(|l| l.contains("thinking"))
             .expect("spinner row must appear");
+        // Ink-style borderless: first prompt line starts with '›'.
         let prompt_border_row = lines
             .iter()
-            .position(|l| l.starts_with('╭'))
-            .expect("prompt border must appear");
+            .position(|l| l.starts_with('›'))
+            .expect("prompt marker must appear");
 
         assert!(
             spinner_row < prompt_border_row,
-            "loading row ({spinner_row}) must be above prompt border ({prompt_border_row}); rendered:\n{text}"
+            "loading row ({spinner_row}) must be above prompt marker ({prompt_border_row}); rendered:\n{text}"
         );
 
         // The earlier transcript message must still be visible.
@@ -3825,7 +3845,7 @@ mod tests {
             ..ShellView::default()
         };
 
-        let frame = render_snapshot(100, 12, &view, &Theme::default());
+        let frame = render_snapshot(120, 12, &view, &Theme::default());
         let text = frame.to_plain_text();
 
         assert!(
@@ -3854,7 +3874,7 @@ mod tests {
             ..ShellView::default()
         };
 
-        let frame = render_snapshot(100, 10, &view, &Theme::default());
+        let frame = render_snapshot(120, 10, &view, &Theme::default());
         let text = frame.to_plain_text();
 
         assert!(
@@ -3875,7 +3895,7 @@ mod tests {
             ..ShellView::default()
         };
 
-        let frame = render_snapshot(100, 12, &view, &Theme::default());
+        let frame = render_snapshot(120, 12, &view, &Theme::default());
         let text = frame.to_plain_text();
 
         assert!(
@@ -3904,7 +3924,7 @@ mod tests {
             ..ShellView::default()
         };
 
-        let frame = render_snapshot(100, 10, &view, &Theme::default());
+        let frame = render_snapshot(120, 10, &view, &Theme::default());
         let text = frame.to_plain_text();
 
         assert!(
@@ -3925,7 +3945,7 @@ mod tests {
             ..ShellView::default()
         };
 
-        let frame = render_snapshot(100, 12, &view, &Theme::default());
+        let frame = render_snapshot(120, 12, &view, &Theme::default());
         let text = frame.to_plain_text();
 
         assert!(
@@ -3950,7 +3970,7 @@ mod tests {
             ..ShellView::default()
         };
 
-        let frame = render_snapshot(100, 10, &view, &Theme::default());
+        let frame = render_snapshot(120, 10, &view, &Theme::default());
         let text = frame.to_plain_text();
 
         assert!(
@@ -3971,7 +3991,7 @@ mod tests {
             ..ShellView::default()
         };
 
-        let frame = render_snapshot(100, 12, &view, &Theme::default());
+        let frame = render_snapshot(120, 12, &view, &Theme::default());
         let text = frame.to_plain_text();
 
         assert!(
@@ -4000,7 +4020,7 @@ mod tests {
             ..ShellView::default()
         };
 
-        let frame = render_snapshot(100, 10, &view, &Theme::default());
+        let frame = render_snapshot(120, 10, &view, &Theme::default());
         let text = frame.to_plain_text();
 
         assert!(
@@ -4041,7 +4061,7 @@ mod tests {
         };
 
         // Use a very tall terminal so all sections fit in the sidebar inner area.
-        let frame = render_snapshot(100, 60, &view, &Theme::default());
+        let frame = render_snapshot(120, 60, &view, &Theme::default());
         let text = frame.to_plain_text();
 
         // Helper: position of first occurrence in rendered text.
@@ -4132,8 +4152,8 @@ mod tests {
             ..ShellView::default()
         };
 
-        // Width 99 is one below MIN_SIDEBAR_WIDTH – sidebar is fully suppressed.
-        let frame = render_snapshot(99, 20, &view, &Theme::default());
+        // Width 119 is one below MIN_SIDEBAR_WIDTH=120 – sidebar is fully suppressed.
+        let frame = render_snapshot(119, 20, &view, &Theme::default());
         let text = frame.to_plain_text();
 
         for absent in &["─ Tools ─", "─ MCP ─", "─ LSP ─", "─ Todo ─"] {
@@ -4163,7 +4183,7 @@ mod tests {
             ..ShellView::default()
         };
 
-        let frame = render_snapshot(100, 40, &view, &Theme::default());
+        let frame = render_snapshot(120, 40, &view, &Theme::default());
         let text = frame.to_plain_text();
 
         // Every integration-panel header must appear at most once.

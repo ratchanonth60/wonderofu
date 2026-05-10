@@ -123,6 +123,8 @@ pub(crate) fn run_tui<W: Write>(
     let mut controller = TuiController::new(context, registry, storage_dir, options)?;
     let mut term = setup_ratatui_terminal(writer)?;
     let mut events = EventLoop::new(CrosstermEventSource, Duration::from_millis(500));
+    let initial_size = term.size()?;
+    controller.on_terminal_resize(initial_size.width, initial_size.height);
 
     render_tui(&mut term, &controller)?;
     controller.mark_rendered();
