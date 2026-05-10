@@ -95,6 +95,44 @@ fn auth_material_label(material: &AuthMaterial) -> &'static str {
 
 /// Default AWS Bedrock API base URL (us-east-1).
 pub const DEFAULT_BEDROCK_API_BASE: &str = "https://bedrock-runtime.us-east-1.amazonaws.com";
+
+/// Constructs a [`ProviderDescriptor`] for an OpenAI-compatible gateway provider.
+///
+/// All gateway providers share the same wire protocol ([`WireProtocol::OpenAiCompat`])
+/// and auth kind ([`AuthMaterialKind::ApiKey`]).  Model validation is intentionally
+/// non-strict so that callers can use any model string the upstream gateway
+/// accepts without needing a locally-maintained catalogue.
+///
+/// # Examples
+///
+/// ```
+/// let desc = wonder_of_u_agent::provider::openai_compat_gateway(
+///     "groq", "Groq", "https://api.groq.com/openai/v1",
+///     "GROQ_API_KEY", "llama-3.3-70b-versatile",
+/// );
+/// assert_eq!(desc.id, "groq");
+/// ```
+#[must_use]
+pub fn openai_compat_gateway(
+    id: &str,
+    display_name: &str,
+    api_base: &str,
+    api_key_env: &str,
+    default_model: &str,
+) -> ProviderDescriptor {
+    ProviderDescriptor {
+        id: id.into(),
+        display_name: display_name.into(),
+        auth_kind: AuthMaterialKind::ApiKey,
+        default_model: default_model.into(),
+        // Non-strict providers keep an empty catalogue; any non-empty model id is accepted.
+        models: vec![],
+        api_base: Some(api_base.into()),
+        api_key_env: Some(api_key_env.into()),
+        wire_protocol: WireProtocol::OpenAiCompat,
+        strict_model_validation: false,
+    }
+}
 /// Represents provider selection
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct ProviderSelection {
@@ -469,6 +507,103 @@ impl ProviderRegistry {
                 strict_model_validation: true,
             })
             .expect("builtin provider");
+
+        // ── OpenAI-compatible gateway providers ──────────────────────────────
+        // Each gateway speaks the standard OpenAI chat-completions wire protocol
+        // and authenticates with a single API key env var.  Model validation is
+        // non-strict so any model string accepted by the upstream gateway passes
+        // through without needing a locally-maintained catalogue.
+        let gateways: &[(&str, &str, &str, &str, &str)] = &[
+            (
+                "hyper",
+                "Hyper AI",
+                "https://api.hyper.ai/v1",
+                "HYPER_API_KEY",
+                "llama-3.3-70b",
+            ),
+            (
+                "vercel",
+                "Vercel AI",
+                "https://api.v0.dev/v1",
+                "VERCEL_API_KEY",
+                "gpt-4o-mini",
+            ),
+            (
+                "zai",
+                "Z.ai",
+                "https://api.z.ai/api/v1",
+                "ZAI_API_KEY",
+                "auto",
+            ),
+            (
+                "minimax",
+                "MiniMax",
+                "https://api.minimax.io/v1",
+                "MINIMAX_API_KEY",
+                "MiniMax-Text-01",
+            ),
+            (
+                "huggingface",
+                "Hugging Face",
+                "https://api-inference.huggingface.co/v1",
+                "HF_TOKEN",
+                "Qwen/Qwen2.5-72B-Instruct",
+            ),
+            (
+                "cerebras",
+                "Cerebras",
+                "https://api.cerebras.ai/v1",
+                "CEREBRAS_API_KEY",
+                "llama-3.3-70b",
+            ),
+            (
+                "openrouter",
+                "OpenRouter",
+                "https://openrouter.ai/api/v1",
+                "OPENROUTER_API_KEY",
+                "openai/gpt-4o-mini",
+            ),
+            (
+                "ionet",
+                "IO Intelligence",
+                "https://api.intelligence.io.solutions/api/v1",
+                "IONET_API_KEY",
+                "meta-llama/Llama-3.3-70B-Instruct",
+            ),
+            (
+                "groq",
+                "Groq",
+                "https://api.groq.com/openai/v1",
+                "GROQ_API_KEY",
+                "llama-3.3-70b-versatile",
+            ),
+            (
+                "avian",
+                "Avian",
+                "https://app.avian.io/api/v1",
+                "AVIAN_API_KEY",
+                "gpt-4o-mini",
+            ),
+            (
+                "opencode",
+                "OpenCode",
+                "https://opencode.ai/api/v1",
+                "OPENCODE_API_KEY",
+                "gpt-4o",
+            ),
+        ];
+        for &(id, display_name, api_base, api_key_env, default_model) in gateways {
+            registry
+                .register(openai_compat_gateway(
+                    id,
+                    display_name,
+                    api_base,
+                    api_key_env,
+                    default_model,
+                ))
+                .expect("builtin gateway provider");
+        }
+
         registry
     }
 
@@ -1735,15 +1870,223 @@ mod tests {
     }
 
     #[test]
-    fn all_builtin_providers_have_strict_model_validation_enabled() {
+    fn native_providers_have_strict_model_validation_enabled() {
+        // Gateway providers are intentionally non-strict; only the four native
+        // providers (copilot/openai/anthropic/bedrock) enforce the catalogue.
         let registry = ProviderRegistry::builtin();
-        for provider in registry.providers() {
+        for id in ["copilot", "openai", "anthropic", "bedrock"] {
+            let provider = registry.get(id).unwrap_or_else(|| panic!("{id} provider"));
             assert!(
                 provider.strict_model_validation,
-                "builtin provider `{}` should have strict_model_validation=true",
-                provider.id
+                "native provider `{id}` should have strict_model_validation=true"
             );
         }
+    }
+
+    #[test]
+    fn gateway_providers_have_non_strict_model_validation() {
+        let registry = ProviderRegistry::builtin();
+        for id in [
+            "hyper",
+            "vercel",
+            "zai",
+            "minimax",
+            "huggingface",
+            "cerebras",
+            "openrouter",
+            "ionet",
+            "groq",
+            "avian",
+            "opencode",
+        ] {
+            let provider = registry
+                .get(id)
+                .unwrap_or_else(|| panic!("gateway provider `{id}` not registered"));
+            assert!(
+                !provider.strict_model_validation,
+                "gateway provider `{id}` must have strict_model_validation=false"
+            );
+        }
+    }
+
+    #[test]
+    fn all_gateway_providers_registered_with_openai_compat_protocol() {
+        let registry = ProviderRegistry::builtin();
+        for id in [
+            "hyper",
+            "vercel",
+            "zai",
+            "minimax",
+            "huggingface",
+            "cerebras",
+            "openrouter",
+            "ionet",
+            "groq",
+            "avian",
+            "opencode",
+        ] {
+            let provider = registry
+                .get(id)
+                .unwrap_or_else(|| panic!("gateway provider `{id}` not registered"));
+            assert_eq!(
+                provider.wire_protocol,
+                WireProtocol::OpenAiCompat,
+                "gateway provider `{id}` must use WireProtocol::OpenAiCompat"
+            );
+            assert_eq!(
+                provider.auth_kind,
+                AuthMaterialKind::ApiKey,
+                "gateway provider `{id}` must use AuthMaterialKind::ApiKey"
+            );
+            assert!(
+                provider.api_key_env.is_some(),
+                "gateway provider `{id}` must declare an api_key_env"
+            );
+            assert!(
+                provider.api_base.is_some(),
+                "gateway provider `{id}` must declare an api_base"
+            );
+            assert!(
+                !provider.default_model.trim().is_empty(),
+                "gateway provider `{id}` must have a non-empty default_model"
+            );
+        }
+    }
+
+    #[test]
+    fn groq_provider_has_expected_env_var_and_resolves_from_env() {
+        let resolver = ProviderResolver::builtin();
+        let settings = AgentSettings {
+            selected_provider: Some("groq".into()),
+            ..AgentSettings::default()
+        };
+
+        let report = resolver
+            .resolve_with_env(
+                &settings,
+                &StoredCredentials::default(),
+                [("GROQ_API_KEY", "test-groq-key".to_string())],
+            )
+            .expect("resolve groq provider");
+
+        assert_eq!(report.provider.as_deref(), Some("groq"));
+        assert_eq!(report.auth.status, wonder_of_u_core::AuthStatus::Ready);
+        assert_eq!(report.auth.source_label(), Some("environment"));
+        assert_eq!(report.readiness, ProviderReadiness::Ready);
+    }
+
+    #[test]
+    fn openrouter_provider_has_expected_env_var_and_resolves_from_env() {
+        let resolver = ProviderResolver::builtin();
+        let settings = AgentSettings {
+            selected_provider: Some("openrouter".into()),
+            ..AgentSettings::default()
+        };
+
+        let report = resolver
+            .resolve_with_env(
+                &settings,
+                &StoredCredentials::default(),
+                [("OPENROUTER_API_KEY", "test-or-key".to_string())],
+            )
+            .expect("resolve openrouter provider");
+
+        assert_eq!(report.provider.as_deref(), Some("openrouter"));
+        assert_eq!(report.auth.status, wonder_of_u_core::AuthStatus::Ready);
+        assert_eq!(report.auth.source_label(), Some("environment"));
+        assert_eq!(report.readiness, ProviderReadiness::Ready);
+    }
+
+    #[test]
+    fn huggingface_provider_has_expected_env_var_and_resolves_from_env() {
+        let resolver = ProviderResolver::builtin();
+        let settings = AgentSettings {
+            selected_provider: Some("huggingface".into()),
+            ..AgentSettings::default()
+        };
+
+        let report = resolver
+            .resolve_with_env(
+                &settings,
+                &StoredCredentials::default(),
+                [("HF_TOKEN", "test-hf-key".to_string())],
+            )
+            .expect("resolve huggingface provider");
+
+        assert_eq!(report.provider.as_deref(), Some("huggingface"));
+        assert_eq!(report.auth.status, wonder_of_u_core::AuthStatus::Ready);
+        assert_eq!(report.auth.source_label(), Some("environment"));
+        assert_eq!(report.readiness, ProviderReadiness::Ready);
+    }
+
+    #[test]
+    fn gateway_provider_accepts_arbitrary_model_id() {
+        // Non-strict providers must accept any non-empty model string; use groq as representative.
+        let resolver = ProviderResolver::builtin();
+        let settings = AgentSettings {
+            selected_provider: Some("groq".into()),
+            selected_model: Some("mixtral-8x7b-32768".into()),
+            ..AgentSettings::default()
+        };
+        let credentials = StoredCredentials {
+            providers: BTreeMap::from([(
+                "groq".into(),
+                AuthMaterial::ApiKey {
+                    key: "groq-secret".into(),
+                },
+            )]),
+        };
+
+        let resolved = resolver
+            .resolve_execution_with_env(
+                &settings,
+                &credentials,
+                std::iter::empty::<(&str, String)>(),
+                &ProviderSelection::default(),
+            )
+            .expect("groq must accept arbitrary model id");
+
+        assert_eq!(resolved.model(), "mixtral-8x7b-32768");
+        assert_eq!(resolved.provider_id(), "groq");
+    }
+
+    #[test]
+    fn gateway_providers_env_vars_do_not_collide_with_each_other() {
+        // Each gateway must declare a unique api_key_env so auto-selection logic
+        // (which activates when exactly one provider has a ready key) stays reliable.
+        let registry = ProviderRegistry::builtin();
+        let mut seen_env_vars: BTreeMap<String, &str> = BTreeMap::new();
+        for provider in registry.providers() {
+            if let Some(env_var) = &provider.api_key_env {
+                if let Some(existing_id) = seen_env_vars.get(env_var.as_str()) {
+                    panic!(
+                        "env var `{env_var}` is shared by providers `{existing_id}` and `{}`",
+                        provider.id
+                    );
+                }
+                seen_env_vars.insert(env_var.clone(), &provider.id);
+            }
+        }
+    }
+
+    #[test]
+    fn gateway_provider_missing_key_reports_missing_auth() {
+        let resolver = ProviderResolver::builtin();
+        let settings = AgentSettings {
+            selected_provider: Some("cerebras".into()),
+            ..AgentSettings::default()
+        };
+
+        let report = resolver
+            .resolve_with_env(
+                &settings,
+                &StoredCredentials::default(),
+                std::iter::empty::<(&str, String)>(),
+            )
+            .expect("resolve cerebras provider");
+
+        assert_eq!(report.auth.status, wonder_of_u_core::AuthStatus::Missing);
+        assert_eq!(report.readiness, ProviderReadiness::MissingAuth);
     }
 
     // ── Stage-1: strict vs. lenient model validation ───────────────────────
