@@ -372,6 +372,19 @@ fn render_message(message: &MessageEnvelope, output: &mut Vec<MessageLineView>) 
             };
             push_prefixed_lines(output, &format!("hook[{hook}]> "), result, role);
         }
+        MessagePayload::HookProgress {
+            event,
+            tool_name,
+            hook_count,
+            success,
+        } => {
+            let icon = if *success { "⚙" } else { "⚠" };
+            let noun = if *hook_count == 1 { "hook" } else { "hooks" };
+            output.push(MessageLineView::new(
+                format!("{icon} {hook_count} {event} {noun} ran for {tool_name}"),
+                MessageRole::Progress,
+            ));
+        }
         MessagePayload::CompactBoundary { summary } => {
             push_prefixed_lines(output, "summary> ", summary, MessageRole::System)
         }
