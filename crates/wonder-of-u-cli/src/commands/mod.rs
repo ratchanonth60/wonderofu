@@ -16,6 +16,7 @@ mod advanced;
 pub(crate) mod auth;
 pub(crate) mod cost;
 mod doctor;
+pub(crate) mod env;
 mod extras;
 mod features;
 mod help;

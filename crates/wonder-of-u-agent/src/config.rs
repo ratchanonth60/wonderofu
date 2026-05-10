@@ -1,5 +1,5 @@
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, HashMap},
     ffi::OsStr,
     fs::{self, File},
     io::{BufWriter, Write},
@@ -72,6 +72,9 @@ pub struct AgentSettings {
     /// Stores the providers
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub providers: BTreeMap<String, ProviderOverride>,
+    /// Stores persisted environment variables injected into agent context.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub env_vars: HashMap<String, String>,
     /// Tool names that this layer explicitly allows. Converted to
     /// `PermissionRule` during hierarchy merge.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -207,6 +210,12 @@ impl SettingsHierarchy {
             for (k, v) in &s.providers {
                 merged
                     .providers
+                    .entry(k.clone())
+                    .or_insert_with(|| v.clone());
+            }
+            for (k, v) in &s.env_vars {
+                merged
+                    .env_vars
                     .entry(k.clone())
                     .or_insert_with(|| v.clone());
             }
@@ -411,6 +420,23 @@ mod tests {
     }
 
     #[test]
+    fn settings_store_round_trips_env_vars() {
+        let dir = unique_test_dir("agent-settings-env-vars");
+        let store = SettingsStore::new(&dir);
+        let settings = AgentSettings {
+            env_vars: HashMap::from([
+                ("ANTHROPIC_API_KEY".into(), "secret".into()),
+                ("WONDER_MODEL".into(), "sonnet".into()),
+            ]),
+            ..AgentSettings::default()
+        };
+
+        store.write(&settings).expect("write settings");
+
+        assert_eq!(store.read().expect("read settings"), settings);
+    }
+
+    #[test]
     fn credential_store_round_trips_api_keys() {
         let dir = unique_test_dir("agent-credentials");
         let store = CredentialStore::new(&dir);
@@ -561,6 +587,49 @@ mod tests {
             .expect("allow rule");
         assert_eq!(allow_rule.tool, "file_read");
         assert_eq!(allow_rule.source, PermissionRuleSource::User);
+    }
+
+    #[test]
+    fn hierarchy_merge_env_vars_respects_precedence() {
+        let base = unique_test_dir("hierarchy-merge-env-vars");
+
+        let policy_dir = base.join("policy");
+        write_layer(
+            &policy_dir,
+            r#"{"env_vars":{"SHARED":"policy","POLICY_ONLY":"yes"}}"#,
+        );
+
+        let user_dir = base.join("user");
+        write_layer(
+            &user_dir,
+            r#"{"env_vars":{"SHARED":"user","USER_ONLY":"yes"}}"#,
+        );
+
+        let project_dir = base.join("project");
+        write_layer(
+            &project_dir,
+            r#"{"env_vars":{"SHARED":"project","PROJECT_ONLY":"yes"}}"#,
+        );
+
+        let hierarchy = SettingsHierarchy::load(Some(&policy_dir), &user_dir, Some(&project_dir))
+            .expect("load hierarchy");
+
+        assert_eq!(
+            hierarchy.merged.env_vars.get("SHARED"),
+            Some(&"policy".into())
+        );
+        assert_eq!(
+            hierarchy.merged.env_vars.get("POLICY_ONLY"),
+            Some(&"yes".into())
+        );
+        assert_eq!(
+            hierarchy.merged.env_vars.get("USER_ONLY"),
+            Some(&"yes".into())
+        );
+        assert_eq!(
+            hierarchy.merged.env_vars.get("PROJECT_ONLY"),
+            Some(&"yes".into())
+        );
     }
 
     // ---------------------------------------------------------------------------
