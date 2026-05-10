@@ -7,8 +7,8 @@ use crate::{
     layout::ShellLayout,
     measure::widest_line,
     message::{
-        HistorySearchView, MessageLineView, MessageRole, PickerListView, PickerView, TaskPanelView,
-        footer_text, message_lines, queued_panel_view, status_text, task_panel_view,
+        HistorySearchView, MessageLineView, MessageRole, PickerListView, PickerView, SearchMatch,
+        TaskPanelView, footer_text, message_lines, queued_panel_view, status_text, task_panel_view,
     },
     notification::{NotificationSeverity, NotificationView},
     style::{Color, TextStyle, Theme},
@@ -30,6 +30,17 @@ pub struct SlashSuggestionEntry {
 pub struct SlashSuggestionsOverlay {
     /// Stores the entries
     pub entries: Vec<SlashSuggestionEntry>,
+}
+
+/// State passed to the renderer when the workspace search overlay is open.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct GlobalSearchOverlayView {
+    /// Current query shown in the input row.
+    pub query: String,
+    /// Search matches shown in the result list.
+    pub results: Vec<SearchMatch>,
+    /// Highlighted result index.
+    pub selected: usize,
 }
 /// Scroll metadata passed from the controller to the renderer each frame.
 ///
@@ -142,6 +153,8 @@ pub struct ShellView {
     pub notifications: Vec<NotificationView>,
     /// When `Some`, display the slash-command autocomplete overlay.
     pub slash_suggestions: Option<SlashSuggestionsOverlay>,
+    /// When `Some`, display the workspace search overlay.
+    pub global_search: Option<GlobalSearchOverlayView>,
     /// Scroll position snapshot for windowed transcript rendering.
     pub scroll: TranscriptScrollView,
     /// Right-side companion panel shown beside all shell content on wide terminals.
@@ -252,6 +265,7 @@ impl ShellView {
             picker_list: None,
             notifications: Vec::new(),
             slash_suggestions: None,
+            global_search: None,
             // Default to follow-tail; the controller will override this each frame.
             scroll: TranscriptScrollView::default(),
             sidebar: Some(sidebar),
@@ -363,6 +377,17 @@ pub fn render_shell(frame: &mut FrameBuffer, view: &ShellView, theme: &Theme) {
         if !overlay.entries.is_empty() {
             draw_slash_suggestions(frame, layout.messages, overlay, theme);
         }
+    }
+
+    if let Some(overlay) = &view.global_search {
+        draw_global_search_overlay(
+            frame,
+            layout.messages,
+            &overlay.query,
+            &overlay.results,
+            overlay.selected,
+            theme,
+        );
     }
 }
 /// Renders snapshot
@@ -1137,6 +1162,103 @@ fn draw_picker_list(
     }
 }
 
+/// Draws the centered workspace search overlay.
+///
+/// The overlay reserves a title row and query row, then renders a truncated
+/// list of `file:line` matches beneath them.
+pub fn draw_global_search_overlay(
+    frame: &mut FrameBuffer,
+    viewport: Rect,
+    query: &str,
+    results: &[SearchMatch],
+    selected: usize,
+    theme: &Theme,
+) {
+    const MIN_WIDTH: u16 = 40;
+    const MIN_HEIGHT: u16 = 8;
+
+    if viewport.width < MIN_WIDTH || viewport.height < MIN_HEIGHT {
+        return;
+    }
+
+    let width = (viewport.width.saturating_mul(4) / 5).clamp(MIN_WIDTH, viewport.width);
+    let height = (viewport.height.saturating_mul(3) / 5).clamp(MIN_HEIGHT, viewport.height);
+    let rect = Rect::new(
+        viewport.x + viewport.width.saturating_sub(width) / 2,
+        viewport.y + viewport.height.saturating_sub(height) / 2,
+        width,
+        height,
+    );
+
+    draw_modal_shadow(frame, rect, viewport, theme);
+
+    let panel_theme = Theme {
+        border: theme.prompt,
+        title: theme.prompt.bold(),
+        ..*theme
+    };
+    draw_panel(
+        frame,
+        rect,
+        Some("Search workspace (ctrl+f)"),
+        &[],
+        &panel_theme,
+    );
+
+    let inner = rect.inset(1);
+    if inner.is_empty() {
+        return;
+    }
+
+    frame.write_str(
+        inner.x,
+        inner.y,
+        &format!("Query: {query}"),
+        theme.status,
+        inner.width,
+    );
+
+    if inner.height <= 1 {
+        return;
+    }
+
+    let list_area = Rect::new(
+        inner.x,
+        inner.y.saturating_add(1),
+        inner.width,
+        inner.height.saturating_sub(1),
+    );
+    if list_area.is_empty() {
+        return;
+    }
+
+    let lines = if results.is_empty() {
+        let message = if query.trim().is_empty() {
+            "Type to search workspace."
+        } else {
+            "No matches."
+        };
+        vec![StyledLine::plain(message, theme.messages)]
+    } else {
+        results
+            .iter()
+            .enumerate()
+            .take(usize::from(list_area.height))
+            .map(|(index, result)| {
+                StyledLine::plain(
+                    format_global_search_result(result, list_area.width),
+                    if index == selected.min(results.len().saturating_sub(1)) {
+                        theme.prompt.reversed().bold()
+                    } else {
+                        theme.messages
+                    },
+                )
+            })
+            .collect()
+    };
+    draw_lines(frame, list_area, &lines);
+}
+
 fn draw_modal_shadow(frame: &mut FrameBuffer, rect: Rect, viewport: Rect, theme: &Theme) {
     if rect.width < 2 || rect.height < 2 {
         return;
@@ -1412,6 +1534,40 @@ fn history_match_label(search: &HistorySearchView) -> String {
     )
 }
 
+fn format_global_search_result(result: &SearchMatch, width: u16) -> String {
+    let location_width = usize::from((width / 3).max(16));
+    let location = truncate_inline(
+        &format!("{}:{}", result.file, result.line),
+        location_width.min(usize::from(width)),
+    );
+    let preview_width = usize::from(width).saturating_sub(location.chars().count() + 2);
+    let preview = truncate_inline(result.text.trim(), preview_width);
+    if preview.is_empty() {
+        location
+    } else {
+        format!("{location}  {preview}")
+    }
+}
+
+fn truncate_inline(text: &str, width: usize) -> String {
+    if width == 0 {
+        return String::new();
+    }
+    let count = text.chars().count();
+    if count <= width {
+        return text.to_string();
+    }
+    if width == 1 {
+        return "…".into();
+    }
+    let mut truncated = text
+        .chars()
+        .take(width.saturating_sub(1))
+        .collect::<String>();
+    truncated.push('…');
+    truncated
+}
+
 fn plain_lines(lines: &[String], style: TextStyle) -> Vec<StyledLine> {
     lines
         .iter()
@@ -1467,6 +1623,21 @@ mod tests {
     use crate::{dialog::DialogView, message::MessageLineView};
 
     #[test]
+    fn global_search_result_format_includes_location_and_truncates_preview() {
+        let formatted = format_global_search_result(
+            &SearchMatch {
+                file: "src/main.rs".into(),
+                line: 42,
+                text: "let very_long_identifier_name = search_target();".into(),
+            },
+            24,
+        );
+
+        assert!(formatted.contains("src/main.rs:42"));
+        assert!(formatted.ends_with('…'));
+    }
+
+    #[test]
     fn empty_shell_snapshot_renders_placeholder_message() {
         let view = ShellView {
             title: "Session: Empty".into(),
@@ -1485,6 +1656,7 @@ mod tests {
             picker_list: None,
             notifications: Vec::new(),
             slash_suggestions: None,
+            global_search: None,
             scroll: TranscriptScrollView::default(),
             sidebar: None,
             prompt_warning: None,
@@ -1537,6 +1709,7 @@ mod tests {
             picker_list: None,
             notifications: Vec::new(),
             slash_suggestions: None,
+            global_search: None,
             scroll: TranscriptScrollView::default(),
             sidebar: None,
             prompt_warning: None,
@@ -1633,6 +1806,7 @@ mod tests {
             picker_list: None,
             notifications: Vec::new(),
             slash_suggestions: None,
+            global_search: None,
             scroll: TranscriptScrollView::default(),
             sidebar: None,
             prompt_warning: None,
@@ -1682,6 +1856,7 @@ mod tests {
             picker_list: None,
             notifications: Vec::new(),
             slash_suggestions: None,
+            global_search: None,
             scroll: TranscriptScrollView::default(),
             sidebar: None,
             prompt_warning: None,
@@ -1733,6 +1908,7 @@ mod tests {
             picker_list: None,
             notifications: Vec::new(),
             slash_suggestions: None,
+            global_search: None,
             scroll: TranscriptScrollView::default(),
             sidebar: None,
             prompt_warning: None,
@@ -1785,6 +1961,7 @@ mod tests {
             picker_list: None,
             notifications: Vec::new(),
             slash_suggestions: None,
+            global_search: None,
             scroll: TranscriptScrollView::default(),
             sidebar: None,
             prompt_warning: None,
@@ -1819,6 +1996,7 @@ mod tests {
             picker_list: None,
             notifications: Vec::new(),
             slash_suggestions: None,
+            global_search: None,
             scroll: TranscriptScrollView::default(),
             sidebar: None,
             prompt_warning: None,
@@ -1878,6 +2056,7 @@ mod tests {
                 },
             ],
             slash_suggestions: None,
+            global_search: None,
             scroll: TranscriptScrollView::default(),
             sidebar: None,
             prompt_warning: None,
@@ -1942,6 +2121,7 @@ mod tests {
             }),
             notifications: Vec::new(),
             slash_suggestions: None,
+            global_search: None,
             scroll: TranscriptScrollView::default(),
             sidebar: None,
             prompt_warning: None,
@@ -1975,6 +2155,7 @@ mod tests {
             picker_list: None,
             notifications: Vec::new(),
             slash_suggestions: None,
+            global_search: None,
             scroll: TranscriptScrollView::default(),
             sidebar: None,
             prompt_warning: None,

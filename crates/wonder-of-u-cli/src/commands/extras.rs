@@ -16,6 +16,7 @@ use wonder_of_u_agent::{AuthMaterial, CredentialStore, SettingsStore};
 use wonder_of_u_core::{
     AppState, Command, CommandContext, CommandInvocation, CommandKind, CommandOutput, CommandSpec,
     MessageEnvelope, MessagePayload, Result, SessionId, ToolSpec, WonderError,
+    app::ThinkingEffort,
 };
 use wonder_of_u_storage::{STORAGE_SCHEMA_VERSION, SessionMetadata, StoragePaths, TranscriptStore};
 
@@ -2198,15 +2199,23 @@ fn thinking_blocks(messages: &[MessageEnvelope]) -> Vec<String> {
 /// Renders the `/thinking` slash-command response for the current session state.
 pub fn execute_thinking_command(app: &AppState, arg: Option<&str>) -> Result<String> {
     let current = app.thinking_enabled;
+    let effort = match app.thinking_effort {
+        ThinkingEffort::Low => "low",
+        ThinkingEffort::Medium => "medium",
+        ThinkingEffort::High => "high",
+    };
     match arg {
         Some("on") => Ok("Thinking enabled — Claude will reason before responding".into()),
         Some("off") => Ok("Thinking disabled".into()),
+        Some("low") => Ok("Thinking effort set to low".into()),
+        Some("medium") => Ok("Thinking effort set to medium".into()),
+        Some("high") => Ok("Thinking effort set to high".into()),
         None | Some("") => Ok(format!(
-            "Thinking is currently {}",
+            "Thinking is currently {} (effort: {effort}). Options: on, off, low, medium, high",
             if current { "enabled" } else { "disabled" }
         )),
         Some(other) => Err(WonderError::Validation(format!(
-            "Unknown argument: {other}. Use 'on' or 'off'"
+            "Unknown argument: {other}. Use 'on', 'off', 'low', 'medium', or 'high'"
         ))),
     }
 }
@@ -2965,13 +2974,13 @@ mod tests {
         let mut app = AppState::new(PathBuf::from("/workspace"));
         assert_eq!(
             execute_thinking_command(&app, None).expect("report thinking state"),
-            "Thinking is currently disabled"
+            "Thinking is currently disabled (effort: medium). Options: on, off, low, medium, high"
         );
 
         app.set_thinking_enabled(true);
         assert_eq!(
             execute_thinking_command(&app, Some("")).expect("report thinking state"),
-            "Thinking is currently enabled"
+            "Thinking is currently enabled (effort: medium). Options: on, off, low, medium, high"
         );
         assert_eq!(
             execute_thinking_command(&app, Some("on")).expect("enable thinking"),
@@ -2981,10 +2990,27 @@ mod tests {
             execute_thinking_command(&app, Some("off")).expect("disable thinking"),
             "Thinking disabled"
         );
+        assert_eq!(
+            execute_thinking_command(&app, Some("low")).expect("set low effort"),
+            "Thinking effort set to low"
+        );
+        app.set_thinking_effort(ThinkingEffort::High);
+        assert_eq!(
+            execute_thinking_command(&app, Some("")).expect("report thinking effort"),
+            "Thinking is currently enabled (effort: high). Options: on, off, low, medium, high"
+        );
+        assert_eq!(
+            execute_thinking_command(&app, Some("medium")).expect("set medium effort"),
+            "Thinking effort set to medium"
+        );
+        assert_eq!(
+            execute_thinking_command(&app, Some("high")).expect("set high effort"),
+            "Thinking effort set to high"
+        );
         assert!(matches!(
             execute_thinking_command(&app, Some("maybe")),
             Err(WonderError::Validation(message))
-                if message == "Unknown argument: maybe. Use 'on' or 'off'"
+                if message == "Unknown argument: maybe. Use 'on', 'off', 'low', 'medium', or 'high'"
         ));
     }
 

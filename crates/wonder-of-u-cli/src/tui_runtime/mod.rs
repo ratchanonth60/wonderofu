@@ -40,13 +40,13 @@ use wonder_of_u_core::{
 use wonder_of_u_storage::{TaskStore, TranscriptStore};
 use wonder_of_u_tools::provider_tool_specs;
 use wonder_of_u_tui::{
-    CrosstermEventSource, DialogActionView, DialogView, EditAction, EventLoop, HistorySearchView,
-    KeyBindingContext, KeyBindingResolver, KeyCode, KeyEvent, MouseEventKind, NotificationInput,
-    NotificationLifetime, NotificationQueue, NotificationSeverity, PermissionSummaryView,
-    PickerListEntry, PickerListView, PromptSuggestion, PromptSuggestionState, Rect, ResolvedKey,
-    ShellLayout, ShellView, SlashSuggestionEntry, SlashSuggestionsOverlay, TextBuffer, Theme,
-    TranscriptScrollView, TurnState, UiEvent, VimMode, VimState, message_lines_for_width,
-    shell_main_area_width,
+    CrosstermEventSource, DialogActionView, DialogView, EditAction, EventLoop,
+    GlobalSearchOverlayView, HistorySearchView, KeyBindingContext, KeyBindingResolver, KeyCode,
+    KeyEvent, MouseEventKind, NotificationInput, NotificationLifetime, NotificationQueue,
+    NotificationSeverity, PermissionSummaryView, PickerListEntry, PickerListView, PromptSuggestion,
+    PromptSuggestionState, Rect, ResolvedKey, ShellLayout, ShellView, SlashSuggestionEntry,
+    SlashSuggestionsOverlay, TextBuffer, Theme, TranscriptScrollView, TurnState, UiEvent, VimMode,
+    VimState, message::SearchMatch, message_lines_for_width, shell_main_area_width,
 };
 
 use crate::commands;
