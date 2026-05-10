@@ -29,6 +29,7 @@ pub use protocol::WireProtocol;
 pub use provider::{
     DEFAULT_BEDROCK_API_BASE, ModelDescriptor, ProviderDescriptor, ProviderRegistry,
     ProviderResolver, ProviderSelection, ProviderStatusReport, ResolvedProviderExecution,
+    openai_compat_gateway,
 };
 /// Re-exports items from `runtime`
 pub use runtime::{
