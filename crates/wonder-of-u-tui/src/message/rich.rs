@@ -1857,4 +1857,144 @@ mod tests {
             ]
         );
     }
+
+    // ── no-prefix transcript tests (Claude Code parity) ──────────────────────
+
+    #[test]
+    fn user_text_renders_without_user_prefix() {
+        let session_id = SessionId::new();
+        let messages = vec![MessageEnvelope::new(
+            session_id,
+            MessagePayload::UserText {
+                content: "hi there".into(),
+            },
+        )];
+        let lines = super::super::message_lines(&messages);
+        assert!(
+            lines.iter().all(|l| !l.text.starts_with("user>")),
+            "UserText must not render with 'user>' prefix; lines: {lines:?}"
+        );
+        assert!(
+            lines.iter().any(|l| l.text.contains("hi there")),
+            "UserText content must appear in transcript; lines: {lines:?}"
+        );
+    }
+
+    #[test]
+    fn assistant_text_renders_without_assistant_prefix() {
+        let session_id = SessionId::new();
+        let messages = vec![MessageEnvelope::new(
+            session_id,
+            MessagePayload::AssistantText {
+                content: "Hello! How can I help?".into(),
+            },
+        )];
+        let lines = super::super::message_lines(&messages);
+        assert!(
+            lines.iter().all(|l| !l.text.starts_with("assistant>")),
+            "AssistantText must not render with 'assistant>' prefix; lines: {lines:?}"
+        );
+        assert!(
+            lines.iter().any(|l| l.text.contains("Hello!")),
+            "AssistantText content must appear in transcript; lines: {lines:?}"
+        );
+    }
+
+    #[test]
+    fn tool_activity_renders_with_bullet_and_subordinate_result() {
+        let session_id = SessionId::new();
+        let uid = use_id("00000000-0000-0000-0000-000000000001");
+        let messages = vec![
+            MessageEnvelope::new(
+                session_id,
+                MessagePayload::AssistantToolUse {
+                    tool: "file_read".into(),
+                    use_id: uid,
+                    input: serde_json::json!({ "path": "src/lib.rs" }),
+                },
+            ),
+            MessageEnvelope::new(
+                session_id,
+                MessagePayload::ToolResult {
+                    tool: "file_read".into(),
+                    use_id: uid,
+                    success: true,
+                    content: "pub fn main() {}".into(),
+                },
+            ),
+        ];
+        let lines = super::super::message_lines(&messages);
+        let texts: Vec<&str> = lines.iter().map(|l| l.text.as_str()).collect();
+        assert!(
+            texts.iter().any(|t| t.starts_with('●')),
+            "Tool headline must start with ● bullet; lines: {texts:?}"
+        );
+        assert!(
+            texts.iter().any(|t| t.contains('└')),
+            "Tool result must contain └ subordinate marker; lines: {texts:?}"
+        );
+        assert!(
+            texts.iter().all(|t| !t.starts_with("tool[")),
+            "Old tool[name] format must not appear; lines: {texts:?}"
+        );
+    }
+
+    #[test]
+    fn full_conversation_has_no_legacy_role_prefixes() {
+        let session_id = SessionId::new();
+        let uid = use_id("00000000-0000-0000-0000-000000000099");
+        let messages = vec![
+            MessageEnvelope::new(
+                session_id,
+                MessagePayload::UserText {
+                    content: "list my files".into(),
+                },
+            ),
+            MessageEnvelope::new(
+                session_id,
+                MessagePayload::AssistantToolUse {
+                    tool: "bash".into(),
+                    use_id: uid,
+                    input: serde_json::json!({ "command": "ls ." }),
+                },
+            ),
+            MessageEnvelope::new(
+                session_id,
+                MessagePayload::ToolResult {
+                    tool: "bash".into(),
+                    use_id: uid,
+                    success: true,
+                    content: "Cargo.toml\nsrc/".into(),
+                },
+            ),
+            MessageEnvelope::new(
+                session_id,
+                MessagePayload::AssistantText {
+                    content: "Done, here are your files.".into(),
+                },
+            ),
+        ];
+        let lines = super::super::message_lines(&messages);
+        let texts: Vec<&str> = lines.iter().map(|l| l.text.as_str()).collect();
+        // None of the legacy prefixes must appear.
+        for prefix in ["user> ", "assistant> ", "tool[bash]"] {
+            assert!(
+                texts.iter().all(|t| !t.starts_with(prefix)),
+                "Legacy prefix '{prefix}' must not appear in transcript; lines: {texts:?}"
+            );
+        }
+        // Content must be present.
+        assert!(
+            texts.iter().any(|t| t.contains("list my files")),
+            "User content must be present; lines: {texts:?}"
+        );
+        assert!(
+            texts.iter().any(|t| t.contains("Done")),
+            "Assistant response must be present; lines: {texts:?}"
+        );
+        assert!(
+            texts.iter().any(|t| t.starts_with('●')),
+            "Tool call must use ● bullet; lines: {texts:?}"
+        );
+    }
 }
