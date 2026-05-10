@@ -731,6 +731,7 @@ fn controller_hydrates_persisted_fast_and_effort_on_launch() {
     SettingsStore::new(&dir)
         .write(&AgentSettings {
             selected_provider: Some("openai".into()),
+            theme: Some("midnight".into()),
             effort_level: Some("high".into()),
             fast_mode: true,
             ..AgentSettings::default()
@@ -745,10 +746,38 @@ fn controller_hydrates_persisted_fast_and_effort_on_launch() {
     )
     .expect("controller");
 
+    assert_eq!(controller.state.theme.as_deref(), Some("midnight"));
     assert_eq!(controller.state.effort_level.as_deref(), Some("high"));
     assert!(controller.state.fast_mode);
+    assert!(controller.view().footer.contains("theme:midnight"));
     assert!(controller.view().footer.contains("effort:high"));
     assert!(controller.view().footer.contains("fast:on"));
+}
+
+#[test]
+fn controller_hydrates_persisted_vim_mode_setting() {
+    let dir = unique_test_dir("tui-hydrate-vim-mode");
+    SettingsStore::new(&dir)
+        .write(&AgentSettings {
+            vim_mode: Some(false),
+            ..AgentSettings::default()
+        })
+        .expect("write settings");
+    let registry = commands::registry(Some(dir.clone())).expect("registry");
+    let mut controller = TuiController::new(
+        test_context(&dir),
+        &registry,
+        Some(dir.as_path()),
+        TuiLaunchOptions { session_id: None },
+    )
+    .expect("controller");
+
+    assert!(!controller.vim_enabled);
+    assert!(controller.view().footer.contains("vim:off"));
+
+    send_prompt_key(&mut controller, picker_key(KeyCode::Esc));
+    assert_eq!(controller.vim.mode(), VimMode::Insert);
+    assert!(controller.view().footer.contains("vim:off"));
 }
 
 #[test]
