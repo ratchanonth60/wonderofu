@@ -932,6 +932,17 @@ impl GroupedToolCallView {
     #[must_use]
     pub fn display_lines(&self, max_width: usize, expand_output: bool) -> Vec<MessageLineView> {
         let mut lines = Vec::new();
+        let summary = tool_group_summary_verb(&self.tool, &self.calls);
+        if !summary.is_empty() {
+            let elapsed = self.calls.iter().try_fold(0.0, |total, call| {
+                call.elapsed_secs.map(|secs| total + secs)
+            });
+            let headline = elapsed.map_or_else(
+                || format!("⤿ {summary}"),
+                |secs| format!("⤿ {summary} ({secs:.1}s)"),
+            );
+            lines.push(MessageLineView::new(headline, MessageRole::Tool));
+        }
         for (index, call) in self.calls.iter().enumerate() {
             if index > 0 {
                 lines.push(MessageLineView::new(String::new(), MessageRole::System));
@@ -946,6 +957,36 @@ impl GroupedToolCallView {
             ));
         }
         lines
+    }
+}
+
+fn tool_group_summary_verb(tool: &str, calls: &[ToolCallView]) -> String {
+    let tool = tool.to_ascii_lowercase();
+    let read_count =
+        if tool.starts_with("file_read") || tool.starts_with("read") || tool.starts_with("list") {
+            calls.len()
+        } else {
+            0
+        };
+    let search_count = if tool.contains("search") || tool.contains("grep") || tool.contains("glob")
+    {
+        calls.len()
+    } else {
+        0
+    };
+
+    match (read_count, search_count) {
+        (0, 0) => String::new(),
+        (reads, 0) => format!("Read {reads} {}", if reads == 1 { "file" } else { "files" }),
+        (0, searches) => format!(
+            "Searched {searches} {}",
+            if searches == 1 { "path" } else { "paths" }
+        ),
+        (reads, searches) => format!(
+            "Read {reads} {}, searched {searches} {}",
+            if reads == 1 { "file" } else { "files" },
+            if searches == 1 { "path" } else { "paths" }
+        ),
     }
 }
 
@@ -2672,6 +2713,73 @@ mod tests {
                 MessageLineView::new("  └ wrote src/lib.rs", MessageRole::System),
             ]
         );
+    }
+
+    #[test]
+    fn grouped_file_reads_render_summary_header() {
+        let view = GroupedToolCallView {
+            tool: "file_read".into(),
+            calls: vec![
+                ToolCallView {
+                    use_id: use_id("00000000-0000-0000-0000-000000000011"),
+                    input: Some(serde_json::json!({ "path": "src/lib.rs" })),
+                    result: Some(RejectedToolMessageView::from_result(
+                        "pub fn one() {}",
+                        true,
+                    )),
+                    elapsed_secs: Some(0.8),
+                },
+                ToolCallView {
+                    use_id: use_id("00000000-0000-0000-0000-000000000012"),
+                    input: Some(serde_json::json!({ "path": "src/main.rs" })),
+                    result: Some(RejectedToolMessageView::from_result("fn main() {}", true)),
+                    elapsed_secs: Some(1.3),
+                },
+            ],
+        };
+
+        let lines = view.display_lines(120, false);
+
+        assert_eq!(lines[0].role, MessageRole::Tool);
+        assert!(lines[0].text.starts_with("⤿ Read 2 files"));
+    }
+
+    #[test]
+    fn grouped_searches_render_summary_header() {
+        let view = GroupedToolCallView {
+            tool: "search".into(),
+            calls: vec![ToolCallView {
+                use_id: use_id("00000000-0000-0000-0000-000000000021"),
+                input: Some(serde_json::json!({ "query": "display_lines" })),
+                result: Some(RejectedToolMessageView::from_result(
+                    "src/message/rich.rs:933",
+                    true,
+                )),
+                elapsed_secs: Some(0.8),
+            }],
+        };
+
+        let lines = view.display_lines(120, false);
+
+        assert_eq!(lines[0].role, MessageRole::Tool);
+        assert!(lines[0].text.starts_with("⤿ Searched"));
+    }
+
+    #[test]
+    fn grouped_bash_calls_do_not_render_summary_header() {
+        let view = GroupedToolCallView {
+            tool: "bash".into(),
+            calls: vec![ToolCallView {
+                use_id: use_id("00000000-0000-0000-0000-000000000031"),
+                input: Some(serde_json::json!({ "command": "cargo test" })),
+                result: Some(RejectedToolMessageView::from_result("ok", true)),
+                elapsed_secs: Some(1.0),
+            }],
+        };
+
+        let lines = view.display_lines(120, false);
+
+        assert!(!lines[0].text.starts_with("⤿"));
     }
 
     #[test]
