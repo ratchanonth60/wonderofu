@@ -89,6 +89,24 @@ pub struct SidebarView {
     pub task_lines: Vec<String>,
 }
 
+/// Severity for the context warning banner above the prompt.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PromptWarningSeverity {
+    /// Context usage crossed the warning threshold.
+    Warning,
+    /// Context usage is close to exhaustion.
+    Critical,
+}
+
+/// State for the context warning banner above the prompt.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PromptWarningView {
+    /// Banner text
+    pub text: String,
+    /// Banner severity
+    pub severity: PromptWarningSeverity,
+}
+
 /// Represents shell view
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct ShellView {
@@ -131,6 +149,8 @@ pub struct ShellView {
     /// `None` suppresses the panel entirely (e.g. when constructed manually in
     /// tests or when no provider context is available yet).
     pub sidebar: Option<SidebarView>,
+    /// Warning banner shown immediately above the prompt when context usage is high.
+    pub prompt_warning: Option<PromptWarningView>,
 }
 
 impl ShellView {
@@ -162,8 +182,9 @@ impl ShellView {
                     .collect::<String>()
             )];
 
-            // Section 2 – Context: placeholder for future token/cost usage.
-            let context_lines: Vec<String> = Vec::new();
+            // Section 2 – Context: current token usage summary.
+            let context_lines =
+                context_sidebar_lines(app.costs.usage.total_tokens(), app.context_window_size);
 
             // Section 3 – Providers: one line combining provider and model.
             let provider_lines = match (&app.provider, &app.model) {
@@ -230,6 +251,10 @@ impl ShellView {
             // Default to follow-tail; the controller will override this each frame.
             scroll: TranscriptScrollView::default(),
             sidebar: Some(sidebar),
+            prompt_warning: context_warning_banner(
+                app.costs.usage.total_tokens(),
+                app.context_window_size,
+            ),
         }
     }
 }
@@ -269,12 +294,32 @@ pub fn render_shell(frame: &mut FrameBuffer, view: &ShellView, theme: &Theme) {
     // Cap prompt height at roughly one third of the terminal so chat/history
     // always dominates the display.  Minimum of 3 rows (top border + one content
     // line + bottom border) to keep the box chrome intact.
-    let max_prompt = (main_area.height / 3).max(3);
-    let prompt_height = view.prompt_height().min(max_prompt);
+    let warning_height = u16::from(view.prompt_warning.is_some());
+    let max_prompt = (main_area.height / 3).max(3).saturating_add(warning_height);
+    let prompt_height = view
+        .prompt_height()
+        .saturating_add(warning_height)
+        .min(max_prompt);
     let layout = ShellLayout::split(main_area, prompt_height);
 
     draw_message_view(frame, layout.messages, view, theme);
-    draw_prompt_view(frame, layout.prompt, view, theme);
+    let prompt_area = if let Some(warning) = view
+        .prompt_warning
+        .as_ref()
+        .filter(|_| layout.prompt.height > 1)
+    {
+        let warning_area = Rect::new(layout.prompt.x, layout.prompt.y, layout.prompt.width, 1);
+        draw_prompt_warning(frame, warning_area, warning, theme);
+        Rect::new(
+            layout.prompt.x,
+            layout.prompt.y.saturating_add(1),
+            layout.prompt.width,
+            layout.prompt.height.saturating_sub(1),
+        )
+    } else {
+        layout.prompt
+    };
+    draw_prompt_view(frame, prompt_area, view, theme);
     draw_status_line(frame, layout.status, &status_line_text(view), theme.status);
     draw_footer_line(frame, layout.footer, &view.footer, theme);
     draw_notification_stack(frame, layout.messages, &view.notifications, theme);
@@ -443,6 +488,24 @@ fn draw_prompt_view(frame: &mut FrameBuffer, area: Rect, view: &ShellView, theme
     draw_lines(frame, content, &prompt_panel_lines(view, theme));
 }
 
+fn draw_prompt_warning(
+    frame: &mut FrameBuffer,
+    area: Rect,
+    warning: &PromptWarningView,
+    theme: &Theme,
+) {
+    if area.is_empty() {
+        return;
+    }
+
+    frame.fill_rect(area, ' ', theme.background);
+    let style = match warning.severity {
+        PromptWarningSeverity::Warning => TextStyle::default().fg(Color::Yellow).bold(),
+        PromptWarningSeverity::Critical => TextStyle::default().fg(Color::Red).bold(),
+    };
+    frame.write_str(area.x, area.y, &warning.text, style, area.width);
+}
+
 /// Minimum total terminal width required to activate the shell-level sidebar.
 ///
 /// Below this threshold all content occupies the full terminal width,
@@ -519,8 +582,8 @@ fn sidebar_section_lines(sidebar: &SidebarView, theme: &Theme) -> Vec<StyledLine
     // (header text, section body lines)
     let sections: &[(&str, &[String])] = &[
         ("─ Session ─", &sidebar.session_lines),
-        ("─ Context ─", &sidebar.context_lines),
         ("─ Providers ─", &sidebar.provider_lines),
+        ("─ Context ─", &sidebar.context_lines),
         ("─ Status ─", &sidebar.status_lines),
         ("─ Controls ─", &sidebar.control_lines),
         ("─ Workspace ─", &sidebar.workspace_lines),
@@ -1247,6 +1310,74 @@ fn prompt_panel_lines(view: &ShellView, theme: &Theme) -> Vec<StyledLine> {
     lines
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct ContextUsageView {
+    used_tokens: u64,
+    max_tokens: u64,
+    percentage: u64,
+}
+
+fn context_usage_view(used_tokens: u64, max_tokens: Option<u64>) -> Option<ContextUsageView> {
+    let max_tokens = max_tokens.filter(|max_tokens| *max_tokens > 0)?;
+    Some(ContextUsageView {
+        used_tokens,
+        max_tokens,
+        percentage: used_tokens.saturating_mul(100) / max_tokens,
+    })
+}
+
+fn context_sidebar_lines(used_tokens: u64, max_tokens: Option<u64>) -> Vec<String> {
+    let Some(context) = context_usage_view(used_tokens, max_tokens) else {
+        return vec!["Context: unknown".into()];
+    };
+    let filled = ((context.used_tokens.saturating_mul(24)) / context.max_tokens).min(24) as usize;
+    vec![
+        format!(
+            "{} / {} tokens",
+            format_token_count(context.used_tokens),
+            format_token_count(context.max_tokens)
+        ),
+        format!(
+            "[{}{}] {}%",
+            "#".repeat(filled),
+            "-".repeat(24usize.saturating_sub(filled)),
+            context.percentage.min(100)
+        ),
+    ]
+}
+
+fn context_warning_banner(used_tokens: u64, max_tokens: Option<u64>) -> Option<PromptWarningView> {
+    let context = context_usage_view(used_tokens, max_tokens)?;
+    let percentage = context.percentage.min(100);
+    if percentage >= 90 {
+        Some(PromptWarningView {
+            text: format!(
+                "⚠ Context window nearly full ({percentage}%) — responses may be truncated"
+            ),
+            severity: PromptWarningSeverity::Critical,
+        })
+    } else if percentage >= 75 {
+        Some(PromptWarningView {
+            text: format!("⚠ Context window {percentage}% full — consider starting a new session"),
+            severity: PromptWarningSeverity::Warning,
+        })
+    } else {
+        None
+    }
+}
+
+fn format_token_count(value: u64) -> String {
+    let digits = value.to_string();
+    let mut formatted = String::with_capacity(digits.len() + digits.len() / 3);
+    for (index, digit) in digits.chars().enumerate() {
+        if index > 0 && (digits.len() - index) % 3 == 0 {
+            formatted.push(',');
+        }
+        formatted.push(digit);
+    }
+    formatted
+}
+
 fn history_match_label(search: &HistorySearchView) -> String {
     if search.match_total == 0 {
         return "no matches".into();
@@ -1337,6 +1468,7 @@ mod tests {
             slash_suggestions: None,
             scroll: TranscriptScrollView::default(),
             sidebar: None,
+            prompt_warning: None,
         };
 
         let frame = render_snapshot(30, 9, &view, &Theme::default());
@@ -1388,6 +1520,7 @@ mod tests {
             slash_suggestions: None,
             scroll: TranscriptScrollView::default(),
             sidebar: None,
+            prompt_warning: None,
         };
 
         let frame = render_snapshot(48, 10, &view, &Theme::default());
@@ -1483,6 +1616,7 @@ mod tests {
             slash_suggestions: None,
             scroll: TranscriptScrollView::default(),
             sidebar: None,
+            prompt_warning: None,
         };
 
         let frame = render_snapshot(42, 12, &view, &Theme::default());
@@ -1531,6 +1665,7 @@ mod tests {
             slash_suggestions: None,
             scroll: TranscriptScrollView::default(),
             sidebar: None,
+            prompt_warning: None,
         };
 
         let frame = render_snapshot(42, 12, &view, &Theme::default());
@@ -1581,6 +1716,7 @@ mod tests {
             slash_suggestions: None,
             scroll: TranscriptScrollView::default(),
             sidebar: None,
+            prompt_warning: None,
         };
 
         let frame = render_snapshot(42, 16, &view, &Theme::default());
@@ -1632,6 +1768,7 @@ mod tests {
             slash_suggestions: None,
             scroll: TranscriptScrollView::default(),
             sidebar: None,
+            prompt_warning: None,
         };
 
         let frame = render_snapshot(32, 9, &view, &Theme::default());
@@ -1665,6 +1802,7 @@ mod tests {
             slash_suggestions: None,
             scroll: TranscriptScrollView::default(),
             sidebar: None,
+            prompt_warning: None,
         };
 
         let frame = render_snapshot(48, 10, &view, &Theme::default());
@@ -1723,6 +1861,7 @@ mod tests {
             slash_suggestions: None,
             scroll: TranscriptScrollView::default(),
             sidebar: None,
+            prompt_warning: None,
         };
 
         let frame = render_snapshot(48, 12, &view, &Theme::default());
@@ -1786,6 +1925,7 @@ mod tests {
             slash_suggestions: None,
             scroll: TranscriptScrollView::default(),
             sidebar: None,
+            prompt_warning: None,
         };
 
         let frame = render_snapshot(60, 16, &view, &Theme::default());
@@ -1818,6 +1958,7 @@ mod tests {
             slash_suggestions: None,
             scroll: TranscriptScrollView::default(),
             sidebar: None,
+            prompt_warning: None,
         };
 
         let frame = render_snapshot(32, 8, &view, &Theme::default());
@@ -2325,6 +2466,16 @@ mod tests {
         let mut app = AppState::new(PathBuf::from("/workspace"));
         app.provider = Some("openai".into());
         app.model = Some("gpt-4o".into());
+        app.context_window_size = Some(128_000);
+        app.record_cost_usage(
+            TokenUsage {
+                input_tokens: 32_000,
+                output_tokens: 8_000,
+                cache_creation_tokens: 0,
+                cache_read_tokens: 0,
+            },
+            None,
+        );
 
         let view = ShellView::from_app_state(&app, "");
 
@@ -2346,6 +2497,14 @@ mod tests {
             sidebar.status_lines.iter().any(|l| l.contains("idle")),
             "default status must be idle stub; got: {:?}",
             sidebar.status_lines
+        );
+        assert!(
+            sidebar
+                .context_lines
+                .iter()
+                .any(|line| line.contains("40,000 / 128,000 tokens")),
+            "context_lines must show token totals; got: {:?}",
+            sidebar.context_lines
         );
     }
 
@@ -2581,5 +2740,66 @@ mod tests {
                 "{absent} header must not appear when section is empty; rendered:\n{text}"
             );
         }
+    }
+
+    #[test]
+    fn shell_snapshot_renders_context_visualization_in_sidebar() {
+        let view = ShellView {
+            prompt: "hi".into(),
+            sidebar: Some(SidebarView {
+                provider_lines: vec!["◈ anthropic · claude-3-7-sonnet-latest".into()],
+                context_lines: vec![
+                    "45,000 / 200,000 tokens".into(),
+                    "[#####-------------------] 22%".into(),
+                ],
+                ..SidebarView::default()
+            }),
+            ..ShellView::default()
+        };
+
+        let frame = render_snapshot(100, 10, &view, &Theme::default());
+        let text = frame.to_plain_text();
+
+        assert!(
+            text.contains("─ Context ─"),
+            "missing context header:\n{text}"
+        );
+        assert!(
+            text.contains("45,000 / 200,000 tokens"),
+            "missing token totals:\n{text}"
+        );
+        assert!(
+            text.contains("[#####-------------------] 22%"),
+            "missing progress bar:\n{text}"
+        );
+    }
+
+    #[test]
+    fn shell_snapshot_renders_context_warning_above_prompt() {
+        let view = ShellView {
+            prompt: "continue".into(),
+            prompt_warning: Some(PromptWarningView {
+                text: "⚠ Context window 80% full — consider starting a new session".into(),
+                severity: PromptWarningSeverity::Warning,
+            }),
+            ..ShellView::default()
+        };
+
+        let frame = render_snapshot(80, 10, &view, &Theme::default());
+        let text = frame.to_plain_text();
+
+        assert!(
+            text.contains("⚠ Context window 80% full"),
+            "missing warning banner:\n{text}"
+        );
+        let warning_row = text
+            .lines()
+            .position(|line| line.contains("⚠ Context window 80% full"))
+            .expect("warning row");
+        let prompt_row = text
+            .lines()
+            .position(|line| line.starts_with('╭'))
+            .expect("prompt row");
+        assert_eq!(warning_row.saturating_add(1), prompt_row);
     }
 }

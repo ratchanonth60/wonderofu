@@ -765,6 +765,10 @@ pub struct AppState {
     /// Stores the pending tool approval
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pending_tool_approval: Option<PendingToolApprovalState>,
+    /// Maximum context window size for the current model (tokens).
+    /// Set from provider response or model config.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_window_size: Option<u64>,
     /// Stores the costs
     pub costs: CostState,
 }
@@ -792,6 +796,7 @@ impl AppState {
             advisor_model: None,
             auth: AuthState::default(),
             pending_tool_approval: None,
+            context_window_size: None,
             costs: CostState::new(),
         }
     }
@@ -832,6 +837,13 @@ impl AppState {
         self.provider = provider;
         self.model = model;
         self.auth = auth;
+        self.context_window_size = None;
+        self.session.updated_at = OffsetDateTime::now_utc();
+    }
+
+    /// Handles set context window size
+    pub fn set_context_window_size(&mut self, context_window_size: Option<u64>) {
+        self.context_window_size = context_window_size;
         self.session.updated_at = OffsetDateTime::now_utc();
     }
 
@@ -1131,6 +1143,22 @@ mod tests {
         assert_eq!(state.costs.usage.total_tokens(), 184);
         assert_eq!(state.costs.estimated_cost_usd, Some(0.42));
         assert_eq!(state.session.updated_at, state.costs.updated_at);
+    }
+
+    #[test]
+    fn app_state_tracks_context_window_size() {
+        let mut state = AppState::new(PathBuf::from("/workspace"));
+
+        assert_eq!(state.context_window_size, None);
+        state.set_context_window_size(Some(200_000));
+        assert_eq!(state.context_window_size, Some(200_000));
+
+        state.set_provider_context(
+            Some("anthropic".into()),
+            Some("claude-3-7-sonnet-latest".into()),
+            AuthState::default(),
+        );
+        assert_eq!(state.context_window_size, None);
     }
 
     #[test]

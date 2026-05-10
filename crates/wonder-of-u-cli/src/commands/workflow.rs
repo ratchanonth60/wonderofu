@@ -3243,6 +3243,9 @@ fn format_resolved_key(result: ResolvedKey) -> String {
         ResolvedKey::System(SystemAction::Interrupt) => "interrupt or exit".into(),
         ResolvedKey::System(SystemAction::Redraw) => "redraw terminal".into(),
         ResolvedKey::System(SystemAction::HistorySearch) => "recall previous prompt".into(),
+        ResolvedKey::System(SystemAction::ExpandToolOutput) => {
+            "expand or collapse tool output".into()
+        }
         ResolvedKey::Vim(command) => match command {
             TuiVimCommand::EnterInsertMode => "enter insert mode".into(),
             TuiVimCommand::EnterNormalMode => "enter normal mode".into(),

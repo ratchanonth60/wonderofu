@@ -23,6 +23,8 @@ pub enum SystemAction {
     Redraw,
     /// Represents history search
     HistorySearch,
+    /// Represents expanding or collapsing grouped tool output
+    ExpandToolOutput,
 }
 /// Enumerates vim command
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
