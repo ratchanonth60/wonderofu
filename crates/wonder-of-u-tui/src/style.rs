@@ -149,7 +149,9 @@ pub struct Theme {
 impl Default for Theme {
     fn default() -> Self {
         Self {
-            background: TextStyle::default().bg(Color::Black).fg(Color::Grey),
+            // No explicit background colour: let the terminal emulator's own
+            // background show through (Ink/Claude Code visual parity).
+            background: TextStyle::default().fg(Color::Grey),
             border: TextStyle::default().fg(Color::DarkBlue),
             title: TextStyle::default().fg(Color::Blue).bold(),
             messages: TextStyle::default().fg(Color::White),
