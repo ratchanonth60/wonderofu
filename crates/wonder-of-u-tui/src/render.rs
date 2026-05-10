@@ -260,9 +260,26 @@ impl ShellView {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+struct StyledSpan {
+    text: String,
+    style: TextStyle,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 struct StyledLine {
     text: String,
     style: TextStyle,
+    spans: Vec<StyledSpan>,
+}
+
+impl StyledLine {
+    fn plain(text: impl Into<String>, style: TextStyle) -> Self {
+        Self {
+            text: text.into(),
+            style,
+            spans: Vec::new(),
+        }
+    }
 }
 
 /// Renders shell
@@ -382,19 +399,13 @@ fn draw_panel(
             let y = inner
                 .y
                 .saturating_add(u16::try_from(offset).unwrap_or(u16::MAX));
-            frame.write_str(inner.x, y, &line.text, line.style, inner.width);
+            draw_styled_line(frame, inner.x, y, line, inner.width);
         }
         return;
     }
 
     if let Some(first_line) = lines.first() {
-        frame.write_str(
-            area.x,
-            area.y,
-            &first_line.text,
-            first_line.style,
-            area.width,
-        );
+        draw_styled_line(frame, area.x, area.y, first_line, area.width);
     }
 }
 
@@ -599,17 +610,11 @@ fn sidebar_section_lines(sidebar: &SidebarView, theme: &Theme) -> Vec<StyledLine
 
         // Blank separator before each section (except at the very top).
         if !out.is_empty() {
-            out.push(StyledLine {
-                text: String::new(),
-                style: dim,
-            });
+            out.push(StyledLine::plain(String::new(), dim));
         }
 
         // Section header row.
-        out.push(StyledLine {
-            text: (*header).to_owned(),
-            style: theme.title,
-        });
+        out.push(StyledLine::plain((*header).to_owned(), theme.title));
 
         // Body lines with prefix-driven colouring.
         for line in *body {
@@ -622,10 +627,7 @@ fn sidebar_section_lines(sidebar: &SidebarView, theme: &Theme) -> Vec<StyledLine
             } else {
                 dim
             };
-            out.push(StyledLine {
-                text: line.clone(),
-                style,
-            });
+            out.push(StyledLine::plain(line.clone(), style));
         }
     }
 
@@ -641,10 +643,7 @@ fn docked_panel_lines(view: &ShellView, theme: &Theme) -> Vec<StyledLine> {
 
     if let Some(queued_panel) = &view.queued_panel {
         if !lines.is_empty() {
-            lines.push(StyledLine {
-                text: String::new(),
-                style: theme.background,
-            });
+            lines.push(StyledLine::plain(String::new(), theme.background));
         }
         lines.extend(panel_lines(queued_panel, theme));
     }
@@ -653,10 +652,7 @@ fn docked_panel_lines(view: &ShellView, theme: &Theme) -> Vec<StyledLine> {
 }
 
 fn panel_lines(panel: &TaskPanelView, theme: &Theme) -> Vec<StyledLine> {
-    let mut lines = vec![StyledLine {
-        text: panel.title.clone(),
-        style: theme.title,
-    }];
+    let mut lines = vec![StyledLine::plain(panel.title.clone(), theme.title)];
     lines.extend(message_lines_to_styled(&panel.lines, theme));
     lines
 }
@@ -670,7 +666,7 @@ fn draw_lines(frame: &mut FrameBuffer, area: Rect, lines: &[StyledLine]) {
         let y = area
             .y
             .saturating_add(u16::try_from(offset).unwrap_or(u16::MAX));
-        frame.write_str(area.x, y, &line.text, line.style, area.width);
+        draw_styled_line(frame, area.x, y, line, area.width);
     }
 }
 
@@ -705,6 +701,29 @@ fn draw_lines_windowed(
         .saturating_sub(visible)
         .saturating_sub(offset_from_bottom);
     draw_lines(frame, area, &lines[start..]);
+}
+
+fn draw_styled_line(frame: &mut FrameBuffer, x: u16, y: u16, line: &StyledLine, max_width: u16) {
+    if line.spans.is_empty() {
+        frame.write_str(x, y, &line.text, line.style, max_width);
+        return;
+    }
+
+    let mut cursor_x = x;
+    let mut remaining = max_width;
+    for span in &line.spans {
+        if remaining == 0 {
+            break;
+        }
+        for symbol in span.text.chars().take(usize::from(remaining)) {
+            frame.put(cursor_x, y, symbol, span.style);
+            cursor_x = cursor_x.saturating_add(1);
+            remaining = remaining.saturating_sub(1);
+            if remaining == 0 {
+                break;
+            }
+        }
+    }
 }
 
 fn draw_rule(frame: &mut FrameBuffer, x: u16, y: u16, width: u16, style: TextStyle) {
@@ -785,10 +804,7 @@ fn draw_dialog(frame: &mut FrameBuffer, viewport: Rect, dialog: &DialogView, the
     );
 
     let mut body = plain_lines(&dialog.body, theme.messages);
-    body.push(StyledLine {
-        text: actions,
-        style: theme.status,
-    });
+    body.push(StyledLine::plain(actions, theme.status));
     draw_panel(frame, rect, Some(&dialog.title), &body, theme);
 }
 
@@ -864,13 +880,15 @@ fn notification_panel_lines(notification: &NotificationView, theme: &Theme) -> V
     notification
         .lines
         .iter()
-        .map(|line| StyledLine {
-            text: line.clone(),
-            style: if notification.focused {
-                theme.messages.bold()
-            } else {
-                theme.messages
-            },
+        .map(|line| {
+            StyledLine::plain(
+                line.clone(),
+                if notification.focused {
+                    theme.messages.bold()
+                } else {
+                    theme.messages
+                },
+            )
         })
         .collect()
 }
@@ -913,10 +931,7 @@ fn draw_picker_preview(frame: &mut FrameBuffer, viewport: Rect, preview: &str, t
         frame,
         rect,
         Some("Preview"),
-        &[StyledLine {
-            text: preview.into(),
-            style: theme.messages,
-        }],
+        &[StyledLine::plain(preview, theme.messages)],
         theme,
     );
 }
@@ -974,14 +989,14 @@ fn draw_slash_suggestions(
             } else {
                 format!("{} ─ {}", e.display, e.description)
             };
-            StyledLine {
+            StyledLine::plain(
                 text,
-                style: if e.selected {
+                if e.selected {
                     theme.prompt.bold()
                 } else {
                     theme.messages
                 },
-            }
+            )
         })
         .collect();
 
@@ -1220,10 +1235,10 @@ fn message_panel_lines(view: &ShellView, theme: &Theme) -> Vec<StyledLine> {
     };
 
     if view.loading {
-        lines.push(StyledLine {
-            text: loading_spinner_line(view),
-            style: style_for_message(theme, MessageRole::Progress),
-        });
+        lines.push(StyledLine::plain(
+            loading_spinner_line(view),
+            style_for_message(theme, MessageRole::Progress),
+        ));
     }
 
     lines
@@ -1247,10 +1262,7 @@ fn welcome_panel_lines(theme: &Theme) -> Vec<StyledLine> {
     let body = theme.messages;
     macro_rules! l {
         ($s:expr, $st:expr) => {
-            StyledLine {
-                text: $s.into(),
-                style: $st,
-            }
+            StyledLine::plain($s, $st)
         };
     }
     vec![
@@ -1277,9 +1289,21 @@ fn welcome_panel_lines(theme: &Theme) -> Vec<StyledLine> {
 fn message_lines_to_styled(lines: &[MessageLineView], theme: &Theme) -> Vec<StyledLine> {
     lines
         .iter()
-        .map(|line| StyledLine {
-            text: line.text.clone(),
-            style: style_for_message(theme, line.role),
+        .map(|line| {
+            let base_style = style_for_message(theme, line.role);
+            let spans = line
+                .spans
+                .iter()
+                .map(|span| StyledSpan {
+                    text: span.text.clone(),
+                    style: span.style.unwrap_or(base_style),
+                })
+                .collect();
+            StyledLine {
+                text: line.text.clone(),
+                style: base_style,
+                spans,
+            }
         })
         .collect()
 }
@@ -1294,14 +1318,8 @@ fn prompt_panel_lines(view: &ShellView, theme: &Theme) -> Vec<StyledLine> {
     };
 
     let mut lines = vec![
-        StyledLine {
-            text: format!("search: {}", search.query),
-            style: theme.status,
-        },
-        StyledLine {
-            text: history_match_label(search),
-            style: theme.footer,
-        },
+        StyledLine::plain(format!("search: {}", search.query), theme.status),
+        StyledLine::plain(history_match_label(search), theme.footer),
     ];
     lines.extend(plain_lines(
         &split_lines(search.match_text.as_deref().unwrap_or("")),
@@ -1393,10 +1411,7 @@ fn history_match_label(search: &HistorySearchView) -> String {
 fn plain_lines(lines: &[String], style: TextStyle) -> Vec<StyledLine> {
     lines
         .iter()
-        .map(|line| StyledLine {
-            text: line.clone(),
-            style,
-        })
+        .map(|line| StyledLine::plain(line.clone(), style))
         .collect()
 }
 

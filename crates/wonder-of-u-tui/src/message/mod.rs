@@ -5,17 +5,17 @@ use wonder_of_u_core::{
     session_footer_text, session_status_text,
 };
 
+use crate::{prompt::PromptQueueView, style::TextStyle};
+
 mod rich;
 mod tool_activity;
-
-use crate::prompt::PromptQueueView;
 
 /// Re-exports items from `rich`
 pub use rich::{
     AttachmentKind, AttachmentSummaryView, FileEditReferenceView, GroupedToolCallView,
     MarkdownBlockView, MarkdownCodeBlockView, MarkdownSummaryView, RejectedToolMessageKind,
     RejectedToolMessageView, RichMessageView, SystemErrorKind, SystemErrorView, ThinkingBlockView,
-    ToolCallView, ToolResultStatus, TranscriptBoundaryView, rich_message_views,
+    ToolCallView, ToolResultStatus, TranscriptBoundaryView, highlight_code_block, rich_message_views,
 };
 /// Re-exports items from `tool_activity`
 pub use tool_activity::{
@@ -41,6 +41,26 @@ pub enum MessageRole {
     /// Represents error
     Error,
 }
+/// Represents a styled message span.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MessageSpanView {
+    /// Stores the text
+    pub text: String,
+    /// Stores the optional style override
+    pub style: Option<TextStyle>,
+}
+
+impl MessageSpanView {
+    /// Creates a new value
+    #[must_use]
+    pub fn new(text: impl Into<String>, style: Option<TextStyle>) -> Self {
+        Self {
+            text: text.into(),
+            style,
+        }
+    }
+}
+
 /// Represents message line view
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct MessageLineView {
@@ -48,6 +68,8 @@ pub struct MessageLineView {
     pub text: String,
     /// Stores the role
     pub role: MessageRole,
+    /// Stores the optional styled spans
+    pub spans: Vec<MessageSpanView>,
 }
 
 impl MessageLineView {
@@ -57,7 +79,18 @@ impl MessageLineView {
         Self {
             text: text.into(),
             role,
+            spans: Vec::new(),
         }
+    }
+
+    /// Creates a line with styled spans.
+    #[must_use]
+    pub fn with_spans(role: MessageRole, spans: Vec<MessageSpanView>) -> Self {
+        let text = spans.iter().fold(String::new(), |mut text, span| {
+            text.push_str(&span.text);
+            text
+        });
+        Self { text, role, spans }
     }
 }
 /// Represents task panel view

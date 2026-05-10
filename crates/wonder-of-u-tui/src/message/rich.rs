@@ -1,4 +1,15 @@
+use std::sync::LazyLock;
+
+use ratatui::{
+    style::{Color as RatatuiColor, Modifier, Style as RatatuiStyle},
+    text::{Line, Span},
+};
 use serde_json::Value;
+use syntect::{
+    easy::HighlightLines,
+    highlighting::{FontStyle, Theme, ThemeSet},
+    parsing::{SyntaxReference, SyntaxSet},
+};
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 use wonder_of_u_core::{MessageEnvelope, MessagePayload, ToolUseId};
@@ -6,13 +17,32 @@ use wonder_of_u_core::{MessageEnvelope, MessagePayload, ToolUseId};
 use crate::{
     diff::{FileEditHunkSummary, PathLinkView},
     measure::{line_width, strip_ansi, wrap_text_hard},
+    style::{Color, TextStyle},
 };
 
-use super::{MessageLineView, MessageRole, render_message};
+use super::{MessageLineView, MessageRole, MessageSpanView, render_message};
 
 const MAX_PARAGRAPH_LINES: usize = 6;
 const MAX_THINKING_LINES: usize = 4;
 const MAX_DETAIL_LINES: usize = 3;
+
+static SYNTAX_SET: LazyLock<SyntaxSet> = LazyLock::new(SyntaxSet::load_defaults_newlines);
+static HIGHLIGHT_THEME: LazyLock<Option<Theme>> = LazyLock::new(|| {
+    let themes = ThemeSet::load_defaults();
+    themes
+        .themes
+        .get("base16-ocean.dark")
+        .or_else(|| themes.themes.get("Solarized (dark)"))
+        .or_else(|| {
+            themes
+                .themes
+                .iter()
+                .find(|(name, _)| name.to_ascii_lowercase().contains("dark"))
+                .map(|(_, theme)| theme)
+        })
+        .or_else(|| themes.themes.values().next())
+        .cloned()
+});
 
 /// Rich, renderer-agnostic message summaries for the TUI transcript.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -192,15 +222,19 @@ impl MarkdownSummaryView {
                     }
                 }
                 MarkdownBlockView::Code(code) => {
-                    let label = code.label();
-                    let preview = code.preview_text();
-                    let mut code_lines = vec![preview];
-                    if code.line_count > 1 {
-                        let hidden = code.line_count.saturating_sub(1);
-                        let noun = if hidden == 1 { "line" } else { "lines" };
-                        code_lines.push(format!("+{hidden} more {noun}"));
+                    if self.role == MessageRole::Assistant {
+                        lines.extend(highlighted_code_lines(code, self.role, max_width));
+                    } else {
+                        let label = code.label();
+                        let preview = code.preview_text();
+                        let mut code_lines = vec![preview];
+                        if code.line_count > 1 {
+                            let hidden = code.line_count.saturating_sub(1);
+                            let noun = if hidden == 1 { "line" } else { "lines" };
+                            code_lines.push(format!("+{hidden} more {noun}"));
+                        }
+                        push_wrapped_block(&mut lines, &label, &code_lines, self.role, max_width);
                     }
-                    push_wrapped_block(&mut lines, &label, &code_lines, self.role, max_width);
                 }
             }
             first_block = false;
@@ -248,6 +282,193 @@ impl MarkdownCodeBlockView {
             .map(str::trim)
             .find(|line| !line.is_empty())
             .map_or_else(|| "(empty)".into(), |line| truncate_visible_end(line, 48))
+    }
+}
+
+/// Highlights a fenced code block for transcript rendering.
+#[must_use]
+pub fn highlight_code_block(lang: &str, code: &str) -> Vec<Line<'static>> {
+    let Some(theme) = HIGHLIGHT_THEME.as_ref() else {
+        return plain_code_lines(code);
+    };
+    let Some(syntax) = syntax_for_language(lang) else {
+        return plain_code_lines(code);
+    };
+
+    let mut highlighter = HighlightLines::new(syntax, theme);
+    let mut lines = Vec::new();
+    for raw_line in code.split('\n') {
+        let Ok(highlighted) = highlighter.highlight_line(raw_line, &SYNTAX_SET) else {
+            return plain_code_lines(code);
+        };
+        let spans: Vec<_> = highlighted
+            .into_iter()
+            .map(|(style, text)| Span::styled(text.to_string(), syntect_style_to_ratatui(style)))
+            .collect();
+        lines.push(Line::from(spans));
+    }
+
+    if lines.is_empty() {
+        lines.push(Line::default());
+    }
+
+    lines
+}
+
+fn syntax_for_language(lang: &str) -> Option<&'static SyntaxReference> {
+    let token = lang.split_whitespace().next().unwrap_or_default().trim();
+    if token.is_empty() {
+        return None;
+    }
+
+    SYNTAX_SET
+        .find_syntax_by_token(token)
+        .or_else(|| SYNTAX_SET.find_syntax_by_name(token))
+        .or_else(|| SYNTAX_SET.find_syntax_by_extension(token))
+}
+
+fn plain_code_lines(code: &str) -> Vec<Line<'static>> {
+    let mut lines = code
+        .split('\n')
+        .map(|line| Line::from(Span::raw(line.to_string())))
+        .collect::<Vec<_>>();
+    if lines.is_empty() {
+        lines.push(Line::default());
+    }
+    lines
+}
+
+fn syntect_style_to_ratatui(style: syntect::highlighting::Style) -> RatatuiStyle {
+    let mut out = RatatuiStyle::default().fg(RatatuiColor::Rgb(
+        style.foreground.r,
+        style.foreground.g,
+        style.foreground.b,
+    ));
+    if style.font_style.contains(FontStyle::BOLD) {
+        out = out.add_modifier(Modifier::BOLD);
+    }
+    if style.font_style.contains(FontStyle::ITALIC) {
+        out = out.add_modifier(Modifier::ITALIC);
+    }
+    if style.font_style.contains(FontStyle::UNDERLINE) {
+        out = out.add_modifier(Modifier::UNDERLINED);
+    }
+    out
+}
+
+fn highlighted_code_lines(
+    code: &MarkdownCodeBlockView,
+    role: MessageRole,
+    max_width: usize,
+) -> Vec<MessageLineView> {
+    highlight_code_block(code.language.as_deref().unwrap_or_default(), &code.code)
+        .into_iter()
+        .flat_map(|line| wrap_highlighted_line(line, role, max_width))
+        .collect()
+}
+
+fn wrap_highlighted_line(line: Line<'static>, role: MessageRole, max_width: usize) -> Vec<MessageLineView> {
+    let width = max_width.max(1);
+    let mut wrapped = Vec::new();
+    let mut current = Vec::new();
+    let mut current_width = 0usize;
+
+    for span in line.spans {
+        let style = text_style_from_ratatui(span.style);
+        let mut chunk = String::new();
+        for symbol in span.content.chars() {
+            if current_width == width {
+                if !chunk.is_empty() {
+                    current.push(MessageSpanView::new(std::mem::take(&mut chunk), style));
+                }
+                wrapped.push(MessageLineView::with_spans(role, current));
+                current = Vec::new();
+                current_width = 0;
+            }
+            chunk.push(symbol);
+            current_width = current_width.saturating_add(1);
+        }
+        if !chunk.is_empty() {
+            current.push(MessageSpanView::new(chunk, style));
+        }
+    }
+
+    if !current.is_empty() {
+        wrapped.push(MessageLineView::with_spans(role, current));
+    }
+
+    if wrapped.is_empty() {
+        wrapped.push(MessageLineView::new(String::new(), role));
+    }
+
+    wrapped
+}
+
+fn text_style_from_ratatui(style: RatatuiStyle) -> Option<TextStyle> {
+    let mut out = TextStyle::default();
+    if let Some(fg) = style.fg {
+        out.fg = Some(color_from_ratatui(fg));
+    }
+    if let Some(bg) = style.bg {
+        out.bg = Some(color_from_ratatui(bg));
+    }
+    out.bold = style.add_modifier.contains(Modifier::BOLD);
+    out.dim = style.add_modifier.contains(Modifier::DIM);
+    out.italic = style.add_modifier.contains(Modifier::ITALIC);
+    out.underlined = style.add_modifier.contains(Modifier::UNDERLINED);
+    out.reversed = style.add_modifier.contains(Modifier::REVERSED);
+
+    (out != TextStyle::default()).then_some(out)
+}
+
+fn color_from_ratatui(color: RatatuiColor) -> Color {
+    match color {
+        RatatuiColor::Reset => Color::Reset,
+        RatatuiColor::Black => Color::Black,
+        RatatuiColor::Red | RatatuiColor::LightRed => Color::Red,
+        RatatuiColor::Green | RatatuiColor::LightGreen => Color::Green,
+        RatatuiColor::Yellow | RatatuiColor::LightYellow => Color::Yellow,
+        RatatuiColor::Blue | RatatuiColor::LightBlue => Color::Blue,
+        RatatuiColor::Magenta | RatatuiColor::LightMagenta => Color::Magenta,
+        RatatuiColor::Cyan | RatatuiColor::LightCyan => Color::Cyan,
+        RatatuiColor::Gray => Color::Grey,
+        RatatuiColor::DarkGray => Color::DarkGrey,
+        RatatuiColor::White => Color::White,
+        RatatuiColor::Rgb(r, g, b) => Color::Rgb(r, g, b),
+        RatatuiColor::Indexed(index) => xterm_256_color(index),
+    }
+}
+
+fn xterm_256_color(index: u8) -> Color {
+    match index {
+        0 => Color::Black,
+        1 => Color::DarkRed,
+        2 => Color::DarkGreen,
+        3 => Color::DarkYellow,
+        4 => Color::DarkBlue,
+        5 => Color::DarkMagenta,
+        6 => Color::DarkCyan,
+        7 => Color::Grey,
+        8 => Color::DarkGrey,
+        9 => Color::Red,
+        10 => Color::Green,
+        11 => Color::Yellow,
+        12 => Color::Blue,
+        13 => Color::Magenta,
+        14 => Color::Cyan,
+        15 => Color::White,
+        16..=231 => {
+            let index = index.saturating_sub(16);
+            let red = index / 36;
+            let green = (index % 36) / 6;
+            let blue = index % 6;
+            let channel = |value| if value == 0 { 0 } else { 55 + value * 40 };
+            Color::Rgb(channel(red), channel(green), channel(blue))
+        }
+        232..=255 => {
+            let level = 8u8.saturating_add(index.saturating_sub(232).saturating_mul(10));
+            Color::Rgb(level, level, level)
+        }
     }
 }
 
@@ -1270,27 +1491,30 @@ pub enum RejectedToolMessageKind {
 fn parse_markdown_blocks(text: &str) -> Vec<MarkdownBlockView> {
     let mut blocks = Vec::new();
     let mut paragraph = Vec::new();
+    let mut in_code_block = false;
     let mut code_language = None;
     let mut code_lines = Vec::new();
 
     for line in text.lines() {
         if let Some(language) = line.strip_prefix("```") {
-            if code_language.is_some() {
+            if in_code_block {
                 blocks.push(MarkdownBlockView::Code(MarkdownCodeBlockView {
                     language: code_language.take(),
                     code: code_lines.join("\n"),
                     line_count: code_lines.len(),
                 }));
                 code_lines.clear();
+                in_code_block = false;
             } else {
                 flush_paragraph(&mut blocks, &mut paragraph);
                 let language = language.trim();
                 code_language = (!language.is_empty()).then(|| language.to_string());
+                in_code_block = true;
             }
             continue;
         }
 
-        if code_language.is_some() {
+        if in_code_block {
             code_lines.push(line.to_string());
             continue;
         }
@@ -1304,7 +1528,7 @@ fn parse_markdown_blocks(text: &str) -> Vec<MarkdownBlockView> {
     }
 
     flush_paragraph(&mut blocks, &mut paragraph);
-    if code_language.is_some() || !code_lines.is_empty() {
+    if in_code_block || code_language.is_some() || !code_lines.is_empty() {
         blocks.push(MarkdownBlockView::Code(MarkdownCodeBlockView {
             language: code_language,
             code: code_lines.join("\n"),
@@ -1594,20 +1818,46 @@ mod tests {
     }
 
     #[test]
-    fn markdown_summary_renders_text_and_code_fallbacks() {
+    fn markdown_summary_renders_text_and_highlighted_code_blocks() {
         let view = MarkdownSummaryView::new(
             MessageRole::Assistant,
             "# Heading\n- first item\n```rust\nfn main() {}\nprintln!(\"hi\");\n```",
         );
 
+        let lines = view.display_lines(80);
+        assert_eq!(lines.len(), 3);
         assert_eq!(
-            view.display_lines(80),
-            vec![
-                MessageLineView::new("Heading • first item", MessageRole::Assistant,),
-                MessageLineView::new("code[rust]> fn main() {}", MessageRole::Assistant),
-                MessageLineView::new("            +1 more line", MessageRole::Assistant),
-            ]
+            lines[0],
+            MessageLineView::new("Heading • first item", MessageRole::Assistant,)
         );
+        assert_eq!(lines[1].text, "fn main() {}");
+        assert_eq!(lines[2].text, "println!(\"hi\");");
+        assert!(!lines[1].spans.is_empty());
+        assert!(
+            lines[1].spans.iter().any(|span| span.style.is_some()),
+            "expected syntect to style Rust code: {lines:?}"
+        );
+    }
+
+    #[test]
+    fn highlight_code_block_styles_known_language() {
+        let lines = highlight_code_block("rust", "fn main() { let value = 1; }\n");
+
+        assert_eq!(lines.len(), 2);
+        assert!(
+            lines[0].spans.iter().any(|span| span.style.fg.is_some()),
+            "expected at least one colored span for Rust code: {lines:?}"
+        );
+    }
+
+    #[test]
+    fn highlight_code_block_falls_back_to_plain_text_for_unknown_language() {
+        let lines = highlight_code_block("not-a-real-language", "plain text\n");
+
+        assert_eq!(lines.len(), 2);
+        assert_eq!(lines[0].spans.len(), 1);
+        assert_eq!(lines[0].spans[0].content.as_ref(), "plain text");
+        assert_eq!(lines[0].spans[0].style, RatatuiStyle::default());
     }
 
     #[test]
