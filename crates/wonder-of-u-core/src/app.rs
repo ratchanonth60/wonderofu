@@ -756,6 +756,9 @@ pub struct AppState {
     /// Stores the fast mode
     #[serde(default)]
     pub fast_mode: bool,
+    /// Stores whether extended thinking is enabled for future provider requests.
+    #[serde(default)]
+    pub thinking_enabled: bool,
     /// Optional advisor/secondary model for multi-model reasoning.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub advisor_model: Option<String>,
@@ -765,6 +768,10 @@ pub struct AppState {
     /// Stores the pending tool approval
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pending_tool_approval: Option<PendingToolApprovalState>,
+    /// Maximum context window size for the current model (tokens).
+    /// Set from provider response or model config.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_window_size: Option<u64>,
     /// Stores the costs
     pub costs: CostState,
 }
@@ -789,9 +796,11 @@ impl AppState {
             effort_level: None,
             brief_mode: false,
             fast_mode: false,
+            thinking_enabled: false,
             advisor_model: None,
             auth: AuthState::default(),
             pending_tool_approval: None,
+            context_window_size: None,
             costs: CostState::new(),
         }
     }
@@ -832,6 +841,13 @@ impl AppState {
         self.provider = provider;
         self.model = model;
         self.auth = auth;
+        self.context_window_size = None;
+        self.session.updated_at = OffsetDateTime::now_utc();
+    }
+
+    /// Handles set context window size
+    pub fn set_context_window_size(&mut self, context_window_size: Option<u64>) {
+        self.context_window_size = context_window_size;
         self.session.updated_at = OffsetDateTime::now_utc();
     }
 
@@ -862,6 +878,12 @@ impl AppState {
     /// Handles set fast mode
     pub fn set_fast_mode(&mut self, fast_mode: bool) {
         self.fast_mode = fast_mode;
+        self.session.updated_at = OffsetDateTime::now_utc();
+    }
+
+    /// Handles set thinking enabled
+    pub fn set_thinking_enabled(&mut self, thinking_enabled: bool) {
+        self.thinking_enabled = thinking_enabled;
         self.session.updated_at = OffsetDateTime::now_utc();
     }
 
@@ -1131,6 +1153,32 @@ mod tests {
         assert_eq!(state.costs.usage.total_tokens(), 184);
         assert_eq!(state.costs.estimated_cost_usd, Some(0.42));
         assert_eq!(state.session.updated_at, state.costs.updated_at);
+    }
+
+    #[test]
+    fn app_state_tracks_context_window_size() {
+        let mut state = AppState::new(PathBuf::from("/workspace"));
+
+        assert_eq!(state.context_window_size, None);
+        state.set_context_window_size(Some(200_000));
+        assert_eq!(state.context_window_size, Some(200_000));
+
+        state.set_provider_context(
+            Some("anthropic".into()),
+            Some("claude-3-7-sonnet-latest".into()),
+            AuthState::default(),
+        );
+        assert_eq!(state.context_window_size, None);
+    }
+
+    #[test]
+    fn app_state_defaults_thinking_to_disabled() {
+        let mut state = AppState::new(PathBuf::from("/workspace"));
+        assert!(!state.thinking_enabled);
+
+        state.set_thinking_enabled(true);
+
+        assert!(state.thinking_enabled);
     }
 
     #[test]

@@ -13,7 +13,7 @@ use wonder_of_u_agent::{
 };
 use wonder_of_u_core::{
     AuthState, InputMode, MessageEnvelope, MessagePayload, PendingLocalToolCall,
-    PendingProviderToolCall, PendingToolApprovalState, PendingToolConversationRound,
+    PendingProviderToolCall, PendingToolApprovalState, PendingToolConversationRound, TokenUsage,
 };
 use wonder_of_u_test_support::{EnvVarGuard, unique_test_dir};
 use wonder_of_u_tui::KeyModifiers;
@@ -1691,7 +1691,7 @@ fn controller_shows_context_notice_dialog() {
 }
 
 #[test]
-fn controller_shows_stats_notice_dialog() {
+fn controller_records_session_stats_in_transcript() {
     let dir = unique_test_dir("tui-stats-notice");
     let registry = commands::registry(Some(dir.clone())).expect("registry");
     let mut controller = TuiController::new(
@@ -1702,23 +1702,83 @@ fn controller_shows_stats_notice_dialog() {
     )
     .expect("controller");
 
+    controller.state.provider = Some("openai".into());
+    controller.state.model = Some("gpt-4.1".into());
+    controller.state.record_cost_usage(
+        TokenUsage {
+            input_tokens: 128,
+            output_tokens: 32,
+            cache_creation_tokens: 16,
+            cache_read_tokens: 8,
+        },
+        Some(0.42),
+    );
+
     controller
         .execute_slash_command("/stats")
         .expect("show stats");
 
-    assert_eq!(controller.status_note.as_deref(), Some("activity stats"));
-    assert!(matches!(
-        controller.dialog.as_ref(),
-        Some(dialog) if dialog.title == "Activity Stats"
-    ));
+    assert_eq!(controller.status_note.as_deref(), Some("session stats"));
+    assert!(controller.dialog.is_none());
     assert!(matches!(
         controller.state.messages.last().map(|message| &message.payload),
         Some(MessagePayload::Command { input, output })
             if input == "/stats"
                 && output
                     .as_deref()
-                    .is_some_and(|text| text.contains("## Activity Stats"))
+                    .is_some_and(|text| {
+                        text.contains("Session Statistics")
+                            && text.contains("Provider:  openai")
+                            && text.contains("Estimated cost:      $0.4200")
+                    })
     ));
+}
+
+#[test]
+fn thinking_slash_command_toggles_and_reports_state() {
+    let dir = unique_test_dir("tui-thinking-slash");
+    let registry = commands::registry(Some(dir.clone())).expect("registry");
+    let mut controller = TuiController::new(
+        test_context(&dir),
+        &registry,
+        Some(dir.as_path()),
+        TuiLaunchOptions { session_id: None },
+    )
+    .expect("controller");
+
+    controller
+        .execute_slash_command("/thinking")
+        .expect("report thinking");
+    assert!(!controller.state.thinking_enabled);
+    assert_eq!(controller.status_note.as_deref(), Some("thinking off"));
+    assert!(matches!(
+        controller.state.messages.last().map(|message| &message.payload),
+        Some(MessagePayload::Command { input, output })
+            if input == "/thinking"
+                && output
+                    .as_deref()
+                    .is_some_and(|text| text.contains("Thinking is currently disabled"))
+    ));
+
+    controller
+        .execute_slash_command("/thinking on")
+        .expect("enable thinking");
+    assert!(controller.state.thinking_enabled);
+    assert_eq!(controller.status_note.as_deref(), Some("thinking on"));
+    assert!(matches!(
+        controller.state.messages.last().map(|message| &message.payload),
+        Some(MessagePayload::Command { input, output })
+            if input == "/thinking on"
+                && output
+                    .as_deref()
+                    .is_some_and(|text| text.contains("Thinking enabled"))
+    ));
+
+    controller
+        .execute_slash_command("/thinking off")
+        .expect("disable thinking");
+    assert!(!controller.state.thinking_enabled);
+    assert_eq!(controller.status_note.as_deref(), Some("thinking off"));
 }
 
 #[test]
