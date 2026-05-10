@@ -160,8 +160,7 @@ pub use prompt::{
 pub use render::{
     GlobalSearchOverlayView, MIN_SIDEBAR_WIDTH, SIDEBAR_WIDTH, ShellView, SidebarView,
     SlashSuggestionEntry, SlashSuggestionsOverlay, TranscriptScrollView, render_shell,
-    render_snapshot,
-    shell_main_area_width,
+    render_snapshot, shell_main_area_width,
 };
 /// Re-exports items from `security`
 pub use security::{

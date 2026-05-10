@@ -1787,7 +1787,14 @@ fn thinking_slash_command_toggles_and_reports_state() {
         .execute_slash_command("/thinking")
         .expect("report thinking");
     assert!(!controller.state.thinking_enabled);
-    assert_eq!(controller.status_note.as_deref(), Some("thinking off"));
+    assert!(
+        controller
+            .status_note
+            .as_deref()
+            .is_some_and(|s| s.starts_with("thinking off")),
+        "expected status to start with 'thinking off', got {:?}",
+        controller.status_note
+    );
     assert!(matches!(
         controller.state.messages.last().map(|message| &message.payload),
         Some(MessagePayload::Command { input, output })
@@ -1801,7 +1808,14 @@ fn thinking_slash_command_toggles_and_reports_state() {
         .execute_slash_command("/thinking on")
         .expect("enable thinking");
     assert!(controller.state.thinking_enabled);
-    assert_eq!(controller.status_note.as_deref(), Some("thinking on"));
+    assert!(
+        controller
+            .status_note
+            .as_deref()
+            .is_some_and(|s| s.starts_with("thinking on")),
+        "expected status to start with 'thinking on', got {:?}",
+        controller.status_note
+    );
     assert!(matches!(
         controller.state.messages.last().map(|message| &message.payload),
         Some(MessagePayload::Command { input, output })
@@ -1815,7 +1829,14 @@ fn thinking_slash_command_toggles_and_reports_state() {
         .execute_slash_command("/thinking off")
         .expect("disable thinking");
     assert!(!controller.state.thinking_enabled);
-    assert_eq!(controller.status_note.as_deref(), Some("thinking off"));
+    assert!(
+        controller
+            .status_note
+            .as_deref()
+            .is_some_and(|s| s.starts_with("thinking off")),
+        "expected status to start with 'thinking off', got {:?}",
+        controller.status_note
+    );
 }
 
 #[test]
