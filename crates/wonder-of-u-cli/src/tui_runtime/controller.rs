@@ -2624,7 +2624,9 @@ impl<'a> TuiController<'a> {
         };
 
         // Populate sidebar provider summary with live provider/model info.
-        // Format: "◈ gpt-4.1(copilot)" for the active provider, "  model(id)" for others.
+        // Active provider is prefixed with ◈; other ready providers are shown
+        // compactly below it.  A trailing count line shows how many configured
+        // providers are not yet authenticated so the user knows what to set up.
         if let Some(sb) = view.sidebar.as_mut() {
             let active_provider = self.state.provider.as_deref().unwrap_or("");
             let active_model = self.state.model.as_deref().unwrap_or("");
@@ -2632,6 +2634,7 @@ impl<'a> TuiController<'a> {
 
             if let Ok(report) = ProviderResolver::builtin().load_report(self.storage_dir.as_deref())
             {
+                let ready_count = report.available_providers.len();
                 for pd in &report.available_providers {
                     // Use the currently active model when this is the active provider;
                     // otherwise fall back to the provider's default.
@@ -2646,6 +2649,14 @@ impl<'a> TuiController<'a> {
                     } else {
                         provider_lines.push(format!("  {label}"));
                     }
+                }
+
+                // Show how many of the full registry are not yet ready so the
+                // user gets a nudge without the sidebar becoming overwhelming.
+                let total = ProviderRegistry::builtin().providers().count();
+                let missing = total.saturating_sub(ready_count);
+                if missing > 0 {
+                    provider_lines.push(format!("  +{missing} more (/setup to configure)"));
                 }
             }
 

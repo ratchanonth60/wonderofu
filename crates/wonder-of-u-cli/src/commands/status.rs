@@ -7,7 +7,7 @@ use std::{
 
 use async_trait::async_trait;
 use serde_json::json;
-use wonder_of_u_agent::ProviderResolver;
+use wonder_of_u_agent::{ProviderRegistry, ProviderResolver};
 use wonder_of_u_core::{
     Command, CommandContext, CommandInvocation, CommandKind, CommandOutput, CommandSpec, CostState,
     MESSAGE_SCHEMA_VERSION, Result,
@@ -340,6 +340,34 @@ impl Command for StatusCommand {
                 .collect::<Vec<_>>()
                 .join(",")
         ));
+        // Emit per-provider env var hints for discoverability. Variable names
+        // only—never the values—so this output is safe to share in bug reports.
+        let registry = ProviderRegistry::builtin();
+        let ready_ids: BTreeSet<&str> = report
+            .available_providers
+            .iter()
+            .map(|p| p.id.as_str())
+            .collect();
+        for p in registry.providers() {
+            let state = if ready_ids.contains(p.id.as_str()) {
+                "ready"
+            } else {
+                "missing"
+            };
+            if let Some(env) = &p.api_key_env {
+                lines.push(format!(
+                    "provider_hint[{}]=state={state};api_key_env={env}",
+                    p.id
+                ));
+            } else if let Some(env) = &p.endpoint_env {
+                lines.push(format!(
+                    "provider_hint[{}]=state={state};endpoint_env={env}",
+                    p.id
+                ));
+            } else {
+                lines.push(format!("provider_hint[{}]=state={state}", p.id));
+            }
+        }
 
         let (_, plugins, skills) = load_catalogs(&context.cwd, self.storage_dir.as_deref())?;
         lines.push(format!("plugins={}", plugins.entries().len()));

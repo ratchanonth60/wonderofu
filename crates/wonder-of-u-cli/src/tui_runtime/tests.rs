@@ -7369,3 +7369,249 @@ fn controller_optimize_token_flag_persists_across_clear() {
         "optimize_token_mode should survive /clear"
     );
 }
+
+// ── Multi-provider & local model TUI tests ──────────────────────────────────
+
+/// Gateway provider (Groq) appears in the model picker when its API key is
+/// set in the environment.  The picker must show the `any model accepted`
+/// label because Groq is a non-strict provider.
+#[test]
+fn controller_model_picker_shows_non_strict_gateway_provider() {
+    let _groq = EnvVarGuard::set("GROQ_API_KEY", "groq-test-key");
+    let dir = unique_test_dir("tui-picker-groq");
+    let registry = commands::registry(Some(dir.clone())).expect("registry");
+    let mut controller = TuiController::new(
+        test_context(&dir),
+        &registry,
+        Some(dir.as_path()),
+        TuiLaunchOptions { session_id: None },
+    )
+    .expect("controller");
+
+    controller
+        .execute_slash_command("/model")
+        .expect("open model picker");
+
+    let picker = controller
+        .pending_model_picker
+        .as_ref()
+        .expect("model picker must be open");
+
+    // Groq option must appear in the picker.
+    assert!(
+        picker.options.iter().any(|o| o.provider == "groq"),
+        "groq must be present when GROQ_API_KEY is set; options: {:?}",
+        picker
+            .options
+            .iter()
+            .map(|o| &o.provider)
+            .collect::<Vec<_>>()
+    );
+
+    // The groq option's model_display must communicate pass-through semantics.
+    let groq_opt = picker
+        .options
+        .iter()
+        .find(|o| o.provider == "groq")
+        .unwrap();
+    assert!(
+        groq_opt.model_display.contains("any model accepted"),
+        "non-strict groq entry must mention arbitrary model acceptance; got: {:?}",
+        groq_opt.model_display
+    );
+}
+
+/// Local provider is always ready (no auth) and must appear in the model
+/// picker even with no env vars or stored credentials.
+#[test]
+fn controller_model_picker_always_includes_local_provider() {
+    let dir = unique_test_dir("tui-picker-local");
+    let registry = commands::registry(Some(dir.clone())).expect("registry");
+    let mut controller = TuiController::new(
+        test_context(&dir),
+        &registry,
+        Some(dir.as_path()),
+        TuiLaunchOptions { session_id: None },
+    )
+    .expect("controller");
+
+    controller
+        .execute_slash_command("/model")
+        .expect("open model picker");
+
+    assert!(
+        controller.pending_model_picker.is_some(),
+        "model picker must open when local provider is ready"
+    );
+    let picker = controller.pending_model_picker.as_ref().unwrap();
+    assert!(
+        picker.options.iter().any(|o| o.provider == "local"),
+        "local provider must always appear in picker (no auth required); options: {:?}",
+        picker
+            .options
+            .iter()
+            .map(|o| &o.provider)
+            .collect::<Vec<_>>()
+    );
+}
+
+/// Selecting the local provider from the picker with a custom model id (set
+/// via `/model set local:phi3:mini`) must succeed and update the session state.
+#[test]
+fn controller_set_local_arbitrary_model_via_slash_model() {
+    let dir = unique_test_dir("tui-local-custom-model");
+    let registry = commands::registry(Some(dir.clone())).expect("registry");
+    let mut controller = TuiController::new(
+        test_context(&dir),
+        &registry,
+        Some(dir.as_path()),
+        TuiLaunchOptions { session_id: None },
+    )
+    .expect("controller");
+
+    controller
+        .execute_slash_command("/model local:phi3:mini")
+        .expect("set local model");
+
+    // The selection should have been applied; picker should be closed.
+    assert!(
+        controller.pending_model_picker.is_none(),
+        "picker must be closed after explicit /model set"
+    );
+    assert_eq!(
+        controller.state.provider.as_deref(),
+        Some("local"),
+        "provider must be local"
+    );
+    assert_eq!(
+        controller.state.model.as_deref(),
+        Some("phi3:mini"),
+        "arbitrary local model must be accepted"
+    );
+}
+
+/// The sidebar provider_lines must include at least one entry for the active
+/// provider and show the active model.  The "+N more" missing-provider line
+/// appears only when not all providers are authenticated—this test verifies
+/// the sidebar populates correctly regardless of environment.
+#[test]
+fn controller_sidebar_shows_missing_provider_count() {
+    let _groq = EnvVarGuard::set("GROQ_API_KEY", "groq-test-key");
+    let dir = unique_test_dir("tui-sidebar-missing");
+    let registry = commands::registry(Some(dir.clone())).expect("registry");
+    let mut controller = TuiController::new(
+        test_context(&dir),
+        &registry,
+        Some(dir.as_path()),
+        TuiLaunchOptions { session_id: None },
+    )
+    .expect("controller");
+    // Inject a provider selection so the session has an active provider.
+    controller.state.set_provider_context(
+        Some("groq".into()),
+        Some("llama-3.3-70b-versatile".into()),
+        wonder_of_u_core::AuthState::not_required(),
+    );
+
+    let view = controller.view();
+    let sidebar = view.sidebar.expect("sidebar must be present");
+
+    // The active provider must appear with the ◈ marker.
+    assert!(
+        sidebar
+            .provider_lines
+            .iter()
+            .any(|l| l.contains("◈") && l.contains("groq")),
+        "active groq provider must appear with ◈ marker; provider_lines: {:?}",
+        sidebar.provider_lines
+    );
+
+    // The active model must appear somewhere in provider_lines.
+    assert!(
+        sidebar
+            .provider_lines
+            .iter()
+            .any(|l| l.contains("llama-3.3-70b-versatile")),
+        "active model must appear in provider_lines; got: {:?}",
+        sidebar.provider_lines
+    );
+
+    // If some providers are not ready (possible depending on env), the
+    // "+N more (/setup to configure)" hint must appear.  When all providers
+    // happen to be ready in the environment, the line is correctly absent.
+    let total = wonder_of_u_agent::ProviderRegistry::builtin()
+        .providers()
+        .count();
+    let ready = sidebar
+        .provider_lines
+        .iter()
+        .filter(|l| !l.trim_start().starts_with('+'))
+        .count();
+    let has_missing_line = sidebar
+        .provider_lines
+        .iter()
+        .any(|l| l.contains("more") && l.contains("setup"));
+    if ready < total {
+        assert!(
+            has_missing_line,
+            "must show missing-count hint when {ready}/{total} providers are ready; \
+             provider_lines: {:?}",
+            sidebar.provider_lines
+        );
+    }
+}
+
+/// Doctor command output must list all builtin providers with env var hints.
+#[test]
+fn doctor_output_includes_all_provider_env_hints() {
+    let dir = unique_test_dir("doctor-env-hints");
+    let registry = commands::registry(Some(dir.clone())).expect("registry");
+    let mut controller = TuiController::new(
+        test_context(&dir),
+        &registry,
+        Some(dir.as_path()),
+        TuiLaunchOptions { session_id: None },
+    )
+    .expect("controller");
+
+    controller
+        .execute_slash_command("/doctor")
+        .expect("run doctor");
+
+    // The last message should contain the doctor output.
+    let output = controller
+        .state
+        .messages
+        .iter()
+        .rev()
+        .find_map(|m| match &m.payload {
+            MessagePayload::Command { output, .. } => output.as_deref(),
+            _ => None,
+        })
+        .expect("doctor command output");
+
+    assert!(
+        output.contains("providers_registered="),
+        "must include provider count; got:\n{output}"
+    );
+    assert!(
+        output.contains("GROQ_API_KEY"),
+        "must include GROQ_API_KEY hint; got:\n{output}"
+    );
+    assert!(
+        output.contains("HF_TOKEN") || output.contains("huggingface"),
+        "must include HuggingFace hint; got:\n{output}"
+    );
+    assert!(
+        output.contains("AZURE_OPENAI_API_KEY"),
+        "must include Azure api-key hint; got:\n{output}"
+    );
+    assert!(
+        output.contains("AZURE_OPENAI_API_ENDPOINT"),
+        "must include Azure endpoint hint; got:\n{output}"
+    );
+    assert!(
+        output.contains("no_auth_required"),
+        "local provider must show no_auth_required hint; got:\n{output}"
+    );
+}
