@@ -175,9 +175,8 @@ pub(super) fn ratatui_color(color: wonder_of_u_tui::Color) -> RatatuiColor {
 pub(super) fn theme_for_state(name: Option<&str>, session_color: Option<&str>) -> Theme {
     let mut theme = match name {
         Some("midnight") => Theme {
-            background: wonder_of_u_tui::TextStyle::default()
-                .bg(wonder_of_u_tui::Color::Black)
-                .fg(wonder_of_u_tui::Color::Grey),
+            // No explicit background: terminal theme shows through.
+            background: wonder_of_u_tui::TextStyle::default().fg(wonder_of_u_tui::Color::Grey),
             border: wonder_of_u_tui::TextStyle::default().fg(wonder_of_u_tui::Color::DarkMagenta),
             title: wonder_of_u_tui::TextStyle::default()
                 .fg(wonder_of_u_tui::Color::Magenta)
@@ -192,9 +191,9 @@ pub(super) fn theme_for_state(name: Option<&str>, session_color: Option<&str>) -
             footer: wonder_of_u_tui::TextStyle::default().fg(wonder_of_u_tui::Color::DarkCyan),
         },
         Some("light") => Theme {
-            background: wonder_of_u_tui::TextStyle::default()
-                .bg(wonder_of_u_tui::Color::White)
-                .fg(wonder_of_u_tui::Color::Black),
+            // No explicit background for light theme either: the terminal
+            // background colour shows through (consistent with Ink parity).
+            background: wonder_of_u_tui::TextStyle::default().fg(wonder_of_u_tui::Color::Black),
             border: wonder_of_u_tui::TextStyle::default().fg(wonder_of_u_tui::Color::Blue),
             title: wonder_of_u_tui::TextStyle::default()
                 .fg(wonder_of_u_tui::Color::DarkBlue)
@@ -282,22 +281,19 @@ pub(super) fn prompt_cursor_position(
     let cap = (height / 3).max(3).saturating_add(warning_height);
     let capped_height = uncapped_height.saturating_add(warning_height).min(cap);
     // Mirror render_shell: on wide terminals the sidebar column is carved out,
-    // shrinking the area available for the prompt box.
+    // shrinking the area available for the prompt.
     let effective_width = wonder_of_u_tui::shell_main_area_width(width, sidebar_active);
     let layout = ShellLayout::split(
         wonder_of_u_tui::Rect::new(0, 0, effective_width.max(1), height.max(1)),
         capped_height,
     );
-    // Box layout: content is inset 1 col from x (just inside the │ border),
-    // 1 row below the top border, and 2 cols narrower (│ on each side).
-    let content_x = layout.prompt.x.saturating_add(1);
-    let content_y = layout
-        .prompt
-        .y
-        .saturating_add(1)
-        .saturating_add(warning_height);
-    let content_width = layout.prompt.width.saturating_sub(2);
-    let content_height = layout.prompt.height.saturating_sub(2);
+    // Ink-style borderless prompt: content fills the area directly — no +1 inset
+    // for border columns/rows.  The warning row (when visible) sits at prompt.y
+    // and bumps the typing area down by one.
+    let content_x = layout.prompt.x;
+    let content_y = layout.prompt.y.saturating_add(warning_height);
+    let content_width = layout.prompt.width;
+    let content_height = layout.prompt.height;
 
     let cursor_text = prompt.chars().take(cursor).collect::<String>();
     let mut line = 0u16;
@@ -313,7 +309,7 @@ pub(super) fn prompt_cursor_position(
     // First line has a "› " prefix (2 chars); subsequent lines start at column 0.
     let x_offset: u16 = if line == 0 { 2 } else { 0 };
     // Clamp column so that content_x + x_offset + column never exceeds
-    // content_x + content_width − 1 (the rightmost cell inside the box border).
+    // content_x + content_width − 1 (the rightmost cell inside the prompt area).
     let max_col = content_width.saturating_sub(x_offset).saturating_sub(1);
     (
         content_x
@@ -368,14 +364,10 @@ pub(super) fn history_search_cursor_position(
         wonder_of_u_tui::Rect::new(0, 0, effective_width.max(1), height.max(1)),
         capped_height,
     );
-    // Box layout: content starts at x+1, y+1, with width-2 available columns.
-    let content_x = layout.prompt.x.saturating_add(1);
-    let content_y = layout
-        .prompt
-        .y
-        .saturating_add(1)
-        .saturating_add(warning_height);
-    let content_width = layout.prompt.width.saturating_sub(2);
+    // Ink-style borderless prompt: content fills the area directly.
+    let content_x = layout.prompt.x;
+    let content_y = layout.prompt.y.saturating_add(warning_height);
+    let content_width = layout.prompt.width;
     let query_prefix = "search: ".chars().count();
     (
         content_x
