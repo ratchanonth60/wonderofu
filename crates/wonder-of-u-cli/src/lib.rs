@@ -11,7 +11,7 @@ use std::{
 
 use clap::{Parser, Subcommand};
 use futures::executor::block_on;
-use wonder_of_u_agent::ProviderResolver;
+use wonder_of_u_agent::{ProviderResolver, SettingsStore};
 use wonder_of_u_core::{
     CommandContext, CommandInvocation, CommandOutput, CommandQuery, FeatureSet, PermissionMode,
     ProviderReadiness, Result, SessionId, WonderError, parse_slash_command,
@@ -65,6 +65,12 @@ pub enum Commands {
         /// Show cost for all sessions.
         all: bool,
     },
+    /// Get or set the assistant output rendering style.
+    OutputStyle {
+        #[command(subcommand)]
+        /// Stores the command
+        command: Option<OutputStyleCliCommand>,
+    },
     /// Inspect persisted provider settings and overrides.
     Config {
         #[command(subcommand)]
@@ -94,6 +100,18 @@ pub enum Commands {
         #[command(subcommand)]
         /// Stores the command
         command: Option<ModelCommand>,
+    },
+    /// Get or set the UI theme.
+    Theme {
+        #[command(subcommand)]
+        /// Stores the command
+        command: Option<ThemeCommand>,
+    },
+    /// Get or set vim keybinding mode.
+    Vim {
+        #[command(subcommand)]
+        /// Stores the command
+        command: Option<VimCommand>,
     },
     /// Execute a non-interactive model prompt.
     Prompt {
@@ -161,6 +179,21 @@ pub enum Commands {
         #[arg()]
         /// Stores the session id
         session_id: String,
+    },
+    /// Add or manage tags on persisted sessions.
+    Tag {
+        #[arg()]
+        /// Tag name to add or remove.
+        name: Option<String>,
+        #[arg(long)]
+        /// Stores the session id.
+        session: Option<String>,
+        #[arg(long)]
+        /// Remove the tag instead of adding it.
+        remove: bool,
+        #[arg(long)]
+        /// List all sessions grouped by tag.
+        list: bool,
     },
     /// Print a summary of a conversation session.
     Summary {
@@ -287,6 +320,46 @@ pub enum ModelCommand {
         #[arg(long)]
         /// Stores the model
         model: String,
+    },
+}
+/// Enumerates theme command
+#[derive(Debug, Clone, Eq, PartialEq, Subcommand)]
+pub enum ThemeCommand {
+    /// Show current theme.
+    Show,
+    /// List available themes.
+    List,
+    /// Set the active theme.
+    Set {
+        #[arg()]
+        /// Stores the theme name
+        name: String,
+    },
+}
+/// Enumerates vim command
+#[derive(Debug, Clone, Eq, PartialEq, Subcommand)]
+pub enum VimCommand {
+    /// Show vim mode state.
+    Show,
+    /// Enable vim mode.
+    On,
+    /// Disable vim mode.
+    Off,
+    /// Toggle vim mode.
+    Toggle,
+}
+/// Enumerates output-style command
+#[derive(Debug, Clone, Eq, PartialEq, Subcommand)]
+pub enum OutputStyleCliCommand {
+    /// Show current output style.
+    Show,
+    /// List available output styles.
+    List,
+    /// Set the active output style.
+    Set {
+        #[arg()]
+        /// Stores the output style name
+        name: String,
     },
 }
 /// Enumerates config command
@@ -614,6 +687,43 @@ fn run_with_terminal_mode<W: Write>(
             writeln!(writer, "{rendered}")?;
             Ok(())
         }
+        LaunchPlan::OutputStyle { command } => {
+            let rendered = match command.unwrap_or(OutputStyleCliCommand::Show) {
+                OutputStyleCliCommand::Show => {
+                    commands::output_style::show(storage_dir.as_deref())?
+                }
+                OutputStyleCliCommand::List => commands::output_style::list(),
+                OutputStyleCliCommand::Set { name } => {
+                    commands::output_style::set(storage_dir.as_deref(), &name)?
+                }
+            };
+            writeln!(writer, "{rendered}")?;
+            Ok(())
+        }
+        LaunchPlan::Theme { command } => {
+            let rendered = match command.unwrap_or(ThemeCommand::Show) {
+                ThemeCommand::Show => commands::theme::show(storage_dir.as_deref())?,
+                ThemeCommand::List => commands::theme::list(),
+                ThemeCommand::Set { name } => commands::theme::set(storage_dir.as_deref(), &name)?,
+            };
+            writeln!(writer, "{rendered}")?;
+            Ok(())
+        }
+        LaunchPlan::Vim { command } => {
+            let storage_dir = storage_dir.ok_or_else(|| {
+                WonderError::validation(
+                    "vim command requires --storage-dir or HOME/XDG_CONFIG_HOME",
+                )
+            })?;
+            let rendered = match command.unwrap_or(VimCommand::Show) {
+                VimCommand::Show => commands::vim::show(&storage_dir)?,
+                VimCommand::On => commands::vim::set(&storage_dir, true)?,
+                VimCommand::Off => commands::vim::set(&storage_dir, false)?,
+                VimCommand::Toggle => commands::vim::toggle(&storage_dir)?,
+            };
+            writeln!(writer, "{rendered}")?;
+            Ok(())
+        }
         LaunchPlan::Tui { session_id } => tui_runtime::run_tui(
             writer,
             &commands::registry(storage_dir.clone())?,
@@ -684,10 +794,25 @@ fn default_terminal_mode_for_run_from() -> bool {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum LaunchPlan {
-    Cost { all: bool },
-    Tui { session_id: Option<String> },
+    Cost {
+        all: bool,
+    },
+    OutputStyle {
+        command: Option<OutputStyleCliCommand>,
+    },
+    Theme {
+        command: Option<ThemeCommand>,
+    },
+    Vim {
+        command: Option<VimCommand>,
+    },
+    Tui {
+        session_id: Option<String>,
+    },
     Invocation(CommandInvocation),
-    Memory { command: Option<MemoryCommand> },
+    Memory {
+        command: Option<MemoryCommand>,
+    },
 }
 
 fn terminal_is_interactive() -> bool {
@@ -699,6 +824,9 @@ fn launch_plan(command: Option<Commands>, interactive_terminal: bool) -> Result<
         None if interactive_terminal => Ok(LaunchPlan::Tui { session_id: None }),
         None => Ok(LaunchPlan::Invocation(to_invocation(Commands::Doctor)?)),
         Some(Commands::Cost { all } | Commands::Usage { all }) => Ok(LaunchPlan::Cost { all }),
+        Some(Commands::OutputStyle { command }) => Ok(LaunchPlan::OutputStyle { command }),
+        Some(Commands::Theme { command }) => Ok(LaunchPlan::Theme { command }),
+        Some(Commands::Vim { command }) => Ok(LaunchPlan::Vim { command }),
         Some(Commands::Tui { session_id }) => Ok(LaunchPlan::Tui { session_id }),
         Some(Commands::Memory { command }) => Ok(LaunchPlan::Memory { command }),
         Some(Commands::Resume { session_id }) if interactive_terminal => Ok(LaunchPlan::Tui {
@@ -718,6 +846,10 @@ fn run_registered_invocation<W: Write>(
         .load_report(storage_dir)?
         .readiness
         == ProviderReadiness::Ready;
+    let persisted_theme = match storage_dir {
+        Some(storage_dir) => SettingsStore::new(storage_dir).read()?.theme,
+        None => None,
+    };
     let context = CommandContext {
         session_id: SessionId::new(),
         cwd: std::env::current_dir()?,
@@ -725,7 +857,7 @@ fn run_registered_invocation<W: Write>(
         authenticated,
         interactive: false,
         permission_mode: PermissionMode::Default,
-        theme: None,
+        theme: persisted_theme,
         session_color: None,
         effort_level: None,
         brief_mode: false,
@@ -828,6 +960,15 @@ fn to_invocation(command: Commands) -> Result<CommandInvocation> {
                 ],
             ),
         },
+        Commands::Theme { .. } => {
+            unreachable!("theme is handled directly by the top-level CLI")
+        }
+        Commands::Vim { .. } => {
+            unreachable!("vim is handled directly by the top-level CLI")
+        }
+        Commands::OutputStyle { .. } => {
+            unreachable!("output-style is handled directly by the top-level CLI")
+        }
         Commands::Prompt {
             provider,
             model,
@@ -979,6 +1120,28 @@ fn to_invocation(command: Commands) -> Result<CommandInvocation> {
             }
         }
         Commands::Resume { session_id } => commands::invocation_from_tokens("resume", [session_id]),
+        Commands::Tag {
+            name,
+            session,
+            remove,
+            list,
+        } => {
+            let mut tokens = Vec::new();
+            if let Some(session) = session {
+                tokens.push("--session".into());
+                tokens.push(session);
+            }
+            if remove {
+                tokens.push("--remove".into());
+            }
+            if list {
+                tokens.push("--list".into());
+            }
+            if let Some(name) = name {
+                tokens.push(name);
+            }
+            commands::invocation_from_tokens("tag", tokens)
+        }
         Commands::Summary { session, format } => {
             let mut tokens = Vec::new();
             if let Some(session) = session {
@@ -1258,6 +1421,7 @@ mod tests {
 
     use serde_json::{Value, json};
     use time::OffsetDateTime;
+    use wonder_of_u_agent::SettingsStore;
     use wonder_of_u_core::{
         AppState, MessagePayload, SessionId, TaskState, TaskStatus, TokenUsage,
     };
@@ -1524,6 +1688,21 @@ mod tests {
     }
 
     #[test]
+    fn vim_subcommand_uses_direct_launch_plan() {
+        let plan = launch_plan(Some(Commands::Vim { command: None }), false).expect("launch plan");
+
+        assert_eq!(plan, LaunchPlan::Vim { command: None });
+    }
+
+    #[test]
+    fn output_style_subcommand_uses_direct_launch_plan() {
+        let plan =
+            launch_plan(Some(Commands::OutputStyle { command: None }), false).expect("launch plan");
+
+        assert_eq!(plan, LaunchPlan::OutputStyle { command: None });
+    }
+
+    #[test]
     fn noninteractive_resume_keeps_summary_invocation() {
         let plan = launch_plan(
             Some(Commands::Resume {
@@ -1563,6 +1742,54 @@ mod tests {
             launch_plan(Some(Commands::Memory { command: None }), false).expect("launch plan");
 
         assert_eq!(plan, LaunchPlan::Memory { command: None });
+    }
+
+    #[test]
+    fn vim_command_reports_current_state() {
+        let dir = unique_test_dir("cli-vim-show");
+        let mut output = Vec::new();
+
+        run_from(
+            vec![
+                "wonder-of-u".to_string(),
+                "--storage-dir".to_string(),
+                dir.display().to_string(),
+                "vim".to_string(),
+            ],
+            &mut output,
+        )
+        .expect("run vim show");
+
+        let text = String::from_utf8(output).expect("utf8");
+        assert_eq!(text.trim(), "vim mode: on");
+    }
+
+    #[test]
+    fn vim_command_toggle_persists_state() {
+        let dir = unique_test_dir("cli-vim-toggle-command");
+        let mut output = Vec::new();
+
+        run_from(
+            vec![
+                "wonder-of-u".to_string(),
+                "--storage-dir".to_string(),
+                dir.display().to_string(),
+                "vim".to_string(),
+                "toggle".to_string(),
+            ],
+            &mut output,
+        )
+        .expect("run vim toggle");
+
+        let text = String::from_utf8(output).expect("utf8");
+        assert_eq!(text.trim(), "vim mode: off");
+        assert_eq!(
+            wonder_of_u_agent::SettingsStore::new(&dir)
+                .read()
+                .expect("read settings")
+                .vim_mode,
+            Some(false)
+        );
     }
 
     #[test]
@@ -1626,6 +1853,162 @@ mod tests {
             text.trim(),
             storage_dir.join("CLAUDE.md").display().to_string()
         );
+    }
+
+    #[test]
+    fn theme_list_command_prints_available_themes() {
+        let mut output = Vec::new();
+
+        run_from(["wonder-of-u", "theme", "list"], &mut output).expect("run theme list");
+
+        let text = String::from_utf8(output).expect("utf8");
+        assert!(text.lines().any(|theme| theme == "default"));
+        assert!(text.lines().any(|theme| theme == "midnight"));
+    }
+
+    #[test]
+    fn theme_set_command_persists_theme() {
+        let dir = unique_test_dir("cli-theme-command-set");
+        let storage_dir = dir.to_string_lossy().into_owned();
+
+        let mut output = Vec::new();
+        run_from(
+            vec![
+                "wonder-of-u".to_string(),
+                "--storage-dir".to_string(),
+                storage_dir.clone(),
+                "theme".to_string(),
+                "set".to_string(),
+                "midnight".to_string(),
+            ],
+            &mut output,
+        )
+        .expect("run theme set");
+
+        let text = String::from_utf8(output).expect("utf8");
+        assert!(text.contains("theme=midnight"));
+        assert_eq!(
+            SettingsStore::new(&dir)
+                .read()
+                .expect("read settings")
+                .theme
+                .as_deref(),
+            Some("midnight")
+        );
+
+        let mut show_output = Vec::new();
+        run_from(
+            vec![
+                "wonder-of-u".to_string(),
+                "--storage-dir".to_string(),
+                storage_dir,
+                "theme".to_string(),
+            ],
+            &mut show_output,
+        )
+        .expect("run theme show");
+        let show_text = String::from_utf8(show_output).expect("utf8");
+        assert_eq!(show_text.trim(), "current_theme=midnight");
+    }
+
+    #[test]
+    fn theme_set_command_rejects_unknown_theme() {
+        let dir = unique_test_dir("cli-theme-command-invalid");
+        let storage_dir = dir.to_string_lossy().into_owned();
+
+        let error = run_from(
+            vec![
+                "wonder-of-u".to_string(),
+                "--storage-dir".to_string(),
+                storage_dir,
+                "theme".to_string(),
+                "set".to_string(),
+                "aurora".to_string(),
+            ],
+            &mut Vec::new(),
+        )
+        .expect_err("unknown theme should fail");
+
+        assert!(error.to_string().contains("unknown theme: aurora"));
+    }
+
+    #[test]
+    fn output_style_list_command_prints_available_styles() {
+        let mut output = Vec::new();
+
+        run_from(["wonder-of-u", "output-style", "list"], &mut output)
+            .expect("run output-style list");
+
+        assert_eq!(
+            String::from_utf8(output).expect("utf8").trim(),
+            "markdown\nplain\nraw"
+        );
+    }
+
+    #[test]
+    fn output_style_set_command_persists_style() {
+        let dir = unique_test_dir("cli-output-style-command-set");
+        let storage_dir = dir.to_string_lossy().into_owned();
+
+        let mut output = Vec::new();
+        run_from(
+            vec![
+                "wonder-of-u".to_string(),
+                "--storage-dir".to_string(),
+                storage_dir.clone(),
+                "output-style".to_string(),
+                "set".to_string(),
+                "raw".to_string(),
+            ],
+            &mut output,
+        )
+        .expect("run output-style set");
+
+        let text = String::from_utf8(output).expect("utf8");
+        assert!(text.contains("output_style=raw"));
+        assert_eq!(
+            wonder_of_u_agent::SettingsStore::new(&dir)
+                .read()
+                .expect("read settings")
+                .output_style
+                .as_deref(),
+            Some("raw")
+        );
+
+        let mut show_output = Vec::new();
+        run_from(
+            vec![
+                "wonder-of-u".to_string(),
+                "--storage-dir".to_string(),
+                storage_dir,
+                "output-style".to_string(),
+            ],
+            &mut show_output,
+        )
+        .expect("run output-style show");
+        let show_text = String::from_utf8(show_output).expect("utf8");
+        assert_eq!(show_text.trim(), "current_output_style=raw");
+    }
+
+    #[test]
+    fn output_style_set_command_rejects_unknown_style() {
+        let dir = unique_test_dir("cli-output-style-command-invalid");
+        let storage_dir = dir.to_string_lossy().into_owned();
+
+        let error = run_from(
+            vec![
+                "wonder-of-u".to_string(),
+                "--storage-dir".to_string(),
+                storage_dir,
+                "output-style".to_string(),
+                "set".to_string(),
+                "html".to_string(),
+            ],
+            &mut Vec::new(),
+        )
+        .expect_err("unknown output style should fail");
+
+        assert!(error.to_string().contains("unknown output style: html"));
     }
 
     #[test]
@@ -2930,6 +3313,76 @@ mod tests {
         assert!(exported.contains("\"transcript\""));
         assert!(exported.contains("\"resume\""));
         assert!(exported.contains("\"source\": \"snapshot\""));
+    }
+
+    #[test]
+    fn tag_command_round_trips_through_cli() {
+        let dir = unique_test_dir("cli-tag");
+        let storage_dir = dir.to_string_lossy().into_owned();
+
+        let mut created = Vec::new();
+        run_from(
+            vec![
+                "wonder-of-u".to_string(),
+                "--storage-dir".to_string(),
+                storage_dir.clone(),
+                "session".to_string(),
+                "new".to_string(),
+                "--title".to_string(),
+                "Tagged Session".to_string(),
+            ],
+            &mut created,
+        )
+        .expect("create session");
+        let created = String::from_utf8(created).expect("utf8");
+        let session_id = extract_value(&created, "session_id=").to_string();
+
+        let mut tagged = Vec::new();
+        run_from(
+            vec![
+                "wonder-of-u".to_string(),
+                "--storage-dir".to_string(),
+                storage_dir.clone(),
+                "tag".to_string(),
+                "bugfix".to_string(),
+            ],
+            &mut tagged,
+        )
+        .expect("tag session");
+        let tagged = String::from_utf8(tagged).expect("utf8");
+        assert!(tagged.contains(&format!("session_id={session_id}")));
+        assert!(tagged.contains("session_tags=bugfix"));
+
+        let mut listed = Vec::new();
+        run_from(
+            vec![
+                "wonder-of-u".to_string(),
+                "--storage-dir".to_string(),
+                storage_dir.clone(),
+                "session".to_string(),
+                "list".to_string(),
+            ],
+            &mut listed,
+        )
+        .expect("list sessions");
+        let listed = String::from_utf8(listed).expect("utf8");
+        assert!(listed.contains("session[0].tags=#bugfix"));
+
+        let mut tag_list = Vec::new();
+        run_from(
+            vec![
+                "wonder-of-u".to_string(),
+                "--storage-dir".to_string(),
+                storage_dir,
+                "tag".to_string(),
+                "--list".to_string(),
+            ],
+            &mut tag_list,
+        )
+        .expect("list tags");
+        let tag_list = String::from_utf8(tag_list).expect("utf8");
+        assert!(tag_list.contains("tag[0].name=bugfix"));
+        assert!(tag_list.contains(&format!("tag[0].session[0].id={session_id}")));
     }
 
     #[test]

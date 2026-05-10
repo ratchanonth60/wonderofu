@@ -54,6 +54,15 @@ pub struct AgentSettings {
     /// Stores the selected model
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub selected_model: Option<String>,
+    /// Stores the selected TUI theme
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub theme: Option<String>,
+    /// Stores the selected assistant output rendering style
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_style: Option<String>,
+    /// Stores whether vim keybindings are enabled in the TUI prompt.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vim_mode: Option<bool>,
     /// Stores the fast mode
     #[serde(default)]
     pub fast_mode: bool,
@@ -177,6 +186,15 @@ impl SettingsHierarchy {
             }
             if merged.selected_model.is_none() {
                 merged.selected_model = s.selected_model.clone();
+            }
+            if merged.theme.is_none() {
+                merged.theme = s.theme.clone();
+            }
+            if merged.output_style.is_none() {
+                merged.output_style = s.output_style.clone();
+            }
+            if merged.vim_mode.is_none() {
+                merged.vim_mode = s.vim_mode;
             }
             // fast_mode: first layer that enables it wins.
             if !merged.fast_mode && s.fast_mode {
@@ -382,6 +400,8 @@ mod tests {
         let settings = AgentSettings {
             selected_provider: Some("openai".into()),
             selected_model: Some("gpt-4.1".into()),
+            theme: Some("midnight".into()),
+            output_style: Some("plain".into()),
             ..AgentSettings::default()
         };
 
@@ -491,7 +511,7 @@ mod tests {
         let project_dir = base.join("project");
         write_layer(
             &project_dir,
-            r#"{"selected_model":"claude-3-7-sonnet-20250219"}"#,
+            r#"{"selected_model":"claude-3-7-sonnet-20250219","theme":"midnight","output_style":"plain"}"#,
         );
 
         let hier = SettingsHierarchy::load(Some(&policy_dir), &user_dir, Some(&project_dir))
@@ -511,6 +531,16 @@ mod tests {
             hier.merged.selected_model.as_deref(),
             Some("claude-3-7-sonnet-20250219"),
             "project model should propagate"
+        );
+        assert_eq!(
+            hier.merged.theme.as_deref(),
+            Some("midnight"),
+            "project theme should propagate"
+        );
+        assert_eq!(
+            hier.merged.output_style.as_deref(),
+            Some("plain"),
+            "project output style should propagate"
         );
 
         // Two permission rules: deny bash (policy) + allow file_read (user)

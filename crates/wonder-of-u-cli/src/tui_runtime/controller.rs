@@ -23,6 +23,7 @@ pub(super) struct TuiController<'a> {
     pub(super) prompt: TextBuffer,
     pub(super) keymap: KeyBindingResolver,
     pub(super) vim: VimState,
+    pub(super) vim_enabled: bool,
     pub(super) history_search: Option<HistorySearchState>,
     pub(super) global_search_open: bool,
     pub(super) global_search_query: String,
@@ -206,6 +207,7 @@ impl<'a> TuiController<'a> {
             prompt: TextBuffer::new(true),
             keymap: crate::commands::workflow::load_keybinding_resolver(storage_dir)?,
             vim: VimState::default(),
+            vim_enabled: true,
             history_search: None,
             global_search_open: false,
             global_search_query: String::new(),
@@ -254,8 +256,13 @@ impl<'a> TuiController<'a> {
             return Ok(());
         };
         let settings = SettingsStore::new(storage_dir).read()?;
+        self.state.theme = settings.theme;
         self.state.effort_level = settings.effort_level;
         self.state.fast_mode = settings.fast_mode;
+        self.vim_enabled = settings.vim_mode.unwrap_or(true);
+        if !self.vim_enabled {
+            self.vim = VimState::new(VimMode::Insert);
+        }
         Ok(())
     }
 
@@ -432,13 +439,15 @@ impl<'a> TuiController<'a> {
         }
 
         let Some(resolved) = resolved else {
-            return if self.vim.mode() == VimMode::Normal || key.code == KeyCode::Esc {
+            return if self.vim_enabled
+                && (self.vim.mode() == VimMode::Normal || key.code == KeyCode::Esc)
+            {
                 self.handle_vim_key(key)
             } else {
                 Ok(())
             };
         };
-        if self.vim.mode() == VimMode::Normal || key.code == KeyCode::Esc {
+        if self.vim_enabled && (self.vim.mode() == VimMode::Normal || key.code == KeyCode::Esc) {
             return self.handle_vim_key(key);
         }
 
@@ -1927,12 +1936,14 @@ impl<'a> TuiController<'a> {
             self.state.add_additional_working_directory(directory);
         }
         if parse_vim_toggle_hint(text) {
+            self.vim_enabled = true;
             self.vim = VimState::new(match self.vim.mode() {
                 VimMode::Insert => VimMode::Normal,
                 VimMode::Normal => VimMode::Insert,
             });
         }
         if let Some(mode) = parse_vim_mode_hint(text) {
+            self.vim_enabled = true;
             self.vim = VimState::new(mode);
         }
         if let Some(picker) = parse_permission_picker_state(text) {
@@ -2534,9 +2545,13 @@ impl<'a> TuiController<'a> {
             self.state.model.as_deref(),
         ));
         footer.push_str(" | vim:");
-        footer.push_str(match self.vim.mode() {
-            VimMode::Insert => "insert",
-            VimMode::Normal => "normal",
+        footer.push_str(if self.vim_enabled {
+            match self.vim.mode() {
+                VimMode::Insert => "insert",
+                VimMode::Normal => "normal",
+            }
+        } else {
+            "off"
         });
         footer.push_str(" | theme:");
         footer.push_str(match self.state.theme.as_deref() {

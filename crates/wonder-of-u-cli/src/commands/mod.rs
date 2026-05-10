@@ -22,6 +22,7 @@ mod help;
 pub(crate) mod hooks;
 mod mcp;
 pub mod memory;
+pub(crate) mod output_style;
 mod plugin;
 pub(crate) mod project;
 pub(crate) mod prompt;
@@ -32,8 +33,11 @@ mod setup;
 mod skills;
 mod status;
 mod summary;
+pub mod tag;
 mod task_runtime;
+pub(crate) mod theme;
 mod tui;
+pub mod vim;
 pub(crate) mod workflow;
 
 use advanced::{BridgeCommand, DebugCommand, DiagnosticsCommand, VoiceCommand};
@@ -64,7 +68,6 @@ use prompt::PromptCommand;
 use rewind::RewindCommand;
 use session::{
     ClearCommand, CompactCommand, ExportCommand, RenameCommand, ResumeCommand, SessionCommand,
-    TagCommand,
 };
 use setup::SetupCommand;
 use skills::SkillsCommand;
@@ -74,6 +77,7 @@ use status::{
     UpgradeCommand, UsageCommand, VersionCommand,
 };
 use summary::SummaryCommand;
+use tag::TagCommand;
 use tui::TuiCommand;
 use workflow::{
     AgentsCommand, BriefCommand, ColorCommand, CommitCommand, CommitPushPrCommand, EffortCommand,
