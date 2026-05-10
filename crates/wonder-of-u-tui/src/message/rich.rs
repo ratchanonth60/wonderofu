@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use serde_json::Value;
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
@@ -15,7 +17,7 @@ const MAX_THINKING_LINES: usize = 4;
 const MAX_DETAIL_LINES: usize = 3;
 
 /// Rich, renderer-agnostic message summaries for the TUI transcript.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum RichMessageView {
     /// Represents markdown
     Markdown(MarkdownSummaryView),
@@ -38,11 +40,11 @@ pub enum RichMessageView {
 impl RichMessageView {
     /// Handles display lines
     #[must_use]
-    pub fn display_lines(&self, max_width: usize) -> Vec<MessageLineView> {
+    pub fn display_lines(&self, max_width: usize, expand_output: bool) -> Vec<MessageLineView> {
         match self {
             Self::Markdown(view) => view.display_lines(max_width),
             Self::Thinking(view) => view.display_lines(max_width),
-            Self::ToolGroup(view) => view.display_lines(max_width),
+            Self::ToolGroup(view) => view.display_lines(max_width, expand_output),
             Self::FileEditReference(view) => view.display_lines(max_width),
             Self::Attachment(view) => view.display_lines(max_width),
             Self::SystemError(view) => view.display_lines(max_width),
@@ -54,7 +56,10 @@ impl RichMessageView {
 
 /// Builds richer message summaries while preserving legacy `message_lines`.
 #[must_use]
-pub fn rich_message_views(messages: &[MessageEnvelope]) -> Vec<RichMessageView> {
+pub fn rich_message_views(
+    messages: &[MessageEnvelope],
+    _expand_output: bool,
+) -> Vec<RichMessageView> {
     let mut views = Vec::new();
     let mut index = 0usize;
 
@@ -118,6 +123,7 @@ fn grouped_tool_call_view(messages: &[MessageEnvelope]) -> Option<(GroupedToolCa
     };
 
     let mut view = GroupedToolCallView::new(tool);
+    let mut started_at = HashMap::new();
     let mut consumed = 0usize;
 
     for message in messages {
@@ -127,6 +133,7 @@ fn grouped_tool_call_view(messages: &[MessageEnvelope]) -> Option<(GroupedToolCa
                 use_id,
                 input,
             } if current_tool == tool => {
+                started_at.insert(*use_id, message.timestamp);
                 view.push_use(*use_id, Some(input.clone()));
                 consumed = consumed.saturating_add(1);
             }
@@ -136,7 +143,10 @@ fn grouped_tool_call_view(messages: &[MessageEnvelope]) -> Option<(GroupedToolCa
                 success,
                 content,
             } if current_tool == tool => {
-                view.push_result(*use_id, *success, content.clone());
+                let elapsed_secs = started_at
+                    .get(use_id)
+                    .map(|started| (message.timestamp - *started).as_seconds_f64());
+                view.push_result(*use_id, *success, content.clone(), elapsed_secs);
                 consumed = consumed.saturating_add(1);
             }
             _ => break,
@@ -289,7 +299,7 @@ impl ThinkingBlockView {
 }
 
 /// Groups contiguous tool calls and their results.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct GroupedToolCallView {
     /// Stores the tool
     pub tool: String,
@@ -317,12 +327,20 @@ impl GroupedToolCallView {
             use_id,
             input,
             result: None,
+            elapsed_secs: None,
         });
     }
 
-    fn push_result(&mut self, use_id: ToolUseId, success: bool, content: String) {
+    fn push_result(
+        &mut self,
+        use_id: ToolUseId,
+        success: bool,
+        content: String,
+        elapsed_secs: Option<f64>,
+    ) {
         if let Some(existing) = self.calls.iter_mut().find(|call| call.use_id == use_id) {
             existing.result = Some(ToolCallView::result_for(success, content));
+            existing.elapsed_secs = elapsed_secs;
             return;
         }
 
@@ -330,17 +348,18 @@ impl GroupedToolCallView {
             use_id,
             input: None,
             result: Some(ToolCallView::result_for(success, content)),
+            elapsed_secs,
         });
     }
     /// Handles display lines
     #[must_use]
-    pub fn display_lines(&self, max_width: usize) -> Vec<MessageLineView> {
+    pub fn display_lines(&self, max_width: usize, expand_output: bool) -> Vec<MessageLineView> {
         let mut lines = Vec::new();
         for (index, call) in self.calls.iter().enumerate() {
             if index > 0 {
                 lines.push(MessageLineView::new(String::new(), MessageRole::System));
             }
-            lines.extend(call.display_lines(&self.tool, max_width));
+            lines.extend(call.display_lines(&self.tool, max_width, expand_output));
         }
         if lines.is_empty() {
             lines.extend(push_line(
@@ -354,7 +373,7 @@ impl GroupedToolCallView {
 }
 
 /// A summarized tool invocation and optional result.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct ToolCallView {
     /// Stores the use identifier
     pub use_id: ToolUseId,
@@ -362,6 +381,8 @@ pub struct ToolCallView {
     pub input: Option<Value>,
     /// Stores the result
     pub result: Option<RejectedToolMessageView>,
+    /// Elapsed wall-clock seconds from tool invocation to result, if known.
+    pub elapsed_secs: Option<f64>,
 }
 
 impl ToolCallView {
@@ -369,8 +390,13 @@ impl ToolCallView {
         RejectedToolMessageView::from_result(content, success)
     }
 
-    fn display_lines(&self, tool: &str, max_width: usize) -> Vec<MessageLineView> {
-        let summary = ToolActivitySummary::from_call(tool, self);
+    fn display_lines(
+        &self,
+        tool: &str,
+        max_width: usize,
+        expand_output: bool,
+    ) -> Vec<MessageLineView> {
+        let summary = ToolActivitySummary::from_call(tool, self, expand_output);
         let mut lines = push_line(summary.headline, self.role(), max_width);
         for row in summary.rows {
             match row {
@@ -471,29 +497,30 @@ enum ToolActivityRow {
 }
 
 impl ToolActivitySummary {
-    fn from_call(tool: &str, call: &ToolCallView) -> Self {
+    fn from_call(tool: &str, call: &ToolCallView, expand_output: bool) -> Self {
         match tool {
-            "bash" => summarize_bash_call(call),
-            "file_read" => summarize_file_read_call(call),
-            "file_write" => summarize_file_write_call(call),
-            "glob" => summarize_glob_call(call),
-            "grep" | "rg" | "search" | "find" => summarize_search_call(tool, call),
-            _ => summarize_generic_tool_call(tool, call),
+            "bash" => summarize_bash_call(call, expand_output),
+            "file_read" => summarize_file_read_call(call, expand_output),
+            "file_write" => summarize_file_write_call(call, expand_output),
+            "glob" => summarize_glob_call(call, expand_output),
+            "grep" | "rg" | "search" | "find" => summarize_search_call(tool, call, expand_output),
+            _ => summarize_generic_tool_call(tool, call, expand_output),
         }
     }
 }
 
-fn summarize_bash_call(call: &ToolCallView) -> ToolActivitySummary {
+fn summarize_bash_call(call: &ToolCallView, expand_output: bool) -> ToolActivitySummary {
     let command = call
         .input
         .as_ref()
         .and_then(|input| input.get("command").and_then(Value::as_str))
         .map(normalize_inline_text)
         .unwrap_or_default();
+    let elapsed = call.elapsed_secs.map(format_elapsed).unwrap_or_default();
     let headline = if command.is_empty() {
-        "● Bash".to_string()
+        format!("● Bash{elapsed}")
     } else {
-        format!("● {}", bash_activity_title(&command))
+        format!("● {}{elapsed}", bash_activity_title(&command))
     };
 
     let mut rows = status_rows(call);
@@ -504,12 +531,12 @@ fn summarize_bash_call(call: &ToolCallView) -> ToolActivitySummary {
             role: MessageRole::System,
         });
     }
-    append_result_rows(call, &mut rows);
+    append_result_rows(call, &mut rows, expand_output);
 
     ToolActivitySummary { headline, rows }
 }
 
-fn summarize_file_read_call(call: &ToolCallView) -> ToolActivitySummary {
+fn summarize_file_read_call(call: &ToolCallView, expand_output: bool) -> ToolActivitySummary {
     let path = call
         .input
         .as_ref()
@@ -522,23 +549,28 @@ fn summarize_file_read_call(call: &ToolCallView) -> ToolActivitySummary {
         role: MessageRole::System,
     });
     if call.is_success() {
-        if let Some(preview) = preview_lines(call.result_detail(), 20, 72) {
+        let max_lines = if expand_output { usize::MAX } else { 20 };
+        if let Some(preview) = preview_lines(call.result_detail(), max_lines, 72, !expand_output) {
             rows.push(ToolActivityRow::Preview {
                 label: "preview",
                 lines: preview,
             });
         }
     } else {
-        append_result_rows(call, &mut rows);
+        append_result_rows(call, &mut rows, expand_output);
     }
 
     ToolActivitySummary {
-        headline: format!("● Read({})", compact_target_label(path)),
+        headline: format!(
+            "● Read({}){}",
+            compact_target_label(path),
+            call.elapsed_secs.map(format_elapsed).unwrap_or_default()
+        ),
         rows,
     }
 }
 
-fn summarize_file_write_call(call: &ToolCallView) -> ToolActivitySummary {
+fn summarize_file_write_call(call: &ToolCallView, expand_output: bool) -> ToolActivitySummary {
     let (path, input_preview) = call
         .input
         .as_ref()
@@ -559,14 +591,17 @@ fn summarize_file_write_call(call: &ToolCallView) -> ToolActivitySummary {
         value: truncate_visible_end(&path, 72),
         role: MessageRole::System,
     });
-    if let Some(preview) = input_preview.and_then(|text| preview_lines(Some(text), 20, 72)) {
+    let max_lines = if expand_output { usize::MAX } else { 20 };
+    if let Some(preview) =
+        input_preview.and_then(|text| preview_lines(Some(text), max_lines, 72, !expand_output))
+    {
         rows.push(ToolActivityRow::Preview {
             label: "preview",
             lines: preview,
         });
     }
     if !call.is_success() {
-        append_result_rows(call, &mut rows);
+        append_result_rows(call, &mut rows, expand_output);
     } else if let Some(detail) = short_result_detail(call.result_detail()) {
         rows.push(ToolActivityRow::Detail {
             label: "result",
@@ -576,12 +611,16 @@ fn summarize_file_write_call(call: &ToolCallView) -> ToolActivitySummary {
     }
 
     ToolActivitySummary {
-        headline: format!("● Edit({})", compact_target_label(&path)),
+        headline: format!(
+            "● Edit({}){}",
+            compact_target_label(&path),
+            call.elapsed_secs.map(format_elapsed).unwrap_or_default()
+        ),
         rows,
     }
 }
 
-fn summarize_glob_call(call: &ToolCallView) -> ToolActivitySummary {
+fn summarize_glob_call(call: &ToolCallView, expand_output: bool) -> ToolActivitySummary {
     let (pattern, path) = call
         .input
         .as_ref()
@@ -605,15 +644,23 @@ fn summarize_glob_call(call: &ToolCallView) -> ToolActivitySummary {
             role: MessageRole::System,
         });
     }
-    append_result_rows(call, &mut rows);
+    append_result_rows(call, &mut rows, expand_output);
 
     ToolActivitySummary {
-        headline: format!("● List({})", infer_list_target(pattern, path)),
+        headline: format!(
+            "● List({}){}",
+            infer_list_target(pattern, path),
+            call.elapsed_secs.map(format_elapsed).unwrap_or_default()
+        ),
         rows,
     }
 }
 
-fn summarize_search_call(tool: &str, call: &ToolCallView) -> ToolActivitySummary {
+fn summarize_search_call(
+    tool: &str,
+    call: &ToolCallView,
+    expand_output: bool,
+) -> ToolActivitySummary {
     let query = call
         .input
         .as_ref()
@@ -631,19 +678,24 @@ fn summarize_search_call(tool: &str, call: &ToolCallView) -> ToolActivitySummary
         value: truncate_visible_end(query, 72),
         role: MessageRole::System,
     });
-    append_result_rows(call, &mut rows);
+    append_result_rows(call, &mut rows, expand_output);
 
     ToolActivitySummary {
         headline: format!(
-            "● {}({})",
+            "● {}({}){}",
             if tool == "find" { "List" } else { "Search" },
-            compact_target_label(query)
+            compact_target_label(query),
+            call.elapsed_secs.map(format_elapsed).unwrap_or_default()
         ),
         rows,
     }
 }
 
-fn summarize_generic_tool_call(tool: &str, call: &ToolCallView) -> ToolActivitySummary {
+fn summarize_generic_tool_call(
+    tool: &str,
+    call: &ToolCallView,
+    expand_output: bool,
+) -> ToolActivitySummary {
     let mut rows = status_rows(call);
     rows.push(ToolActivityRow::Detail {
         label: "summary",
@@ -657,11 +709,27 @@ fn summarize_generic_tool_call(tool: &str, call: &ToolCallView) -> ToolActivityS
             role: MessageRole::System,
         });
     }
-    append_result_rows(call, &mut rows);
+    append_result_rows(call, &mut rows, expand_output);
 
     ToolActivitySummary {
-        headline: format!("● {tool}"),
+        headline: format!(
+            "● {tool}{}",
+            call.elapsed_secs.map(format_elapsed).unwrap_or_default()
+        ),
         rows,
+    }
+}
+
+fn format_elapsed(secs: f64) -> String {
+    if secs < 0.05 {
+        return String::new();
+    }
+    if secs < 10.0 {
+        format!(" · {:.1}s", secs)
+    } else if secs < 60.0 {
+        format!(" · {:.0}s", secs)
+    } else {
+        format!(" · {:.0}m {:.0}s", secs / 60.0, secs % 60.0)
     }
 }
 
@@ -677,11 +745,12 @@ fn status_rows(call: &ToolCallView) -> Vec<ToolActivityRow> {
     }
 }
 
-fn append_result_rows(call: &ToolCallView, rows: &mut Vec<ToolActivityRow>) {
+fn append_result_rows(call: &ToolCallView, rows: &mut Vec<ToolActivityRow>, expand_output: bool) {
     let Some(result) = &call.result else {
         return;
     };
-    if let Some(preview) = preview_lines(Some(&result.detail), 20, 72) {
+    let max_lines = if expand_output { usize::MAX } else { 20 };
+    if let Some(preview) = preview_lines(Some(&result.detail), max_lines, 72, !expand_output) {
         if preview.len() > 1 || result.detail.contains('\n') || looks_like_preview(&preview[0]) {
             rows.push(ToolActivityRow::Preview {
                 label: if call.is_success() {
@@ -711,7 +780,12 @@ fn append_result_rows(call: &ToolCallView, rows: &mut Vec<ToolActivityRow>) {
     }
 }
 
-fn preview_lines(text: Option<&str>, max_lines: usize, max_width: usize) -> Option<Vec<String>> {
+fn preview_lines(
+    text: Option<&str>,
+    max_lines: usize,
+    max_width: usize,
+    show_expand_hint: bool,
+) -> Option<Vec<String>> {
     let text = text?;
     let all_lines = text
         .lines()
@@ -728,7 +802,11 @@ fn preview_lines(text: Option<&str>, max_lines: usize, max_width: usize) -> Opti
     let mut lines = all_lines.into_iter().take(max_lines).collect::<Vec<_>>();
     if overflow {
         let remaining = total - max_lines;
-        lines.push(format!("… +{remaining} lines"));
+        let mut overflow_label = format!("… +{remaining} lines");
+        if show_expand_hint {
+            overflow_label.push_str(" (ctrl+o to expand)");
+        }
+        lines.push(overflow_label);
     }
     Some(lines)
 }
@@ -1685,7 +1763,7 @@ mod tests {
         ];
 
         assert_eq!(
-            rich_message_views(&messages),
+            rich_message_views(&messages, false),
             vec![RichMessageView::ToolGroup(GroupedToolCallView {
                 tool: "bash".into(),
                 calls: vec![
@@ -1699,6 +1777,7 @@ mod tests {
                             status: ToolResultStatus::Success,
                             detail: "tests passed".into(),
                         }),
+                        elapsed_secs: None,
                     },
                     ToolCallView {
                         use_id: use_id("00000000-0000-0000-0000-000000000002"),
@@ -1708,14 +1787,15 @@ mod tests {
                             status: ToolResultStatus::Rejected,
                             detail: "Tool use rejected by the user".into(),
                         }),
+                        elapsed_secs: None,
                     },
                 ],
             })]
         );
 
-        let lines = rich_message_views(&messages)
+        let lines = rich_message_views(&messages, false)
             .into_iter()
-            .flat_map(|view| view.display_lines(120))
+            .flat_map(|view| view.display_lines(120, false))
             .collect::<Vec<_>>();
         assert_eq!(
             lines,
@@ -1740,9 +1820,10 @@ mod tests {
                 "pub fn demo() {\n    println!(\"hi\");\n}\n",
                 true,
             )),
+            elapsed_secs: None,
         };
         assert_eq!(
-            read.display_lines("file_read", 120),
+            read.display_lines("file_read", 120, false),
             vec![
                 MessageLineView::new("● Read(lib.rs)", MessageRole::Tool),
                 MessageLineView::new("  └ src/lib.rs", MessageRole::System),
@@ -1762,9 +1843,10 @@ mod tests {
                 "wrote src/lib.rs",
                 true,
             )),
+            elapsed_secs: None,
         };
         assert_eq!(
-            write.display_lines("file_write", 120),
+            write.display_lines("file_write", 120, false),
             vec![
                 MessageLineView::new("● Edit(lib.rs)", MessageRole::Tool),
                 MessageLineView::new("  └ src/lib.rs", MessageRole::System),
@@ -1870,7 +1952,7 @@ mod tests {
                 content: "hi there".into(),
             },
         )];
-        let lines = super::super::message_lines(&messages);
+        let lines = super::super::message_lines(&messages, false);
         assert!(
             lines.iter().all(|l| !l.text.starts_with("user>")),
             "UserText must not render with 'user>' prefix; lines: {lines:?}"
@@ -1890,7 +1972,7 @@ mod tests {
                 content: "Hello! How can I help?".into(),
             },
         )];
-        let lines = super::super::message_lines(&messages);
+        let lines = super::super::message_lines(&messages, false);
         assert!(
             lines.iter().all(|l| !l.text.starts_with("assistant>")),
             "AssistantText must not render with 'assistant>' prefix; lines: {lines:?}"
@@ -1924,7 +2006,7 @@ mod tests {
                 },
             ),
         ];
-        let lines = super::super::message_lines(&messages);
+        let lines = super::super::message_lines(&messages, false);
         let texts: Vec<&str> = lines.iter().map(|l| l.text.as_str()).collect();
         assert!(
             texts.iter().any(|t| t.starts_with('●')),
@@ -1937,6 +2019,85 @@ mod tests {
         assert!(
             texts.iter().all(|t| !t.starts_with("tool[")),
             "Old tool[name] format must not appear; lines: {texts:?}"
+        );
+    }
+
+    #[test]
+    fn collapsed_tool_output_shows_expand_hint() {
+        let session_id = SessionId::new();
+        let uid = use_id("00000000-0000-0000-0000-000000000002");
+        let content = (1..=22)
+            .map(|index| format!("line {index}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let messages = vec![
+            MessageEnvelope::new(
+                session_id,
+                MessagePayload::AssistantToolUse {
+                    tool: "file_read".into(),
+                    use_id: uid,
+                    input: serde_json::json!({ "path": "src/lib.rs" }),
+                },
+            ),
+            MessageEnvelope::new(
+                session_id,
+                MessagePayload::ToolResult {
+                    tool: "file_read".into(),
+                    use_id: uid,
+                    success: true,
+                    content,
+                },
+            ),
+        ];
+
+        let lines = super::super::message_lines(&messages, false);
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.text.contains("… +2 lines (ctrl+o to expand)")),
+            "Collapsed transcript must expose the ctrl+o hint; lines: {lines:?}"
+        );
+    }
+
+    #[test]
+    fn expanded_tool_output_renders_all_preview_lines() {
+        let session_id = SessionId::new();
+        let uid = use_id("00000000-0000-0000-0000-000000000003");
+        let content = (1..=22)
+            .map(|index| format!("line {index}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let messages = vec![
+            MessageEnvelope::new(
+                session_id,
+                MessagePayload::AssistantToolUse {
+                    tool: "file_read".into(),
+                    use_id: uid,
+                    input: serde_json::json!({ "path": "src/lib.rs" }),
+                },
+            ),
+            MessageEnvelope::new(
+                session_id,
+                MessagePayload::ToolResult {
+                    tool: "file_read".into(),
+                    use_id: uid,
+                    success: true,
+                    content,
+                },
+            ),
+        ];
+
+        let lines = super::super::message_lines(&messages, true);
+        let texts: Vec<&str> = lines.iter().map(|line| line.text.as_str()).collect();
+        assert!(
+            texts.iter().any(|line| line.contains("line 22")),
+            "Expanded transcript must include the full preview; lines: {texts:?}"
+        );
+        assert!(
+            texts
+                .iter()
+                .all(|line| !line.contains("(ctrl+o to expand)") && !line.contains("… +")),
+            "Expanded transcript must not render overflow hints; lines: {texts:?}"
         );
     }
 
@@ -1975,7 +2136,7 @@ mod tests {
                 },
             ),
         ];
-        let lines = super::super::message_lines(&messages);
+        let lines = super::super::message_lines(&messages, false);
         let texts: Vec<&str> = lines.iter().map(|l| l.text.as_str()).collect();
         // None of the legacy prefixes must appear.
         for prefix in ["user> ", "assistant> ", "tool[bash]"] {

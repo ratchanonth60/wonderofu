@@ -149,7 +149,11 @@ impl ShellView {
     }
     /// Handles from app state
     #[must_use]
-    pub fn from_app_state(app: &AppState, prompt: impl Into<String>) -> Self {
+    pub fn from_app_state(
+        app: &AppState,
+        prompt: impl Into<String>,
+        expand_tool_output: bool,
+    ) -> Self {
         let sidebar = {
             // Section 1 – Session: show a short session id prefix.
             let session_lines = vec![format!(
@@ -212,7 +216,7 @@ impl ShellView {
         };
         Self {
             title: format!("Session: {}", app.session.title),
-            messages: message_lines(&app.messages),
+            messages: message_lines(&app.messages, expand_tool_output),
             prompt: prompt.into(),
             history_search: None,
             status: status_text(app),
@@ -1445,7 +1449,7 @@ mod tests {
         );
         app.queue_command("/status", wonder_of_u_core::QueuePlacement::Later);
 
-        let view = ShellView::from_app_state(&app, "/help");
+        let view = ShellView::from_app_state(&app, "/help", false);
 
         assert_eq!(view.title, "Session: Demo");
         assert_eq!(view.messages[0].text, "system> ready");
@@ -2107,7 +2111,7 @@ mod tests {
         );
         app.push_message(envelope).expect("push provider error");
 
-        let view = ShellView::from_app_state(&app, "");
+        let view = ShellView::from_app_state(&app, "", false);
         assert_eq!(view.messages.len(), 1, "one transcript line expected");
         assert_eq!(
             view.messages[0].role,
@@ -2326,7 +2330,7 @@ mod tests {
         app.provider = Some("openai".into());
         app.model = Some("gpt-4o".into());
 
-        let view = ShellView::from_app_state(&app, "");
+        let view = ShellView::from_app_state(&app, "", false);
 
         let sidebar = view.sidebar.expect("sidebar must be Some from_app_state");
         assert!(
@@ -2354,7 +2358,7 @@ mod tests {
         let mut app = AppState::new(PathBuf::from("/workspace/myproject"));
         app.session.git_branch = Some("feat/my-feature".into());
 
-        let view = ShellView::from_app_state(&app, "");
+        let view = ShellView::from_app_state(&app, "", false);
 
         let sidebar = view.sidebar.expect("sidebar must be Some from_app_state");
         assert!(

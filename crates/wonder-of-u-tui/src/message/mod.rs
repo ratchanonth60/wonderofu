@@ -117,8 +117,8 @@ pub struct PickerListView {
 }
 
 /// Handles message lines
-pub fn message_lines(messages: &[MessageEnvelope]) -> Vec<MessageLineView> {
-    message_lines_for_width(messages, DEFAULT_MESSAGE_SUMMARY_WIDTH)
+pub fn message_lines(messages: &[MessageEnvelope], expand_output: bool) -> Vec<MessageLineView> {
+    message_lines_for_width(messages, DEFAULT_MESSAGE_SUMMARY_WIDTH, expand_output)
 }
 
 /// Handles message lines for a specific summary width.
@@ -126,10 +126,11 @@ pub fn message_lines(messages: &[MessageEnvelope]) -> Vec<MessageLineView> {
 pub fn message_lines_for_width(
     messages: &[MessageEnvelope],
     summary_width: usize,
+    expand_output: bool,
 ) -> Vec<MessageLineView> {
-    rich_message_views(messages)
+    rich_message_views(messages, expand_output)
         .into_iter()
-        .flat_map(|view| view.display_lines(summary_width.max(1)))
+        .flat_map(|view| view.display_lines(summary_width.max(1), expand_output))
         .collect()
 }
 /// Handles status text
@@ -465,7 +466,7 @@ mod tests {
         ];
 
         assert_eq!(
-            message_lines(&messages),
+            message_lines(&messages, false),
             vec![
                 MessageLineView::new("review changes", MessageRole::User),
                 MessageLineView::new("line one line two", MessageRole::Assistant),
@@ -554,7 +555,7 @@ mod tests {
         ];
 
         assert_eq!(
-            message_lines(&messages),
+            message_lines(&messages, false),
             vec![
                 MessageLineView::new("attachment> image diagram.png", MessageRole::User,),
                 MessageLineView::new("  file:///workspace/assets/diagram.png", MessageRole::User),
@@ -593,7 +594,7 @@ mod tests {
         ];
 
         assert_eq!(
-            message_lines(&messages),
+            message_lines(&messages, false),
             vec![
                 MessageLineView::new("● Bash(echo hi)", MessageRole::Tool,),
                 MessageLineView::new("  └ echo hi", MessageRole::System),
@@ -612,7 +613,7 @@ mod tests {
             },
         )];
 
-        let lines = message_lines(&messages);
+        let lines = message_lines(&messages, false);
         assert_eq!(lines.len(), 2);
         assert_eq!(lines[0].role, MessageRole::Error);
         assert!(lines[0].text.starts_with("error[provider]> "));
