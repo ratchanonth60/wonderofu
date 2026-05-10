@@ -522,7 +522,7 @@ fn summarize_file_read_call(call: &ToolCallView) -> ToolActivitySummary {
         role: MessageRole::System,
     });
     if call.is_success() {
-        if let Some(preview) = preview_lines(call.result_detail(), 3, 72) {
+        if let Some(preview) = preview_lines(call.result_detail(), 20, 72) {
             rows.push(ToolActivityRow::Preview {
                 label: "preview",
                 lines: preview,
@@ -559,7 +559,7 @@ fn summarize_file_write_call(call: &ToolCallView) -> ToolActivitySummary {
         value: truncate_visible_end(&path, 72),
         role: MessageRole::System,
     });
-    if let Some(preview) = input_preview.and_then(|text| preview_lines(Some(text), 3, 72)) {
+    if let Some(preview) = input_preview.and_then(|text| preview_lines(Some(text), 20, 72)) {
         rows.push(ToolActivityRow::Preview {
             label: "preview",
             lines: preview,
@@ -681,7 +681,7 @@ fn append_result_rows(call: &ToolCallView, rows: &mut Vec<ToolActivityRow>) {
     let Some(result) = &call.result else {
         return;
     };
-    if let Some(preview) = preview_lines(Some(&result.detail), 3, 72) {
+    if let Some(preview) = preview_lines(Some(&result.detail), 20, 72) {
         if preview.len() > 1 || result.detail.contains('\n') || looks_like_preview(&preview[0]) {
             rows.push(ToolActivityRow::Preview {
                 label: if call.is_success() {
@@ -713,21 +713,22 @@ fn append_result_rows(call: &ToolCallView, rows: &mut Vec<ToolActivityRow>) {
 
 fn preview_lines(text: Option<&str>, max_lines: usize, max_width: usize) -> Option<Vec<String>> {
     let text = text?;
-    let lines = text
+    let all_lines = text
         .lines()
         .map(str::trim_end)
         .skip_while(|line| line.trim().is_empty())
-        .take(max_lines + 1)
         .map(|line| truncate_visible_end(line, max_width))
         .collect::<Vec<_>>();
-    if lines.is_empty() {
+    if all_lines.is_empty() {
         return None;
     }
 
-    let overflow = lines.len() > max_lines;
-    let mut lines = lines.into_iter().take(max_lines).collect::<Vec<_>>();
+    let total = all_lines.len();
+    let overflow = total > max_lines;
+    let mut lines = all_lines.into_iter().take(max_lines).collect::<Vec<_>>();
     if overflow {
-        lines.push("…".into());
+        let remaining = total - max_lines;
+        lines.push(format!("… +{remaining} lines"));
     }
     Some(lines)
 }
