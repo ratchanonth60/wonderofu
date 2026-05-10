@@ -140,6 +140,19 @@ fn single_message_view(message: &MessageEnvelope) -> RichMessageView {
         MessagePayload::CompactBoundary { summary } => {
             RichMessageView::Boundary(TranscriptBoundaryView::new(summary))
         }
+        MessagePayload::HookProgress {
+            event,
+            tool_name,
+            hook_count,
+            success,
+        } => {
+            let icon = if *success { "⚙" } else { "⚠" };
+            let noun = if *hook_count == 1 { "hook" } else { "hooks" };
+            RichMessageView::Fallback(vec![MessageLineView::new(
+                format!("{icon} {hook_count} {event} {noun} ran for {tool_name}"),
+                MessageRole::System,
+            )])
+        }
         _ => {
             let mut lines = Vec::new();
             render_message(message, &mut lines);
@@ -259,6 +272,9 @@ impl MarkdownSummaryView {
                         push_wrapped_block(&mut lines, &label, &code_lines, self.role, max_width);
                     }
                 }
+                MarkdownBlockView::Table(table) => {
+                    lines.extend(table.display_lines(max_width, MessageRole::Assistant));
+                }
             }
             first_block = false;
         }
@@ -287,6 +303,8 @@ pub enum MarkdownBlockView {
     Paragraph(String),
     /// Represents code
     Code(MarkdownCodeBlockView),
+    /// Represents table
+    Table(MarkdownTableView),
 }
 
 /// A summarized fenced code block.
@@ -298,6 +316,15 @@ pub struct MarkdownCodeBlockView {
     pub code: String,
     /// Stores the line count
     pub line_count: usize,
+}
+
+/// A summarized markdown table.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MarkdownTableView {
+    /// Stores the header cells.
+    pub headers: Vec<String>,
+    /// Stores the row cells.
+    pub rows: Vec<Vec<String>>,
 }
 
 impl MarkdownCodeBlockView {
@@ -315,6 +342,309 @@ impl MarkdownCodeBlockView {
             .find(|line| !line.is_empty())
             .map_or_else(|| "(empty)".into(), |line| truncate_visible_end(line, 48))
     }
+}
+
+const MIN_TABLE_COLUMN_WIDTH: usize = 3;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum TableRenderStyle {
+    Box,
+    Simple,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct TableLayout {
+    widths: Vec<usize>,
+    hard_wrap: bool,
+}
+
+impl MarkdownTableView {
+    fn display_lines(&self, max_width: usize, role: MessageRole) -> Vec<MessageLineView> {
+        let column_count = self
+            .headers
+            .len()
+            .max(self.rows.iter().map(Vec::len).max().unwrap_or(0));
+        if column_count == 0 {
+            return Vec::new();
+        }
+
+        let style = if table_min_width(self, TableRenderStyle::Box) <= max_width {
+            TableRenderStyle::Box
+        } else {
+            TableRenderStyle::Simple
+        };
+        let layout = compute_table_layout(self, max_width, style);
+        let rendered = match style {
+            TableRenderStyle::Box => render_box_table(self, &layout.widths, layout.hard_wrap),
+            TableRenderStyle::Simple => render_simple_table(self, &layout.widths, layout.hard_wrap),
+        };
+
+        rendered
+            .into_iter()
+            .map(|line| MessageLineView::new(line, role))
+            .collect()
+    }
+}
+
+fn table_min_width(table: &MarkdownTableView, style: TableRenderStyle) -> usize {
+    let widths = table_column_measurements(table)
+        .into_iter()
+        .map(|(min_width, _)| min_width)
+        .collect::<Vec<_>>();
+    widths.iter().sum::<usize>() + table_overhead(widths.len(), style)
+}
+
+fn compute_table_layout(
+    table: &MarkdownTableView,
+    max_width: usize,
+    style: TableRenderStyle,
+) -> TableLayout {
+    let measurements = table_column_measurements(table);
+    let min_widths = measurements
+        .iter()
+        .map(|(min_width, _)| *min_width)
+        .collect::<Vec<_>>();
+    let ideal_widths = measurements
+        .into_iter()
+        .map(|(_, ideal_width)| ideal_width)
+        .collect::<Vec<_>>();
+    let overhead = table_overhead(min_widths.len(), style);
+    let min_total = min_widths.iter().sum::<usize>();
+    let ideal_total = ideal_widths.iter().sum::<usize>();
+    let available = max_width.saturating_sub(overhead);
+
+    if ideal_total <= available {
+        return TableLayout {
+            widths: ideal_widths,
+            hard_wrap: false,
+        };
+    }
+
+    if min_total <= available {
+        return TableLayout {
+            widths: distribute_widths(&min_widths, &ideal_widths, available),
+            hard_wrap: false,
+        };
+    }
+
+    let baseline = vec![MIN_TABLE_COLUMN_WIDTH; min_widths.len()];
+    let widths = if available <= baseline.iter().sum() {
+        baseline
+    } else {
+        distribute_widths(&baseline, &min_widths, available)
+    };
+
+    TableLayout {
+        widths,
+        hard_wrap: true,
+    }
+}
+
+fn table_column_measurements(table: &MarkdownTableView) -> Vec<(usize, usize)> {
+    let column_count = table
+        .headers
+        .len()
+        .max(table.rows.iter().map(Vec::len).max().unwrap_or(0));
+    (0..column_count)
+        .map(|index| {
+            let mut min_width = cell_min_width(table.headers.get(index).map_or("", String::as_str));
+            let mut ideal_width =
+                cell_ideal_width(table.headers.get(index).map_or("", String::as_str));
+            for row in &table.rows {
+                let cell = row.get(index).map_or("", String::as_str);
+                min_width = min_width.max(cell_min_width(cell));
+                ideal_width = ideal_width.max(cell_ideal_width(cell));
+            }
+            (min_width, ideal_width)
+        })
+        .collect()
+}
+
+fn cell_min_width(cell: &str) -> usize {
+    cell.split_whitespace()
+        .map(UnicodeWidthStr::width)
+        .max()
+        .unwrap_or(0)
+        .max(MIN_TABLE_COLUMN_WIDTH)
+}
+
+fn cell_ideal_width(cell: &str) -> usize {
+    cell.lines()
+        .map(UnicodeWidthStr::width)
+        .max()
+        .unwrap_or(0)
+        .max(MIN_TABLE_COLUMN_WIDTH)
+}
+
+fn table_overhead(column_count: usize, style: TableRenderStyle) -> usize {
+    match style {
+        TableRenderStyle::Box => 1 + column_count * 3,
+        TableRenderStyle::Simple => column_count.saturating_sub(1) * 3,
+    }
+}
+
+fn distribute_widths(min_widths: &[usize], ideal_widths: &[usize], available: usize) -> Vec<usize> {
+    let base_total = min_widths.iter().sum::<usize>();
+    if available <= base_total {
+        return min_widths.to_vec();
+    }
+
+    let extra_space = available - base_total;
+    let overflows = ideal_widths
+        .iter()
+        .zip(min_widths.iter())
+        .map(|(ideal_width, min_width)| ideal_width.saturating_sub(*min_width))
+        .collect::<Vec<_>>();
+    let overflow_total = overflows.iter().sum::<usize>();
+    if overflow_total == 0 {
+        return min_widths.to_vec();
+    }
+
+    let mut widths = min_widths.to_vec();
+    let mut allocated = 0usize;
+    let mut remainders = Vec::new();
+    for (index, overflow) in overflows.iter().copied().enumerate() {
+        let raw = overflow.saturating_mul(extra_space);
+        let extra = raw / overflow_total;
+        widths[index] = widths[index].saturating_add(extra);
+        allocated = allocated.saturating_add(extra);
+        remainders.push((index, raw % overflow_total));
+    }
+
+    remainders.sort_by(|left, right| right.1.cmp(&left.1).then_with(|| left.0.cmp(&right.0)));
+    for (index, _) in remainders
+        .into_iter()
+        .take(extra_space.saturating_sub(allocated))
+    {
+        widths[index] = widths[index].saturating_add(1);
+    }
+
+    widths
+}
+
+fn render_box_table(table: &MarkdownTableView, widths: &[usize], hard_wrap: bool) -> Vec<String> {
+    let mut lines = vec![table_border(widths, '┌', '┬', '┐')];
+    lines.extend(render_table_row(
+        widths,
+        &table.headers,
+        hard_wrap,
+        TableRenderStyle::Box,
+    ));
+    lines.push(table_border(widths, '├', '┼', '┤'));
+    for row in &table.rows {
+        lines.extend(render_table_row(
+            widths,
+            row,
+            hard_wrap,
+            TableRenderStyle::Box,
+        ));
+    }
+    lines.push(table_border(widths, '└', '┴', '┘'));
+    lines
+}
+
+fn render_simple_table(
+    table: &MarkdownTableView,
+    widths: &[usize],
+    hard_wrap: bool,
+) -> Vec<String> {
+    let mut lines = render_table_row(widths, &table.headers, hard_wrap, TableRenderStyle::Simple);
+    lines.push(
+        widths
+            .iter()
+            .map(|width| "-".repeat(*width))
+            .collect::<Vec<_>>()
+            .join(" | "),
+    );
+    for row in &table.rows {
+        lines.extend(render_table_row(
+            widths,
+            row,
+            hard_wrap,
+            TableRenderStyle::Simple,
+        ));
+    }
+    lines
+}
+
+fn render_table_row(
+    widths: &[usize],
+    cells: &[String],
+    hard_wrap: bool,
+    style: TableRenderStyle,
+) -> Vec<String> {
+    let wrapped_cells = widths
+        .iter()
+        .enumerate()
+        .map(|(index, width)| {
+            wrap_table_cell(
+                cells.get(index).map_or("", String::as_str),
+                *width,
+                hard_wrap,
+            )
+        })
+        .collect::<Vec<_>>();
+    let height = wrapped_cells.iter().map(Vec::len).max().unwrap_or(1);
+    let mut lines = Vec::with_capacity(height);
+
+    for line_index in 0..height {
+        let segments = wrapped_cells
+            .iter()
+            .zip(widths.iter())
+            .map(|(cell_lines, width)| {
+                let content = cell_lines.get(line_index).map_or("", String::as_str);
+                pad_table_cell(content, *width)
+            })
+            .collect::<Vec<_>>();
+        let line = match style {
+            TableRenderStyle::Box => format!("│ {} │", segments.join(" │ ")),
+            TableRenderStyle::Simple => segments.join(" | "),
+        };
+        lines.push(line);
+    }
+
+    lines
+}
+
+fn wrap_table_cell(cell: &str, width: usize, _hard_wrap: bool) -> Vec<String> {
+    let mut lines = Vec::new();
+    let source = cell.trim();
+    if source.is_empty() {
+        return vec![String::new()];
+    }
+
+    for raw_line in source.lines() {
+        let mut wrapped = wrap_text_hard(raw_line, width.max(1));
+        if wrapped.is_empty() {
+            wrapped.push(String::new());
+        }
+        lines.extend(wrapped);
+    }
+
+    if lines.is_empty() {
+        lines.push(String::new());
+    }
+
+    lines
+}
+
+fn pad_table_cell(cell: &str, width: usize) -> String {
+    let padding = width.saturating_sub(UnicodeWidthStr::width(cell));
+    format!("{cell}{}", " ".repeat(padding))
+}
+
+fn table_border(widths: &[usize], left: char, middle: char, right: char) -> String {
+    let mut line = String::new();
+    line.push(left);
+    for (index, width) in widths.iter().enumerate() {
+        line.push_str(&"─".repeat(width.saturating_add(2)));
+        if index + 1 == widths.len() {
+            line.push(right);
+        } else {
+            line.push(middle);
+        }
+    }
+    line
 }
 
 /// Highlights a fenced code block for transcript rendering.
@@ -1598,8 +1928,10 @@ fn parse_markdown_blocks(text: &str) -> Vec<MarkdownBlockView> {
     let mut in_code_block = false;
     let mut code_language = None;
     let mut code_lines = Vec::new();
+    let lines = text.lines().collect::<Vec<_>>();
+    let mut index = 0usize;
 
-    for line in text.lines() {
+    while let Some(line) = lines.get(index).copied() {
         if let Some(language) = line.strip_prefix("```") {
             if in_code_block {
                 blocks.push(MarkdownBlockView::Code(MarkdownCodeBlockView {
@@ -1615,20 +1947,40 @@ fn parse_markdown_blocks(text: &str) -> Vec<MarkdownBlockView> {
                 code_language = (!language.is_empty()).then(|| language.to_string());
                 in_code_block = true;
             }
+            index = index.saturating_add(1);
             continue;
         }
 
         if in_code_block {
             code_lines.push(line.to_string());
+            index = index.saturating_add(1);
             continue;
         }
 
         if line.trim().is_empty() {
             flush_paragraph(&mut blocks, &mut paragraph);
+            index = index.saturating_add(1);
+            continue;
+        }
+
+        if line.trim_start().starts_with('|') {
+            flush_paragraph(&mut blocks, &mut paragraph);
+            let mut table_lines = Vec::new();
+            while let Some(table_line) = lines.get(index).copied() {
+                if !table_line.trim_start().starts_with('|') {
+                    break;
+                }
+                table_lines.push(table_line);
+                index = index.saturating_add(1);
+            }
+            if let Some(table) = parse_markdown_table(&table_lines) {
+                blocks.push(MarkdownBlockView::Table(table));
+            }
             continue;
         }
 
         paragraph.push(normalize_markdown_line(line));
+        index = index.saturating_add(1);
     }
 
     flush_paragraph(&mut blocks, &mut paragraph);
@@ -1650,6 +2002,51 @@ fn flush_paragraph(blocks: &mut Vec<MarkdownBlockView>, paragraph: &mut Vec<Stri
 
     blocks.push(MarkdownBlockView::Paragraph(paragraph.join(" ")));
     paragraph.clear();
+}
+
+fn parse_markdown_table(lines: &[&str]) -> Option<MarkdownTableView> {
+    let mut headers = None;
+    let mut rows = Vec::new();
+
+    for line in lines {
+        if is_table_separator(line) {
+            continue;
+        }
+        let cells = parse_table_line(line);
+        if headers.is_none() {
+            headers = Some(cells);
+        } else {
+            rows.push(cells);
+        }
+    }
+
+    headers.map(|headers| MarkdownTableView { headers, rows })
+}
+
+fn is_table_separator(line: &str) -> bool {
+    let trimmed = line.trim();
+    if !trimmed.starts_with('|') {
+        return false;
+    }
+    let content = trimmed.trim_start_matches('|').trim_end_matches('|').trim();
+    if content.is_empty() {
+        return false;
+    }
+
+    content.split('|').all(|cell| {
+        cell.trim()
+            .chars()
+            .all(|character| matches!(character, '-' | ':' | ' '))
+    })
+}
+
+fn parse_table_line(line: &str) -> Vec<String> {
+    line.trim()
+        .trim_start_matches('|')
+        .trim_end_matches('|')
+        .split('|')
+        .map(|cell| cell.trim().to_string())
+        .collect()
 }
 
 fn normalize_markdown_line(line: &str) -> String {
@@ -1823,6 +2220,14 @@ fn markdown_block_has_content(block: &MarkdownBlockView) -> bool {
     match block {
         MarkdownBlockView::Paragraph(text) => !text.trim().is_empty(),
         MarkdownBlockView::Code(code) => !code.code.trim().is_empty(),
+        MarkdownBlockView::Table(table) => {
+            table.headers.iter().any(|cell| !cell.trim().is_empty())
+                || table
+                    .rows
+                    .iter()
+                    .flatten()
+                    .any(|cell| !cell.trim().is_empty())
+        }
     }
 }
 
@@ -1978,6 +2383,34 @@ mod tests {
     }
 
     #[test]
+    fn markdown_table_renders_simple_two_column_table() {
+        let view = MarkdownSummaryView::new(
+            MessageRole::Assistant,
+            "| Col A | Col B |\n|-------|-------|\n| val 1 | val 2 |",
+        );
+
+        let lines = view.display_lines(80);
+        assert!(lines.iter().any(|line| line.text.contains("Col A")));
+        assert!(lines.iter().any(|line| line.text.contains("Col B")));
+        assert!(lines.iter().any(|line| line.text.contains("val 1")));
+        assert!(lines.iter().any(|line| line.text.contains("val 2")));
+        assert!(lines.iter().all(|line| line.role == MessageRole::Assistant));
+    }
+
+    #[test]
+    fn markdown_table_with_separator_row_is_skipped() {
+        let view = MarkdownSummaryView::new(
+            MessageRole::Assistant,
+            "| Col A | Col B |\n|:------|------:|\n| val 1 | val 2 |",
+        );
+
+        let lines = view.display_lines(80);
+        assert!(lines.iter().any(|line| line.text.contains("val 1")));
+        assert!(!lines.iter().any(|line| line.text.contains(":------")));
+        assert!(!lines.iter().any(|line| line.text.contains("------:")));
+    }
+
+    #[test]
     fn highlight_code_block_styles_known_language() {
         let lines = highlight_code_block("rust", "fn main() { let value = 1; }\n");
 
@@ -2064,6 +2497,29 @@ mod tests {
                 MessageLineView::new("  step one step two", MessageRole::Progress),
             ]
         );
+    }
+
+    #[test]
+    fn hook_progress_messages_render_as_non_empty_system_lines() {
+        let session_id = SessionId::new();
+        let views = rich_message_views(
+            &[MessageEnvelope::new(
+                session_id,
+                MessagePayload::HookProgress {
+                    event: "PreToolUse".into(),
+                    tool_name: "bash".into(),
+                    hook_count: 1,
+                    success: true,
+                },
+            )],
+            false,
+        );
+        let lines = views[0].display_lines(80, false);
+
+        assert!(!lines.is_empty());
+        assert_eq!(lines[0].role, MessageRole::System);
+        assert!(!lines[0].text.trim().is_empty());
+        assert!(lines[0].text.contains("hook"));
     }
 
     #[test]
