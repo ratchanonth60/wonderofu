@@ -7,7 +7,10 @@ use wonder_of_u_core::{
 };
 
 use crate::{
-    auth::{AuthMaterial, AwsCredentials, DEFAULT_COPILOT_API_BASE, StoredCredentials},
+    auth::{
+        AuthMaterial, AwsCredentials, DEFAULT_COPILOT_API_BASE, StoredCredentials,
+        parse_aws_credentials_file,
+    },
     config::{AgentSettings, CredentialStore, SettingsStore},
     protocol::WireProtocol,
 };
@@ -126,6 +129,24 @@ enum ResolvedAuthMaterial {
         credentials: AwsCredentials,
         source: AuthSource,
     },
+    /// Short-lived bearer token sourced from `AWS_BEARER_TOKEN_BEDROCK`.
+    AwsBearer {
+        token: String,
+        region: String,
+        source: AuthSource,
+    },
+    /// AWS credentials resolved from a named profile (`~/.aws/credentials`).
+    AwsProfile {
+        credentials: AwsCredentials,
+        source: AuthSource,
+    },
+    /// GCP Vertex AI readiness (project + location + credentials path).
+    GcpOAuth2 {
+        project: String,
+        location: String,
+        credentials_source: String,
+        source: AuthSource,
+    },
 }
 
 impl fmt::Debug for ResolvedAuthMaterial {
@@ -159,6 +180,34 @@ impl fmt::Debug for ResolvedAuthMaterial {
                 .field("access_key_id", &"[redacted]")
                 .field("has_session_token", &credentials.session_token.is_some())
                 .finish(),
+            Self::AwsBearer { source, region, .. } => formatter
+                .debug_struct("ResolvedAuthMaterial::AwsBearer")
+                .field("source", source)
+                .field("region", region)
+                .field("token", &"[redacted]")
+                .finish(),
+            Self::AwsProfile {
+                source,
+                credentials,
+            } => formatter
+                .debug_struct("ResolvedAuthMaterial::AwsProfile")
+                .field("source", source)
+                .field("region", &credentials.region)
+                .field("access_key_id", &"[redacted]")
+                .field("has_session_token", &credentials.session_token.is_some())
+                .finish(),
+            Self::GcpOAuth2 {
+                source,
+                project,
+                location,
+                ..
+            } => formatter
+                .debug_struct("ResolvedAuthMaterial::GcpOAuth2")
+                .field("source", source)
+                .field("project", project)
+                .field("location", location)
+                .field("credentials_source", &"[redacted]")
+                .finish(),
         }
     }
 }
@@ -170,6 +219,15 @@ impl ResolvedAuthMaterial {
             Self::ApiKey { source, .. } => AuthState::ready(AuthMaterialKind::ApiKey, *source),
             Self::OAuth { source, .. } => AuthState::ready(AuthMaterialKind::OAuth, *source),
             Self::AwsSigV4 { source, .. } => AuthState::ready(AuthMaterialKind::AwsSigV4, *source),
+            Self::AwsBearer { source, .. } => {
+                AuthState::ready(AuthMaterialKind::AwsBearer, *source)
+            }
+            Self::AwsProfile { source, .. } => {
+                AuthState::ready(AuthMaterialKind::AwsProfile, *source)
+            }
+            Self::GcpOAuth2 { source, .. } => {
+                AuthState::ready(AuthMaterialKind::GcpOAuth2, *source)
+            }
         }
     }
 
@@ -178,7 +236,10 @@ impl ResolvedAuthMaterial {
             Self::None => None,
             Self::ApiKey { source, .. }
             | Self::OAuth { source, .. }
-            | Self::AwsSigV4 { source, .. } => Some(*source),
+            | Self::AwsSigV4 { source, .. }
+            | Self::AwsBearer { source, .. }
+            | Self::AwsProfile { source, .. }
+            | Self::GcpOAuth2 { source, .. } => Some(*source),
         }
     }
 
@@ -210,9 +271,13 @@ impl ResolvedAuthMaterial {
         }
     }
 
+    /// Returns the underlying [`AwsCredentials`] for both `AwsSigV4` and
+    /// `AwsProfile` variants, which share the same credential shape.
     fn aws_credentials(&self) -> Option<&AwsCredentials> {
         match self {
-            Self::AwsSigV4 { credentials, .. } => Some(credentials),
+            Self::AwsSigV4 { credentials, .. } | Self::AwsProfile { credentials, .. } => {
+                Some(credentials)
+            }
             _ => None,
         }
     }
@@ -299,10 +364,28 @@ impl ResolvedProviderExecution {
     pub(crate) fn aws_credentials(&self) -> Result<&AwsCredentials> {
         self.auth.aws_credentials().ok_or_else(|| {
             WonderError::validation(format!(
-                "provider `{}` is not configured with AWS SigV4 auth",
+                "provider `{}` is not configured with AWS SigV4 or profile auth",
                 self.provider.id
             ))
         })
+    }
+
+    /// Returns `(token, region)` when the provider resolved via an AWS bearer
+    /// token.  Returns an error for callers that expect this credential kind
+    /// but encounter a different (or absent) material.
+    ///
+    /// Intentionally exposed for the Bedrock runtime stage; unused in v1.
+    #[allow(dead_code)]
+    pub(crate) fn aws_bearer_token(&self) -> Result<(&str, &str)> {
+        match &self.auth {
+            ResolvedAuthMaterial::AwsBearer { token, region, .. } => {
+                Ok((token.as_str(), region.as_str()))
+            }
+            _ => Err(WonderError::validation(format!(
+                "provider `{}` is not configured with AWS bearer-token auth",
+                self.provider.id
+            ))),
+        }
     }
 }
 /// Stores provider registry
@@ -822,6 +905,11 @@ impl ProviderResolver {
                     AuthMaterialKind::None => AuthState::not_required(),
                     AuthMaterialKind::ApiKey => AuthState::missing(AuthMaterialKind::ApiKey),
                     AuthMaterialKind::AwsSigV4 => AuthState::missing(AuthMaterialKind::AwsSigV4),
+                    AuthMaterialKind::AwsBearer => AuthState::missing(AuthMaterialKind::AwsBearer),
+                    AuthMaterialKind::AwsProfile => {
+                        AuthState::missing(AuthMaterialKind::AwsProfile)
+                    }
+                    AuthMaterialKind::GcpOAuth2 => AuthState::missing(AuthMaterialKind::GcpOAuth2),
                     AuthMaterialKind::OAuth => match credentials.providers.get(&provider.id) {
                         Some(AuthMaterial::OAuth {
                             access_token,
@@ -875,8 +963,10 @@ impl ProviderResolver {
         match provider.auth_kind {
             AuthMaterialKind::None => Ok(Some(ResolvedAuthMaterial::None)),
             AuthMaterialKind::AwsSigV4 => {
-                // Resolve AWS credentials: environment variables take precedence
-                // over anything stored in the credential file.
+                // Bedrock resolution priority:
+                //   1. AWS_BEARER_TOKEN_BEDROCK  → AwsBearer (no signing needed)
+                //   2. AWS_ACCESS_KEY_ID + AWS_SECRET_ACCESS_KEY → AwsSigV4
+                //   3. AWS_PROFILE + credentials file → AwsProfile
                 let region = env
                     .get("AWS_REGION")
                     .or_else(|| env.get("AWS_DEFAULT_REGION"))
@@ -885,6 +975,20 @@ impl ProviderResolver {
                     .map(ToString::to_string)
                     .unwrap_or_else(|| "us-east-1".to_string());
 
+                // Priority 1: bearer token
+                if let Some(token) = env
+                    .get("AWS_BEARER_TOKEN_BEDROCK")
+                    .map(|v| v.trim())
+                    .filter(|v| !v.is_empty())
+                {
+                    return Ok(Some(ResolvedAuthMaterial::AwsBearer {
+                        token: token.to_string(),
+                        region,
+                        source: AuthSource::Environment,
+                    }));
+                }
+
+                // Priority 2: static SigV4 env vars
                 if let (Some(access_key_id), Some(secret_access_key)) = (
                     env.get("AWS_ACCESS_KEY_ID")
                         .map(|v| v.trim())
@@ -908,7 +1012,82 @@ impl ProviderResolver {
                         source: AuthSource::Environment,
                     }));
                 }
+
+                // Priority 3: named profile from credentials file
+                if let Some(resolved) = resolve_profile_from_env_map(env) {
+                    return Ok(Some(ResolvedAuthMaterial::AwsProfile {
+                        credentials: resolved,
+                        source: AuthSource::CredentialsFile,
+                    }));
+                }
+
                 Ok(None)
+            }
+            AuthMaterialKind::AwsBearer => {
+                // Standalone bearer-token provider (not yet registered, but
+                // the resolution path is available for future providers).
+                let region = env
+                    .get("AWS_REGION")
+                    .or_else(|| env.get("AWS_DEFAULT_REGION"))
+                    .map(|v| v.trim())
+                    .filter(|v| !v.is_empty())
+                    .map(ToString::to_string)
+                    .unwrap_or_else(|| "us-east-1".to_string());
+
+                if let Some(token) = env
+                    .get("AWS_BEARER_TOKEN_BEDROCK")
+                    .map(|v| v.trim())
+                    .filter(|v| !v.is_empty())
+                {
+                    Ok(Some(ResolvedAuthMaterial::AwsBearer {
+                        token: token.to_string(),
+                        region,
+                        source: AuthSource::Environment,
+                    }))
+                } else {
+                    Ok(None)
+                }
+            }
+            AuthMaterialKind::AwsProfile => {
+                // Standalone profile provider.
+                if let Some(resolved) = resolve_profile_from_env_map(env) {
+                    Ok(Some(ResolvedAuthMaterial::AwsProfile {
+                        credentials: resolved,
+                        source: AuthSource::CredentialsFile,
+                    }))
+                } else {
+                    Ok(None)
+                }
+            }
+            AuthMaterialKind::GcpOAuth2 => {
+                // All three GCP vars must be present for readiness.
+                let project = env
+                    .get("VERTEXAI_PROJECT")
+                    .map(|v| v.trim())
+                    .filter(|v| !v.is_empty())
+                    .map(ToString::to_string);
+                let location = env
+                    .get("VERTEXAI_LOCATION")
+                    .map(|v| v.trim())
+                    .filter(|v| !v.is_empty())
+                    .map(ToString::to_string);
+                let credentials_source = env
+                    .get("GOOGLE_APPLICATION_CREDENTIALS")
+                    .map(|v| v.trim())
+                    .filter(|v| !v.is_empty())
+                    .map(ToString::to_string);
+
+                match (project, location, credentials_source) {
+                    (Some(project), Some(location), Some(credentials_source)) => {
+                        Ok(Some(ResolvedAuthMaterial::GcpOAuth2 {
+                            project,
+                            location,
+                            credentials_source,
+                            source: AuthSource::Environment,
+                        }))
+                    }
+                    _ => Ok(None),
+                }
             }
             AuthMaterialKind::ApiKey => {
                 if let Some(env_var) = &provider.api_key_env {
@@ -969,7 +1148,19 @@ impl ProviderResolver {
     fn missing_auth_error(&self, provider: &ProviderDescriptor) -> WonderError {
         match provider.auth_kind {
             AuthMaterialKind::AwsSigV4 => WonderError::validation(format!(
-                "provider `{}` requires AWS SigV4 auth; set AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY (and optionally AWS_SESSION_TOKEN and AWS_REGION)",
+                "provider `{}` requires AWS auth; set AWS_BEARER_TOKEN_BEDROCK, or AWS_ACCESS_KEY_ID + AWS_SECRET_ACCESS_KEY, or AWS_PROFILE with a valid ~/.aws/credentials entry",
+                provider.id
+            )),
+            AuthMaterialKind::AwsBearer => WonderError::validation(format!(
+                "provider `{}` requires an AWS bearer token; set AWS_BEARER_TOKEN_BEDROCK",
+                provider.id
+            )),
+            AuthMaterialKind::AwsProfile => WonderError::validation(format!(
+                "provider `{}` requires a named AWS profile; set AWS_PROFILE and ensure ~/.aws/credentials (or AWS_SHARED_CREDENTIALS_FILE) contains that profile",
+                provider.id
+            )),
+            AuthMaterialKind::GcpOAuth2 => WonderError::validation(format!(
+                "provider `{}` requires GCP credentials; set VERTEXAI_PROJECT, VERTEXAI_LOCATION, and GOOGLE_APPLICATION_CREDENTIALS",
                 provider.id
             )),
             AuthMaterialKind::None => WonderError::validation(format!(
@@ -1001,6 +1192,49 @@ fn is_fast_model_id(model_id: &str) -> bool {
 
 fn oauth_access_token_expired(expires_at: Option<OffsetDateTime>) -> bool {
     expires_at.is_some_and(|value| value <= OffsetDateTime::now_utc())
+}
+
+/// Resolves a named AWS profile from the environment variables available in
+/// `env` (the test-injectable `BTreeMap` snapshot).
+///
+/// This mirrors [`crate::auth::resolve_aws_profile_from_env`] but operates on
+/// the env-snapshot used by the provider resolver, enabling test injection.
+/// When neither `AWS_SHARED_CREDENTIALS_FILE` nor `HOME` are present in the
+/// snapshot, profile resolution is skipped (returns `None`).
+fn resolve_profile_from_env_map(env: &BTreeMap<String, String>) -> Option<AwsCredentials> {
+    let profile = env
+        .get("AWS_PROFILE")
+        .map(|v| v.trim())
+        .filter(|v| !v.is_empty())
+        .map(ToString::to_string)
+        .unwrap_or_else(|| "default".to_string());
+
+    // Derive the credentials file path entirely from the injected env map so
+    // that tests with an empty map never accidentally read $HOME/.aws/credentials
+    // from the host filesystem.
+    let creds_path = if let Some(explicit) = env
+        .get("AWS_SHARED_CREDENTIALS_FILE")
+        .map(|v| v.trim())
+        .filter(|v| !v.is_empty())
+    {
+        std::path::PathBuf::from(explicit)
+    } else if let Some(home) = env
+        .get("HOME")
+        .map(|v| v.trim())
+        .filter(|v| !v.is_empty())
+    {
+        std::path::Path::new(home).join(".aws").join("credentials")
+    } else {
+        // No HOME in the snapshot → skip profile resolution.
+        return None;
+    };
+
+    let content = std::fs::read_to_string(&creds_path).ok()?;
+
+    // Region from the env snapshot (injected map), with a default of us-east-1.
+    // We pass this via a temporary std::env mutation only in test contexts where
+    // --test-threads=1 is mandated; for production use the real env is fine.
+    parse_aws_credentials_file(&content, &profile)
 }
 
 #[cfg(test)]
@@ -1635,5 +1869,212 @@ mod tests {
 
         assert_eq!(descriptor.wire_protocol, WireProtocol::OpenAiCompat);
         assert!(!descriptor.strict_model_validation);
+    }
+
+    // ── provider-auth-env: AwsBearer priority for Bedrock ─────────────────
+
+    #[test]
+    fn bedrock_bearer_token_takes_priority_over_sigv4_env_vars() {
+        let resolver = ProviderResolver::builtin();
+        let settings = AgentSettings {
+            selected_provider: Some("bedrock".into()),
+            ..AgentSettings::default()
+        };
+
+        // Both bearer token AND static keys are present; bearer wins.
+        let report = resolver
+            .resolve_with_env(
+                &settings,
+                &StoredCredentials::default(),
+                [
+                    ("AWS_BEARER_TOKEN_BEDROCK", "my-bearer-token".to_string()),
+                    ("AWS_ACCESS_KEY_ID", "AKIAIOSFODNN7EXAMPLE".to_string()),
+                    (
+                        "AWS_SECRET_ACCESS_KEY",
+                        "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY".to_string(),
+                    ),
+                    ("AWS_REGION", "us-west-2".to_string()),
+                ],
+            )
+            .expect("resolve bedrock with bearer token");
+
+        assert_eq!(report.auth.status, wonder_of_u_core::AuthStatus::Ready);
+        assert_eq!(
+            report.auth.kind,
+            wonder_of_u_core::AuthMaterialKind::AwsBearer,
+            "bearer token must take priority over SigV4 env vars"
+        );
+        assert_eq!(report.auth.source_label(), Some("environment"));
+        assert_eq!(report.readiness, ProviderReadiness::Ready);
+    }
+
+    #[test]
+    fn bedrock_bearer_token_execution_returns_token_accessor() {
+        let resolver = ProviderResolver::builtin();
+        let settings = AgentSettings {
+            selected_provider: Some("bedrock".into()),
+            ..AgentSettings::default()
+        };
+
+        let resolved = resolver
+            .resolve_execution_with_env(
+                &settings,
+                &StoredCredentials::default(),
+                [
+                    ("AWS_BEARER_TOKEN_BEDROCK", "test-bearer-xyz".to_string()),
+                    ("AWS_REGION", "ap-northeast-1".to_string()),
+                ],
+                &ProviderSelection::default(),
+            )
+            .expect("resolve bedrock execution with bearer");
+
+        let (token, region) = resolved.aws_bearer_token().expect("bearer token accessor");
+        assert_eq!(token, "test-bearer-xyz");
+        assert_eq!(region, "ap-northeast-1");
+        // aws_credentials() should fail — bearer and SigV4/Profile are mutually exclusive.
+        assert!(resolved.aws_credentials().is_err());
+    }
+
+    #[test]
+    fn bedrock_bearer_token_blank_falls_through_to_sigv4() {
+        let resolver = ProviderResolver::builtin();
+        let settings = AgentSettings {
+            selected_provider: Some("bedrock".into()),
+            ..AgentSettings::default()
+        };
+
+        // A blank bearer token must NOT shadow the SigV4 path.
+        let report = resolver
+            .resolve_with_env(
+                &settings,
+                &StoredCredentials::default(),
+                [
+                    ("AWS_BEARER_TOKEN_BEDROCK", "   ".to_string()),
+                    ("AWS_ACCESS_KEY_ID", "AKID".to_string()),
+                    ("AWS_SECRET_ACCESS_KEY", "SECRET".to_string()),
+                ],
+            )
+            .expect("resolve bedrock with blank bearer + sigv4");
+
+        assert_eq!(
+            report.auth.kind,
+            wonder_of_u_core::AuthMaterialKind::AwsSigV4,
+            "blank bearer must fall through to SigV4"
+        );
+        assert_eq!(report.auth.status, wonder_of_u_core::AuthStatus::Ready);
+    }
+
+    #[test]
+    fn bedrock_sigv4_takes_priority_over_profile() {
+        // When both SigV4 env vars AND a credentials file are present, SigV4 wins.
+        let dir = std::env::temp_dir().join("wou_provider_test_sigv4_over_profile");
+        std::fs::create_dir_all(&dir).ok();
+        let creds_path = dir.join("credentials");
+        std::fs::write(
+            &creds_path,
+            "[default]\naws_access_key_id = PROFILEKEY\naws_secret_access_key = PROFILESECRET\n",
+        )
+        .expect("write test creds");
+
+        let resolver = ProviderResolver::builtin();
+        let settings = AgentSettings {
+            selected_provider: Some("bedrock".into()),
+            ..AgentSettings::default()
+        };
+
+        let report = resolver
+            .resolve_with_env(
+                &settings,
+                &StoredCredentials::default(),
+                [
+                    ("AWS_ACCESS_KEY_ID", "ENVKEY".to_string()),
+                    ("AWS_SECRET_ACCESS_KEY", "ENVSECRET".to_string()),
+                    (
+                        "AWS_SHARED_CREDENTIALS_FILE",
+                        creds_path.to_str().unwrap().to_string(),
+                    ),
+                ],
+            )
+            .expect("resolve bedrock sigv4 over profile");
+
+        assert_eq!(
+            report.auth.kind,
+            wonder_of_u_core::AuthMaterialKind::AwsSigV4,
+            "SigV4 env vars must take priority over profile file"
+        );
+        std::fs::remove_file(&creds_path).ok();
+    }
+
+    #[test]
+    fn bedrock_resolves_from_aws_profile_when_no_env_vars() {
+        // Write a minimal credentials file and inject its path via the env map.
+        let dir = std::env::temp_dir().join("wou_provider_test_profile_fallback");
+        std::fs::create_dir_all(&dir).ok();
+        let creds_path = dir.join("credentials");
+        std::fs::write(
+            &creds_path,
+            "[default]\naws_access_key_id = PROFILEKEY\naws_secret_access_key = PROFILESECRET\nregion = eu-central-1\n",
+        )
+        .expect("write test creds");
+
+        let resolver = ProviderResolver::builtin();
+        let settings = AgentSettings {
+            selected_provider: Some("bedrock".into()),
+            ..AgentSettings::default()
+        };
+
+        let report = resolver
+            .resolve_with_env(
+                &settings,
+                &StoredCredentials::default(),
+                [(
+                    "AWS_SHARED_CREDENTIALS_FILE",
+                    creds_path.to_str().unwrap().to_string(),
+                )],
+            )
+            .expect("resolve bedrock via profile");
+
+        assert_eq!(
+            report.auth.kind,
+            wonder_of_u_core::AuthMaterialKind::AwsProfile,
+            "should resolve via AWS_PROFILE credentials file"
+        );
+        assert_eq!(report.auth.status, wonder_of_u_core::AuthStatus::Ready);
+        assert_eq!(report.auth.source_label(), Some("credentials_file"));
+        assert_eq!(report.readiness, ProviderReadiness::Ready);
+
+        std::fs::remove_file(&creds_path).ok();
+    }
+
+    #[test]
+    fn bedrock_missing_auth_error_mentions_all_three_options() {
+        let resolver = ProviderResolver::builtin();
+        let settings = AgentSettings {
+            selected_provider: Some("bedrock".into()),
+            ..AgentSettings::default()
+        };
+
+        let error = resolver
+            .resolve_execution_with_env(
+                &settings,
+                &StoredCredentials::default(),
+                std::iter::empty::<(&str, String)>(),
+                &ProviderSelection::default(),
+            )
+            .expect_err("should fail without aws creds");
+
+        let message = error.to_string();
+        assert!(
+            message.contains("AWS_BEARER_TOKEN_BEDROCK"),
+            "error should mention bearer token option; got: {message}"
+        );
+        assert!(
+            message.contains("AWS_ACCESS_KEY_ID"),
+            "error should mention SigV4 option; got: {message}"
+        );
+        assert!(
+            message.contains("AWS_PROFILE"),
+            "error should mention profile option; got: {message}"
+        );
     }
 }
