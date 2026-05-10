@@ -81,6 +81,23 @@ impl TranscriptScrollView {
 /// | `✓`    | green  |
 /// | `⚠`    | yellow |
 /// | `◈`    | `theme.prompt` (accent) |
+///
+/// ## Render order (OpenCode-style integration panel)
+///
+/// ```text
+/// ─ Session ─       (session_lines)
+/// ─ Context ─       (context_lines)
+/// ─ Tools ─         (tool_lines)
+/// ─ MCP ─           (mcp_lines)
+/// ─ LSP ─           (lsp_lines)
+/// ─ Todo ─          (todo_lines)
+/// ─ Suggestions ─   (suggestions)
+/// ─ Providers ─     (provider_lines)
+/// ─ Workspace ─     (workspace_lines)
+/// ─ Status ─        (status_lines)
+/// ─ Controls ─      (control_lines)
+/// ─ Tasks ─         (task_lines)
+/// ```
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct SidebarView {
     /// Section 1 – Session: turn state, title, status note etc.
@@ -88,17 +105,34 @@ pub struct SidebarView {
     pub session_lines: Vec<String>,
     /// Section 2 – Context: token/cost usage summary.
     pub context_lines: Vec<String>,
-    /// Section 3 – Suggestions: proactive context-saving hints.
+    /// Section 3 – Tools: active built-in tool names / call counts.
+    ///
+    /// Populated by the controller each frame from the live tool-use registry.
+    /// Each entry is one display row, e.g. `"✓ Bash"` or `"⚠ FileWrite (3)"`.
+    pub tool_lines: Vec<String>,
+    /// Section 4 – MCP: connected MCP server names and connection state.
+    ///
+    /// Each entry is one display row, e.g. `"✓ filesystem"` or `"⚠ github (reconnecting)"`.
+    pub mcp_lines: Vec<String>,
+    /// Section 5 – LSP: active language-server diagnostics summary.
+    ///
+    /// Each entry is one display row, e.g. `"✓ rust-analyzer"` or `"⚠ 3 errors"`.
+    pub lsp_lines: Vec<String>,
+    /// Section 6 – Todo: in-session task checklist items.
+    ///
+    /// Each entry is one display row, e.g. `"✓ Write tests"` or `"◈ Refactor module"`.
+    pub todo_lines: Vec<String>,
+    /// Section 7 – Suggestions: proactive context-saving hints.
     pub suggestions: Vec<ContextSuggestion>,
-    /// Section 4 – Providers: one entry per line, active model marked with `◈`.
+    /// Section 8 – Providers: one entry per line, active model marked with `◈`.
     pub provider_lines: Vec<String>,
-    /// Section 5 – Status: turn detail, loading verb, error snippets.
-    pub status_lines: Vec<String>,
-    /// Section 6 – Controls: compact keybindings.
-    pub control_lines: Vec<String>,
-    /// Section 7 – Workspace: cwd, git, storage, runtime labels.
+    /// Section 9 – Workspace: cwd, git, storage, runtime labels.
     pub workspace_lines: Vec<String>,
-    /// Section 8 – Tasks: background task count + hints.
+    /// Section 10 – Status: turn detail, loading verb, error snippets.
+    pub status_lines: Vec<String>,
+    /// Section 11 – Controls: compact keybindings.
+    pub control_lines: Vec<String>,
+    /// Section 12 – Tasks: background task count + hints.
     pub task_lines: Vec<String>,
 }
 
@@ -281,11 +315,17 @@ impl ShellView {
             SidebarView {
                 session_lines,
                 context_lines,
+                // tool_lines / mcp_lines / lsp_lines / todo_lines are ephemeral;
+                // the controller overwrites them from live registries each frame.
+                tool_lines: Vec::new(),
+                mcp_lines: Vec::new(),
+                lsp_lines: Vec::new(),
+                todo_lines: Vec::new(),
                 suggestions,
                 provider_lines,
+                workspace_lines,
                 status_lines,
                 control_lines,
-                workspace_lines,
                 task_lines,
             }
         };
@@ -690,6 +730,23 @@ fn draw_shell_sidebar(frame: &mut FrameBuffer, area: Rect, sidebar: &SidebarView
 
 /// Builds the ordered list of styled lines for the sidebar panel.
 ///
+/// Renders sections in the OpenCode-style integration-panel order:
+///
+/// ```text
+/// 1. Session      – session id / title
+/// 2. Context      – token usage bar
+/// 3. Tools        – active tool names / call counts
+/// 4. MCP          – connected MCP server states
+/// 5. LSP          – language-server diagnostics summary
+/// 6. Todo         – in-session checklist items
+/// 7. Suggestions  – proactive context-saving hints
+/// 8. Providers    – model + provider
+/// 9. Workspace    – git branch, cwd
+/// 10. Status      – turn state / loading verb
+/// 11. Controls    – compact keybinding reference
+/// 12. Tasks       – background task count
+/// ```
+///
 /// Each non-empty section is prefixed by a dim section-header row and followed
 /// by a blank separator row.  Lines are clamped to [`SIDEBAR_WIDTH`] columns by
 /// [`draw_lines`].  Special line-prefix characters drive extra colour:
@@ -705,6 +762,7 @@ fn sidebar_section_lines(sidebar: &SidebarView, theme: &Theme) -> Vec<StyledLine
 
     let mut out: Vec<StyledLine> = Vec::new();
 
+    // 1 – Session
     push_sidebar_text_section(
         &mut out,
         "─ Session ─",
@@ -713,14 +771,7 @@ fn sidebar_section_lines(sidebar: &SidebarView, theme: &Theme) -> Vec<StyledLine
         accent,
         theme,
     );
-    push_sidebar_text_section(
-        &mut out,
-        "─ Providers ─",
-        &sidebar.provider_lines,
-        dim,
-        accent,
-        theme,
-    );
+    // 2 – Context
     push_sidebar_text_section(
         &mut out,
         "─ Context ─",
@@ -729,23 +780,40 @@ fn sidebar_section_lines(sidebar: &SidebarView, theme: &Theme) -> Vec<StyledLine
         accent,
         theme,
     );
+    // 3 – Tools
+    push_sidebar_text_section(
+        &mut out,
+        "─ Tools ─",
+        &sidebar.tool_lines,
+        dim,
+        accent,
+        theme,
+    );
+    // 4 – MCP
+    push_sidebar_text_section(&mut out, "─ MCP ─", &sidebar.mcp_lines, dim, accent, theme);
+    // 5 – LSP
+    push_sidebar_text_section(&mut out, "─ LSP ─", &sidebar.lsp_lines, dim, accent, theme);
+    // 6 – Todo
+    push_sidebar_text_section(
+        &mut out,
+        "─ Todo ─",
+        &sidebar.todo_lines,
+        dim,
+        accent,
+        theme,
+    );
+    // 7 – Suggestions (span-coloured; handled by its own helper)
     push_sidebar_suggestions_section(&mut out, &sidebar.suggestions, theme);
+    // 8 – Providers
     push_sidebar_text_section(
         &mut out,
-        "─ Status ─",
-        &sidebar.status_lines,
+        "─ Providers ─",
+        &sidebar.provider_lines,
         dim,
         accent,
         theme,
     );
-    push_sidebar_text_section(
-        &mut out,
-        "─ Controls ─",
-        &sidebar.control_lines,
-        dim,
-        accent,
-        theme,
-    );
+    // 9 – Workspace
     push_sidebar_text_section(
         &mut out,
         "─ Workspace ─",
@@ -754,6 +822,25 @@ fn sidebar_section_lines(sidebar: &SidebarView, theme: &Theme) -> Vec<StyledLine
         accent,
         theme,
     );
+    // 10 – Status
+    push_sidebar_text_section(
+        &mut out,
+        "─ Status ─",
+        &sidebar.status_lines,
+        dim,
+        accent,
+        theme,
+    );
+    // 11 – Controls
+    push_sidebar_text_section(
+        &mut out,
+        "─ Controls ─",
+        &sidebar.control_lines,
+        dim,
+        accent,
+        theme,
+    );
+    // 12 – Tasks
     push_sidebar_text_section(
         &mut out,
         "─ Tasks ─",
@@ -3373,10 +3460,15 @@ mod tests {
             text.contains("─ Status ─"),
             "Status header must appear; rendered:\n{text}"
         );
-        // Empty sections must produce no headers.
+        // All empty sections — including the four new panel sections — must
+        // produce no headers.
         for absent in &[
             "─ Session ─",
             "─ Context ─",
+            "─ Tools ─",
+            "─ MCP ─",
+            "─ LSP ─",
+            "─ Todo ─",
             "─ Providers ─",
             "─ Controls ─",
             "─ Workspace ─",
@@ -3716,5 +3808,372 @@ mod tests {
             text.contains("earlier message"),
             "transcript must still show earlier message during loading; rendered:\n{text}"
         );
+    }
+
+    // ── new integration-panel sections (tool / mcp / lsp / todo) ────────────
+
+    /// `tool_lines` must produce a `─ Tools ─` header followed by its body on a
+    /// wide terminal, and must be silently omitted when the slice is empty.
+    #[test]
+    fn sidebar_tools_section_renders_when_populated() {
+        let view = ShellView {
+            prompt: "hi".into(),
+            sidebar: Some(SidebarView {
+                tool_lines: vec!["✓ Bash".into(), "✓ FileRead".into()],
+                ..SidebarView::default()
+            }),
+            ..ShellView::default()
+        };
+
+        let frame = render_snapshot(100, 12, &view, &Theme::default());
+        let text = frame.to_plain_text();
+
+        assert!(
+            text.contains("─ Tools ─"),
+            "Tools header must appear when tool_lines is non-empty; rendered:\n{text}"
+        );
+        assert!(
+            text.contains("Bash"),
+            "tool body line must appear; rendered:\n{text}"
+        );
+        assert!(
+            text.contains("FileRead"),
+            "second tool body line must appear; rendered:\n{text}"
+        );
+    }
+
+    /// An empty `tool_lines` must not produce a `─ Tools ─` header.
+    #[test]
+    fn sidebar_tools_section_omitted_when_empty() {
+        let view = ShellView {
+            prompt: "hi".into(),
+            sidebar: Some(SidebarView {
+                status_lines: vec!["● idle".into()],
+                ..SidebarView::default()
+            }),
+            ..ShellView::default()
+        };
+
+        let frame = render_snapshot(100, 10, &view, &Theme::default());
+        let text = frame.to_plain_text();
+
+        assert!(
+            !text.contains("─ Tools ─"),
+            "Tools header must not appear when tool_lines is empty; rendered:\n{text}"
+        );
+    }
+
+    /// `mcp_lines` must produce a `─ MCP ─` header followed by its body.
+    #[test]
+    fn sidebar_mcp_section_renders_when_populated() {
+        let view = ShellView {
+            prompt: "hi".into(),
+            sidebar: Some(SidebarView {
+                mcp_lines: vec!["✓ filesystem".into(), "⚠ github (reconnecting)".into()],
+                ..SidebarView::default()
+            }),
+            ..ShellView::default()
+        };
+
+        let frame = render_snapshot(100, 12, &view, &Theme::default());
+        let text = frame.to_plain_text();
+
+        assert!(
+            text.contains("─ MCP ─"),
+            "MCP header must appear when mcp_lines is non-empty; rendered:\n{text}"
+        );
+        assert!(
+            text.contains("filesystem"),
+            "MCP body line must appear; rendered:\n{text}"
+        );
+        assert!(
+            text.contains("github"),
+            "second MCP body line must appear; rendered:\n{text}"
+        );
+    }
+
+    /// An empty `mcp_lines` must not produce a `─ MCP ─` header.
+    #[test]
+    fn sidebar_mcp_section_omitted_when_empty() {
+        let view = ShellView {
+            prompt: "hi".into(),
+            sidebar: Some(SidebarView {
+                status_lines: vec!["● idle".into()],
+                ..SidebarView::default()
+            }),
+            ..ShellView::default()
+        };
+
+        let frame = render_snapshot(100, 10, &view, &Theme::default());
+        let text = frame.to_plain_text();
+
+        assert!(
+            !text.contains("─ MCP ─"),
+            "MCP header must not appear when mcp_lines is empty; rendered:\n{text}"
+        );
+    }
+
+    /// `lsp_lines` must produce a `─ LSP ─` header followed by its body.
+    #[test]
+    fn sidebar_lsp_section_renders_when_populated() {
+        let view = ShellView {
+            prompt: "hi".into(),
+            sidebar: Some(SidebarView {
+                lsp_lines: vec!["✓ rust-analyzer".into(), "⚠ 3 errors".into()],
+                ..SidebarView::default()
+            }),
+            ..ShellView::default()
+        };
+
+        let frame = render_snapshot(100, 12, &view, &Theme::default());
+        let text = frame.to_plain_text();
+
+        assert!(
+            text.contains("─ LSP ─"),
+            "LSP header must appear when lsp_lines is non-empty; rendered:\n{text}"
+        );
+        assert!(
+            text.contains("rust-analyzer"),
+            "LSP body line must appear; rendered:\n{text}"
+        );
+    }
+
+    /// An empty `lsp_lines` must not produce a `─ LSP ─` header.
+    #[test]
+    fn sidebar_lsp_section_omitted_when_empty() {
+        let view = ShellView {
+            prompt: "hi".into(),
+            sidebar: Some(SidebarView {
+                status_lines: vec!["● idle".into()],
+                ..SidebarView::default()
+            }),
+            ..ShellView::default()
+        };
+
+        let frame = render_snapshot(100, 10, &view, &Theme::default());
+        let text = frame.to_plain_text();
+
+        assert!(
+            !text.contains("─ LSP ─"),
+            "LSP header must not appear when lsp_lines is empty; rendered:\n{text}"
+        );
+    }
+
+    /// `todo_lines` must produce a `─ Todo ─` header followed by its body.
+    #[test]
+    fn sidebar_todo_section_renders_when_populated() {
+        let view = ShellView {
+            prompt: "hi".into(),
+            sidebar: Some(SidebarView {
+                todo_lines: vec!["✓ Write tests".into(), "◈ Refactor module".into()],
+                ..SidebarView::default()
+            }),
+            ..ShellView::default()
+        };
+
+        let frame = render_snapshot(100, 12, &view, &Theme::default());
+        let text = frame.to_plain_text();
+
+        assert!(
+            text.contains("─ Todo ─"),
+            "Todo header must appear when todo_lines is non-empty; rendered:\n{text}"
+        );
+        assert!(
+            text.contains("Write tests"),
+            "Todo body line must appear; rendered:\n{text}"
+        );
+        assert!(
+            text.contains("Refactor module"),
+            "second Todo body line must appear; rendered:\n{text}"
+        );
+    }
+
+    /// An empty `todo_lines` must not produce a `─ Todo ─` header.
+    #[test]
+    fn sidebar_todo_section_omitted_when_empty() {
+        let view = ShellView {
+            prompt: "hi".into(),
+            sidebar: Some(SidebarView {
+                status_lines: vec!["● idle".into()],
+                ..SidebarView::default()
+            }),
+            ..ShellView::default()
+        };
+
+        let frame = render_snapshot(100, 10, &view, &Theme::default());
+        let text = frame.to_plain_text();
+
+        assert!(
+            !text.contains("─ Todo ─"),
+            "Todo header must not appear when todo_lines is empty; rendered:\n{text}"
+        );
+    }
+
+    /// Verify the full OpenCode-style render order: sections must appear in the
+    /// documented sequence (Session → Context → Tools → MCP → LSP → Todo →
+    /// Suggestions → Providers → Workspace → Status → Controls → Tasks).
+    ///
+    /// We populate every section and assert that each header appears *after* its
+    /// predecessor in the rendered output, using byte-offset positions.
+    #[test]
+    fn sidebar_sections_render_in_opencode_panel_order() {
+        let view = ShellView {
+            prompt: "order-check".into(),
+            sidebar: Some(SidebarView {
+                session_lines: vec!["◈ abc12345".into()],
+                context_lines: vec!["100 / 200,000 tokens".into()],
+                tool_lines: vec!["✓ Bash".into()],
+                mcp_lines: vec!["✓ filesystem".into()],
+                lsp_lines: vec!["✓ rust-analyzer".into()],
+                todo_lines: vec!["◈ Fix lint".into()],
+                suggestions: vec![ContextSuggestion {
+                    severity: SuggestionSeverity::Info,
+                    title: "Consider /compact".into(),
+                    detail: "Free up context".into(),
+                }],
+                provider_lines: vec!["◈ openai · gpt-4o".into()],
+                workspace_lines: vec!["⎇  main".into()],
+                status_lines: vec!["● idle".into()],
+                control_lines: vec!["↵ send".into()],
+                task_lines: vec!["⚙  1 task".into()],
+            }),
+            ..ShellView::default()
+        };
+
+        // Use a very tall terminal so all sections fit in the sidebar inner area.
+        let frame = render_snapshot(100, 60, &view, &Theme::default());
+        let text = frame.to_plain_text();
+
+        // Helper: position of first occurrence in rendered text.
+        let pos = |needle: &str| {
+            text.find(needle)
+                .unwrap_or_else(|| panic!("'{needle}' not found in sidebar output:\n{text}"))
+        };
+
+        // Assert the strict ordering of every section header.
+        let session_pos = pos("─ Session ─");
+        let context_pos = pos("─ Context ─");
+        let tools_pos = pos("─ Tools ─");
+        let mcp_pos = pos("─ MCP ─");
+        let lsp_pos = pos("─ LSP ─");
+        let todo_pos = pos("─ Todo ─");
+        let suggestions_pos = pos("─ Suggestions ─");
+        let providers_pos = pos("─ Providers ─");
+        let workspace_pos = pos("─ Workspace ─");
+        let status_pos = pos("─ Status ─");
+        let controls_pos = pos("─ Controls ─");
+        let tasks_pos = pos("─ Tasks ─");
+
+        assert!(session_pos < context_pos, "Session must precede Context");
+        assert!(context_pos < tools_pos, "Context must precede Tools");
+        assert!(tools_pos < mcp_pos, "Tools must precede MCP");
+        assert!(mcp_pos < lsp_pos, "MCP must precede LSP");
+        assert!(lsp_pos < todo_pos, "LSP must precede Todo");
+        assert!(todo_pos < suggestions_pos, "Todo must precede Suggestions");
+        assert!(
+            suggestions_pos < providers_pos,
+            "Suggestions must precede Providers"
+        );
+        assert!(
+            providers_pos < workspace_pos,
+            "Providers must precede Workspace"
+        );
+        assert!(workspace_pos < status_pos, "Workspace must precede Status");
+        assert!(status_pos < controls_pos, "Status must precede Controls");
+        assert!(controls_pos < tasks_pos, "Controls must precede Tasks");
+    }
+
+    /// `from_app_state` must initialise the four new fields to empty `Vec`s.
+    /// The controller owns population of these fields each frame, so the model
+    /// layer must not pre-fill them.
+    #[test]
+    fn from_app_state_initialises_new_panel_fields_as_empty() {
+        let app = AppState::new(std::path::PathBuf::from("/workspace"));
+
+        let view = ShellView::from_app_state(&app, "", false);
+        let sidebar = view
+            .sidebar
+            .expect("sidebar must be Some from from_app_state");
+
+        assert!(
+            sidebar.tool_lines.is_empty(),
+            "tool_lines must be empty from from_app_state; got: {:?}",
+            sidebar.tool_lines
+        );
+        assert!(
+            sidebar.mcp_lines.is_empty(),
+            "mcp_lines must be empty from from_app_state; got: {:?}",
+            sidebar.mcp_lines
+        );
+        assert!(
+            sidebar.lsp_lines.is_empty(),
+            "lsp_lines must be empty from from_app_state; got: {:?}",
+            sidebar.lsp_lines
+        );
+        assert!(
+            sidebar.todo_lines.is_empty(),
+            "todo_lines must be empty from from_app_state; got: {:?}",
+            sidebar.todo_lines
+        );
+    }
+
+    /// All four new sections must be absent from a narrow terminal even when populated.
+    #[test]
+    fn new_sidebar_sections_absent_on_narrow_terminal() {
+        let view = ShellView {
+            prompt: "narrow".into(),
+            sidebar: Some(SidebarView {
+                tool_lines: vec!["✓ Bash".into()],
+                mcp_lines: vec!["✓ filesystem".into()],
+                lsp_lines: vec!["✓ rust-analyzer".into()],
+                todo_lines: vec!["◈ Fix lint".into()],
+                ..SidebarView::default()
+            }),
+            ..ShellView::default()
+        };
+
+        // Width 99 is one below MIN_SIDEBAR_WIDTH – sidebar is fully suppressed.
+        let frame = render_snapshot(99, 20, &view, &Theme::default());
+        let text = frame.to_plain_text();
+
+        for absent in &["─ Tools ─", "─ MCP ─", "─ LSP ─", "─ Todo ─"] {
+            assert!(
+                !text.contains(absent),
+                "{absent} must not appear on narrow terminal; rendered:\n{text}"
+            );
+        }
+    }
+
+    /// Each section header must appear exactly once even when all sections are
+    /// populated.  A previous merge accidentally inserted duplicate render calls
+    /// for Tools/MCP/LSP/Todo at the end of `sidebar_section_lines`; this test
+    /// is the regression guard.
+    #[test]
+    fn sidebar_section_headers_appear_exactly_once() {
+        let view = ShellView {
+            prompt: "dup-check".into(),
+            sidebar: Some(SidebarView {
+                tool_lines: vec!["✓ Bash".into()],
+                mcp_lines: vec!["✓ filesystem".into()],
+                lsp_lines: vec!["✓ rust-analyzer".into()],
+                todo_lines: vec!["◈ Fix lint".into()],
+                session_lines: vec!["◈ abc12345".into()],
+                ..SidebarView::default()
+            }),
+            ..ShellView::default()
+        };
+
+        let frame = render_snapshot(100, 40, &view, &Theme::default());
+        let text = frame.to_plain_text();
+
+        // Every integration-panel header must appear at most once.
+        for header in &["─ Tools ─", "─ MCP ─", "─ LSP ─", "─ Todo ─", "─ Session ─"]
+        {
+            let count = text.matches(header).count();
+            assert_eq!(
+                count, 1,
+                "'{header}' must appear exactly once; found {count} times in:\n{text}"
+            );
+        }
     }
 }
