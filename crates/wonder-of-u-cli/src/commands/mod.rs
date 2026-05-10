@@ -14,20 +14,24 @@ use wonder_of_u_core::{
 
 mod advanced;
 pub(crate) mod auth;
+pub(crate) mod cost;
 mod doctor;
 mod extras;
 mod features;
 mod help;
 pub(crate) mod hooks;
 mod mcp;
+pub mod memory;
 mod plugin;
 pub(crate) mod project;
 pub(crate) mod prompt;
+pub mod rewind;
 pub(crate) mod search;
 mod session;
 mod setup;
 mod skills;
 mod status;
+mod summary;
 mod task_runtime;
 mod tui;
 pub(crate) mod workflow;
@@ -42,9 +46,8 @@ use extras::{
     InitVerifiersCommand, InstallCommand, InstallGithubAppCommand, InstallSlackAppCommand,
     IssueCommand, MockLimitsCommand, OauthRefreshCommand, OnboardingCommand, PassesCommand,
     PerfIssueCommand, PrCommentsCommand, RateLimitOptionsCommand, RemoteEnvCommand,
-    RemoteSetupCommand, ResetLimitsCommand, RewindCommand, SandboxToggleCommand, ShareCommand,
-    StickersCommand, SummaryCommand, TeleportCommand, ThinkbackCommand, ThinkbackPlayCommand,
-    UltraplanCommand,
+    RemoteSetupCommand, ResetLimitsCommand, SandboxToggleCommand, ShareCommand, StickersCommand,
+    TeleportCommand, ThinkbackCommand, ThinkbackPlayCommand, UltraplanCommand,
 };
 pub(crate) use extras::{
     execute_help_command, execute_settings_command, execute_stats_command, execute_thinking_command,
@@ -58,6 +61,7 @@ use project::{
     InitCommand, MemoryCommand,
 };
 use prompt::PromptCommand;
+use rewind::RewindCommand;
 use session::{
     ClearCommand, CompactCommand, ExportCommand, RenameCommand, ResumeCommand, SessionCommand,
     TagCommand,
@@ -69,6 +73,7 @@ use status::{
     MobileCommand, OutputStyleCommand, ReleaseNotesCommand, StatsCommand, StatusCommand,
     UpgradeCommand, UsageCommand, VersionCommand,
 };
+use summary::SummaryCommand;
 use tui::TuiCommand;
 use workflow::{
     AgentsCommand, BriefCommand, ColorCommand, CommitCommand, CommitPushPrCommand, EffortCommand,
@@ -296,7 +301,7 @@ pub fn registry(storage_dir: Option<PathBuf>) -> Result<CommandRegistry> {
     registry.register(Arc::new(ThinkbackPlayCommand::new()))?;
     registry.register(Arc::new(AutofixPrCommand::new()))?;
     registry.register(Arc::new(PrCommentsCommand::new()))?;
-    registry.register(Arc::new(SummaryCommand::new()))?;
+    registry.register(Arc::new(SummaryCommand::new(storage_dir.clone())))?;
     registry.register(Arc::new(EnvCommand::new()))?;
     registry.register(Arc::new(OauthRefreshCommand::new(storage_dir.clone())))?;
     registry.register(Arc::new(IssueCommand::new()))?;

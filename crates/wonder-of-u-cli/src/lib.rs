@@ -53,6 +53,18 @@ pub enum Commands {
     Doctor,
     /// Summarize runtime and storage status.
     Status,
+    /// Show session cost and token usage.
+    Cost {
+        #[arg(long)]
+        /// Show cost for all sessions.
+        all: bool,
+    },
+    /// Show token usage (alias for cost).
+    Usage {
+        #[arg(long)]
+        /// Show cost for all sessions.
+        all: bool,
+    },
     /// Inspect persisted provider settings and overrides.
     Config {
         #[command(subcommand)]
@@ -150,6 +162,15 @@ pub enum Commands {
         /// Stores the session id
         session_id: String,
     },
+    /// Print a summary of a conversation session.
+    Summary {
+        #[arg(long)]
+        /// Stores the session id
+        session: Option<String>,
+        #[arg(long, default_value = "markdown")]
+        /// Stores the format
+        format: String,
+    },
     /// Rename a persisted session.
     Rename {
         #[arg()]
@@ -182,6 +203,24 @@ pub enum Commands {
         #[arg(long, default_value_t = 8)]
         /// Stores the keep last
         keep_last: usize,
+    },
+    /// Rewind a session to remove recent message exchanges.
+    Rewind {
+        /// Session ID (defaults to most recent).
+        #[arg(long)]
+        session: Option<String>,
+        /// Number of exchanges to remove.
+        #[arg(long, short, default_value_t = 1)]
+        n: usize,
+        /// Skip the confirmation prompt.
+        #[arg(long, short)]
+        yes: bool,
+    },
+    /// Manage AI memory files (CLAUDE.md).
+    Memory {
+        #[command(subcommand)]
+        /// Stores the command
+        command: Option<MemoryCommand>,
     },
     /// List files beneath the current working directory.
     Files {
@@ -381,6 +420,16 @@ pub enum SessionCommand {
         limit: usize,
     },
 }
+/// Enumerates memory command
+#[derive(Debug, Clone, Eq, PartialEq, Subcommand)]
+pub enum MemoryCommand {
+    /// Show all memory file contents.
+    Show,
+    /// Open global memory file in $EDITOR.
+    Edit,
+    /// Print the path to the global memory file.
+    Path,
+}
 /// Enumerates permissions command
 #[derive(Debug, Clone, Subcommand)]
 pub enum PermissionsCommand {
@@ -558,17 +607,40 @@ fn run_with_terminal_mode<W: Write>(
     interactive_terminal: bool,
 ) -> Result<()> {
     let storage_dir = cli.storage_dir.or_else(resolve_default_storage_dir);
-    let registry = commands::registry(storage_dir.clone())?;
     match launch_plan(cli.command, interactive_terminal)? {
+        LaunchPlan::Cost { all } => {
+            let rendered =
+                commands::cost::show(storage_dir.as_deref(), &std::env::current_dir()?, all)?;
+            writeln!(writer, "{rendered}")?;
+            Ok(())
+        }
         LaunchPlan::Tui { session_id } => tui_runtime::run_tui(
             writer,
-            &registry,
+            &commands::registry(storage_dir.clone())?,
             storage_dir.as_deref(),
             tui_runtime::TuiLaunchOptions { session_id },
         ),
-        LaunchPlan::Invocation(invocation) => {
-            run_registered_invocation(invocation, &registry, storage_dir.as_deref(), writer)
+        LaunchPlan::Memory { command } => {
+            let storage_dir = storage_dir.ok_or_else(|| {
+                WonderError::validation(
+                    "memory command requires --storage-dir or HOME/XDG_CONFIG_HOME",
+                )
+            })?;
+            let cwd = std::env::current_dir()?;
+            match command.unwrap_or(MemoryCommand::Show) {
+                MemoryCommand::Show => {
+                    commands::memory::show_with_writer(&storage_dir, &cwd, writer)
+                }
+                MemoryCommand::Edit => commands::memory::edit(&storage_dir),
+                MemoryCommand::Path => commands::memory::path_cmd_with_writer(&storage_dir, writer),
+            }
         }
+        LaunchPlan::Invocation(invocation) => run_registered_invocation(
+            invocation,
+            &commands::registry(storage_dir.clone())?,
+            storage_dir.as_deref(),
+            writer,
+        ),
     }
 }
 
@@ -612,8 +684,10 @@ fn default_terminal_mode_for_run_from() -> bool {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum LaunchPlan {
+    Cost { all: bool },
     Tui { session_id: Option<String> },
     Invocation(CommandInvocation),
+    Memory { command: Option<MemoryCommand> },
 }
 
 fn terminal_is_interactive() -> bool {
@@ -624,7 +698,9 @@ fn launch_plan(command: Option<Commands>, interactive_terminal: bool) -> Result<
     match command {
         None if interactive_terminal => Ok(LaunchPlan::Tui { session_id: None }),
         None => Ok(LaunchPlan::Invocation(to_invocation(Commands::Doctor)?)),
+        Some(Commands::Cost { all } | Commands::Usage { all }) => Ok(LaunchPlan::Cost { all }),
         Some(Commands::Tui { session_id }) => Ok(LaunchPlan::Tui { session_id }),
+        Some(Commands::Memory { command }) => Ok(LaunchPlan::Memory { command }),
         Some(Commands::Resume { session_id }) if interactive_terminal => Ok(LaunchPlan::Tui {
             session_id: Some(session_id),
         }),
@@ -695,6 +771,9 @@ fn to_invocation(command: Commands) -> Result<CommandInvocation> {
         }
         Commands::Status => {
             commands::invocation_from_tokens("status", std::iter::empty::<String>())
+        }
+        Commands::Cost { .. } | Commands::Usage { .. } => {
+            unreachable!("cost and usage are handled directly by the top-level CLI")
         }
         Commands::Config { command } => match command.unwrap_or(ConfigCommand::Show) {
             ConfigCommand::Show => commands::invocation_from_tokens("config", ["show"]),
@@ -900,6 +979,16 @@ fn to_invocation(command: Commands) -> Result<CommandInvocation> {
             }
         }
         Commands::Resume { session_id } => commands::invocation_from_tokens("resume", [session_id]),
+        Commands::Summary { session, format } => {
+            let mut tokens = Vec::new();
+            if let Some(session) = session {
+                tokens.push("--session".into());
+                tokens.push(session);
+            }
+            tokens.push("--format".into());
+            tokens.push(format);
+            commands::invocation_from_tokens("summary", tokens)
+        }
         Commands::Rename { session_id, title } => {
             commands::invocation_from_tokens("rename", [session_id, title])
         }
@@ -921,6 +1010,24 @@ fn to_invocation(command: Commands) -> Result<CommandInvocation> {
             tokens.push("--keep-last".into());
             tokens.push(keep_last.to_string());
             commands::invocation_from_tokens("compact", tokens)
+        }
+        Commands::Rewind { session, n, yes } => {
+            let mut tokens = Vec::new();
+            if let Some(session) = session {
+                tokens.push("--session".into());
+                tokens.push(session);
+            }
+            tokens.push("--n".into());
+            tokens.push(n.to_string());
+            if yes {
+                tokens.push("--yes".into());
+            }
+            commands::invocation_from_tokens("rewind", tokens)
+        }
+        Commands::Memory { .. } => {
+            return Err(WonderError::validation(
+                "memory is handled directly and cannot be converted into a slash invocation",
+            ));
         }
         Commands::Files {
             path,
@@ -1151,9 +1258,13 @@ mod tests {
 
     use serde_json::{Value, json};
     use time::OffsetDateTime;
-    use wonder_of_u_core::{MessagePayload, SessionId, TaskState, TaskStatus};
+    use wonder_of_u_core::{
+        AppState, MessagePayload, SessionId, TaskState, TaskStatus, TokenUsage,
+    };
     use wonder_of_u_plugins::{PluginConfig, PluginConfigStore, PluginTrustDecision};
-    use wonder_of_u_storage::{CostStore, TaskStore, TranscriptStore};
+    use wonder_of_u_storage::{
+        CostStore, SessionCostLedger, SessionMetadata, TaskStore, TranscriptStore,
+    };
     use wonder_of_u_test_support::{EnvVarGuard, unique_test_dir};
 
     use super::*;
@@ -1406,6 +1517,13 @@ mod tests {
     }
 
     #[test]
+    fn cost_subcommand_uses_direct_launch_plan() {
+        let plan = launch_plan(Some(Commands::Cost { all: true }), false).expect("launch plan");
+
+        assert_eq!(plan, LaunchPlan::Cost { all: true });
+    }
+
+    #[test]
     fn noninteractive_resume_keeps_summary_invocation() {
         let plan = launch_plan(
             Some(Commands::Resume {
@@ -1419,6 +1537,32 @@ mod tests {
             plan,
             LaunchPlan::Invocation(commands::invocation_from_tokens("resume", ["abc-123"]))
         );
+    }
+
+    #[test]
+    fn rewind_command_keeps_cli_flags_in_the_registry_invocation() {
+        let invocation = to_invocation(Commands::Rewind {
+            session: Some("abc-123".into()),
+            n: 3,
+            yes: true,
+        })
+        .expect("rewind invocation");
+
+        assert_eq!(
+            invocation,
+            commands::invocation_from_tokens(
+                "rewind",
+                ["--session", "abc-123", "--n", "3", "--yes"]
+            )
+        );
+    }
+
+    #[test]
+    fn memory_command_uses_direct_launch_plan() {
+        let plan =
+            launch_plan(Some(Commands::Memory { command: None }), false).expect("launch plan");
+
+        assert_eq!(plan, LaunchPlan::Memory { command: None });
     }
 
     #[test]
@@ -1458,6 +1602,30 @@ mod tests {
 
         let text = String::from_utf8(output).expect("utf8");
         assert!(text.contains("SessionPersistence"));
+    }
+
+    #[test]
+    fn memory_path_command_prints_global_memory_path() {
+        let storage_dir = unique_test_dir("cli-memory-path");
+        let mut output = Vec::new();
+
+        run_from(
+            vec![
+                "wonder-of-u".to_string(),
+                "--storage-dir".to_string(),
+                storage_dir.display().to_string(),
+                "memory".to_string(),
+                "path".to_string(),
+            ],
+            &mut output,
+        )
+        .expect("run memory path");
+
+        let text = String::from_utf8(output).expect("utf8");
+        assert_eq!(
+            text.trim(),
+            storage_dir.join("CLAUDE.md").display().to_string()
+        );
     }
 
     #[test]
@@ -1528,6 +1696,74 @@ mod tests {
         assert!(text.contains("tasks_reconciled_at="));
         assert!(text.contains("fresh_task_heartbeats=0"));
         assert!(text.contains("plugin_runtime=command_subprocess"));
+    }
+
+    #[test]
+    fn cost_and_usage_commands_render_human_readable_cost_summary() {
+        let dir = unique_test_dir("cli-cost-command");
+        let storage_dir = dir.to_string_lossy().into_owned();
+        let store = TranscriptStore::new(&dir);
+        let cost_store = CostStore::new(&dir);
+
+        let mut state = AppState::new(dir.join("workspace"));
+        fs::create_dir_all(&state.session.cwd).expect("create workspace");
+        state.record_cost_usage(
+            TokenUsage {
+                input_tokens: 12_345,
+                output_tokens: 3_456,
+                cache_creation_tokens: 567,
+                cache_read_tokens: 1_234,
+            },
+            Some(0.0842),
+        );
+        store
+            .write_metadata(&SessionMetadata::from_app_state(&state))
+            .expect("write metadata");
+        cost_store
+            .write_costs(&SessionCostLedger::from_app_state(&state))
+            .expect("write costs");
+
+        let _cwd_lock = CWD_TEST_LOCK.lock().expect("cwd lock");
+        let original_cwd = std::env::current_dir().expect("current dir");
+        std::env::set_current_dir(&state.session.cwd).expect("set current dir");
+
+        let mut cost_output = Vec::new();
+        let mut usage_output = Vec::new();
+        let result = (|| -> Result<()> {
+            run_from(
+                vec![
+                    "wonder-of-u".to_string(),
+                    "--storage-dir".to_string(),
+                    storage_dir.clone(),
+                    "cost".to_string(),
+                ],
+                &mut cost_output,
+            )?;
+            run_from(
+                vec![
+                    "wonder-of-u".to_string(),
+                    "--storage-dir".to_string(),
+                    storage_dir,
+                    "usage".to_string(),
+                ],
+                &mut usage_output,
+            )?;
+            Ok(())
+        })();
+        std::env::set_current_dir(&original_cwd).expect("restore current dir");
+        result.expect("run cost commands");
+
+        let cost_text = String::from_utf8(cost_output).expect("cost utf8");
+        let usage_text = String::from_utf8(usage_output).expect("usage utf8");
+
+        assert_eq!(cost_text, usage_text);
+        assert!(cost_text.contains(&format!("Session: {}", state.session.id)));
+        assert!(cost_text.contains("  Input tokens:   12,345"));
+        assert!(cost_text.contains("  Output tokens:  3,456"));
+        assert!(cost_text.contains("  Cache read:     1,234"));
+        assert!(cost_text.contains("  Cache write:    567"));
+        assert!(cost_text.contains("  Total cost:     $0.0842"));
+        assert!(cost_text.contains("All-time total:   $0.0842"));
     }
 
     #[test]
