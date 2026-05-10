@@ -377,7 +377,11 @@ fn highlighted_code_lines(
         .collect()
 }
 
-fn wrap_highlighted_line(line: Line<'static>, role: MessageRole, max_width: usize) -> Vec<MessageLineView> {
+fn wrap_highlighted_line(
+    line: Line<'static>,
+    role: MessageRole,
+    max_width: usize,
+) -> Vec<MessageLineView> {
     let width = max_width.max(1);
     let mut wrapped = Vec::new();
     let mut current = Vec::new();

@@ -15,7 +15,8 @@ pub use rich::{
     AttachmentKind, AttachmentSummaryView, FileEditReferenceView, GroupedToolCallView,
     MarkdownBlockView, MarkdownCodeBlockView, MarkdownSummaryView, RejectedToolMessageKind,
     RejectedToolMessageView, RichMessageView, SystemErrorKind, SystemErrorView, ThinkingBlockView,
-    ToolCallView, ToolResultStatus, TranscriptBoundaryView, highlight_code_block, rich_message_views,
+    ToolCallView, ToolResultStatus, TranscriptBoundaryView, highlight_code_block,
+    rich_message_views,
 };
 /// Re-exports items from `tool_activity`
 pub use tool_activity::{

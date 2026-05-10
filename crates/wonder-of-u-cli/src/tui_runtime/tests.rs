@@ -4396,6 +4396,7 @@ fn ratatui_message_text_appears_in_frame() {
         messages: vec![MessageLineView {
             role: MessageRole::User,
             text: "test user message".into(),
+            spans: Vec::new(),
         }],
         status: "m".into(),
         footer: "f".into(),
