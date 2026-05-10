@@ -3286,8 +3286,11 @@ mod tests {
             ..AgentSettings::default()
         };
 
+        type EnvPairs<'a> = &'a [(&'a str, &'a str)];
+        type LocalBaseCase<'a> = (EnvPairs<'a>, &'a str, &'a str);
+
         // (env vars to inject, expected api_base, description)
-        let cases: &[(&[(&str, &str)], &str, &str)] = &[
+        let cases: &[LocalBaseCase<'_>] = &[
             (
                 &[("WONDER_OF_U_LOCAL_API_BASE", "http://primary:9000/v1")],
                 "http://primary:9000/v1",
