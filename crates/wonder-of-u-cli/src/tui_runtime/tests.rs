@@ -7284,10 +7284,7 @@ fn controller_toggles_optimize_token_mode_from_command() {
         .expect("toggle optimize-tonken");
 
     assert!(controller.state.optimize_token_mode);
-    assert_eq!(
-        controller.status_note.as_deref(),
-        Some("optimize token on")
-    );
+    assert_eq!(controller.status_note.as_deref(), Some("optimize token on"));
     assert!(matches!(
         controller.state.messages.last().map(|message| &message.payload),
         Some(MessagePayload::Command { input, output })
@@ -7315,10 +7312,7 @@ fn controller_toggles_optimize_token_mode_via_alias() {
         .expect("toggle via alias");
 
     assert!(controller.state.optimize_token_mode);
-    assert_eq!(
-        controller.status_note.as_deref(),
-        Some("optimize token on")
-    );
+    assert_eq!(controller.status_note.as_deref(), Some("optimize token on"));
 }
 
 #[test]
@@ -7337,10 +7331,7 @@ fn controller_shows_optimize_token_notice_dialog() {
         .execute_slash_command("/optimize-tonken show")
         .expect("show optimize-tonken");
 
-    assert_eq!(
-        controller.status_note.as_deref(),
-        Some("optimize token")
-    );
+    assert_eq!(controller.status_note.as_deref(), Some("optimize token"));
     assert!(matches!(
         controller.dialog.as_ref(),
         Some(dialog) if dialog.title == "Optimize Token"
@@ -7372,9 +7363,7 @@ fn controller_optimize_token_flag_persists_across_clear() {
         .expect("enable");
     assert!(controller.state.optimize_token_mode);
 
-    controller
-        .execute_slash_command("/clear")
-        .expect("clear");
+    controller.execute_slash_command("/clear").expect("clear");
     assert!(
         controller.state.optimize_token_mode,
         "optimize_token_mode should survive /clear"

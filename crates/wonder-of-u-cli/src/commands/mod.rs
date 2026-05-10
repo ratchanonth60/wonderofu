@@ -85,9 +85,8 @@ use tui::TuiCommand;
 use workflow::{
     AgentsCommand, BriefCommand, ColorCommand, CommitCommand, CommitPushPrCommand, EffortCommand,
     ExitCommand, FastCommand, HooksCommand, KeybindingsCommand, OptimizeTonkenCommand,
-    PermissionsCommand, PlanCommand, PrivacySettingsCommand, ReviewCommand,
-    SecurityReviewCommand, StatuslineCommand, TasksCommand, TerminalSetupCommand, ThemeCommand,
-    VimCommand,
+    PermissionsCommand, PlanCommand, PrivacySettingsCommand, ReviewCommand, SecurityReviewCommand,
+    StatuslineCommand, TasksCommand, TerminalSetupCommand, ThemeCommand, VimCommand,
 };
 
 /// Builds the registry

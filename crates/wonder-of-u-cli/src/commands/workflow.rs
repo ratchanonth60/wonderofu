@@ -721,13 +721,10 @@ impl Command for OptimizeTonkenCommand {
         context: CommandContext,
         invocation: CommandInvocation,
     ) -> Result<CommandOutput> {
-        match parse_optimize_tonken_action(
-            invocation.args.trim(),
-            context.optimize_token_mode,
-        )? {
-            OptimizeTonkenAction::Show => Ok(CommandOutput::Text(
-                render_optimize_tonken_status(context.optimize_token_mode),
-            )),
+        match parse_optimize_tonken_action(invocation.args.trim(), context.optimize_token_mode)? {
+            OptimizeTonkenAction::Show => Ok(CommandOutput::Text(render_optimize_tonken_status(
+                context.optimize_token_mode,
+            ))),
             OptimizeTonkenAction::Set(enabled) => Ok(CommandOutput::Text(
                 render_optimize_tonken_transition(enabled),
             )),
@@ -1980,9 +1977,13 @@ fn render_optimize_tonken_status(enabled: bool) -> String {
     [
         "## Optimize Token".into(),
         format!("optimize_token_mode={enabled}"),
-        format!("current_optimize_token={}", optimize_token_mode_label(enabled)),
+        format!(
+            "current_optimize_token={}",
+            optimize_token_mode_label(enabled)
+        ),
         String::new(),
-        "When enabled, a system-prompt instruction is injected that tells the model to minimise".into(),
+        "When enabled, a system-prompt instruction is injected that tells the model to minimise"
+            .into(),
         "output tokens — omitting preambles, filler words, and unnecessary repetition.".into(),
         "Use '/optimize-tonken on' to enable, '/optimize-tonken off' to disable, or".into(),
         "'/optimize-tonken' (no args) to toggle.  '/optimize-token' is also accepted.".into(),
@@ -3572,20 +3573,20 @@ mod tests {
     use wonder_of_u_test_support::{EnvVarGuard, unique_test_dir};
 
     use super::{
-        CommitCommand, CommitPushPrCommand, PlanAction, PrivacySettingsCommand,
-        SecurityReviewCommand, TerminalSetupCommand, ensure_hooks_file, ensure_keybindings_file,
-        load_keybinding_resolver, normalize_color_invocation, normalize_effort_invocation,
-        normalize_permissions_invocation, normalize_theme_invocation, normalize_vim_invocation,
-        parse_brief_action, parse_effort_level_name, parse_fast_action, parse_optimize_tonken_action,
-        parse_plan_action, parse_session_color_name, render_brief_status, render_brief_transition,
-        render_color_status, render_color_transition, render_commit_enqueue,
-        render_commit_push_pr_enqueue, render_effort_status, render_effort_transition,
-        render_fast_status, render_fast_transition, render_hooks_summary,
-        render_keybindings_summary, render_optimize_tonken_status, render_optimize_tonken_transition,
-        render_plan_display, render_privacy_settings_summary, render_review_enqueue,
-        render_security_review_enqueue, render_statusline_enqueue, render_terminal_setup_notice,
-        render_theme_status, resolve_hooks_path, resolve_keybindings_path, resolve_plan_path,
-        write_persisted_effort, write_persisted_fast, OptimizeTonkenAction,
+        CommitCommand, CommitPushPrCommand, OptimizeTonkenAction, PlanAction,
+        PrivacySettingsCommand, SecurityReviewCommand, TerminalSetupCommand, ensure_hooks_file,
+        ensure_keybindings_file, load_keybinding_resolver, normalize_color_invocation,
+        normalize_effort_invocation, normalize_permissions_invocation, normalize_theme_invocation,
+        normalize_vim_invocation, parse_brief_action, parse_effort_level_name, parse_fast_action,
+        parse_optimize_tonken_action, parse_plan_action, parse_session_color_name,
+        render_brief_status, render_brief_transition, render_color_status, render_color_transition,
+        render_commit_enqueue, render_commit_push_pr_enqueue, render_effort_status,
+        render_effort_transition, render_fast_status, render_fast_transition, render_hooks_summary,
+        render_keybindings_summary, render_optimize_tonken_status,
+        render_optimize_tonken_transition, render_plan_display, render_privacy_settings_summary,
+        render_review_enqueue, render_security_review_enqueue, render_statusline_enqueue,
+        render_terminal_setup_notice, render_theme_status, resolve_hooks_path,
+        resolve_keybindings_path, resolve_plan_path, write_persisted_effort, write_persisted_fast,
     };
 
     fn test_context(cwd: &Path) -> CommandContext {

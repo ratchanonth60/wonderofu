@@ -2075,7 +2075,10 @@ const HELP_SLASH_COMMANDS: &[(&str, &str)] = &[
     ("/compact", "Compact conversation context"),
     ("/thinking", "Toggle extended thinking on/off"),
     ("/brief", "Toggle concise-response mode"),
-    ("/optimize-tonken", "Toggle token-optimisation mode (alias: /optimize-token)"),
+    (
+        "/optimize-tonken",
+        "Toggle token-optimisation mode (alias: /optimize-token)",
+    ),
     ("/stats", "Show session statistics"),
     ("/login", "Authenticate with a provider"),
     ("/logout", "Sign out"),
