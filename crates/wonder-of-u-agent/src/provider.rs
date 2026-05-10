@@ -1218,11 +1218,7 @@ fn resolve_profile_from_env_map(env: &BTreeMap<String, String>) -> Option<AwsCre
         .filter(|v| !v.is_empty())
     {
         std::path::PathBuf::from(explicit)
-    } else if let Some(home) = env
-        .get("HOME")
-        .map(|v| v.trim())
-        .filter(|v| !v.is_empty())
-    {
+    } else if let Some(home) = env.get("HOME").map(|v| v.trim()).filter(|v| !v.is_empty()) {
         std::path::Path::new(home).join(".aws").join("credentials")
     } else {
         // No HOME in the snapshot → skip profile resolution.

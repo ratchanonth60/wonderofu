@@ -768,7 +768,10 @@ mod tests {
     use time::OffsetDateTime;
     use wonder_of_u_test_support::unique_test_dir;
 
-    use crate::{AgentSettings, AuthMaterial, CredentialStore, SettingsStore, StoredCredentials, auth::AwsCredentials};
+    use crate::{
+        AgentSettings, AuthMaterial, CredentialStore, SettingsStore, StoredCredentials,
+        auth::AwsCredentials,
+    };
 
     use super::*;
     // Explicitly import test-visible helpers from sub-modules.
@@ -1113,15 +1116,18 @@ mod tests {
             Some("gpt-4.1")
         );
         assert_eq!(
-            body.pointer("/messages/0/role").and_then(serde_json::Value::as_str),
+            body.pointer("/messages/0/role")
+                .and_then(serde_json::Value::as_str),
             Some("system")
         );
         assert_eq!(
-            body.pointer("/messages/0/content").and_then(serde_json::Value::as_str),
+            body.pointer("/messages/0/content")
+                .and_then(serde_json::Value::as_str),
             Some("Be concise")
         );
         assert_eq!(
-            body.pointer("/messages/1/content").and_then(serde_json::Value::as_str),
+            body.pointer("/messages/1/content")
+                .and_then(serde_json::Value::as_str),
             Some("Say hi")
         );
         assert_eq!(
@@ -1198,7 +1204,8 @@ mod tests {
 
         assert!(matches!(response, ToolUseResponse::Final(_)));
         assert_eq!(
-            body.pointer("/tool_choice").and_then(serde_json::Value::as_str),
+            body.pointer("/tool_choice")
+                .and_then(serde_json::Value::as_str),
             Some("auto")
         );
         assert_eq!(
@@ -1212,11 +1219,13 @@ mod tests {
             Some("file_read")
         );
         assert_eq!(
-            body.pointer("/messages/0/role").and_then(serde_json::Value::as_str),
+            body.pointer("/messages/0/role")
+                .and_then(serde_json::Value::as_str),
             Some("system")
         );
         assert_eq!(
-            body.pointer("/messages/1/content").and_then(serde_json::Value::as_str),
+            body.pointer("/messages/1/content")
+                .and_then(serde_json::Value::as_str),
             Some("Summarize the file")
         );
         assert_eq!(
@@ -1230,7 +1239,8 @@ mod tests {
             Some("{\"path\":\"src/main.rs\"}")
         );
         assert_eq!(
-            body.pointer("/messages/3/role").and_then(serde_json::Value::as_str),
+            body.pointer("/messages/3/role")
+                .and_then(serde_json::Value::as_str),
             Some("tool")
         );
         assert_eq!(
@@ -1281,7 +1291,10 @@ mod tests {
                 assert_eq!(batch.calls.len(), 1);
                 assert_eq!(batch.calls[0].call_id, "call_456");
                 assert_eq!(batch.calls[0].tool_name, "glob");
-                assert_eq!(batch.calls[0].arguments, serde_json::json!({"pattern": "src/**/*.rs"}));
+                assert_eq!(
+                    batch.calls[0].arguments,
+                    serde_json::json!({"pattern": "src/**/*.rs"})
+                );
                 assert_eq!(batch.context_window_size, Some(128_000));
                 assert_eq!(batch.stop_reason.as_deref(), Some("tool_calls"));
                 assert_eq!(batch.usage.input_tokens, 18);
@@ -1334,11 +1347,13 @@ mod tests {
             Some("claude-3-7-sonnet-latest")
         );
         assert_eq!(
-            body.pointer("/messages/0/content").and_then(serde_json::Value::as_str),
+            body.pointer("/messages/0/content")
+                .and_then(serde_json::Value::as_str),
             Some("Explain the slice")
         );
         assert_eq!(
-            body.pointer("/max_tokens").and_then(serde_json::Value::as_u64),
+            body.pointer("/max_tokens")
+                .and_then(serde_json::Value::as_u64),
             Some(u64::from(DEFAULT_ANTHROPIC_MAX_OUTPUT_TOKENS))
         );
         assert_eq!(response.output_text, "Part one. Part two.");
@@ -1373,7 +1388,10 @@ mod tests {
 
         assert_eq!(recorded.method, "POST");
         assert_eq!(recorded.url, "https://api.openai.com/v1/chat/completions");
-        assert_eq!(body.pointer("/stream").and_then(serde_json::Value::as_bool), Some(true));
+        assert_eq!(
+            body.pointer("/stream").and_then(serde_json::Value::as_bool),
+            Some(true)
+        );
         assert_eq!(
             body.pointer("/stream_options/include_usage")
                 .and_then(serde_json::Value::as_bool),
@@ -1421,7 +1439,10 @@ mod tests {
 
         assert_eq!(recorded.method, "POST");
         assert_eq!(recorded.url, "https://api.anthropic.com/v1/messages");
-        assert_eq!(body.pointer("/stream").and_then(serde_json::Value::as_bool), Some(true));
+        assert_eq!(
+            body.pointer("/stream").and_then(serde_json::Value::as_bool),
+            Some(true)
+        );
         assert_eq!(streamed, "Part one. Part two.");
         assert_eq!(response.output_text, "Part one. Part two.");
         assert_eq!(response.stop_reason.as_deref(), Some("end_turn"));
@@ -1498,7 +1519,9 @@ mod tests {
             Some("copilot-chat/0.26.7")
         );
         assert_eq!(
-            completion_body.pointer("/model").and_then(serde_json::Value::as_str),
+            completion_body
+                .pointer("/model")
+                .and_then(serde_json::Value::as_str),
             Some("gpt-4.1")
         );
         assert_eq!(response.output_text, "Copilot reply");
@@ -1592,7 +1615,8 @@ mod tests {
             Some("secret-key")
         );
         assert_eq!(
-            body.pointer("/tool_choice/type").and_then(serde_json::Value::as_str),
+            body.pointer("/tool_choice/type")
+                .and_then(serde_json::Value::as_str),
             Some("auto")
         );
         assert_eq!(
@@ -1620,7 +1644,10 @@ mod tests {
                 assert_eq!(batch.calls.len(), 1);
                 assert_eq!(batch.calls[0].call_id, "toolu_1");
                 assert_eq!(batch.calls[0].tool_name, "glob");
-                assert_eq!(batch.calls[0].arguments, serde_json::json!({"pattern": "Cargo.toml"}));
+                assert_eq!(
+                    batch.calls[0].arguments,
+                    serde_json::json!({"pattern": "Cargo.toml"})
+                );
                 assert_eq!(batch.stop_reason.as_deref(), Some("tool_use"));
                 assert_eq!(batch.usage.input_tokens, 21);
                 assert_eq!(batch.usage.output_tokens, 5);
@@ -1700,7 +1727,8 @@ mod tests {
             Some("Bearer copilot-bearer")
         );
         assert_eq!(
-            body.pointer("/tool_choice").and_then(serde_json::Value::as_str),
+            body.pointer("/tool_choice")
+                .and_then(serde_json::Value::as_str),
             Some("auto")
         );
         assert_eq!(
@@ -1717,7 +1745,10 @@ mod tests {
                 );
                 assert_eq!(batch.calls.len(), 1);
                 assert_eq!(batch.calls[0].tool_name, "glob");
-                assert_eq!(batch.calls[0].arguments, serde_json::json!({"pattern": "Cargo.toml"}));
+                assert_eq!(
+                    batch.calls[0].arguments,
+                    serde_json::json!({"pattern": "Cargo.toml"})
+                );
             }
             other => panic!("expected copilot tool-call response, got {other:?}"),
         }
@@ -1864,11 +1895,13 @@ mod tests {
             Some("Bearer copilot-bearer")
         );
         assert_eq!(
-            body.pointer("/tool_choice/type").and_then(serde_json::Value::as_str),
+            body.pointer("/tool_choice/type")
+                .and_then(serde_json::Value::as_str),
             Some("auto")
         );
         assert_eq!(
-            body.pointer("/tools/0/name").and_then(serde_json::Value::as_str),
+            body.pointer("/tools/0/name")
+                .and_then(serde_json::Value::as_str),
             Some("glob")
         );
 
@@ -1877,7 +1910,10 @@ mod tests {
                 assert_eq!(batch.calls.len(), 1);
                 assert_eq!(batch.calls[0].call_id, "toolu_copilot_1");
                 assert_eq!(batch.calls[0].tool_name, "glob");
-                assert_eq!(batch.calls[0].arguments, serde_json::json!({"pattern": "Cargo.toml"}));
+                assert_eq!(
+                    batch.calls[0].arguments,
+                    serde_json::json!({"pattern": "Cargo.toml"})
+                );
                 assert_eq!(batch.stop_reason.as_deref(), Some("tool_use"));
             }
             other => panic!("expected copilot claude tool-call response, got {other:?}"),
@@ -1903,7 +1939,8 @@ mod tests {
         let body: serde_json::Value = serde_json::from_str(&recorded.body).expect("body json");
 
         assert_eq!(
-            body.pointer("/reasoning_effort").and_then(serde_json::Value::as_str),
+            body.pointer("/reasoning_effort")
+                .and_then(serde_json::Value::as_str),
             Some("high"),
             "reasoning_effort should be 'high' for high effort level"
         );
@@ -1932,7 +1969,8 @@ mod tests {
         let body: serde_json::Value = serde_json::from_str(&recorded.body).expect("body json");
 
         assert_eq!(
-            body.pointer("/thinking/type").and_then(serde_json::Value::as_str),
+            body.pointer("/thinking/type")
+                .and_then(serde_json::Value::as_str),
             Some("enabled"),
             "thinking type should be 'enabled' for high effort with claude model"
         );

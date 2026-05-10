@@ -166,10 +166,9 @@ pub(super) fn parse_openai_response(
     let choice = json
         .pointer("/choices/0")
         .ok_or_else(|| WonderError::validation("OpenAI response missing choices[0]"))?;
-    let output_text =
-        extract_openai_text(choice.pointer("/message/content")).ok_or_else(|| {
-            WonderError::validation("OpenAI response missing assistant message content")
-        })?;
+    let output_text = extract_openai_text(choice.pointer("/message/content")).ok_or_else(|| {
+        WonderError::validation("OpenAI response missing assistant message content")
+    })?;
     let usage = parse_openai_usage(json.get("usage"));
 
     Ok(CompletionResponse {

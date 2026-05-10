@@ -9,14 +9,14 @@
 use std::collections::BTreeMap;
 
 use hmac::{Hmac, Mac};
-use sha2::{Digest, Sha256};
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 use time::OffsetDateTime;
 use wonder_of_u_core::Result;
 
 use crate::{ResolvedProviderExecution, auth::AwsCredentials};
 
-use super::{CompletionRequest, HttpRequest, ToolUseRequest, DEFAULT_ANTHROPIC_MAX_OUTPUT_TOKENS};
+use super::{CompletionRequest, DEFAULT_ANTHROPIC_MAX_OUTPUT_TOKENS, HttpRequest, ToolUseRequest};
 
 // ─── SigV4 signing ────────────────────────────────────────────────────────────
 
@@ -305,10 +305,7 @@ pub(super) fn build_bedrock_tool_use_request(
 
 // ─── Private helpers ──────────────────────────────────────────────────────────
 
-fn append_bedrock_round(
-    messages: &mut Vec<Value>,
-    round: &super::ToolConversationRound,
-) {
+fn append_bedrock_round(messages: &mut Vec<Value>, round: &super::ToolConversationRound) {
     let mut assistant_content = Vec::new();
     if let Some(text) = round
         .assistant_text

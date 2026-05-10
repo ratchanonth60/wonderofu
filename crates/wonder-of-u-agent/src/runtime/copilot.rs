@@ -28,9 +28,9 @@ use crate::{
 };
 
 use super::{
-    CompletionRequest, HttpRequest, ToolConversationRound, ToolUseRequest,
-    COPILOT_OAUTH_REFRESH_SKEW_SECONDS, DEFAULT_ANTHROPIC_API_VERSION,
-    DEFAULT_ANTHROPIC_MAX_OUTPUT_TOKENS, is_anthropic_model, is_high_effort, join_url,
+    COPILOT_OAUTH_REFRESH_SKEW_SECONDS, CompletionRequest, DEFAULT_ANTHROPIC_API_VERSION,
+    DEFAULT_ANTHROPIC_MAX_OUTPUT_TOKENS, HttpRequest, ToolConversationRound, ToolUseRequest,
+    is_anthropic_model, is_high_effort, join_url,
 };
 
 /// Short-lived Copilot API session produced by the token-exchange step.
@@ -116,9 +116,7 @@ pub(super) fn build_copilot_oauth_refresh_request(refresh_token: &str) -> HttpRe
     }
 }
 
-pub(super) fn parse_copilot_oauth_refresh_response(
-    body: &str,
-) -> Result<crate::CopilotOAuthToken> {
+pub(super) fn parse_copilot_oauth_refresh_response(body: &str) -> Result<crate::CopilotOAuthToken> {
     let json: Value = serde_json::from_str(body)?;
     match json
         .get("error")
