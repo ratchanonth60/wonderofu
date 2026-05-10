@@ -1735,6 +1735,43 @@ fn controller_records_session_stats_in_transcript() {
 }
 
 #[test]
+fn controller_records_help_with_system_styled_rows() {
+    let dir = unique_test_dir("tui-help-command");
+    let registry = commands::registry(Some(dir.clone())).expect("registry");
+    let mut controller = TuiController::new(
+        test_context(&dir),
+        &registry,
+        Some(dir.as_path()),
+        TuiLaunchOptions { session_id: None },
+    )
+    .expect("controller");
+
+    controller
+        .execute_slash_command("/help")
+        .expect("show help");
+
+    assert_eq!(controller.status_note.as_deref(), Some("help"));
+    assert!(matches!(
+        controller.state.messages.last().map(|message| &message.payload),
+        Some(MessagePayload::Command { input, output })
+            if input == "/help"
+                && output
+                    .as_deref()
+                    .is_some_and(|text| text.contains("Slash Commands") && text.contains("/search"))
+    ));
+
+    let lines = wonder_of_u_tui::message_lines(&controller.state.messages, false);
+    assert!(lines.iter().any(|line| {
+        line.text == "Slash Commands" && line.role == wonder_of_u_tui::MessageRole::System
+    }));
+    assert!(lines.iter().any(|line| {
+        line.text.contains("/search")
+            && line.text.contains("Search workspace files")
+            && line.role == wonder_of_u_tui::MessageRole::System
+    }));
+}
+
+#[test]
 fn thinking_slash_command_toggles_and_reports_state() {
     let dir = unique_test_dir("tui-thinking-slash");
     let registry = commands::registry(Some(dir.clone())).expect("registry");
@@ -1902,6 +1939,54 @@ fn controller_shows_privacy_settings_notice_dialog() {
                 && output
                     .as_deref()
                     .is_some_and(|text| text.contains("## Privacy Settings"))
+    ));
+}
+
+#[test]
+fn settings_slash_command_records_configuration_and_usage() {
+    let dir = unique_test_dir("tui-settings-slash");
+    let registry = commands::registry(Some(dir.clone())).expect("registry");
+    let mut controller = TuiController::new(
+        test_context(&dir),
+        &registry,
+        Some(dir.as_path()),
+        TuiLaunchOptions { session_id: None },
+    )
+    .expect("controller");
+
+    controller.state.provider = Some("anthropic".into());
+    controller.state.model = Some("claude-3-5-sonnet-20241022".into());
+    controller.state.auth = AuthState::ready(
+        wonder_of_u_core::AuthMaterialKind::ApiKey,
+        wonder_of_u_core::AuthSource::Environment,
+    );
+    controller.state.set_context_window_size(Some(200_000));
+    controller.state.record_cost_usage(
+        TokenUsage {
+            input_tokens: 12_450,
+            output_tokens: 3_821,
+            cache_creation_tokens: 1_200,
+            cache_read_tokens: 8_100,
+        },
+        Some(0.0412),
+    );
+
+    controller
+        .execute_slash_command("/settings")
+        .expect("show settings");
+
+    assert_eq!(controller.status_note.as_deref(), Some("settings"));
+    assert!(controller.dialog.is_none());
+    assert!(matches!(
+        controller.state.messages.last().map(|message| &message.payload),
+        Some(MessagePayload::Command { input, output })
+            if input == "/settings"
+                && output.as_deref().is_some_and(|text| {
+                    text.contains("Configuration")
+                        && text.contains("Session Usage")
+                        && text.contains("Provider Status")
+                        && text.contains("$0.0412")
+                })
     ));
 }
 

@@ -1601,6 +1601,20 @@ impl<'a> TuiController<'a> {
             self.needs_render = true;
             return Ok(());
         }
+        if trimmed == "/help" || trimmed.starts_with("/help ") {
+            let arg = trimmed.strip_prefix("/help").map(str::trim).unwrap_or("");
+            if !arg.is_empty() {
+                return Err(WonderError::validation(
+                    "/help does not take arguments in the TUI",
+                ));
+            }
+            let output = commands::execute_help_command()?;
+            self.dismiss_dialog();
+            self.record_command_message(input, Some(&output))?;
+            self.status_note = Some("help".into());
+            self.needs_render = true;
+            return Ok(());
+        }
         if trimmed == "/stats" || trimmed.starts_with("/stats ") {
             let arg = trimmed.strip_prefix("/stats").map(str::trim).unwrap_or("");
             if !arg.is_empty() {
@@ -1610,6 +1624,21 @@ impl<'a> TuiController<'a> {
             self.dismiss_dialog();
             self.record_command_message(input, Some(&output))?;
             self.status_note = Some("session stats".into());
+            self.needs_render = true;
+            return Ok(());
+        }
+        if trimmed == "/settings" || trimmed.starts_with("/settings ") {
+            let arg = trimmed
+                .strip_prefix("/settings")
+                .map(str::trim)
+                .unwrap_or("");
+            if !arg.is_empty() {
+                return Err(WonderError::validation("/settings does not take arguments"));
+            }
+            let output = commands::execute_settings_command(&self.state)?;
+            self.dismiss_dialog();
+            self.record_command_message(input, Some(&output))?;
+            self.status_note = Some("settings".into());
             self.needs_render = true;
             return Ok(());
         }
