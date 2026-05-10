@@ -1,3 +1,24 @@
+//! Provider runtime: HTTP transport, shared types, and protocol dispatch.
+//!
+//! This module is the entry point for all provider completions.  Request
+//! building, response parsing, and streaming logic live in the protocol-
+//! specific sub-modules:
+//!
+//! - [`openai`]   – OpenAI-compatible (`/chat/completions`) logic.
+//! - [`anthropic`] – Anthropic Messages API (`/v1/messages`) logic.
+//! - [`copilot`]  – GitHub Copilot token exchange and request builders.
+//! - [`bedrock`]  – AWS Bedrock SigV4 signing and `InvokeModel` builders.
+//!
+//! [`ProviderRuntime::complete`], [`ProviderRuntime::complete_streaming`], and
+//! [`ProviderRuntime::complete_with_tool_use`] dispatch to the appropriate
+//! sub-module by inspecting [`WireProtocol`] on the resolved provider
+//! descriptor.
+
+mod anthropic;
+mod bedrock;
+mod copilot;
+mod openai;
+
 use std::{
     collections::BTreeMap,
     io::{BufRead, BufReader, Read},
@@ -6,25 +27,21 @@ use std::{
     time::Duration,
 };
 
-use hmac::{Hmac, Mac};
-use sha2::{Digest, Sha256};
-
-use percent_encoding::{NON_ALPHANUMERIC, utf8_percent_encode};
-use serde_json::{Value, json};
-use time::OffsetDateTime;
+use serde_json::Value;
 use wonder_of_u_core::{Result, TokenUsage, WonderError};
 
 use crate::{
-    CredentialStore, ProviderResolver, ProviderSelection, ResolvedProviderExecution,
-    auth::{
-        AwsCredentials, copilot_device_flow_client_id, copilot_standard_headers, copilot_token_url,
-        github_device_access_token_url, parse_copilot_oauth_token_response,
-    },
+    CredentialStore, ProviderResolver, ProviderSelection, ResolvedProviderExecution, WireProtocol,
 };
+
+// ─── Constants ────────────────────────────────────────────────────────────────
 
 const DEFAULT_ANTHROPIC_API_VERSION: &str = "2023-06-01";
 const DEFAULT_ANTHROPIC_MAX_OUTPUT_TOKENS: u32 = 1024;
 const COPILOT_OAUTH_REFRESH_SKEW_SECONDS: i64 = 60;
+
+// ─── Public types ─────────────────────────────────────────────────────────────
+
 /// Represents completion request
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct CompletionRequest {
@@ -53,6 +70,7 @@ impl CompletionRequest {
         }
     }
 }
+
 /// Represents completion response
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct CompletionResponse {
@@ -69,6 +87,7 @@ pub struct CompletionResponse {
     /// Stores the usage
     pub usage: TokenUsage,
 }
+
 /// Represents provider tool spec
 #[derive(Clone, Debug, PartialEq)]
 pub struct ProviderToolSpec {
@@ -79,6 +98,7 @@ pub struct ProviderToolSpec {
     /// Stores the input schema
     pub input_schema: Value,
 }
+
 /// Represents provider tool call
 #[derive(Clone, Debug, PartialEq)]
 pub struct ProviderToolCall {
@@ -89,6 +109,7 @@ pub struct ProviderToolCall {
     /// Stores the arguments
     pub arguments: Value,
 }
+
 /// Represents provider tool result message
 #[derive(Clone, Debug, PartialEq)]
 pub struct ProviderToolResultMessage {
@@ -97,6 +118,7 @@ pub struct ProviderToolResultMessage {
     /// Stores the content
     pub content: String,
 }
+
 /// Represents tool conversation round
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct ToolConversationRound {
@@ -107,6 +129,7 @@ pub struct ToolConversationRound {
     /// Stores the results
     pub results: Vec<ProviderToolResultMessage>,
 }
+
 /// Represents tool use request
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct ToolUseRequest {
@@ -125,6 +148,7 @@ pub struct ToolUseRequest {
     /// Stores the effort level
     pub effort_level: Option<String>,
 }
+
 /// Represents tool call batch response
 #[derive(Clone, Debug, PartialEq)]
 pub struct ToolCallBatchResponse {
@@ -139,6 +163,7 @@ pub struct ToolCallBatchResponse {
     /// Stores the usage
     pub usage: TokenUsage,
 }
+
 /// Enumerates tool use response
 #[derive(Clone, Debug, PartialEq)]
 pub enum ToolUseResponse {
@@ -147,6 +172,8 @@ pub enum ToolUseResponse {
     /// Represents tool calls
     ToolCalls(ToolCallBatchResponse),
 }
+
+// ─── Internal transport types ─────────────────────────────────────────────────
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct HttpRequest {
@@ -160,12 +187,6 @@ struct HttpRequest {
 struct HttpResponse {
     status: u16,
     body: String,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-struct CopilotSession {
-    api_base: String,
-    bearer_token: String,
 }
 
 struct StreamingHttpResponse {
@@ -255,6 +276,8 @@ fn read_http_response(response: ureq::Response) -> Result<HttpResponse> {
     Ok(HttpResponse { status, body })
 }
 
+// ─── Shared helpers (used across sub-modules) ─────────────────────────────────
+
 fn provider_error_message(body: &str) -> String {
     if let Ok(json) = serde_json::from_str::<Value>(body) {
         if let Some(message) = json
@@ -275,1658 +298,35 @@ fn provider_error_message(body: &str) -> String {
     }
 }
 
-/// Represents provider runtime
-pub struct ProviderRuntime {
-    resolver: ProviderResolver,
-    transport: Arc<dyn HttpTransport>,
+fn join_url(base: &str, path: &str) -> String {
+    format!("{}{}", base.trim_end_matches('/'), path)
 }
 
-impl Default for ProviderRuntime {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl ProviderRuntime {
-    /// Creates a new value
-    #[must_use]
-    pub fn new() -> Self {
-        Self {
-            resolver: ProviderResolver::builtin(),
-            transport: Arc::new(UreqTransport::default()),
-        }
-    }
-
-    /// Resolves execution
-    pub fn resolve_execution(
-        &self,
-        storage_dir: Option<&Path>,
-        selection: ProviderSelection,
-    ) -> Result<ResolvedProviderExecution> {
-        let resolved = self
-            .resolver
-            .load_execution(storage_dir, selection.clone())?;
-        self.refresh_copilot_oauth_if_needed(storage_dir, &selection, resolved)
-    }
-
-    /// Handles complete with storage
-    pub fn complete_with_storage(
-        &self,
-        storage_dir: Option<&Path>,
-        selection: ProviderSelection,
-        request: &CompletionRequest,
-    ) -> Result<(ResolvedProviderExecution, CompletionResponse)> {
-        let resolved = self.resolve_execution(storage_dir, selection)?;
-        let response = self.complete(&resolved, request)?;
-        Ok((resolved, response))
-    }
-
-    /// Handles complete
-    pub fn complete(
-        &self,
-        resolved: &ResolvedProviderExecution,
-        request: &CompletionRequest,
-    ) -> Result<CompletionResponse> {
-        if request.prompt.trim().is_empty() {
-            return Err(WonderError::validation("prompt cannot be empty"));
-        }
-
-        match resolved.provider_id() {
-            "openai" => self.complete_openai(resolved, request),
-            "anthropic" => self.complete_anthropic(resolved, request),
-            "copilot" => self.complete_copilot(resolved, request),
-            "bedrock" => self.complete_bedrock(resolved, request),
-            other => Err(WonderError::validation(format!(
-                "provider `{other}` runtime is not implemented yet; supported providers in this slice: openai, anthropic, copilot, bedrock"
-            ))),
-        }
-    }
-    /// Returns whether streaming
-    #[must_use]
-    pub fn supports_streaming(&self, provider_id: &str) -> bool {
-        matches!(provider_id, "openai" | "anthropic" | "copilot" | "bedrock")
-    }
-    /// Returns whether tool use
-    #[must_use]
-    pub fn supports_tool_use(&self, provider_id: &str) -> bool {
-        provider_id == "openai"
-    }
-    /// Returns whether tool use for
-    #[must_use]
-    pub fn supports_tool_use_for(&self, resolved: &ResolvedProviderExecution) -> bool {
-        matches!(
-            resolved.provider_id(),
-            "openai" | "anthropic" | "copilot" | "bedrock"
-        )
-    }
-
-    /// Handles complete streaming
-    pub fn complete_streaming<F>(
-        &self,
-        resolved: &ResolvedProviderExecution,
-        request: &CompletionRequest,
-        mut on_text_delta: F,
-    ) -> Result<CompletionResponse>
-    where
-        F: FnMut(&str) -> Result<()>,
+fn context_window_for_model(model: &str) -> u64 {
+    let model = model.to_ascii_lowercase();
+    if model.contains("claude-3-5")
+        || model.contains("claude-3-7")
+        || model.contains("claude-sonnet")
+        || model.contains("claude-3-opus")
     {
-        if request.prompt.trim().is_empty() {
-            return Err(WonderError::validation("prompt cannot be empty"));
-        }
-
-        match resolved.provider_id() {
-            "openai" => self.complete_openai_streaming(resolved, request, &mut on_text_delta),
-            "anthropic" => self.complete_anthropic_streaming(resolved, request, &mut on_text_delta),
-            "copilot" => self.complete_copilot_streaming(resolved, request, &mut on_text_delta),
-            "bedrock" => self.complete_bedrock_streaming(resolved, request, &mut on_text_delta),
-            other => Err(WonderError::validation(format!(
-                "provider `{other}` streaming runtime is not implemented yet; supported providers in this slice: openai, anthropic, copilot, bedrock"
-            ))),
-        }
-    }
-
-    /// Handles complete with tool use
-    pub fn complete_with_tool_use(
-        &self,
-        resolved: &ResolvedProviderExecution,
-        request: &ToolUseRequest,
-    ) -> Result<ToolUseResponse> {
-        if request.prompt.trim().is_empty() {
-            return Err(WonderError::validation("prompt cannot be empty"));
-        }
-
-        match resolved.provider_id() {
-            "openai" => self.complete_openai_with_tool_use(resolved, request),
-            "anthropic" => self.complete_anthropic_with_tool_use(resolved, request),
-            "copilot" => self.complete_copilot_with_tool_use(resolved, request),
-            "bedrock" => self.complete_bedrock_with_tool_use(resolved, request),
-            other => Err(WonderError::validation(format!(
-                "provider `{other}` tool-use orchestration is not implemented yet; supported providers in this slice: openai, anthropic, copilot, bedrock"
-            ))),
-        }
-    }
-
-    fn complete_openai(
-        &self,
-        resolved: &ResolvedProviderExecution,
-        request: &CompletionRequest,
-    ) -> Result<CompletionResponse> {
-        let http_request = build_openai_request(resolved, request)?;
-        let http_response = self.transport.execute(&http_request)?;
-        parse_openai_response(resolved, &http_response.body)
-    }
-
-    fn complete_openai_streaming<F>(
-        &self,
-        resolved: &ResolvedProviderExecution,
-        request: &CompletionRequest,
-        on_text_delta: &mut F,
-    ) -> Result<CompletionResponse>
-    where
-        F: FnMut(&str) -> Result<()>,
-    {
-        let http_request = build_openai_stream_request(resolved, request)?;
-        let http_response = self.transport.execute_stream(&http_request)?;
-        parse_openai_stream_response(resolved, http_response.reader, on_text_delta)
-    }
-
-    fn complete_openai_with_tool_use(
-        &self,
-        resolved: &ResolvedProviderExecution,
-        request: &ToolUseRequest,
-    ) -> Result<ToolUseResponse> {
-        let http_request = build_openai_tool_use_request(resolved, request)?;
-        let http_response = self.transport.execute(&http_request)?;
-        parse_openai_tool_use_response(resolved, &http_response.body)
-    }
-
-    fn complete_anthropic(
-        &self,
-        resolved: &ResolvedProviderExecution,
-        request: &CompletionRequest,
-    ) -> Result<CompletionResponse> {
-        let http_request = build_anthropic_request(resolved, request)?;
-        let http_response = self.transport.execute(&http_request)?;
-        parse_anthropic_response(resolved, &http_response.body)
-    }
-
-    fn complete_anthropic_streaming<F>(
-        &self,
-        resolved: &ResolvedProviderExecution,
-        request: &CompletionRequest,
-        on_text_delta: &mut F,
-    ) -> Result<CompletionResponse>
-    where
-        F: FnMut(&str) -> Result<()>,
-    {
-        let http_request = build_anthropic_stream_request(resolved, request)?;
-        let http_response = self.transport.execute_stream(&http_request)?;
-        parse_anthropic_stream_response(resolved, http_response.reader, on_text_delta)
-    }
-
-    fn complete_anthropic_with_tool_use(
-        &self,
-        resolved: &ResolvedProviderExecution,
-        request: &ToolUseRequest,
-    ) -> Result<ToolUseResponse> {
-        let http_request = build_anthropic_tool_use_request(resolved, request)?;
-        let http_response = self.transport.execute(&http_request)?;
-        parse_anthropic_tool_use_response(resolved, &http_response.body)
-    }
-
-    fn complete_copilot(
-        &self,
-        resolved: &ResolvedProviderExecution,
-        request: &CompletionRequest,
-    ) -> Result<CompletionResponse> {
-        let session = self.exchange_copilot_session(resolved)?;
-        if is_anthropic_model(resolved.model()) {
-            let http_request = build_copilot_anthropic_request(
-                resolved,
-                request,
-                false,
-                &session.api_base,
-                &session.bearer_token,
-            )?;
-            let http_response = self.transport.execute(&http_request)?;
-            parse_anthropic_response(resolved, &http_response.body)
-        } else {
-            let http_request = build_copilot_openai_request(
-                resolved,
-                request,
-                false,
-                &session.api_base,
-                &session.bearer_token,
-            )?;
-            let http_response = self.transport.execute(&http_request)?;
-            parse_openai_response(resolved, &http_response.body)
-        }
-    }
-
-    fn complete_copilot_streaming<F>(
-        &self,
-        resolved: &ResolvedProviderExecution,
-        request: &CompletionRequest,
-        on_text_delta: &mut F,
-    ) -> Result<CompletionResponse>
-    where
-        F: FnMut(&str) -> Result<()>,
-    {
-        let session = self.exchange_copilot_session(resolved)?;
-        if is_anthropic_model(resolved.model()) {
-            let http_request = build_copilot_anthropic_request(
-                resolved,
-                request,
-                true,
-                &session.api_base,
-                &session.bearer_token,
-            )?;
-            let http_response = self.transport.execute_stream(&http_request)?;
-            parse_anthropic_stream_response(resolved, http_response.reader, on_text_delta)
-        } else {
-            let http_request = build_copilot_openai_request(
-                resolved,
-                request,
-                true,
-                &session.api_base,
-                &session.bearer_token,
-            )?;
-            let http_response = self.transport.execute_stream(&http_request)?;
-            parse_openai_stream_response(resolved, http_response.reader, on_text_delta)
-        }
-    }
-
-    fn complete_copilot_with_tool_use(
-        &self,
-        resolved: &ResolvedProviderExecution,
-        request: &ToolUseRequest,
-    ) -> Result<ToolUseResponse> {
-        let session = self.exchange_copilot_session(resolved)?;
-        let http_request = if is_anthropic_model(resolved.model()) {
-            build_copilot_anthropic_tool_use_request(
-                resolved,
-                request,
-                &session.api_base,
-                &session.bearer_token,
-            )?
-        } else {
-            build_copilot_openai_tool_use_request(
-                resolved,
-                request,
-                &session.api_base,
-                &session.bearer_token,
-            )?
-        };
-        let http_response = self.transport.execute(&http_request)?;
-        if is_anthropic_model(resolved.model()) {
-            parse_anthropic_tool_use_response(resolved, &http_response.body)
-        } else {
-            parse_openai_tool_use_response(resolved, &http_response.body)
-        }
-    }
-
-    fn complete_bedrock(
-        &self,
-        resolved: &ResolvedProviderExecution,
-        request: &CompletionRequest,
-    ) -> Result<CompletionResponse> {
-        let http_request = build_bedrock_request(resolved, request)?;
-        let http_response = self.transport.execute(&http_request)?;
-        parse_anthropic_response(resolved, &http_response.body)
-    }
-
-    fn complete_bedrock_streaming<F>(
-        &self,
-        resolved: &ResolvedProviderExecution,
-        request: &CompletionRequest,
-        on_text_delta: &mut F,
-    ) -> Result<CompletionResponse>
-    where
-        F: FnMut(&str) -> Result<()>,
-    {
-        let http_request = build_bedrock_stream_request(resolved, request)?;
-        let http_response = self.transport.execute_stream(&http_request)?;
-        parse_anthropic_stream_response(resolved, http_response.reader, on_text_delta)
-    }
-
-    fn complete_bedrock_with_tool_use(
-        &self,
-        resolved: &ResolvedProviderExecution,
-        request: &ToolUseRequest,
-    ) -> Result<ToolUseResponse> {
-        let http_request = build_bedrock_tool_use_request(resolved, request)?;
-        let http_response = self.transport.execute(&http_request)?;
-        parse_anthropic_tool_use_response(resolved, &http_response.body)
-    }
-
-    fn exchange_copilot_session(
-        &self,
-        resolved: &ResolvedProviderExecution,
-    ) -> Result<CopilotSession> {
-        let http_request = build_copilot_token_exchange_request(resolved)?;
-        let http_response = self.transport.execute(&http_request)?;
-        parse_copilot_token_exchange_response(resolved, &http_response.body)
-    }
-
-    fn refresh_copilot_oauth_if_needed(
-        &self,
-        storage_dir: Option<&Path>,
-        selection: &ProviderSelection,
-        resolved: ResolvedProviderExecution,
-    ) -> Result<ResolvedProviderExecution> {
-        if resolved.provider_id() != "copilot" || !copilot_oauth_should_refresh(&resolved) {
-            return Ok(resolved);
-        }
-        let storage_dir = storage_dir.ok_or_else(|| {
-            WonderError::validation(
-                "copilot oauth token refresh requires --storage-dir so refreshed credentials can be persisted",
-            )
-        })?;
-        let refresh_token = resolved.oauth_refresh_token().ok_or_else(|| {
-            WonderError::validation(
-                "stored copilot oauth access token expired and no refresh token is available; run `wonder-of-u login --provider copilot` again",
-            )
-        })?;
-        let http_request = build_copilot_oauth_refresh_request(refresh_token);
-        let http_response = self.transport.execute(&http_request)?;
-        let token = parse_copilot_oauth_refresh_response(&http_response.body)?;
-        CredentialStore::new(storage_dir).set_oauth_token(
-            "copilot",
-            token.access_token,
-            token.refresh_token,
-            token.expires_at,
-        )?;
-        self.resolver
-            .load_execution(Some(storage_dir), selection.clone())
-    }
-}
-
-#[cfg(test)]
-impl ProviderRuntime {
-    fn with_transport(transport: Arc<dyn HttpTransport>) -> Self {
-        Self {
-            resolver: ProviderResolver::builtin(),
-            transport,
-        }
-    }
-}
-
-fn build_openai_request(
-    resolved: &ResolvedProviderExecution,
-    request: &CompletionRequest,
-) -> Result<HttpRequest> {
-    build_openai_request_with_mode(resolved, request, false)
-}
-
-fn build_openai_stream_request(
-    resolved: &ResolvedProviderExecution,
-    request: &CompletionRequest,
-) -> Result<HttpRequest> {
-    build_openai_request_with_mode(resolved, request, true)
-}
-
-fn build_openai_request_with_mode(
-    resolved: &ResolvedProviderExecution,
-    request: &CompletionRequest,
-    stream: bool,
-) -> Result<HttpRequest> {
-    let mut messages = Vec::new();
-    if let Some(system_prompt) = request
-        .system_prompt
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-    {
-        messages.push(json!({
-            "role": "system",
-            "content": system_prompt,
-        }));
-    }
-    messages.push(json!({
-        "role": "user",
-        "content": request.prompt,
-    }));
-
-    let mut body = json!({
-        "model": resolved.model(),
-        "messages": messages,
-    });
-    let body_map = body
-        .as_object_mut()
-        .expect("openai request body should be an object");
-    if stream {
-        body_map.insert("stream".into(), Value::Bool(true));
-        body_map.insert(
-            "stream_options".into(),
-            json!({
-                "include_usage": true,
-            }),
-        );
-    }
-    if let Some(temperature) = request.temperature {
-        body_map.insert("temperature".into(), json!(temperature));
-    }
-    if let Some(max_output_tokens) = request.max_output_tokens {
-        body_map.insert("max_completion_tokens".into(), json!(max_output_tokens));
-    }
-    // wire reasoning effort for openai
-    if is_high_effort(request.effort_level.as_deref()) {
-        body_map.insert("reasoning_effort".into(), json!("high"));
-    }
-
-    Ok(HttpRequest {
-        method: "POST".into(),
-        url: join_url(resolved.api_base(), "/chat/completions"),
-        headers: BTreeMap::from([
-            ("accept".into(), "application/json".into()),
-            (
-                "authorization".into(),
-                format!("Bearer {}", resolved.api_key()?),
-            ),
-            ("content-type".into(), "application/json".into()),
-        ]),
-        body: serde_json::to_string(&body)?,
-    })
-}
-
-fn build_openai_tool_use_request(
-    resolved: &ResolvedProviderExecution,
-    request: &ToolUseRequest,
-) -> Result<HttpRequest> {
-    let mut messages = Vec::new();
-    if let Some(system_prompt) = request
-        .system_prompt
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-    {
-        messages.push(json!({
-            "role": "system",
-            "content": system_prompt,
-        }));
-    }
-    messages.push(json!({
-        "role": "user",
-        "content": request.prompt,
-    }));
-    for round in &request.rounds {
-        let tool_calls = round
-            .calls
-            .iter()
-            .map(|call| {
-                Ok(json!({
-                    "id": call.call_id,
-                    "type": "function",
-                    "function": {
-                        "name": call.tool_name,
-                        "arguments": serde_json::to_string(&call.arguments)?,
-                    },
-                }))
-            })
-            .collect::<Result<Vec<_>>>()?;
-        messages.push(json!({
-            "role": "assistant",
-            "content": round.assistant_text,
-            "tool_calls": tool_calls,
-        }));
-        for result in &round.results {
-            messages.push(json!({
-                "role": "tool",
-                "tool_call_id": result.call_id,
-                "content": result.content,
-            }));
-        }
-    }
-
-    let tools = request
-        .tools
-        .iter()
-        .map(|tool| {
-            json!({
-                "type": "function",
-                "function": {
-                    "name": tool.name,
-                    "description": tool.description,
-                    "parameters": tool.input_schema,
-                },
-            })
-        })
-        .collect::<Vec<_>>();
-
-    let mut body = json!({
-        "model": resolved.model(),
-        "messages": messages,
-        "tool_choice": "auto",
-        "parallel_tool_calls": true,
-        "tools": tools,
-    });
-    let body_map = body
-        .as_object_mut()
-        .expect("openai request body should be an object");
-    if let Some(temperature) = request.temperature {
-        body_map.insert("temperature".into(), json!(temperature));
-    }
-    if let Some(max_output_tokens) = request.max_output_tokens {
-        body_map.insert("max_completion_tokens".into(), json!(max_output_tokens));
-    }
-    // wire reasoning effort for openai
-    if is_high_effort(request.effort_level.as_deref()) {
-        body_map.insert("reasoning_effort".into(), json!("high"));
-    }
-
-    Ok(HttpRequest {
-        method: "POST".into(),
-        url: join_url(resolved.api_base(), "/chat/completions"),
-        headers: BTreeMap::from([
-            ("accept".into(), "application/json".into()),
-            (
-                "authorization".into(),
-                format!("Bearer {}", resolved.api_key()?),
-            ),
-            ("content-type".into(), "application/json".into()),
-        ]),
-        body: serde_json::to_string(&body)?,
-    })
-}
-
-fn build_anthropic_request(
-    resolved: &ResolvedProviderExecution,
-    request: &CompletionRequest,
-) -> Result<HttpRequest> {
-    build_anthropic_request_with_mode(resolved, request, false)
-}
-
-fn build_anthropic_stream_request(
-    resolved: &ResolvedProviderExecution,
-    request: &CompletionRequest,
-) -> Result<HttpRequest> {
-    build_anthropic_request_with_mode(resolved, request, true)
-}
-
-fn build_anthropic_request_with_mode(
-    resolved: &ResolvedProviderExecution,
-    request: &CompletionRequest,
-    stream: bool,
-) -> Result<HttpRequest> {
-    let mut body = json!({
-        "model": resolved.model(),
-        "max_tokens": request
-            .max_output_tokens
-            .unwrap_or(DEFAULT_ANTHROPIC_MAX_OUTPUT_TOKENS),
-        "messages": [{
-            "role": "user",
-            "content": request.prompt,
-        }],
-    });
-    let body_map = body
-        .as_object_mut()
-        .expect("anthropic request body should be an object");
-    if stream {
-        body_map.insert("stream".into(), Value::Bool(true));
-    }
-    if let Some(system_prompt) = request
-        .system_prompt
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-    {
-        body_map.insert("system".into(), json!(system_prompt));
-    }
-    if let Some(temperature) = request.temperature {
-        body_map.insert("temperature".into(), json!(temperature));
-    }
-    // wire reasoning effort for anthropic
-    if is_high_effort(request.effort_level.as_deref()) && is_anthropic_model(resolved.model()) {
-        body_map.insert(
-            "thinking".into(),
-            json!({"type": "enabled", "budget_tokens": 10000}),
-        );
-    }
-
-    Ok(HttpRequest {
-        method: "POST".into(),
-        url: join_url(resolved.api_base(), "/v1/messages"),
-        headers: BTreeMap::from([
-            ("accept".into(), "application/json".into()),
-            (
-                "anthropic-version".into(),
-                DEFAULT_ANTHROPIC_API_VERSION.into(),
-            ),
-            ("content-type".into(), "application/json".into()),
-            ("x-api-key".into(), resolved.api_key()?.to_string()),
-        ]),
-        body: serde_json::to_string(&body)?,
-    })
-}
-
-fn build_anthropic_tool_use_request(
-    resolved: &ResolvedProviderExecution,
-    request: &ToolUseRequest,
-) -> Result<HttpRequest> {
-    build_anthropic_tool_use_request_with_headers(
-        resolved.model(),
-        resolved.api_base(),
-        BTreeMap::from([
-            ("accept".into(), "application/json".into()),
-            (
-                "anthropic-version".into(),
-                DEFAULT_ANTHROPIC_API_VERSION.into(),
-            ),
-            ("content-type".into(), "application/json".into()),
-            ("x-api-key".into(), resolved.api_key()?.to_string()),
-        ]),
-        request,
-    )
-}
-
-fn build_anthropic_tool_use_request_with_headers(
-    model: &str,
-    api_base: &str,
-    headers: BTreeMap<String, String>,
-    request: &ToolUseRequest,
-) -> Result<HttpRequest> {
-    let mut messages = vec![json!({
-        "role": "user",
-        "content": [{
-            "type": "text",
-            "text": request.prompt.as_str(),
-        }],
-    })];
-    for round in &request.rounds {
-        let mut assistant_content = Vec::new();
-        if let Some(text) = round
-            .assistant_text
-            .as_deref()
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-        {
-            assistant_content.push(json!({
-                "type": "text",
-                "text": text,
-            }));
-        }
-        assistant_content.extend(round.calls.iter().map(|call| {
-            json!({
-                "type": "tool_use",
-                "id": call.call_id.as_str(),
-                "name": call.tool_name.as_str(),
-                "input": call.arguments.clone(),
-            })
-        }));
-        messages.push(json!({
-            "role": "assistant",
-            "content": assistant_content,
-        }));
-        messages.push(json!({
-            "role": "user",
-            "content": round.results.iter().map(|result| json!({
-                "type": "tool_result",
-                "tool_use_id": result.call_id.as_str(),
-                "content": result.content.as_str(),
-            })).collect::<Vec<_>>(),
-        }));
-    }
-
-    let mut body = json!({
-        "model": model,
-        "max_tokens": request
-            .max_output_tokens
-            .unwrap_or(DEFAULT_ANTHROPIC_MAX_OUTPUT_TOKENS),
-        "messages": messages,
-    });
-    let body_map = body
-        .as_object_mut()
-        .expect("anthropic tool-use request body should be an object");
-    if !request.tools.is_empty() {
-        body_map.insert(
-            "tools".into(),
-            Value::Array(
-                request
-                    .tools
-                    .iter()
-                    .map(|tool| {
-                        json!({
-                            "name": tool.name.as_str(),
-                            "description": tool.description.as_str(),
-                            "input_schema": tool.input_schema.clone(),
-                        })
-                    })
-                    .collect(),
-            ),
-        );
-        body_map.insert("tool_choice".into(), json!({ "type": "auto" }));
-    }
-    if let Some(system_prompt) = request
-        .system_prompt
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-    {
-        body_map.insert("system".into(), json!(system_prompt));
-    }
-    if let Some(temperature) = request.temperature {
-        body_map.insert("temperature".into(), json!(temperature));
-    }
-    // wire reasoning effort for anthropic
-    if is_high_effort(request.effort_level.as_deref()) && is_anthropic_model(model) {
-        body_map.insert(
-            "thinking".into(),
-            json!({"type": "enabled", "budget_tokens": 10000}),
-        );
-    }
-
-    Ok(HttpRequest {
-        method: "POST".into(),
-        url: join_url(api_base, "/v1/messages"),
-        headers,
-        body: serde_json::to_string(&body)?,
-    })
-}
-
-fn build_copilot_token_exchange_request(
-    resolved: &ResolvedProviderExecution,
-) -> Result<HttpRequest> {
-    let mut headers = copilot_standard_headers();
-    headers.insert("accept".into(), "application/json".into());
-    headers.insert(
-        "authorization".into(),
-        format!("Bearer {}", resolved.oauth_access_token()?),
-    );
-    Ok(HttpRequest {
-        method: "GET".into(),
-        url: copilot_token_url(),
-        headers,
-        body: String::new(),
-    })
-}
-
-fn build_copilot_oauth_refresh_request(refresh_token: &str) -> HttpRequest {
-    let body = [
-        (
-            "client_id",
-            utf8_percent_encode(copilot_device_flow_client_id().as_str(), NON_ALPHANUMERIC)
-                .to_string(),
-        ),
-        ("grant_type", "refresh_token".to_string()),
-        (
-            "refresh_token",
-            utf8_percent_encode(refresh_token, NON_ALPHANUMERIC).to_string(),
-        ),
-    ]
-    .into_iter()
-    .map(|(key, value)| format!("{key}={value}"))
-    .collect::<Vec<_>>()
-    .join("&");
-    HttpRequest {
-        method: "POST".into(),
-        url: github_device_access_token_url(),
-        headers: BTreeMap::from([
-            ("accept".into(), "application/json".into()),
-            (
-                "content-type".into(),
-                "application/x-www-form-urlencoded".into(),
-            ),
-        ]),
-        body,
-    }
-}
-
-fn parse_copilot_token_exchange_response(
-    resolved: &ResolvedProviderExecution,
-    body: &str,
-) -> Result<CopilotSession> {
-    let json: Value = serde_json::from_str(body)?;
-    let bearer_token = json
-        .get("token")
-        .and_then(Value::as_str)
-        .filter(|value| !value.trim().is_empty())
-        .ok_or_else(|| WonderError::validation("Copilot token exchange response missing token"))?;
-    let api_base = json
-        .pointer("/endpoints/api")
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .unwrap_or_else(|| resolved.api_base());
-    Ok(CopilotSession {
-        api_base: api_base.to_string(),
-        bearer_token: bearer_token.to_string(),
-    })
-}
-
-fn parse_copilot_oauth_refresh_response(body: &str) -> Result<crate::CopilotOAuthToken> {
-    let json: Value = serde_json::from_str(body)?;
-    match json
-        .get("error")
-        .and_then(Value::as_str)
-        .unwrap_or_default()
-    {
-        "" => parse_copilot_oauth_token_response(&json),
-        other => Err(WonderError::validation(format!(
-            "GitHub oauth refresh failed: {other}"
-        ))),
-    }
-}
-
-fn build_copilot_openai_request(
-    resolved: &ResolvedProviderExecution,
-    request: &CompletionRequest,
-    stream: bool,
-    api_base: &str,
-    bearer_token: &str,
-) -> Result<HttpRequest> {
-    let mut messages = Vec::new();
-    if let Some(system_prompt) = request
-        .system_prompt
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-    {
-        messages.push(json!({
-            "role": "system",
-            "content": system_prompt,
-        }));
-    }
-    messages.push(json!({
-        "role": "user",
-        "content": request.prompt,
-    }));
-
-    let mut body = json!({
-        "model": resolved.model(),
-        "messages": messages,
-    });
-    let body_map = body
-        .as_object_mut()
-        .expect("copilot openai request body should be an object");
-    if stream {
-        body_map.insert("stream".into(), Value::Bool(true));
-        body_map.insert(
-            "stream_options".into(),
-            json!({
-                "include_usage": true,
-            }),
-        );
-    }
-    if let Some(temperature) = request.temperature {
-        body_map.insert("temperature".into(), json!(temperature));
-    }
-    if let Some(max_output_tokens) = request.max_output_tokens {
-        body_map.insert("max_completion_tokens".into(), json!(max_output_tokens));
-    }
-
-    let mut headers = copilot_standard_headers();
-    headers.insert("accept".into(), "application/json".into());
-    headers.insert("content-type".into(), "application/json".into());
-    headers.insert("authorization".into(), format!("Bearer {bearer_token}"));
-    // wire reasoning effort for copilot
-    if is_high_effort(request.effort_level.as_deref()) {
-        headers.insert("x-reasoning-effort".into(), "high".into());
-    }
-    Ok(HttpRequest {
-        method: "POST".into(),
-        url: join_url(api_base, "/chat/completions"),
-        headers,
-        body: serde_json::to_string(&body)?,
-    })
-}
-
-fn build_copilot_openai_tool_use_request(
-    resolved: &ResolvedProviderExecution,
-    request: &ToolUseRequest,
-    api_base: &str,
-    bearer_token: &str,
-) -> Result<HttpRequest> {
-    let mut messages = Vec::new();
-    if let Some(system_prompt) = request
-        .system_prompt
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-    {
-        messages.push(json!({
-            "role": "system",
-            "content": system_prompt,
-        }));
-    }
-    messages.push(json!({
-        "role": "user",
-        "content": request.prompt,
-    }));
-    for round in &request.rounds {
-        let tool_calls = round
-            .calls
-            .iter()
-            .map(|call| {
-                Ok(json!({
-                    "id": call.call_id,
-                    "type": "function",
-                    "function": {
-                        "name": call.tool_name,
-                        "arguments": serde_json::to_string(&call.arguments)?,
-                    },
-                }))
-            })
-            .collect::<Result<Vec<_>>>()?;
-        messages.push(json!({
-            "role": "assistant",
-            "content": round.assistant_text,
-            "tool_calls": tool_calls,
-        }));
-        for result in &round.results {
-            messages.push(json!({
-                "role": "tool",
-                "tool_call_id": result.call_id,
-                "content": result.content,
-            }));
-        }
-    }
-
-    let tools = request
-        .tools
-        .iter()
-        .map(|tool| {
-            json!({
-                "type": "function",
-                "function": {
-                    "name": tool.name,
-                    "description": tool.description,
-                    "parameters": tool.input_schema,
-                },
-            })
-        })
-        .collect::<Vec<_>>();
-
-    let mut body = json!({
-        "model": resolved.model(),
-        "messages": messages,
-        "tool_choice": "auto",
-        "parallel_tool_calls": true,
-        "tools": tools,
-    });
-    let body_map = body
-        .as_object_mut()
-        .expect("copilot openai tool-use request body should be an object");
-    if let Some(temperature) = request.temperature {
-        body_map.insert("temperature".into(), json!(temperature));
-    }
-    if let Some(max_output_tokens) = request.max_output_tokens {
-        body_map.insert("max_completion_tokens".into(), json!(max_output_tokens));
-    }
-
-    let mut headers = copilot_standard_headers();
-    headers.insert("accept".into(), "application/json".into());
-    headers.insert("content-type".into(), "application/json".into());
-    headers.insert("authorization".into(), format!("Bearer {bearer_token}"));
-    // wire reasoning effort for copilot
-    if is_high_effort(request.effort_level.as_deref()) {
-        headers.insert("x-reasoning-effort".into(), "high".into());
-    }
-    Ok(HttpRequest {
-        method: "POST".into(),
-        url: join_url(api_base, "/chat/completions"),
-        headers,
-        body: serde_json::to_string(&body)?,
-    })
-}
-
-fn build_copilot_anthropic_request(
-    resolved: &ResolvedProviderExecution,
-    request: &CompletionRequest,
-    stream: bool,
-    api_base: &str,
-    bearer_token: &str,
-) -> Result<HttpRequest> {
-    let mut body = json!({
-        "model": resolved.model(),
-        "max_tokens": request
-            .max_output_tokens
-            .unwrap_or(DEFAULT_ANTHROPIC_MAX_OUTPUT_TOKENS),
-        "messages": [{
-            "role": "user",
-            "content": request.prompt,
-        }],
-    });
-    let body_map = body
-        .as_object_mut()
-        .expect("copilot anthropic request body should be an object");
-    if stream {
-        body_map.insert("stream".into(), Value::Bool(true));
-    }
-    if let Some(system_prompt) = request
-        .system_prompt
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-    {
-        body_map.insert("system".into(), json!(system_prompt));
-    }
-    if let Some(temperature) = request.temperature {
-        body_map.insert("temperature".into(), json!(temperature));
-    }
-    // wire reasoning effort for anthropic
-    if is_high_effort(request.effort_level.as_deref()) && is_anthropic_model(resolved.model()) {
-        body_map.insert(
-            "thinking".into(),
-            json!({"type": "enabled", "budget_tokens": 10000}),
-        );
-    }
-
-    let mut headers = copilot_standard_headers();
-    headers.insert("accept".into(), "application/json".into());
-    headers.insert(
-        "anthropic-version".into(),
-        DEFAULT_ANTHROPIC_API_VERSION.into(),
-    );
-    headers.insert("authorization".into(), format!("Bearer {bearer_token}"));
-    headers.insert("content-type".into(), "application/json".into());
-    Ok(HttpRequest {
-        method: "POST".into(),
-        url: join_url(api_base, "/v1/messages"),
-        headers,
-        body: serde_json::to_string(&body)?,
-    })
-}
-
-fn build_copilot_anthropic_tool_use_request(
-    resolved: &ResolvedProviderExecution,
-    request: &ToolUseRequest,
-    api_base: &str,
-    bearer_token: &str,
-) -> Result<HttpRequest> {
-    let mut headers = copilot_standard_headers();
-    headers.insert("accept".into(), "application/json".into());
-    headers.insert(
-        "anthropic-version".into(),
-        DEFAULT_ANTHROPIC_API_VERSION.into(),
-    );
-    headers.insert("authorization".into(), format!("Bearer {bearer_token}"));
-    headers.insert("content-type".into(), "application/json".into());
-    build_anthropic_tool_use_request_with_headers(resolved.model(), api_base, headers, request)
-}
-
-// ─── AWS SigV4 signing ────────────────────────────────────────────────────────
-
-/// Computes an HMAC-SHA256 digest and returns the raw bytes.
-fn hmac_sha256(key: &[u8], data: &[u8]) -> Vec<u8> {
-    let mut mac = Hmac::<Sha256>::new_from_slice(key).expect("HMAC accepts any key length");
-    mac.update(data);
-    mac.finalize().into_bytes().to_vec()
-}
-
-/// Computes a hex-encoded SHA-256 hash of the given bytes.
-fn sha256_hex(data: &[u8]) -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(data);
-    hex::encode(hasher.finalize())
-}
-
-/// Derives the SigV4 signing key from the secret access key, date, region, and service.
-fn derive_signing_key(secret: &str, date: &str, region: &str, service: &str) -> Vec<u8> {
-    let k_date = hmac_sha256(format!("AWS4{secret}").as_bytes(), date.as_bytes());
-    let k_region = hmac_sha256(&k_date, region.as_bytes());
-    let k_service = hmac_sha256(&k_region, service.as_bytes());
-    hmac_sha256(&k_service, b"aws4_request")
-}
-
-/// Adds the AWS SigV4 `Authorization`, `x-amz-date`, `x-amz-content-sha256`,
-/// and optional `x-amz-security-token` headers to `headers` in place.
-///
-/// `datetime` must be `YYYYMMDDTHHMMSSZ`.
-fn sign_request_headers(
-    headers: &mut BTreeMap<String, String>,
-    method: &str,
-    url: &str,
-    body_bytes: &[u8],
-    credentials: &AwsCredentials,
-    datetime: &str,
-) -> Result<()> {
-    let date = &datetime[..8]; // YYYYMMDD
-    let service = "bedrock";
-
-    let url_no_scheme = url.split_once("://").map(|(_, r)| r).unwrap_or(url);
-    let (host_and_path, query_str) = url_no_scheme.split_once('?').unwrap_or((url_no_scheme, ""));
-    let host = host_and_path
-        .split_once('/')
-        .map(|(h, _)| h)
-        .unwrap_or(host_and_path);
-    let path = host_and_path
-        .split_once('/')
-        .map(|(_, p)| format!("/{p}"))
-        .unwrap_or_else(|| "/".to_string());
-
-    let payload_hash = sha256_hex(body_bytes);
-
-    headers.insert("host".into(), host.to_string());
-    headers.insert("x-amz-date".into(), datetime.to_string());
-    headers.insert("x-amz-content-sha256".into(), payload_hash.clone());
-    if let Some(token) = &credentials.session_token {
-        headers.insert("x-amz-security-token".into(), token.clone());
-    }
-
-    let mut signed_header_names: Vec<String> =
-        headers.keys().map(|k| k.to_ascii_lowercase()).collect();
-    signed_header_names.sort();
-    let signed_headers_str = signed_header_names.join(";");
-
-    let canonical_headers_str: String = signed_header_names
-        .iter()
-        .map(|name| {
-            let value = headers
-                .iter()
-                .find(|(k, _)| k.to_ascii_lowercase() == *name)
-                .map(|(_, v)| v.trim())
-                .unwrap_or_default();
-            format!("{name}:{value}\n")
-        })
-        .collect();
-
-    let canonical_request = [
-        method,
-        path.as_str(),
-        query_str,
-        canonical_headers_str.as_str(),
-        signed_headers_str.as_str(),
-        payload_hash.as_str(),
-    ]
-    .join("\n");
-
-    let credential_scope = format!("{date}/{}/{service}/aws4_request", credentials.region);
-    let string_to_sign = format!(
-        "AWS4-HMAC-SHA256\n{datetime}\n{credential_scope}\n{}",
-        sha256_hex(canonical_request.as_bytes())
-    );
-
-    let signing_key = derive_signing_key(
-        &credentials.secret_access_key,
-        date,
-        &credentials.region,
-        service,
-    );
-    let signature = hex::encode(hmac_sha256(&signing_key, string_to_sign.as_bytes()));
-
-    headers.insert(
-        "authorization".into(),
-        format!(
-            "AWS4-HMAC-SHA256 Credential={}/{credential_scope}, SignedHeaders={signed_headers_str}, Signature={signature}",
-            credentials.access_key_id,
-        ),
-    );
-
-    Ok(())
-}
-
-/// Formats a `time::OffsetDateTime` as the SigV4 datetime string `YYYYMMDDTHHMMSSZ`.
-fn sigv4_datetime(now: time::OffsetDateTime) -> String {
-    format!(
-        "{:04}{:02}{:02}T{:02}{:02}{:02}Z",
-        now.year(),
-        now.month() as u8,
-        now.day(),
-        now.hour(),
-        now.minute(),
-        now.second(),
-    )
-}
-
-// ─── Bedrock request builders ─────────────────────────────────────────────────
-
-fn build_bedrock_request(
-    resolved: &ResolvedProviderExecution,
-    request: &CompletionRequest,
-) -> Result<HttpRequest> {
-    build_bedrock_request_with_mode(resolved, request, false)
-}
-
-fn build_bedrock_stream_request(
-    resolved: &ResolvedProviderExecution,
-    request: &CompletionRequest,
-) -> Result<HttpRequest> {
-    build_bedrock_request_with_mode(resolved, request, true)
-}
-
-fn build_bedrock_request_with_mode(
-    resolved: &ResolvedProviderExecution,
-    request: &CompletionRequest,
-    stream: bool,
-) -> Result<HttpRequest> {
-    let credentials = resolved.aws_credentials()?;
-
-    let path_suffix = if stream {
-        "invoke-with-response-stream"
+        200_000
+    } else if model.contains("gpt-4o") || model.contains("gpt-4.1") {
+        128_000
     } else {
-        "invoke"
-    };
-    let url = format!(
-        "{}/model/{}/{}",
-        resolved.api_base().trim_end_matches('/'),
-        resolved.model(),
-        path_suffix,
-    );
-
-    let mut body = json!({
-        "anthropic_version": "bedrock-2023-05-31",
-        "max_tokens": request.max_output_tokens.unwrap_or(DEFAULT_ANTHROPIC_MAX_OUTPUT_TOKENS),
-        "messages": [{"role": "user", "content": request.prompt}],
-    });
-    let body_map = body
-        .as_object_mut()
-        .expect("bedrock request body is an object");
-    if let Some(system_prompt) = request
-        .system_prompt
-        .as_deref()
-        .map(str::trim)
-        .filter(|v| !v.is_empty())
-    {
-        body_map.insert("system".into(), json!(system_prompt));
+        200_000
     }
-    if let Some(temperature) = request.temperature {
-        body_map.insert("temperature".into(), json!(temperature));
-    }
-
-    let body_str = serde_json::to_string(&body)?;
-    let mut headers = BTreeMap::from([
-        ("accept".into(), "application/json".into()),
-        ("content-type".into(), "application/json".into()),
-    ]);
-    let datetime = sigv4_datetime(time::OffsetDateTime::now_utc());
-    sign_request_headers(
-        &mut headers,
-        "POST",
-        &url,
-        body_str.as_bytes(),
-        credentials,
-        &datetime,
-    )?;
-
-    Ok(HttpRequest {
-        method: "POST".into(),
-        url,
-        headers,
-        body: body_str,
-    })
 }
 
-fn build_bedrock_tool_use_request(
-    resolved: &ResolvedProviderExecution,
-    request: &ToolUseRequest,
-) -> Result<HttpRequest> {
-    let credentials = resolved.aws_credentials()?;
-    let url = format!(
-        "{}/model/{}/invoke",
-        resolved.api_base().trim_end_matches('/'),
-        resolved.model(),
-    );
-
-    let mut messages = vec![json!({
-        "role": "user",
-        "content": [{"type": "text", "text": request.prompt.as_str()}],
-    })];
-    for round in &request.rounds {
-        let mut assistant_content = Vec::new();
-        if let Some(text) = round
-            .assistant_text
-            .as_deref()
-            .map(str::trim)
-            .filter(|v| !v.is_empty())
-        {
-            assistant_content.push(json!({"type": "text", "text": text}));
-        }
-        assistant_content.extend(round.calls.iter().map(|call| {
-            json!({
-                "type": "tool_use",
-                "id": call.call_id.as_str(),
-                "name": call.tool_name.as_str(),
-                "input": call.arguments.clone(),
-            })
-        }));
-        messages.push(json!({"role": "assistant", "content": assistant_content}));
-        messages.push(json!({
-            "role": "user",
-            "content": round.results.iter().map(|r| json!({
-                "type": "tool_result",
-                "tool_use_id": r.call_id.as_str(),
-                "content": r.content.as_str(),
-            })).collect::<Vec<_>>(),
-        }));
-    }
-
-    let mut body = json!({
-        "anthropic_version": "bedrock-2023-05-31",
-        "max_tokens": request.max_output_tokens.unwrap_or(DEFAULT_ANTHROPIC_MAX_OUTPUT_TOKENS),
-        "messages": messages,
-    });
-    let body_map = body
-        .as_object_mut()
-        .expect("bedrock tool-use body is an object");
-    if !request.tools.is_empty() {
-        body_map.insert(
-            "tools".into(),
-            Value::Array(
-                request
-                    .tools
-                    .iter()
-                    .map(|tool| {
-                        json!({
-                            "name": tool.name.as_str(),
-                            "description": tool.description.as_str(),
-                            "input_schema": tool.input_schema.clone(),
-                        })
-                    })
-                    .collect(),
-            ),
-        );
-        body_map.insert("tool_choice".into(), json!({"type": "auto"}));
-    }
-    if let Some(system_prompt) = request
-        .system_prompt
-        .as_deref()
-        .map(str::trim)
-        .filter(|v| !v.is_empty())
-    {
-        body_map.insert("system".into(), json!(system_prompt));
-    }
-    if let Some(temperature) = request.temperature {
-        body_map.insert("temperature".into(), json!(temperature));
-    }
-
-    let body_str = serde_json::to_string(&body)?;
-    let mut headers = BTreeMap::from([
-        ("accept".into(), "application/json".into()),
-        ("content-type".into(), "application/json".into()),
-    ]);
-    let datetime = sigv4_datetime(time::OffsetDateTime::now_utc());
-    sign_request_headers(
-        &mut headers,
-        "POST",
-        &url,
-        body_str.as_bytes(),
-        credentials,
-        &datetime,
-    )?;
-
-    Ok(HttpRequest {
-        method: "POST".into(),
-        url,
-        headers,
-        body: body_str,
-    })
+/// Returns `true` when the model name indicates an Anthropic Claude model.
+///
+/// Used by the Copilot sub-module to choose between the OpenAI-compat and
+/// Anthropic Messages sub-paths.
+fn is_anthropic_model(model: &str) -> bool {
+    model.to_ascii_lowercase().contains("claude")
 }
 
-fn parse_openai_response(
-    resolved: &ResolvedProviderExecution,
-    body: &str,
-) -> Result<CompletionResponse> {
-    let json: Value = serde_json::from_str(body)?;
-    let choice = json
-        .pointer("/choices/0")
-        .ok_or_else(|| WonderError::validation("OpenAI response missing choices[0]"))?;
-    let output_text = extract_openai_text(choice.pointer("/message/content")).ok_or_else(|| {
-        WonderError::validation("OpenAI response missing assistant message content")
-    })?;
-    let usage = parse_openai_usage(json.get("usage"));
-
-    Ok(CompletionResponse {
-        provider: resolved.provider_id().to_string(),
-        model: resolved.model().to_string(),
-        context_window_size: Some(context_window_for_model(resolved.model())),
-        output_text,
-        stop_reason: choice
-            .get("finish_reason")
-            .and_then(Value::as_str)
-            .map(ToString::to_string),
-        usage,
-    })
-}
-
-fn parse_openai_tool_use_response(
-    resolved: &ResolvedProviderExecution,
-    body: &str,
-) -> Result<ToolUseResponse> {
-    let json: Value = serde_json::from_str(body)?;
-    let choice = json
-        .pointer("/choices/0")
-        .ok_or_else(|| WonderError::validation("OpenAI response missing choices[0]"))?;
-    let assistant_text = extract_openai_text(choice.pointer("/message/content"))
-        .filter(|text| !text.trim().is_empty());
-    let usage = parse_openai_usage(json.get("usage"));
-    let stop_reason = choice
-        .get("finish_reason")
-        .and_then(Value::as_str)
-        .map(ToString::to_string);
-
-    let tool_calls = choice
-        .pointer("/message/tool_calls")
-        .and_then(Value::as_array)
-        .map(|calls| {
-            calls
-                .iter()
-                .map(parse_openai_tool_call)
-                .collect::<Result<Vec<_>>>()
-        })
-        .transpose()?
-        .unwrap_or_default();
-
-    if !tool_calls.is_empty() {
-        return Ok(ToolUseResponse::ToolCalls(ToolCallBatchResponse {
-            assistant_text,
-            calls: tool_calls,
-            context_window_size: Some(context_window_for_model(resolved.model())),
-            stop_reason,
-            usage,
-        }));
-    }
-
-    let output_text = assistant_text.ok_or_else(|| {
-        WonderError::validation("OpenAI response missing assistant message content")
-    })?;
-    Ok(ToolUseResponse::Final(CompletionResponse {
-        provider: resolved.provider_id().to_string(),
-        model: resolved.model().to_string(),
-        context_window_size: Some(context_window_for_model(resolved.model())),
-        output_text,
-        stop_reason,
-        usage,
-    }))
-}
-
-fn parse_anthropic_response(
-    resolved: &ResolvedProviderExecution,
-    body: &str,
-) -> Result<CompletionResponse> {
-    let json: Value = serde_json::from_str(body)?;
-    let content = json
-        .get("content")
-        .and_then(Value::as_array)
-        .ok_or_else(|| WonderError::validation("Anthropic response missing content array"))?;
-    let output_text = extract_anthropic_text(content);
-    if output_text.trim().is_empty() {
-        return Err(WonderError::validation(
-            "Anthropic response did not contain any text content",
-        ));
-    }
-
-    Ok(CompletionResponse {
-        provider: resolved.provider_id().to_string(),
-        model: resolved.model().to_string(),
-        context_window_size: Some(context_window_for_model(resolved.model())),
-        output_text,
-        stop_reason: json
-            .get("stop_reason")
-            .and_then(Value::as_str)
-            .map(ToString::to_string),
-        usage: parse_anthropic_usage(json.get("usage")),
-    })
-}
-
-fn parse_anthropic_tool_use_response(
-    resolved: &ResolvedProviderExecution,
-    body: &str,
-) -> Result<ToolUseResponse> {
-    let json: Value = serde_json::from_str(body)?;
-    let content = json
-        .get("content")
-        .and_then(Value::as_array)
-        .ok_or_else(|| WonderError::validation("Anthropic response missing content array"))?;
-    let assistant_text = {
-        let text = extract_anthropic_text(content);
-        (!text.trim().is_empty()).then_some(text)
-    };
-    let tool_calls = content
-        .iter()
-        .filter(|part| part.get("type").and_then(Value::as_str) == Some("tool_use"))
-        .map(parse_anthropic_tool_call)
-        .collect::<Result<Vec<_>>>()?;
-    let stop_reason = json
-        .get("stop_reason")
-        .and_then(Value::as_str)
-        .map(ToString::to_string);
-    let usage = parse_anthropic_usage(json.get("usage"));
-
-    if !tool_calls.is_empty() {
-        return Ok(ToolUseResponse::ToolCalls(ToolCallBatchResponse {
-            assistant_text,
-            calls: tool_calls,
-            context_window_size: Some(context_window_for_model(resolved.model())),
-            stop_reason,
-            usage,
-        }));
-    }
-
-    let output_text = assistant_text.ok_or_else(|| {
-        WonderError::validation("Anthropic response did not contain any text content")
-    })?;
-    Ok(ToolUseResponse::Final(CompletionResponse {
-        provider: resolved.provider_id().to_string(),
-        model: resolved.model().to_string(),
-        context_window_size: Some(context_window_for_model(resolved.model())),
-        output_text,
-        stop_reason,
-        usage,
-    }))
-}
-
-fn parse_openai_stream_response<F>(
-    resolved: &ResolvedProviderExecution,
-    reader: Box<dyn Read + Send>,
-    on_text_delta: &mut F,
-) -> Result<CompletionResponse>
-where
-    F: FnMut(&str) -> Result<()>,
-{
-    let mut output_text = String::new();
-    let mut stop_reason = None;
-    let mut usage = TokenUsage::default();
-    consume_sse(BufReader::new(reader), |_, data| {
-        if data == "[DONE]" {
-            return Ok(false);
-        }
-        let json: Value = serde_json::from_str(data)?;
-        if let Some(text) = extract_openai_text(json.pointer("/choices/0/delta/content"))
-            .filter(|text| !text.is_empty())
-        {
-            output_text.push_str(&text);
-            on_text_delta(&text)?;
-        }
-        if let Some(choice) = json.pointer("/choices/0") {
-            if stop_reason.is_none() {
-                stop_reason = choice
-                    .get("finish_reason")
-                    .and_then(Value::as_str)
-                    .map(ToString::to_string);
-            }
-        }
-        if let Some(chunk_usage) = json.get("usage") {
-            usage = parse_openai_usage(Some(chunk_usage));
-        }
-        Ok(true)
-    })?;
-
-    if output_text.trim().is_empty() {
-        return Err(WonderError::validation(
-            "OpenAI streaming response did not contain any text content",
-        ));
-    }
-
-    Ok(CompletionResponse {
-        provider: resolved.provider_id().to_string(),
-        model: resolved.model().to_string(),
-        context_window_size: Some(context_window_for_model(resolved.model())),
-        output_text,
-        stop_reason,
-        usage,
-    })
-}
-
-fn parse_anthropic_stream_response<F>(
-    resolved: &ResolvedProviderExecution,
-    reader: Box<dyn Read + Send>,
-    on_text_delta: &mut F,
-) -> Result<CompletionResponse>
-where
-    F: FnMut(&str) -> Result<()>,
-{
-    let mut output_text = String::new();
-    let mut stop_reason = None;
-    let mut usage = TokenUsage::default();
-    consume_sse(BufReader::new(reader), |event, data| {
-        let json: Value = serde_json::from_str(data)?;
-        let event_type = json
-            .get("type")
-            .and_then(Value::as_str)
-            .or(event)
-            .unwrap_or_default();
-        match event_type {
-            "ping" | "content_block_start" | "message_stop" => {}
-            "error" => {
-                return Err(WonderError::validation(format!(
-                    "Anthropic streaming request failed: {}",
-                    provider_error_message(data)
-                )));
-            }
-            "message_start" => {
-                merge_usage(
-                    &mut usage,
-                    parse_anthropic_usage(json.pointer("/message/usage")),
-                );
-            }
-            "content_block_delta" => {
-                if let Some(text) = json
-                    .pointer("/delta/text")
-                    .and_then(Value::as_str)
-                    .filter(|text| !text.is_empty())
-                {
-                    output_text.push_str(text);
-                    on_text_delta(text)?;
-                }
-            }
-            "message_delta" => {
-                if stop_reason.is_none() {
-                    stop_reason = json
-                        .pointer("/delta/stop_reason")
-                        .and_then(Value::as_str)
-                        .map(ToString::to_string);
-                }
-                merge_usage(&mut usage, parse_anthropic_usage(json.get("usage")));
-            }
-            _ => {}
-        }
-        Ok(true)
-    })?;
-
-    if output_text.trim().is_empty() {
-        return Err(WonderError::validation(
-            "Anthropic streaming response did not contain any text content",
-        ));
-    }
-
-    Ok(CompletionResponse {
-        provider: resolved.provider_id().to_string(),
-        model: resolved.model().to_string(),
-        context_window_size: Some(context_window_for_model(resolved.model())),
-        output_text,
-        stop_reason,
-        usage,
-    })
+fn is_high_effort(level: Option<&str>) -> bool {
+    matches!(level, Some("high") | Some("max"))
 }
 
 fn consume_sse<R, F>(mut reader: BufReader<R>, mut on_event: F) -> Result<()>
@@ -1987,193 +387,392 @@ where
     Ok(keep_going)
 }
 
-fn extract_openai_text(content: Option<&Value>) -> Option<String> {
-    match content? {
-        Value::String(text) => Some(text.clone()),
-        Value::Array(parts) => {
-            let joined = parts
-                .iter()
-                .filter_map(|part| {
-                    part.get("text")
-                        .and_then(Value::as_str)
-                        .map(ToString::to_string)
-                        .or_else(|| {
-                            part.get("content")
-                                .and_then(Value::as_str)
-                                .map(ToString::to_string)
-                        })
-                })
-                .collect::<Vec<_>>()
-                .join("");
-            (!joined.is_empty()).then_some(joined)
+// ─── ProviderRuntime ──────────────────────────────────────────────────────────
+
+/// Represents provider runtime
+pub struct ProviderRuntime {
+    resolver: ProviderResolver,
+    transport: Arc<dyn HttpTransport>,
+}
+
+impl Default for ProviderRuntime {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl ProviderRuntime {
+    /// Creates a new value
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            resolver: ProviderResolver::builtin(),
+            transport: Arc::new(UreqTransport::default()),
         }
-        _ => None,
     }
-}
 
-fn parse_openai_tool_call(value: &Value) -> Result<ProviderToolCall> {
-    let call_id = value
-        .get("id")
-        .and_then(Value::as_str)
-        .filter(|value| !value.trim().is_empty())
-        .ok_or_else(|| WonderError::validation("OpenAI tool call missing id"))?;
-    let tool_name = value
-        .pointer("/function/name")
-        .and_then(Value::as_str)
-        .filter(|value| !value.trim().is_empty())
-        .ok_or_else(|| WonderError::validation("OpenAI tool call missing function name"))?;
-    let raw_arguments = value
-        .pointer("/function/arguments")
-        .and_then(Value::as_str)
-        .unwrap_or("{}");
-    let arguments = if raw_arguments.trim().is_empty() {
-        json!({})
-    } else {
-        serde_json::from_str(raw_arguments).map_err(|error| {
-            WonderError::validation(format!(
-                "OpenAI tool call `{tool_name}` returned invalid JSON arguments: {error}"
-            ))
-        })?
-    };
-
-    Ok(ProviderToolCall {
-        call_id: call_id.to_string(),
-        tool_name: tool_name.to_string(),
-        arguments,
-    })
-}
-
-fn parse_anthropic_tool_call(value: &Value) -> Result<ProviderToolCall> {
-    let call_id = value
-        .get("id")
-        .and_then(Value::as_str)
-        .filter(|value| !value.trim().is_empty())
-        .ok_or_else(|| WonderError::validation("Anthropic tool call missing id"))?;
-    let tool_name = value
-        .get("name")
-        .and_then(Value::as_str)
-        .filter(|value| !value.trim().is_empty())
-        .ok_or_else(|| WonderError::validation("Anthropic tool call missing name"))?;
-    let arguments = value.get("input").cloned().unwrap_or_else(|| json!({}));
-
-    Ok(ProviderToolCall {
-        call_id: call_id.to_string(),
-        tool_name: tool_name.to_string(),
-        arguments,
-    })
-}
-
-fn extract_anthropic_text(content: &[Value]) -> String {
-    content
-        .iter()
-        .filter(|part| {
-            part.get("type")
-                .and_then(Value::as_str)
-                .is_none_or(|kind| kind == "text")
-        })
-        .filter_map(|part| part.get("text").and_then(Value::as_str))
-        .collect::<Vec<_>>()
-        .join("")
-}
-
-fn parse_openai_usage(usage: Option<&Value>) -> TokenUsage {
-    TokenUsage {
-        input_tokens: usage
-            .and_then(|usage| usage.get("prompt_tokens"))
-            .and_then(Value::as_u64)
-            .unwrap_or_default(),
-        output_tokens: usage
-            .and_then(|usage| usage.get("completion_tokens"))
-            .and_then(Value::as_u64)
-            .unwrap_or_default(),
-        cache_creation_tokens: 0,
-        cache_read_tokens: usage
-            .and_then(|usage| usage.pointer("/prompt_tokens_details/cached_tokens"))
-            .and_then(Value::as_u64)
-            .unwrap_or_default(),
+    /// Resolves execution
+    pub fn resolve_execution(
+        &self,
+        storage_dir: Option<&Path>,
+        selection: ProviderSelection,
+    ) -> Result<ResolvedProviderExecution> {
+        let resolved = self
+            .resolver
+            .load_execution(storage_dir, selection.clone())?;
+        self.refresh_copilot_oauth_if_needed(storage_dir, &selection, resolved)
     }
-}
 
-fn context_window_for_model(model: &str) -> u64 {
-    let model = model.to_ascii_lowercase();
-    if model.contains("claude-3-5")
-        || model.contains("claude-3-7")
-        || model.contains("claude-sonnet")
-        || model.contains("claude-3-opus")
+    /// Handles complete with storage
+    pub fn complete_with_storage(
+        &self,
+        storage_dir: Option<&Path>,
+        selection: ProviderSelection,
+        request: &CompletionRequest,
+    ) -> Result<(ResolvedProviderExecution, CompletionResponse)> {
+        let resolved = self.resolve_execution(storage_dir, selection)?;
+        let response = self.complete(&resolved, request)?;
+        Ok((resolved, response))
+    }
+
+    /// Handles complete.
+    ///
+    /// Dispatches to the appropriate protocol implementation based on
+    /// `resolved.provider().wire_protocol`.
+    pub fn complete(
+        &self,
+        resolved: &ResolvedProviderExecution,
+        request: &CompletionRequest,
+    ) -> Result<CompletionResponse> {
+        if request.prompt.trim().is_empty() {
+            return Err(WonderError::validation("prompt cannot be empty"));
+        }
+
+        match resolved.provider().wire_protocol {
+            WireProtocol::OpenAiCompat => {
+                let http_request = openai::build_openai_request(resolved, request)?;
+                let http_response = self.transport.execute(&http_request)?;
+                openai::parse_openai_response(resolved, &http_response.body)
+            }
+            WireProtocol::AnthropicCompat => {
+                let http_request = anthropic::build_anthropic_request(resolved, request)?;
+                let http_response = self.transport.execute(&http_request)?;
+                anthropic::parse_anthropic_response(resolved, &http_response.body)
+            }
+            WireProtocol::Copilot => self.complete_copilot(resolved, request),
+            WireProtocol::BedrockAnthropic => {
+                let http_request = bedrock::build_bedrock_request(resolved, request)?;
+                let http_response = self.transport.execute(&http_request)?;
+                anthropic::parse_anthropic_response(resolved, &http_response.body)
+            }
+            proto => Err(WonderError::validation(format!(
+                "wire protocol `{proto:?}` is not supported yet; \
+                 supported protocols: open_ai_compat, anthropic_compat, copilot, bedrock_anthropic"
+            ))),
+        }
+    }
+
+    /// Returns whether the provider identified by `provider_id` supports
+    /// streaming.
+    ///
+    /// Looks up the provider's [`WireProtocol`] from the registry; unknown
+    /// provider IDs return `false`.
+    #[must_use]
+    pub fn supports_streaming(&self, provider_id: &str) -> bool {
+        self.resolver
+            .registry()
+            .get(provider_id)
+            .map(|desc| {
+                matches!(
+                    desc.wire_protocol,
+                    WireProtocol::OpenAiCompat
+                        | WireProtocol::AnthropicCompat
+                        | WireProtocol::Copilot
+                        | WireProtocol::BedrockAnthropic
+                )
+            })
+            .unwrap_or(false)
+    }
+
+    /// Returns whether the provider identified by `provider_id` supports tool
+    /// use via the OpenAI function-calling schema.
+    ///
+    /// Looks up the provider's [`WireProtocol`] from the registry; unknown
+    /// provider IDs return `false`.
+    #[must_use]
+    pub fn supports_tool_use(&self, provider_id: &str) -> bool {
+        self.resolver
+            .registry()
+            .get(provider_id)
+            .map(|desc| matches!(desc.wire_protocol, WireProtocol::OpenAiCompat))
+            .unwrap_or(false)
+    }
+
+    /// Returns whether tool use is supported for the given resolved provider.
+    ///
+    /// Dispatches based on [`WireProtocol`]; all currently implemented protocols
+    /// support tool use.
+    #[must_use]
+    pub fn supports_tool_use_for(&self, resolved: &ResolvedProviderExecution) -> bool {
+        matches!(
+            resolved.provider().wire_protocol,
+            WireProtocol::OpenAiCompat
+                | WireProtocol::AnthropicCompat
+                | WireProtocol::Copilot
+                | WireProtocol::BedrockAnthropic
+        )
+    }
+
+    /// Handles complete streaming.
+    ///
+    /// Dispatches to the appropriate protocol implementation based on
+    /// `resolved.provider().wire_protocol`.
+    pub fn complete_streaming<F>(
+        &self,
+        resolved: &ResolvedProviderExecution,
+        request: &CompletionRequest,
+        mut on_text_delta: F,
+    ) -> Result<CompletionResponse>
+    where
+        F: FnMut(&str) -> Result<()>,
     {
-        200_000
-    } else if model.contains("gpt-4o") || model.contains("gpt-4.1") {
-        128_000
-    } else {
-        200_000
-    }
-}
+        if request.prompt.trim().is_empty() {
+            return Err(WonderError::validation("prompt cannot be empty"));
+        }
 
-fn parse_anthropic_usage(usage: Option<&Value>) -> TokenUsage {
-    TokenUsage {
-        input_tokens: usage
-            .and_then(|usage| usage.get("input_tokens"))
-            .and_then(Value::as_u64)
-            .unwrap_or_default(),
-        output_tokens: usage
-            .and_then(|usage| usage.get("output_tokens"))
-            .and_then(Value::as_u64)
-            .unwrap_or_default(),
-        cache_creation_tokens: usage
-            .and_then(|usage| usage.get("cache_creation_input_tokens"))
-            .and_then(Value::as_u64)
-            .unwrap_or_default(),
-        cache_read_tokens: usage
-            .and_then(|usage| usage.get("cache_read_input_tokens"))
-            .and_then(Value::as_u64)
-            .unwrap_or_default(),
+        match resolved.provider().wire_protocol {
+            WireProtocol::OpenAiCompat => {
+                let http_request = openai::build_openai_stream_request(resolved, request)?;
+                let http_response = self.transport.execute_stream(&http_request)?;
+                openai::parse_openai_stream_response(resolved, http_response, &mut on_text_delta)
+            }
+            WireProtocol::AnthropicCompat => {
+                let http_request = anthropic::build_anthropic_stream_request(resolved, request)?;
+                let http_response = self.transport.execute_stream(&http_request)?;
+                anthropic::parse_anthropic_stream_response(
+                    resolved,
+                    http_response,
+                    &mut on_text_delta,
+                )
+            }
+            WireProtocol::Copilot => {
+                self.complete_copilot_streaming(resolved, request, &mut on_text_delta)
+            }
+            WireProtocol::BedrockAnthropic => {
+                let http_request = bedrock::build_bedrock_stream_request(resolved, request)?;
+                let http_response = self.transport.execute_stream(&http_request)?;
+                anthropic::parse_anthropic_stream_response(
+                    resolved,
+                    http_response,
+                    &mut on_text_delta,
+                )
+            }
+            proto => Err(WonderError::validation(format!(
+                "wire protocol `{proto:?}` streaming is not supported yet; \
+                 supported protocols: open_ai_compat, anthropic_compat, copilot, bedrock_anthropic"
+            ))),
+        }
     }
-}
 
-fn merge_usage(current: &mut TokenUsage, next: TokenUsage) {
-    if next.input_tokens > 0 {
-        current.input_tokens = next.input_tokens;
+    /// Handles complete with tool use.
+    ///
+    /// Dispatches to the appropriate protocol implementation based on
+    /// `resolved.provider().wire_protocol`.
+    pub fn complete_with_tool_use(
+        &self,
+        resolved: &ResolvedProviderExecution,
+        request: &ToolUseRequest,
+    ) -> Result<ToolUseResponse> {
+        if request.prompt.trim().is_empty() {
+            return Err(WonderError::validation("prompt cannot be empty"));
+        }
+
+        match resolved.provider().wire_protocol {
+            WireProtocol::OpenAiCompat => {
+                let http_request = openai::build_openai_tool_use_request(resolved, request)?;
+                let http_response = self.transport.execute(&http_request)?;
+                openai::parse_openai_tool_use_response(resolved, &http_response.body)
+            }
+            WireProtocol::AnthropicCompat => {
+                let http_request = anthropic::build_anthropic_tool_use_request(resolved, request)?;
+                let http_response = self.transport.execute(&http_request)?;
+                anthropic::parse_anthropic_tool_use_response(resolved, &http_response.body)
+            }
+            WireProtocol::Copilot => self.complete_copilot_with_tool_use(resolved, request),
+            WireProtocol::BedrockAnthropic => {
+                let http_request = bedrock::build_bedrock_tool_use_request(resolved, request)?;
+                let http_response = self.transport.execute(&http_request)?;
+                anthropic::parse_anthropic_tool_use_response(resolved, &http_response.body)
+            }
+            proto => Err(WonderError::validation(format!(
+                "wire protocol `{proto:?}` tool-use is not supported yet; \
+                 supported protocols: open_ai_compat, anthropic_compat, copilot, bedrock_anthropic"
+            ))),
+        }
     }
-    if next.output_tokens > 0 {
-        current.output_tokens = next.output_tokens;
+
+    // ─── Copilot dispatch helpers ─────────────────────────────────────────────
+
+    fn complete_copilot(
+        &self,
+        resolved: &ResolvedProviderExecution,
+        request: &CompletionRequest,
+    ) -> Result<CompletionResponse> {
+        let session = self.exchange_copilot_session(resolved)?;
+        if copilot::copilot_model_uses_anthropic_path(resolved.model()) {
+            let http_request = copilot::build_copilot_anthropic_request(
+                resolved,
+                request,
+                false,
+                &session.api_base,
+                &session.bearer_token,
+            )?;
+            let http_response = self.transport.execute(&http_request)?;
+            anthropic::parse_anthropic_response(resolved, &http_response.body)
+        } else {
+            let http_request = copilot::build_copilot_openai_request(
+                resolved,
+                request,
+                false,
+                &session.api_base,
+                &session.bearer_token,
+            )?;
+            let http_response = self.transport.execute(&http_request)?;
+            openai::parse_openai_response(resolved, &http_response.body)
+        }
     }
-    if next.cache_creation_tokens > 0 {
-        current.cache_creation_tokens = next.cache_creation_tokens;
+
+    fn complete_copilot_streaming<F>(
+        &self,
+        resolved: &ResolvedProviderExecution,
+        request: &CompletionRequest,
+        on_text_delta: &mut F,
+    ) -> Result<CompletionResponse>
+    where
+        F: FnMut(&str) -> Result<()>,
+    {
+        let session = self.exchange_copilot_session(resolved)?;
+        if copilot::copilot_model_uses_anthropic_path(resolved.model()) {
+            let http_request = copilot::build_copilot_anthropic_request(
+                resolved,
+                request,
+                true,
+                &session.api_base,
+                &session.bearer_token,
+            )?;
+            let http_response = self.transport.execute_stream(&http_request)?;
+            anthropic::parse_anthropic_stream_response(resolved, http_response, on_text_delta)
+        } else {
+            let http_request = copilot::build_copilot_openai_request(
+                resolved,
+                request,
+                true,
+                &session.api_base,
+                &session.bearer_token,
+            )?;
+            let http_response = self.transport.execute_stream(&http_request)?;
+            openai::parse_openai_stream_response(resolved, http_response, on_text_delta)
+        }
     }
-    if next.cache_read_tokens > 0 {
-        current.cache_read_tokens = next.cache_read_tokens;
+
+    fn complete_copilot_with_tool_use(
+        &self,
+        resolved: &ResolvedProviderExecution,
+        request: &ToolUseRequest,
+    ) -> Result<ToolUseResponse> {
+        let session = self.exchange_copilot_session(resolved)?;
+        let http_request = if copilot::copilot_model_uses_anthropic_path(resolved.model()) {
+            copilot::build_copilot_anthropic_tool_use_request(
+                resolved,
+                request,
+                &session.api_base,
+                &session.bearer_token,
+            )?
+        } else {
+            copilot::build_copilot_openai_tool_use_request(
+                resolved,
+                request,
+                &session.api_base,
+                &session.bearer_token,
+            )?
+        };
+        let http_response = self.transport.execute(&http_request)?;
+        if copilot::copilot_model_uses_anthropic_path(resolved.model()) {
+            anthropic::parse_anthropic_tool_use_response(resolved, &http_response.body)
+        } else {
+            openai::parse_openai_tool_use_response(resolved, &http_response.body)
+        }
     }
-}
 
-fn is_anthropic_model(model: &str) -> bool {
-    model.to_ascii_lowercase().contains("claude")
-}
+    fn exchange_copilot_session(
+        &self,
+        resolved: &ResolvedProviderExecution,
+    ) -> Result<copilot::CopilotSession> {
+        let http_request = copilot::build_copilot_token_exchange_request(resolved)?;
+        let http_response = self.transport.execute(&http_request)?;
+        copilot::parse_copilot_token_exchange_response(resolved, &http_response.body)
+    }
 
-fn is_high_effort(level: Option<&str>) -> bool {
-    matches!(level, Some("high") | Some("max"))
-}
-
-fn copilot_oauth_should_refresh(resolved: &ResolvedProviderExecution) -> bool {
-    resolved.oauth_expires_at().is_some_and(|expires_at| {
-        expires_at
-            <= OffsetDateTime::now_utc()
-                + time::Duration::seconds(COPILOT_OAUTH_REFRESH_SKEW_SECONDS)
-    })
-}
-
-fn join_url(base: &str, path: &str) -> String {
-    format!("{}{}", base.trim_end_matches('/'), path)
+    fn refresh_copilot_oauth_if_needed(
+        &self,
+        storage_dir: Option<&Path>,
+        selection: &ProviderSelection,
+        resolved: ResolvedProviderExecution,
+    ) -> Result<ResolvedProviderExecution> {
+        // Only Copilot uses OAuth token refresh; skip all other protocols.
+        if resolved.provider().wire_protocol != WireProtocol::Copilot
+            || !copilot::copilot_oauth_should_refresh(&resolved)
+        {
+            return Ok(resolved);
+        }
+        let storage_dir = storage_dir.ok_or_else(|| {
+            WonderError::validation(
+                "copilot oauth token refresh requires --storage-dir so refreshed credentials can be persisted",
+            )
+        })?;
+        let refresh_token = resolved.oauth_refresh_token().ok_or_else(|| {
+            WonderError::validation(
+                "stored copilot oauth access token expired and no refresh token is available; run `wonder-of-u login --provider copilot` again",
+            )
+        })?;
+        let http_request = copilot::build_copilot_oauth_refresh_request(refresh_token);
+        let http_response = self.transport.execute(&http_request)?;
+        let token = copilot::parse_copilot_oauth_refresh_response(&http_response.body)?;
+        CredentialStore::new(storage_dir).set_oauth_token(
+            "copilot",
+            token.access_token,
+            token.refresh_token,
+            token.expires_at,
+        )?;
+        self.resolver
+            .load_execution(Some(storage_dir), selection.clone())
+    }
 }
 
 #[cfg(test)]
-mod tests {
-    use std::{io::Cursor, sync::Mutex};
+impl ProviderRuntime {
+    fn with_transport(transport: Arc<dyn HttpTransport>) -> Self {
+        Self {
+            resolver: ProviderResolver::builtin(),
+            transport,
+        }
+    }
+}
 
+// ─── Tests ────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use std::{collections::BTreeMap, io::Cursor, sync::Mutex};
+
+    use time::OffsetDateTime;
     use wonder_of_u_test_support::unique_test_dir;
 
-    use crate::{AgentSettings, AuthMaterial, CredentialStore, SettingsStore, StoredCredentials};
+    use crate::{AgentSettings, AuthMaterial, CredentialStore, SettingsStore, StoredCredentials, auth::AwsCredentials};
 
     use super::*;
+    // Explicitly import test-visible helpers from sub-modules.
+    use bedrock::{sha256_hex, sign_request_headers, sigv4_datetime};
 
     #[derive(Default)]
     struct RecordingTransport {
@@ -2184,7 +783,7 @@ mod tests {
     }
 
     impl RecordingTransport {
-        fn with_json_body(body: Value) -> Arc<Self> {
+        fn with_json_body(body: serde_json::Value) -> Arc<Self> {
             Arc::new(Self {
                 requests: Mutex::new(Vec::new()),
                 responses: Mutex::new(vec![HttpResponse {
@@ -2208,7 +807,7 @@ mod tests {
             std::mem::take(&mut *self.requests.lock().expect("lock requests"))
         }
 
-        fn with_json_responses(bodies: Vec<Value>) -> Arc<Self> {
+        fn with_json_responses(bodies: Vec<serde_json::Value>) -> Arc<Self> {
             Arc::new(Self {
                 requests: Mutex::new(Vec::new()),
                 responses: Mutex::new(
@@ -2235,7 +834,7 @@ mod tests {
         }
 
         fn with_json_and_stream_bodies(
-            json_bodies: Vec<Value>,
+            json_bodies: Vec<serde_json::Value>,
             stream_bodies: Vec<&str>,
         ) -> Arc<Self> {
             Arc::new(Self {
@@ -2256,7 +855,7 @@ mod tests {
             })
         }
 
-        fn with_http_error(status: u16, body: Value) -> Arc<Self> {
+        fn with_http_error(status: u16, body: serde_json::Value) -> Arc<Self> {
             Arc::new(Self {
                 responses: Mutex::new(vec![HttpResponse {
                     status,
@@ -2396,7 +995,7 @@ mod tests {
                 Some(OffsetDateTime::now_utc() - time::Duration::minutes(5)),
             )
             .expect("write credentials");
-        let transport = RecordingTransport::with_json_responses(vec![json!({
+        let transport = RecordingTransport::with_json_responses(vec![serde_json::json!({
             "access_token": "fresh-oauth-token",
             "refresh_token": "refresh-token-2",
             "expires_in": 3600
@@ -2476,7 +1075,7 @@ mod tests {
 
     #[test]
     fn openai_runtime_builds_chat_completions_request() {
-        let transport = RecordingTransport::with_json_body(json!({
+        let transport = RecordingTransport::with_json_body(serde_json::json!({
             "choices": [{
                 "finish_reason": "stop",
                 "message": {"content": "Hello back"}
@@ -2501,7 +1100,7 @@ mod tests {
             .complete(&resolved, &request)
             .expect("openai response");
         let recorded = transport.take_request();
-        let body: Value = serde_json::from_str(&recorded.body).expect("request json");
+        let body: serde_json::Value = serde_json::from_str(&recorded.body).expect("request json");
 
         assert_eq!(recorded.method, "POST");
         assert_eq!(recorded.url, "https://api.openai.com/v1/chat/completions");
@@ -2510,29 +1109,29 @@ mod tests {
             Some("Bearer secret-key")
         );
         assert_eq!(
-            body.pointer("/model").and_then(Value::as_str),
+            body.pointer("/model").and_then(serde_json::Value::as_str),
             Some("gpt-4.1")
         );
         assert_eq!(
-            body.pointer("/messages/0/role").and_then(Value::as_str),
+            body.pointer("/messages/0/role").and_then(serde_json::Value::as_str),
             Some("system")
         );
         assert_eq!(
-            body.pointer("/messages/0/content").and_then(Value::as_str),
+            body.pointer("/messages/0/content").and_then(serde_json::Value::as_str),
             Some("Be concise")
         );
         assert_eq!(
-            body.pointer("/messages/1/content").and_then(Value::as_str),
+            body.pointer("/messages/1/content").and_then(serde_json::Value::as_str),
             Some("Say hi")
         );
         assert_eq!(
             body.pointer("/max_completion_tokens")
-                .and_then(Value::as_u64),
+                .and_then(serde_json::Value::as_u64),
             Some(64)
         );
         let temperature = body
             .pointer("/temperature")
-            .and_then(Value::as_f64)
+            .and_then(serde_json::Value::as_f64)
             .expect("temperature");
         assert!((temperature - 0.2).abs() < 1e-6);
         assert_eq!(response.output_text, "Hello back");
@@ -2545,7 +1144,7 @@ mod tests {
 
     #[test]
     fn openai_tool_use_runtime_builds_tools_request_with_prior_rounds() {
-        let transport = RecordingTransport::with_json_body(json!({
+        let transport = RecordingTransport::with_json_body(serde_json::json!({
             "choices": [{
                 "finish_reason": "stop",
                 "message": {"content": "Done"}
@@ -2570,7 +1169,7 @@ mod tests {
                     tools: vec![ProviderToolSpec {
                         name: "file_read".into(),
                         description: "Read a UTF-8 file".into(),
-                        input_schema: json!({
+                        input_schema: serde_json::json!({
                             "type": "object",
                             "properties": {
                                 "path": {"type": "string"}
@@ -2584,7 +1183,7 @@ mod tests {
                         calls: vec![ProviderToolCall {
                             call_id: "call_123".into(),
                             tool_name: "file_read".into(),
-                            arguments: json!({"path": "src/main.rs"}),
+                            arguments: serde_json::json!({"path": "src/main.rs"}),
                         }],
                         results: vec![ProviderToolResultMessage {
                             call_id: "call_123".into(),
@@ -2595,55 +1194,55 @@ mod tests {
             )
             .expect("tool-use response");
         let recorded = transport.take_request();
-        let body: Value = serde_json::from_str(&recorded.body).expect("request json");
+        let body: serde_json::Value = serde_json::from_str(&recorded.body).expect("request json");
 
         assert!(matches!(response, ToolUseResponse::Final(_)));
         assert_eq!(
-            body.pointer("/tool_choice").and_then(Value::as_str),
+            body.pointer("/tool_choice").and_then(serde_json::Value::as_str),
             Some("auto")
         );
         assert_eq!(
             body.pointer("/parallel_tool_calls")
-                .and_then(Value::as_bool),
+                .and_then(serde_json::Value::as_bool),
             Some(true)
         );
         assert_eq!(
             body.pointer("/tools/0/function/name")
-                .and_then(Value::as_str),
+                .and_then(serde_json::Value::as_str),
             Some("file_read")
         );
         assert_eq!(
-            body.pointer("/messages/0/role").and_then(Value::as_str),
+            body.pointer("/messages/0/role").and_then(serde_json::Value::as_str),
             Some("system")
         );
         assert_eq!(
-            body.pointer("/messages/1/content").and_then(Value::as_str),
+            body.pointer("/messages/1/content").and_then(serde_json::Value::as_str),
             Some("Summarize the file")
         );
         assert_eq!(
             body.pointer("/messages/2/tool_calls/0/id")
-                .and_then(Value::as_str),
+                .and_then(serde_json::Value::as_str),
             Some("call_123")
         );
         assert_eq!(
             body.pointer("/messages/2/tool_calls/0/function/arguments")
-                .and_then(Value::as_str),
+                .and_then(serde_json::Value::as_str),
             Some("{\"path\":\"src/main.rs\"}")
         );
         assert_eq!(
-            body.pointer("/messages/3/role").and_then(Value::as_str),
+            body.pointer("/messages/3/role").and_then(serde_json::Value::as_str),
             Some("tool")
         );
         assert_eq!(
             body.pointer("/messages/3/tool_call_id")
-                .and_then(Value::as_str),
+                .and_then(serde_json::Value::as_str),
             Some("call_123")
         );
     }
 
     #[test]
     fn openai_tool_use_runtime_parses_structured_tool_calls() {
-        let transport = RecordingTransport::with_json_body(json!({
+        let transport = RecordingTransport::with_json_body(serde_json::json!({
             "choices": [{
                 "finish_reason": "tool_calls",
                 "message": {
@@ -2682,7 +1281,7 @@ mod tests {
                 assert_eq!(batch.calls.len(), 1);
                 assert_eq!(batch.calls[0].call_id, "call_456");
                 assert_eq!(batch.calls[0].tool_name, "glob");
-                assert_eq!(batch.calls[0].arguments, json!({"pattern": "src/**/*.rs"}));
+                assert_eq!(batch.calls[0].arguments, serde_json::json!({"pattern": "src/**/*.rs"}));
                 assert_eq!(batch.context_window_size, Some(128_000));
                 assert_eq!(batch.stop_reason.as_deref(), Some("tool_calls"));
                 assert_eq!(batch.usage.input_tokens, 18);
@@ -2694,7 +1293,7 @@ mod tests {
 
     #[test]
     fn anthropic_runtime_builds_messages_request() {
-        let transport = RecordingTransport::with_json_body(json!({
+        let transport = RecordingTransport::with_json_body(serde_json::json!({
             "content": [
                 {"type": "text", "text": "Part one. "},
                 {"type": "text", "text": "Part two."}
@@ -2715,7 +1314,7 @@ mod tests {
             .complete(&resolved, &request)
             .expect("anthropic response");
         let recorded = transport.take_request();
-        let body: Value = serde_json::from_str(&recorded.body).expect("request json");
+        let body: serde_json::Value = serde_json::from_str(&recorded.body).expect("request json");
 
         assert_eq!(recorded.method, "POST");
         assert_eq!(recorded.url, "https://api.anthropic.com/v1/messages");
@@ -2731,15 +1330,15 @@ mod tests {
             Some(DEFAULT_ANTHROPIC_API_VERSION)
         );
         assert_eq!(
-            body.pointer("/model").and_then(Value::as_str),
+            body.pointer("/model").and_then(serde_json::Value::as_str),
             Some("claude-3-7-sonnet-latest")
         );
         assert_eq!(
-            body.pointer("/messages/0/content").and_then(Value::as_str),
+            body.pointer("/messages/0/content").and_then(serde_json::Value::as_str),
             Some("Explain the slice")
         );
         assert_eq!(
-            body.pointer("/max_tokens").and_then(Value::as_u64),
+            body.pointer("/max_tokens").and_then(serde_json::Value::as_u64),
             Some(u64::from(DEFAULT_ANTHROPIC_MAX_OUTPUT_TOKENS))
         );
         assert_eq!(response.output_text, "Part one. Part two.");
@@ -2770,14 +1369,14 @@ mod tests {
             })
             .expect("openai stream");
         let recorded = transport.take_request();
-        let body: Value = serde_json::from_str(&recorded.body).expect("request json");
+        let body: serde_json::Value = serde_json::from_str(&recorded.body).expect("request json");
 
         assert_eq!(recorded.method, "POST");
         assert_eq!(recorded.url, "https://api.openai.com/v1/chat/completions");
-        assert_eq!(body.pointer("/stream").and_then(Value::as_bool), Some(true));
+        assert_eq!(body.pointer("/stream").and_then(serde_json::Value::as_bool), Some(true));
         assert_eq!(
             body.pointer("/stream_options/include_usage")
-                .and_then(Value::as_bool),
+                .and_then(serde_json::Value::as_bool),
             Some(true)
         );
         assert_eq!(streamed, "Hello back");
@@ -2818,11 +1417,11 @@ mod tests {
             )
             .expect("anthropic stream");
         let recorded = transport.take_request();
-        let body: Value = serde_json::from_str(&recorded.body).expect("request json");
+        let body: serde_json::Value = serde_json::from_str(&recorded.body).expect("request json");
 
         assert_eq!(recorded.method, "POST");
         assert_eq!(recorded.url, "https://api.anthropic.com/v1/messages");
-        assert_eq!(body.pointer("/stream").and_then(Value::as_bool), Some(true));
+        assert_eq!(body.pointer("/stream").and_then(serde_json::Value::as_bool), Some(true));
         assert_eq!(streamed, "Part one. Part two.");
         assert_eq!(response.output_text, "Part one. Part two.");
         assert_eq!(response.stop_reason.as_deref(), Some("end_turn"));
@@ -2836,13 +1435,13 @@ mod tests {
     #[test]
     fn copilot_runtime_exchanges_oauth_token_and_builds_openai_request() {
         let transport = RecordingTransport::with_json_responses(vec![
-            json!({
+            serde_json::json!({
                 "token": "copilot-bearer",
                 "expires_at": 1_750_000_000,
                 "refresh_in": 900,
                 "endpoints": {"api": "https://api.githubcopilot.com"}
             }),
-            json!({
+            serde_json::json!({
                 "choices": [{
                     "finish_reason": "stop",
                     "message": {"content": "Copilot reply"}
@@ -2863,7 +1462,7 @@ mod tests {
         assert_eq!(requests.len(), 2);
         let exchange = &requests[0];
         let completion = &requests[1];
-        let completion_body: Value =
+        let completion_body: serde_json::Value =
             serde_json::from_str(&completion.body).expect("completion request json");
 
         assert_eq!(exchange.method, "GET");
@@ -2899,7 +1498,7 @@ mod tests {
             Some("copilot-chat/0.26.7")
         );
         assert_eq!(
-            completion_body.pointer("/model").and_then(Value::as_str),
+            completion_body.pointer("/model").and_then(serde_json::Value::as_str),
             Some("gpt-4.1")
         );
         assert_eq!(response.output_text, "Copilot reply");
@@ -2924,7 +1523,7 @@ mod tests {
 
     #[test]
     fn anthropic_runtime_builds_tool_use_request_and_parses_tool_calls() {
-        let transport = RecordingTransport::with_json_responses(vec![json!({
+        let transport = RecordingTransport::with_json_responses(vec![serde_json::json!({
             "id": "msg_123",
             "type": "message",
             "role": "assistant",
@@ -2955,7 +1554,7 @@ mod tests {
                     tools: vec![ProviderToolSpec {
                         name: "glob".into(),
                         description: "Find matching files".into(),
-                        input_schema: json!({
+                        input_schema: serde_json::json!({
                             "type": "object",
                             "properties": {
                                 "pattern": {"type": "string"}
@@ -2969,7 +1568,7 @@ mod tests {
                         calls: vec![ProviderToolCall {
                             call_id: "toolu_prev".into(),
                             tool_name: "glob".into(),
-                            arguments: json!({"pattern": "src/**/*.rs"}),
+                            arguments: serde_json::json!({"pattern": "src/**/*.rs"}),
                         }],
                         results: vec![ProviderToolResultMessage {
                             call_id: "toolu_prev".into(),
@@ -2983,7 +1582,8 @@ mod tests {
         let requests = transport.take_requests();
         assert_eq!(requests.len(), 1);
         let completion = &requests[0];
-        let body: Value = serde_json::from_str(&completion.body).expect("tool-use request json");
+        let body: serde_json::Value =
+            serde_json::from_str(&completion.body).expect("tool-use request json");
 
         assert_eq!(completion.method, "POST");
         assert_eq!(completion.url, "https://api.anthropic.com/v1/messages");
@@ -2992,22 +1592,22 @@ mod tests {
             Some("secret-key")
         );
         assert_eq!(
-            body.pointer("/tool_choice/type").and_then(Value::as_str),
+            body.pointer("/tool_choice/type").and_then(serde_json::Value::as_str),
             Some("auto")
         );
         assert_eq!(
             body.pointer("/messages/0/content/0/text")
-                .and_then(Value::as_str),
+                .and_then(serde_json::Value::as_str),
             Some("Inspect the workspace")
         );
         assert_eq!(
             body.pointer("/messages/1/content/1/type")
-                .and_then(Value::as_str),
+                .and_then(serde_json::Value::as_str),
             Some("tool_use")
         );
         assert_eq!(
             body.pointer("/messages/2/content/0/tool_use_id")
-                .and_then(Value::as_str),
+                .and_then(serde_json::Value::as_str),
             Some("toolu_prev")
         );
 
@@ -3020,7 +1620,7 @@ mod tests {
                 assert_eq!(batch.calls.len(), 1);
                 assert_eq!(batch.calls[0].call_id, "toolu_1");
                 assert_eq!(batch.calls[0].tool_name, "glob");
-                assert_eq!(batch.calls[0].arguments, json!({"pattern": "Cargo.toml"}));
+                assert_eq!(batch.calls[0].arguments, serde_json::json!({"pattern": "Cargo.toml"}));
                 assert_eq!(batch.stop_reason.as_deref(), Some("tool_use"));
                 assert_eq!(batch.usage.input_tokens, 21);
                 assert_eq!(batch.usage.output_tokens, 5);
@@ -3032,13 +1632,13 @@ mod tests {
     #[test]
     fn copilot_runtime_exchanges_oauth_token_and_builds_tool_use_request() {
         let transport = RecordingTransport::with_json_responses(vec![
-            json!({
+            serde_json::json!({
                 "token": "copilot-bearer",
                 "expires_at": 1_750_000_000,
                 "refresh_in": 900,
                 "endpoints": {"api": "https://api.githubcopilot.com"}
             }),
-            json!({
+            serde_json::json!({
                 "choices": [{
                     "finish_reason": "tool_calls",
                     "message": {
@@ -3070,7 +1670,7 @@ mod tests {
                     tools: vec![ProviderToolSpec {
                         name: "glob".into(),
                         description: "Find matching files".into(),
-                        input_schema: json!({
+                        input_schema: serde_json::json!({
                             "type": "object",
                             "properties": {
                                 "pattern": {"type": "string"}
@@ -3087,7 +1687,8 @@ mod tests {
         assert_eq!(requests.len(), 2);
         let exchange = &requests[0];
         let completion = &requests[1];
-        let body: Value = serde_json::from_str(&completion.body).expect("tool-use request json");
+        let body: serde_json::Value =
+            serde_json::from_str(&completion.body).expect("tool-use request json");
 
         assert_eq!(exchange.method, "GET");
         assert_eq!(
@@ -3099,12 +1700,12 @@ mod tests {
             Some("Bearer copilot-bearer")
         );
         assert_eq!(
-            body.pointer("/tool_choice").and_then(Value::as_str),
+            body.pointer("/tool_choice").and_then(serde_json::Value::as_str),
             Some("auto")
         );
         assert_eq!(
             body.pointer("/tools/0/function/name")
-                .and_then(Value::as_str),
+                .and_then(serde_json::Value::as_str),
             Some("glob")
         );
 
@@ -3116,7 +1717,7 @@ mod tests {
                 );
                 assert_eq!(batch.calls.len(), 1);
                 assert_eq!(batch.calls[0].tool_name, "glob");
-                assert_eq!(batch.calls[0].arguments, json!({"pattern": "Cargo.toml"}));
+                assert_eq!(batch.calls[0].arguments, serde_json::json!({"pattern": "Cargo.toml"}));
             }
             other => panic!("expected copilot tool-call response, got {other:?}"),
         }
@@ -3125,7 +1726,7 @@ mod tests {
     #[test]
     fn copilot_runtime_streams_anthropic_models_after_token_exchange() {
         let transport = RecordingTransport::with_json_and_stream_bodies(
-            vec![json!({
+            vec![serde_json::json!({
                 "token": "copilot-bearer",
                 "expires_at": 1_750_000_000,
                 "refresh_in": 900,
@@ -3161,7 +1762,8 @@ mod tests {
         let requests = transport.take_requests();
         assert_eq!(requests.len(), 2);
         let stream_request = &requests[1];
-        let body: Value = serde_json::from_str(&stream_request.body).expect("request json");
+        let body: serde_json::Value =
+            serde_json::from_str(&stream_request.body).expect("request json");
 
         assert_eq!(stream_request.method, "POST");
         assert_eq!(
@@ -3190,7 +1792,7 @@ mod tests {
             Some("vscode-chat")
         );
         assert_eq!(
-            body.pointer("/model").and_then(Value::as_str),
+            body.pointer("/model").and_then(serde_json::Value::as_str),
             Some("claude-sonnet-4")
         );
         assert_eq!(streamed, "Hello Copilot");
@@ -3203,13 +1805,13 @@ mod tests {
     #[test]
     fn copilot_runtime_supports_tool_use_for_claude_models() {
         let transport = RecordingTransport::with_json_responses(vec![
-            json!({
+            serde_json::json!({
                 "token": "copilot-bearer",
                 "expires_at": 1_750_000_000,
                 "refresh_in": 900,
                 "endpoints": {"api": "https://api.githubcopilot.com"}
             }),
-            json!({
+            serde_json::json!({
                 "id": "msg_456",
                 "type": "message",
                 "role": "assistant",
@@ -3237,7 +1839,7 @@ mod tests {
                     tools: vec![ProviderToolSpec {
                         name: "glob".into(),
                         description: "Find matching files".into(),
-                        input_schema: json!({
+                        input_schema: serde_json::json!({
                             "type": "object",
                             "properties": {
                                 "pattern": {"type": "string"}
@@ -3253,7 +1855,8 @@ mod tests {
         let requests = transport.take_requests();
         assert_eq!(requests.len(), 2);
         let completion = &requests[1];
-        let body: Value = serde_json::from_str(&completion.body).expect("tool-use request json");
+        let body: serde_json::Value =
+            serde_json::from_str(&completion.body).expect("tool-use request json");
 
         assert_eq!(completion.url, "https://api.githubcopilot.com/v1/messages");
         assert_eq!(
@@ -3261,11 +1864,11 @@ mod tests {
             Some("Bearer copilot-bearer")
         );
         assert_eq!(
-            body.pointer("/tool_choice/type").and_then(Value::as_str),
+            body.pointer("/tool_choice/type").and_then(serde_json::Value::as_str),
             Some("auto")
         );
         assert_eq!(
-            body.pointer("/tools/0/name").and_then(Value::as_str),
+            body.pointer("/tools/0/name").and_then(serde_json::Value::as_str),
             Some("glob")
         );
 
@@ -3274,7 +1877,7 @@ mod tests {
                 assert_eq!(batch.calls.len(), 1);
                 assert_eq!(batch.calls[0].call_id, "toolu_copilot_1");
                 assert_eq!(batch.calls[0].tool_name, "glob");
-                assert_eq!(batch.calls[0].arguments, json!({"pattern": "Cargo.toml"}));
+                assert_eq!(batch.calls[0].arguments, serde_json::json!({"pattern": "Cargo.toml"}));
                 assert_eq!(batch.stop_reason.as_deref(), Some("tool_use"));
             }
             other => panic!("expected copilot claude tool-call response, got {other:?}"),
@@ -3283,7 +1886,7 @@ mod tests {
 
     #[test]
     fn openai_request_includes_reasoning_effort_for_high() {
-        let transport = RecordingTransport::with_json_body(json!({
+        let transport = RecordingTransport::with_json_body(serde_json::json!({
             "choices": [{"finish_reason": "stop", "message": {"content": "ok"}}],
             "usage": {"prompt_tokens": 4, "completion_tokens": 1}
         }));
@@ -3297,10 +1900,10 @@ mod tests {
 
         runtime.complete(&resolved, &request).expect("complete");
         let recorded = transport.take_request();
-        let body: Value = serde_json::from_str(&recorded.body).expect("body json");
+        let body: serde_json::Value = serde_json::from_str(&recorded.body).expect("body json");
 
         assert_eq!(
-            body.pointer("/reasoning_effort").and_then(Value::as_str),
+            body.pointer("/reasoning_effort").and_then(serde_json::Value::as_str),
             Some("high"),
             "reasoning_effort should be 'high' for high effort level"
         );
@@ -3308,7 +1911,7 @@ mod tests {
 
     #[test]
     fn anthropic_request_includes_thinking_for_high_effort_claude_model() {
-        let transport = RecordingTransport::with_json_body(json!({
+        let transport = RecordingTransport::with_json_body(serde_json::json!({
             "id": "msg_think_1",
             "type": "message",
             "role": "assistant",
@@ -3326,16 +1929,16 @@ mod tests {
 
         runtime.complete(&resolved, &request).expect("complete");
         let recorded = transport.take_request();
-        let body: Value = serde_json::from_str(&recorded.body).expect("body json");
+        let body: serde_json::Value = serde_json::from_str(&recorded.body).expect("body json");
 
         assert_eq!(
-            body.pointer("/thinking/type").and_then(Value::as_str),
+            body.pointer("/thinking/type").and_then(serde_json::Value::as_str),
             Some("enabled"),
             "thinking type should be 'enabled' for high effort with claude model"
         );
         assert_eq!(
             body.pointer("/thinking/budget_tokens")
-                .and_then(Value::as_u64),
+                .and_then(serde_json::Value::as_u64),
             Some(10000),
             "thinking budget_tokens should be 10000"
         );
@@ -3344,13 +1947,13 @@ mod tests {
     #[test]
     fn copilot_openai_request_includes_reasoning_effort_header_for_max_effort() {
         let transport = RecordingTransport::with_json_responses(vec![
-            json!({
+            serde_json::json!({
                 "token": "copilot-bearer",
                 "expires_at": 1_750_000_000,
                 "refresh_in": 900,
                 "endpoints": {"api": "https://api.githubcopilot.com"}
             }),
-            json!({
+            serde_json::json!({
                 "choices": [{"finish_reason": "stop", "message": {"content": "done"}}],
                 "usage": {"prompt_tokens": 4, "completion_tokens": 1}
             }),
@@ -3381,7 +1984,7 @@ mod tests {
     fn openai_401_auth_error_surfaces_as_validation_error() {
         let transport = RecordingTransport::with_http_error(
             401,
-            json!({"error": {"message": "Invalid API key"}}),
+            serde_json::json!({"error": {"message": "Invalid API key"}}),
         );
         let runtime = ProviderRuntime::with_transport(transport as Arc<dyn HttpTransport>);
         let resolved = resolved_provider("openai", Some("gpt-4.1"));
@@ -3405,7 +2008,7 @@ mod tests {
     fn openai_429_rate_limit_error_surfaces_message() {
         let transport = RecordingTransport::with_http_error(
             429,
-            json!({"error": {"message": "Rate limit exceeded. Please retry after 60 seconds."}}),
+            serde_json::json!({"error": {"message": "Rate limit exceeded. Please retry after 60 seconds."}}),
         );
         let runtime = ProviderRuntime::with_transport(transport as Arc<dyn HttpTransport>);
         let resolved = resolved_provider("openai", Some("gpt-4.1"));
@@ -3426,7 +2029,7 @@ mod tests {
     fn anthropic_500_server_error_surfaces_as_validation_error() {
         let transport = RecordingTransport::with_http_error(
             500,
-            json!({"error": {"message": "Internal server error"}}),
+            serde_json::json!({"error": {"message": "Internal server error"}}),
         );
         let runtime = ProviderRuntime::with_transport(transport as Arc<dyn HttpTransport>);
         let resolved = resolved_provider("anthropic", Some("claude-3-7-sonnet-latest"));
@@ -3590,7 +2193,7 @@ mod tests {
 
     #[test]
     fn bedrock_runtime_builds_invoke_request_with_sigv4_headers() {
-        let transport = RecordingTransport::with_json_body(json!({
+        let transport = RecordingTransport::with_json_body(serde_json::json!({
             "content": [{"type": "text", "text": "Hello from Bedrock"}],
             "stop_reason": "end_turn",
             "usage": {"input_tokens": 10, "output_tokens": 5}
