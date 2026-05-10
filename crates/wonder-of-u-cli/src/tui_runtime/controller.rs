@@ -4318,7 +4318,10 @@ impl<'a> TuiController<'a> {
             .unwrap_or(u16::MAX)
             .saturating_add(2);
         let cap = (height / 3).max(3);
-        let prompt_height = uncapped.min(cap);
+        let warning_height = u16::from(context_warning_visible(&self.state));
+        let prompt_height = uncapped
+            .saturating_add(warning_height)
+            .min(cap.saturating_add(warning_height));
         let layout = ShellLayout::split(
             Rect::new(
                 0,
@@ -4497,7 +4500,7 @@ fn format_token_count(value: u64) -> String {
     let digits = value.to_string();
     let mut formatted = String::with_capacity(digits.len() + digits.len() / 3);
     for (index, digit) in digits.chars().enumerate() {
-        if index > 0 && (digits.len() - index).is_multiple_of(3) {
+        if index > 0 && (digits.len() - index) % 3 == 0 {
             formatted.push(',');
         }
         formatted.push(digit);

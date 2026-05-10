@@ -265,6 +265,7 @@ pub(crate) fn execute_prompt_turn(
             content: response.output_text.clone(),
         },
     )?;
+    state.set_context_window_size(response.context_window_size);
     state.record_cost_usage(response.usage, None);
     persist_messages_and_state(
         storage_dir,
@@ -594,6 +595,7 @@ fn execute_prompt_tool_loop(
 
         match response {
             ToolUseResponse::Final(response) => {
+                state.set_context_window_size(response.context_window_size);
                 state.record_cost_usage(response.usage, None);
                 let assistant_message = append_contextual_message(
                     state,
@@ -614,6 +616,7 @@ fn execute_prompt_tool_loop(
                 });
             }
             ToolUseResponse::ToolCalls(batch) => {
+                state.set_context_window_size(batch.context_window_size);
                 state.record_cost_usage(batch.usage, None);
                 orchestration
                     .query

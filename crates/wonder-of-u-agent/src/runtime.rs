@@ -60,6 +60,8 @@ pub struct CompletionResponse {
     pub provider: String,
     /// Stores the model
     pub model: String,
+    /// Stores the context window size for the selected model
+    pub context_window_size: Option<u64>,
     /// Stores the output text
     pub output_text: String,
     /// Stores the stop reason
@@ -130,6 +132,8 @@ pub struct ToolCallBatchResponse {
     pub assistant_text: Option<String>,
     /// Stores the calls
     pub calls: Vec<ProviderToolCall>,
+    /// Stores the context window size for the selected model
+    pub context_window_size: Option<u64>,
     /// Stores the stop reason
     pub stop_reason: Option<String>,
     /// Stores the usage
@@ -1664,6 +1668,7 @@ fn parse_openai_response(
     Ok(CompletionResponse {
         provider: resolved.provider_id().to_string(),
         model: resolved.model().to_string(),
+        context_window_size: Some(context_window_for_model(resolved.model())),
         output_text,
         stop_reason: choice
             .get("finish_reason")
@@ -1705,6 +1710,7 @@ fn parse_openai_tool_use_response(
         return Ok(ToolUseResponse::ToolCalls(ToolCallBatchResponse {
             assistant_text,
             calls: tool_calls,
+            context_window_size: Some(context_window_for_model(resolved.model())),
             stop_reason,
             usage,
         }));
@@ -1716,6 +1722,7 @@ fn parse_openai_tool_use_response(
     Ok(ToolUseResponse::Final(CompletionResponse {
         provider: resolved.provider_id().to_string(),
         model: resolved.model().to_string(),
+        context_window_size: Some(context_window_for_model(resolved.model())),
         output_text,
         stop_reason,
         usage,
@@ -1741,6 +1748,7 @@ fn parse_anthropic_response(
     Ok(CompletionResponse {
         provider: resolved.provider_id().to_string(),
         model: resolved.model().to_string(),
+        context_window_size: Some(context_window_for_model(resolved.model())),
         output_text,
         stop_reason: json
             .get("stop_reason")
@@ -1778,6 +1786,7 @@ fn parse_anthropic_tool_use_response(
         return Ok(ToolUseResponse::ToolCalls(ToolCallBatchResponse {
             assistant_text,
             calls: tool_calls,
+            context_window_size: Some(context_window_for_model(resolved.model())),
             stop_reason,
             usage,
         }));
@@ -1789,6 +1798,7 @@ fn parse_anthropic_tool_use_response(
     Ok(ToolUseResponse::Final(CompletionResponse {
         provider: resolved.provider_id().to_string(),
         model: resolved.model().to_string(),
+        context_window_size: Some(context_window_for_model(resolved.model())),
         output_text,
         stop_reason,
         usage,
@@ -1840,6 +1850,7 @@ where
     Ok(CompletionResponse {
         provider: resolved.provider_id().to_string(),
         model: resolved.model().to_string(),
+        context_window_size: Some(context_window_for_model(resolved.model())),
         output_text,
         stop_reason,
         usage,
@@ -1911,6 +1922,7 @@ where
     Ok(CompletionResponse {
         provider: resolved.provider_id().to_string(),
         model: resolved.model().to_string(),
+        context_window_size: Some(context_window_for_model(resolved.model())),
         output_text,
         stop_reason,
         usage,
@@ -2079,6 +2091,21 @@ fn parse_openai_usage(usage: Option<&Value>) -> TokenUsage {
             .and_then(|usage| usage.pointer("/prompt_tokens_details/cached_tokens"))
             .and_then(Value::as_u64)
             .unwrap_or_default(),
+    }
+}
+
+fn context_window_for_model(model: &str) -> u64 {
+    let model = model.to_ascii_lowercase();
+    if model.contains("claude-3-5")
+        || model.contains("claude-3-7")
+        || model.contains("claude-sonnet")
+        || model.contains("claude-3-opus")
+    {
+        200_000
+    } else if model.contains("gpt-4o") || model.contains("gpt-4.1") {
+        128_000
+    } else {
+        200_000
     }
 }
 
@@ -2510,6 +2537,7 @@ mod tests {
         assert!((temperature - 0.2).abs() < 1e-6);
         assert_eq!(response.output_text, "Hello back");
         assert_eq!(response.stop_reason.as_deref(), Some("stop"));
+        assert_eq!(response.context_window_size, Some(128_000));
         assert_eq!(response.usage.input_tokens, 11);
         assert_eq!(response.usage.output_tokens, 7);
         assert_eq!(response.usage.cache_read_tokens, 2);
@@ -2655,6 +2683,7 @@ mod tests {
                 assert_eq!(batch.calls[0].call_id, "call_456");
                 assert_eq!(batch.calls[0].tool_name, "glob");
                 assert_eq!(batch.calls[0].arguments, json!({"pattern": "src/**/*.rs"}));
+                assert_eq!(batch.context_window_size, Some(128_000));
                 assert_eq!(batch.stop_reason.as_deref(), Some("tool_calls"));
                 assert_eq!(batch.usage.input_tokens, 18);
                 assert_eq!(batch.usage.output_tokens, 3);
@@ -2715,6 +2744,7 @@ mod tests {
         );
         assert_eq!(response.output_text, "Part one. Part two.");
         assert_eq!(response.stop_reason.as_deref(), Some("end_turn"));
+        assert_eq!(response.context_window_size, Some(200_000));
         assert_eq!(response.usage.input_tokens, 13);
         assert_eq!(response.usage.output_tokens, 5);
         assert_eq!(response.usage.cache_creation_tokens, 4);
@@ -2753,6 +2783,7 @@ mod tests {
         assert_eq!(streamed, "Hello back");
         assert_eq!(response.output_text, "Hello back");
         assert_eq!(response.stop_reason.as_deref(), Some("stop"));
+        assert_eq!(response.context_window_size, Some(128_000));
         assert_eq!(response.usage.input_tokens, 11);
         assert_eq!(response.usage.output_tokens, 7);
         assert_eq!(response.usage.cache_read_tokens, 2);
@@ -2795,6 +2826,7 @@ mod tests {
         assert_eq!(streamed, "Part one. Part two.");
         assert_eq!(response.output_text, "Part one. Part two.");
         assert_eq!(response.stop_reason.as_deref(), Some("end_turn"));
+        assert_eq!(response.context_window_size, Some(200_000));
         assert_eq!(response.usage.input_tokens, 13);
         assert_eq!(response.usage.output_tokens, 5);
         assert_eq!(response.usage.cache_creation_tokens, 4);

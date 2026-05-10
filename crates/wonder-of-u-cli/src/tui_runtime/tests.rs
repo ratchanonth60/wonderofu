@@ -4213,7 +4213,7 @@ fn controller_preserves_restored_provider_selection_on_resume() {
 fn prompt_cursor_tracks_edit_position_inside_prompt_panel() {
     // Box layout (40×10): prompt at y=5, height=3 → content at x=1, y=6.
     // cursor=2 → after "ab" → line=0, col=2, x_offset=2 → (1+2+2, 6) = (5, 6).
-    let (x, y) = prompt_cursor_position(40, 10, "abc", 2, false);
+    let (x, y) = prompt_cursor_position(40, 10, "abc", 2, false, false);
     assert_eq!((x, y), (5, 6));
 }
 
@@ -6228,7 +6228,7 @@ fn sanitize_error_plain_message_passes_through_unchanged() {
 #[test]
 fn prompt_cursor_position_small_terminal_respects_renderer_cap() {
     // 3-line prompt: uncapped box height = 5.  At height=6, cap = max(2, 3) = 3.
-    let (x, y) = prompt_cursor_position(40, 6, "line1\nline2\nline3", 5, false);
+    let (x, y) = prompt_cursor_position(40, 6, "line1\nline2\nline3", 5, false, false);
     // cursor=5 → "line1" (no newline seen) → line=0, col=5, first-line x_offset=2.
     // layout.prompt = Rect(0, 1, 40, 3), content_x=1, content_y=2, content_height=1.
     assert_eq!(
@@ -6250,7 +6250,7 @@ fn history_search_cursor_position_small_terminal_respects_renderer_cap() {
         match_total: 0,
     };
     // query_cursor=3 → x = content_x(1) + "search: ".len()(8) + 3 = 12
-    let (x, y) = history_search_cursor_position(40, 6, &view, 3, false);
+    let (x, y) = history_search_cursor_position(40, 6, &view, 3, false, false);
     assert_eq!(
         (x, y),
         (12, 2),
@@ -6274,7 +6274,7 @@ fn prompt_cursor_position_continuation_line_has_no_marker_offset() {
     // line=1 is within content_height − the continuation path applies.
     //   x = content_x(1) + x_offset(0) + col(2) = 3
     //   y = content_y(11) + line(1) = 12
-    let (x, y) = prompt_cursor_position(40, 16, "abc\ndef", 6, false);
+    let (x, y) = prompt_cursor_position(40, 16, "abc\ndef", 6, false, false);
     assert_eq!(
         (x, y),
         (3, 12),
@@ -6302,7 +6302,7 @@ fn prompt_cursor_position_wide_terminal_stays_inside_main_area() {
     // 80-char single-line prompt; cursor at the very end.  Before the fix the
     // unclamped x would be 1+2+80 = 83, well inside the sidebar (78..99).
     let prompt = "a".repeat(80);
-    let (x, y) = prompt_cursor_position(100, 24, &prompt, 80, true);
+    let (x, y) = prompt_cursor_position(100, 24, &prompt, 80, true, false);
 
     // main_w = 61; separator at column 61; valid main-area columns = 0..=60.
     assert!(
@@ -6335,7 +6335,7 @@ fn history_search_cursor_wide_terminal_stays_inside_main_area() {
         match_index: 0,
         match_total: 0,
     };
-    let (x, y) = history_search_cursor_position(100, 24, &view, 90, true);
+    let (x, y) = history_search_cursor_position(100, 24, &view, 90, true, false);
 
     assert!(
         x < 61,
@@ -6356,7 +6356,7 @@ fn prompt_cursor_position_just_below_sidebar_threshold_uses_full_width() {
     // At width=99 shell_main_area_width returns 99 regardless of sidebar_active.
     // 10-char prompt, cursor at end → line=0, col=10, x_offset=2.
     // effective_width=99 → content_width=97 → max_col=94 → x=1+2+10=13.
-    let (x, y) = prompt_cursor_position(99, 20, &"a".repeat(10), 10, true);
+    let (x, y) = prompt_cursor_position(99, 20, &"a".repeat(10), 10, true, false);
     assert_eq!(
         (x, y),
         (13, 16),

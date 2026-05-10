@@ -249,6 +249,8 @@ pub(super) fn prompt_cursor_position(
     // wider than MIN_SIDEBAR_WIDTH, and we must mirror that here so the cursor
     // x coordinate never overshoots into the │ separator or sidebar columns.
     sidebar_active: bool,
+    // Whether a context warning row is rendered above the prompt box.
+    prompt_warning_visible: bool,
 ) -> (u16, u16) {
     let uncapped_height = ShellView {
         title: String::new(),
@@ -269,11 +271,13 @@ pub(super) fn prompt_cursor_position(
         slash_suggestions: None,
         scroll: wonder_of_u_tui::TranscriptScrollView::default(),
         sidebar: None,
+        prompt_warning: None,
     }
     .prompt_height();
     // Apply the same 1/3-terminal cap used by the renderer.
-    let cap = (height / 3).max(3);
-    let capped_height = uncapped_height.min(cap);
+    let warning_height = u16::from(prompt_warning_visible);
+    let cap = (height / 3).max(3).saturating_add(warning_height);
+    let capped_height = uncapped_height.saturating_add(warning_height).min(cap);
     // Mirror render_shell: on wide terminals the sidebar column is carved out,
     // shrinking the area available for the prompt box.
     let effective_width = wonder_of_u_tui::shell_main_area_width(width, sidebar_active);
@@ -284,7 +288,11 @@ pub(super) fn prompt_cursor_position(
     // Box layout: content is inset 1 col from x (just inside the │ border),
     // 1 row below the top border, and 2 cols narrower (│ on each side).
     let content_x = layout.prompt.x.saturating_add(1);
-    let content_y = layout.prompt.y.saturating_add(1);
+    let content_y = layout
+        .prompt
+        .y
+        .saturating_add(1)
+        .saturating_add(warning_height);
     let content_width = layout.prompt.width.saturating_sub(2);
     let content_height = layout.prompt.height.saturating_sub(2);
 
@@ -320,6 +328,8 @@ pub(super) fn history_search_cursor_position(
     // Whether the caller's ShellView contains a sidebar panel — mirrors the
     // same flag in prompt_cursor_position.
     sidebar_active: bool,
+    // Whether a context warning row is rendered above the prompt box.
+    prompt_warning_visible: bool,
 ) -> (u16, u16) {
     let uncapped_height = ShellView {
         title: String::new(),
@@ -340,10 +350,12 @@ pub(super) fn history_search_cursor_position(
         slash_suggestions: None,
         scroll: wonder_of_u_tui::TranscriptScrollView::default(),
         sidebar: None,
+        prompt_warning: None,
     }
     .prompt_height();
-    let cap = (height / 3).max(3);
-    let capped_height = uncapped_height.min(cap);
+    let warning_height = u16::from(prompt_warning_visible);
+    let cap = (height / 3).max(3).saturating_add(warning_height);
+    let capped_height = uncapped_height.saturating_add(warning_height).min(cap);
     // Mirror render_shell's sidebar column deduction on wide terminals.
     let effective_width = wonder_of_u_tui::shell_main_area_width(width, sidebar_active);
     let layout = ShellLayout::split(
@@ -352,7 +364,11 @@ pub(super) fn history_search_cursor_position(
     );
     // Box layout: content starts at x+1, y+1, with width-2 available columns.
     let content_x = layout.prompt.x.saturating_add(1);
-    let content_y = layout.prompt.y.saturating_add(1);
+    let content_y = layout
+        .prompt
+        .y
+        .saturating_add(1)
+        .saturating_add(warning_height);
     let content_width = layout.prompt.width.saturating_sub(2);
     let query_prefix = "search: ".chars().count();
     (
