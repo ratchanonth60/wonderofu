@@ -6701,3 +6701,71 @@ fn controller_view_sizes_provider_errors_to_main_pane_width() {
         "provider error should continue onto the next line instead of truncating; rows: {rows:?}"
     );
 }
+
+// ── /login TUI interception ────────────────────────────────────────────────
+
+#[test]
+fn login_without_args_opens_setup_overlay() {
+    let dir = unique_test_dir("tui-login-no-args");
+    let registry = commands::registry(Some(dir.clone())).expect("registry");
+    let mut controller = TuiController::new(
+        test_context(&dir),
+        &registry,
+        Some(dir.as_path()),
+        TuiLaunchOptions { session_id: None },
+    )
+    .expect("controller");
+
+    // Dismiss any auto-opened setup overlay first so we start clean.
+    controller.pending_setup_overlay = None;
+
+    controller
+        .execute_slash_command("/login")
+        .expect("/login should not error");
+
+    assert!(
+        controller.pending_setup_overlay.is_some(),
+        "/login with no args must open the setup overlay"
+    );
+}
+
+#[test]
+fn login_copilot_opens_oauth_dialog() {
+    let dir = unique_test_dir("tui-login-copilot");
+    let registry = commands::registry(Some(dir.clone())).expect("registry");
+    let mut controller = TuiController::new(
+        test_context(&dir),
+        &registry,
+        Some(dir.as_path()),
+        TuiLaunchOptions { session_id: None },
+    )
+    .expect("controller");
+
+    // `open_copilot_oauth_flow()` makes a real HTTP request for a device code.
+    // In a test environment without network we expect it to fail and show an
+    // error dialog rather than panicking.  Either outcome proves the interceptor
+    // fired (i.e. no clap-args parse error was returned to the caller).
+    let result = controller.execute_slash_command("/login copilot");
+
+    // The interceptor must not bubble up a "missing --provider" clap error.
+    // It is fine if the OAuth HTTP call fails in CI (no credentials); the
+    // important invariant is that the *error type* is a network/agent error,
+    // not a validation-parse error from LoginCommand.
+    match &result {
+        Ok(()) => {
+            // OAuth request succeeded or opened a dialog — both are fine.
+            // Either pending_copilot_oauth or a notice dialog must be set.
+            assert!(
+                controller.pending_copilot_oauth.is_some() || controller.dialog.is_some(),
+                "/login copilot should set OAuth state or an error dialog"
+            );
+        }
+        Err(e) => {
+            let msg = e.to_string();
+            assert!(
+                !msg.contains("--provider") && !msg.contains("required arguments"),
+                "/login copilot must not fail with a clap arg-parse error; got: {msg}"
+            );
+        }
+    }
+}

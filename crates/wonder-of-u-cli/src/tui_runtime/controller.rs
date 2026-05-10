@@ -1550,6 +1550,49 @@ impl<'a> TuiController<'a> {
             }
             return Ok(());
         }
+        // Handle /login as a TUI-local shortcut when no CLI flags are present.
+        // /login              → open the /setup overlay (guided choice)
+        // /login copilot      → open Copilot OAuth device-code flow directly
+        // /login <provider>   → open provider API-key form for that provider
+        // /login --provider … → fall through to LoginCommand (keeps CLI parity)
+        if trimmed == "/login" || trimmed.starts_with("/login ") {
+            let arg = trimmed
+                .strip_prefix("/login")
+                .map(str::trim)
+                .unwrap_or("")
+                .trim();
+            // If the user passed real CLI flags, fall through to the command registry.
+            if !arg.starts_with('-') {
+                match arg {
+                    "" => {
+                        // No provider specified — open the setup hub so the user can
+                        // choose interactively.
+                        return self.execute_slash_command_with("/setup", before_blocking);
+                    }
+                    "copilot" => {
+                        self.open_copilot_oauth_flow();
+                        return Ok(());
+                    }
+                    provider => {
+                        // Check whether this is a known API-key provider; if so open
+                        // the provider form pre-filtered to that provider.
+                        let known = ProviderResolver::builtin()
+                            .registry()
+                            .get(provider)
+                            .map(|p| p.auth_kind == AuthMaterialKind::ApiKey)
+                            .unwrap_or(false);
+                        if known {
+                            self.open_provider_form(ProviderFormKind::ApiKey);
+                        } else {
+                            // Unknown provider — open the setup hub and let the user pick.
+                            return self
+                                .execute_slash_command_with("/setup", before_blocking);
+                        }
+                        return Ok(());
+                    }
+                }
+            }
+        }
         let invocation = parse_slash_command(input)
             .ok_or_else(|| WonderError::validation("invalid slash command"))?;
         let context = self.command_context();
