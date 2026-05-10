@@ -267,29 +267,6 @@ impl StickersCommand {
     }
 }
 
-/// Represents rewind command
-pub struct RewindCommand {
-    storage_dir: Option<PathBuf>,
-}
-
-impl RewindCommand {
-    /// Constant fn
-    pub const fn new(storage_dir: Option<PathBuf>) -> Self {
-        Self { storage_dir }
-    }
-
-    /// Handles command spec
-    pub fn command_spec() -> CommandSpec {
-        let mut spec = CommandSpec::new(
-            "rewind",
-            "Restore the conversation to a previous checkpoint",
-            CommandKind::Local,
-        );
-        spec.aliases.push("checkpoint".into());
-        spec
-    }
-}
-
 /// Represents init verifiers command
 pub struct InitVerifiersCommand {
     tool_specs: Arc<[ToolSpec]>,
@@ -636,27 +613,6 @@ impl PrCommentsCommand {
             CommandKind::NonInteractive,
         );
         spec.aliases.push("pr_comments".into());
-        spec
-    }
-}
-
-/// Represents summary command
-pub struct SummaryCommand;
-
-impl SummaryCommand {
-    /// Constant fn
-    pub const fn new() -> Self {
-        Self
-    }
-
-    /// Handles command spec
-    pub fn command_spec() -> CommandSpec {
-        let mut spec = CommandSpec::new(
-            "summary",
-            "Show summary guidance for the current session",
-            CommandKind::NonInteractive,
-        );
-        spec.hidden = true;
         spec
     }
 }
@@ -1080,24 +1036,6 @@ impl Command for StickersCommand {
 }
 
 #[async_trait]
-impl Command for RewindCommand {
-    fn spec(&self) -> CommandSpec {
-        Self::command_spec()
-    }
-
-    async fn execute(
-        &self,
-        context: CommandContext,
-        _invocation: CommandInvocation,
-    ) -> Result<CommandOutput> {
-        Ok(CommandOutput::Text(render_rewind(
-            self.storage_dir.as_deref(),
-            &context,
-        )?))
-    }
-}
-
-#[async_trait]
 impl Command for InitVerifiersCommand {
     fn spec(&self) -> CommandSpec {
         Self::command_spec()
@@ -1390,24 +1328,6 @@ impl Command for PrCommentsCommand {
             ))));
         }
         Ok(CommandOutput::Text(fetch_pr_comments(args)))
-    }
-}
-
-#[async_trait]
-impl Command for SummaryCommand {
-    fn spec(&self) -> CommandSpec {
-        Self::command_spec()
-    }
-
-    async fn execute(
-        &self,
-        context: CommandContext,
-        _invocation: CommandInvocation,
-    ) -> Result<CommandOutput> {
-        Ok(CommandOutput::Text(render_summary(
-            storage_root(None).as_deref(),
-            &context,
-        )?))
     }
 }
 
@@ -1753,46 +1673,6 @@ fn recommend_advisor(task: &str) -> String {
         "claude-3.7-sonnet"
     };
     format!("Advisor recommendation: {recommendation}\nreason={task}")
-}
-
-fn render_rewind(storage_dir: Option<&Path>, context: &CommandContext) -> Result<String> {
-    let Some(storage_dir) = storage_dir else {
-        return Ok(
-            "Rewind: no checkpoints found in current session. Use /compact to create a checkpoint."
-                .into(),
-        );
-    };
-    let store = TranscriptStore::new(storage_dir);
-    let mut checkpoints = Vec::new();
-    if let Some(snapshot) = store.read_snapshot_if_exists(context.session_id)? {
-        checkpoints.push(format!(
-            "• current session ({}) - {} messages",
-            context.session_id,
-            snapshot.state.messages.len()
-        ));
-    }
-    for metadata in store.list_metadata()?.into_iter().take(10) {
-        if metadata.session_id == context.session_id {
-            continue;
-        }
-        if let Some(snapshot) = store.read_snapshot_if_exists(metadata.session_id)? {
-            checkpoints.push(format!(
-                "• {} - {} ({})",
-                metadata.session_id,
-                metadata.title,
-                snapshot.state.messages.len()
-            ));
-        }
-    }
-    if checkpoints.is_empty() {
-        return Ok(
-            "Rewind: no checkpoints found in current session. Use /compact to create a checkpoint."
-                .into(),
-        );
-    }
-    let mut lines = vec!["Rewind checkpoints:".into()];
-    lines.extend(checkpoints);
-    Ok(lines.join("\n"))
 }
 
 fn verifier_tool_names(tool_specs: &[ToolSpec]) -> Vec<String> {
@@ -2159,13 +2039,6 @@ fn load_session_messages(
         .unwrap_or_default())
 }
 
-fn count_tool_calls(messages: &[MessageEnvelope]) -> usize {
-    messages
-        .iter()
-        .filter(|message| matches!(message.payload, MessagePayload::AssistantToolUse { .. }))
-        .count()
-}
-
 fn recent_tool_calls(messages: &[MessageEnvelope], limit: usize) -> Vec<String> {
     messages
         .iter()
@@ -2521,31 +2394,6 @@ fn tool_version(tool: &str, version_args: &[&str]) -> String {
         Ok(output) => format!("{tool}=unavailable(status={})", output.status),
         Err(_) => format!("{tool}=missing"),
     }
-}
-
-fn render_summary(storage_dir: Option<&Path>, context: &CommandContext) -> Result<String> {
-    let messages = load_session_messages(storage_dir, context.session_id)?;
-    let snapshot = load_session_snapshot(storage_dir, context.session_id);
-    let metadata = storage_dir.and_then(|dir| {
-        TranscriptStore::new(dir)
-            .read_metadata(context.session_id)
-            .ok()
-    });
-    let token_usage = snapshot
-        .as_ref()
-        .map(|snapshot| snapshot.state.costs.usage.total_tokens())
-        .or_else(|| {
-            metadata
-                .as_ref()
-                .map(|metadata| metadata.costs.usage.total_tokens())
-        })
-        .unwrap_or_default();
-    Ok(format!(
-        "Session summary\nmessage_count={}\ntool_calls={}\ntoken_usage={token_usage}\nsession_id={}",
-        messages.len(),
-        count_tool_calls(&messages),
-        context.session_id
-    ))
 }
 
 fn preview_json(value: &Value) -> String {
