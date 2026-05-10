@@ -29,6 +29,13 @@ const MAX_PARAGRAPH_LINES: usize = 6;
 const MAX_THINKING_LINES: usize = 4;
 const MAX_DETAIL_LINES: usize = 3;
 
+/// Ink-style guide prefix for tool result/detail/progress continuation lines.
+///
+/// Mirrors the Claude Code visual: `"  ⎿  "` (2 sp + U+23BF + 2 sp).
+/// The two leading spaces come from `push_wrapped_block`'s `""` prefix
+/// logic, so only the `⎿  ` portion is stored here.
+const GUIDE_PREFIX: &str = "⎿  ";
+
 static SYNTAX_SET: LazyLock<SyntaxSet> = LazyLock::new(SyntaxSet::load_defaults_newlines);
 static HIGHLIGHT_THEME: LazyLock<Option<Theme>> = LazyLock::new(|| {
     let themes = ThemeSet::load_defaults();
@@ -776,9 +783,9 @@ fn text_style_from_ratatui(style: RatatuiStyle) -> Option<TextStyle> {
     if let Some(fg) = style.fg {
         out.fg = Some(color_from_ratatui(fg));
     }
-    if let Some(bg) = style.bg {
-        out.bg = Some(color_from_ratatui(bg));
-    }
+    // Deliberately skip `style.bg`: syntect themes apply grey block
+    // backgrounds that look wrong against the terminal background color.
+    // Keeping only fg + modifiers gives clean, Ink-style code spans.
     out.bold = style.add_modifier.contains(Modifier::BOLD);
     out.dim = style.add_modifier.contains(Modifier::DIM);
     out.italic = style.add_modifier.contains(Modifier::ITALIC);
@@ -1023,7 +1030,13 @@ impl ToolCallView {
                     label: _,
                     value,
                     role,
-                } => push_wrapped_block(&mut lines, "", &[format!("└ {value}")], role, max_width),
+                } => push_wrapped_block(
+                    &mut lines,
+                    "",
+                    &[format!("{GUIDE_PREFIX}{value}")],
+                    role,
+                    max_width,
+                ),
                 ToolActivityRow::Preview {
                     label: _,
                     lines: preview,
@@ -1033,7 +1046,7 @@ impl ToolCallView {
                         .enumerate()
                         .map(|(index, line)| {
                             if index == 0 {
-                                format!("└ {line}")
+                                format!("{GUIDE_PREFIX}{line}")
                             } else {
                                 format!("  {line}")
                             }
@@ -1630,7 +1643,7 @@ impl FileEditReferenceView {
         push_wrapped_block(
             &mut lines,
             "",
-            &[format!("└ {}", self.summary.label())],
+            &[format!("{GUIDE_PREFIX}{}", self.summary.label())],
             MessageRole::System,
             max_width,
         );
@@ -2229,23 +2242,45 @@ fn wrap_summary_lines(
     max_lines: usize,
     summarize: bool,
 ) -> Vec<String> {
-    let normalized = strip_ansi(text).replace('\n', " ");
-    let source = normalized.trim();
-    if source.is_empty() {
+    let stripped = strip_ansi(text);
+    let width = max_width.max(1);
+
+    // Wrap each logical line independently so that paragraphs, lists, and
+    // blank separators are preserved rather than collapsed into a single
+    // space-joined run.
+    let mut lines: Vec<String> = stripped
+        .split('\n')
+        .flat_map(|logical| {
+            let trimmed = logical.trim_end();
+            if trimmed.is_empty() {
+                vec![String::new()]
+            } else {
+                wrap_text_hard(trimmed, width)
+            }
+        })
+        .collect();
+
+    // Drop leading/trailing blank lines so callers get clean output.
+    while lines.first().is_some_and(|l| l.is_empty()) {
+        lines.remove(0);
+    }
+    while lines.last().is_some_and(|l| l.is_empty()) {
+        lines.pop();
+    }
+
+    if lines.is_empty() {
         return vec![String::new()];
     }
-    let width = max_width.max(1);
-    let mut lines = wrap_text_hard(source, width);
-    let was_truncated = lines.len() > max_lines;
-    if summarize && was_truncated {
-        lines.truncate(max_lines);
-    }
-    if was_truncated {
+
+    // Only truncate when the caller explicitly requests a summary; when
+    // summarize=false the full content is returned regardless of max_lines.
+    if summarize && lines.len() > max_lines {
         lines.truncate(max_lines);
         if let Some(last) = lines.last_mut() {
             *last = append_ellipsis(last, width);
         }
     }
+
     lines
 }
 
@@ -2546,7 +2581,8 @@ mod tests {
             expanded.display_lines(80),
             vec![
                 MessageLineView::new("thinking> ∴ Thinking…", MessageRole::Progress),
-                MessageLineView::new("  step one step two", MessageRole::Progress),
+                MessageLineView::new("  step one", MessageRole::Progress),
+                MessageLineView::new("  step two", MessageRole::Progress),
             ]
         );
     }
@@ -2669,12 +2705,12 @@ mod tests {
             lines,
             vec![
                 MessageLineView::new("● Run(Tests) · 2.0s", MessageRole::Tool,),
-                MessageLineView::new("  └ cargo test -p wonder-of-u-tui", MessageRole::System,),
-                MessageLineView::new("  └ tests passed", MessageRole::System),
+                MessageLineView::new("  ⎿  cargo test -p wonder-of-u-tui", MessageRole::System,),
+                MessageLineView::new("  ⎿  tests passed", MessageRole::System),
                 MessageLineView::new("", MessageRole::System),
                 MessageLineView::new("● Bash(rm -rf /tmp/build) · 3.0s", MessageRole::Error,),
-                MessageLineView::new("  └ rm -rf /tmp/build", MessageRole::System,),
-                MessageLineView::new("  └ Tool use rejected by the user", MessageRole::Error,),
+                MessageLineView::new("  ⎿  rm -rf /tmp/build", MessageRole::System,),
+                MessageLineView::new("  ⎿  Tool use rejected by the user", MessageRole::Error,),
             ]
         );
     }
@@ -2694,8 +2730,8 @@ mod tests {
             read.display_lines("file_read", 120, false),
             vec![
                 MessageLineView::new("● Read(lib.rs)", MessageRole::Tool),
-                MessageLineView::new("  └ src/lib.rs", MessageRole::System),
-                MessageLineView::new("  └ pub fn demo() {", MessageRole::System),
+                MessageLineView::new("  ⎿  src/lib.rs", MessageRole::System),
+                MessageLineView::new("  ⎿  pub fn demo() {", MessageRole::System),
                 MessageLineView::new("        println!(\"hi\");", MessageRole::System),
                 MessageLineView::new("    }", MessageRole::System),
             ]
@@ -2717,11 +2753,11 @@ mod tests {
             write.display_lines("file_write", 120, false),
             vec![
                 MessageLineView::new("● Edit(lib.rs)", MessageRole::Tool),
-                MessageLineView::new("  └ src/lib.rs", MessageRole::System),
-                MessageLineView::new("  └ pub fn demo() {", MessageRole::System),
+                MessageLineView::new("  ⎿  src/lib.rs", MessageRole::System),
+                MessageLineView::new("  ⎿  pub fn demo() {", MessageRole::System),
                 MessageLineView::new("        println!(\"updated\");", MessageRole::System),
                 MessageLineView::new("    }", MessageRole::System),
-                MessageLineView::new("  └ wrote src/lib.rs", MessageRole::System),
+                MessageLineView::new("  ⎿  wrote src/lib.rs", MessageRole::System),
             ]
         );
     }
@@ -2887,7 +2923,7 @@ mod tests {
                     "● Edit(crates/wonder-of-u-tui/src/message/mod.rs)",
                     MessageRole::Tool,
                 ),
-                MessageLineView::new("  └ +12 -1 ~4", MessageRole::System),
+                MessageLineView::new("  ⎿  +12 -1 ~4", MessageRole::System),
                 MessageLineView::new("  Rich transcript summaries", MessageRole::System),
             ]
         );
@@ -2975,8 +3011,8 @@ mod tests {
             "Tool headline must start with ● bullet; lines: {texts:?}"
         );
         assert!(
-            texts.iter().any(|t| t.contains('└')),
-            "Tool result must contain └ subordinate marker; lines: {texts:?}"
+            texts.iter().any(|t| t.contains('⎿')),
+            "Tool result must contain ⎿ guide prefix; lines: {texts:?}"
         );
         assert!(
             texts.iter().all(|t| !t.starts_with("tool[")),
@@ -3222,8 +3258,8 @@ mod tests {
             "List tool headline must start with ● List(; lines: {lines:?}"
         );
         assert!(
-            lines.iter().any(|l| l.text.contains('└')),
-            "List tool must emit a └ detail row; lines: {lines:?}"
+            lines.iter().any(|l| l.text.contains('⎿')),
+            "List tool must emit a ⎿ guide prefix detail row; lines: {lines:?}"
         );
     }
 
@@ -3245,8 +3281,8 @@ mod tests {
         );
         assert_eq!(lines[0].role, MessageRole::Tool);
         assert!(
-            lines.iter().any(|l| l.text.contains('└')),
-            "Read tool must emit at least one └ detail row; lines: {lines:?}"
+            lines.iter().any(|l| l.text.contains('⎿')),
+            "Read tool must emit at least one ⎿ guide prefix detail row; lines: {lines:?}"
         );
     }
 
@@ -3273,8 +3309,8 @@ mod tests {
             "Write tool headline must start with ● Edit(; lines: {lines:?}"
         );
         assert!(
-            lines.iter().any(|l| l.text.contains('└')),
-            "Write tool must emit at least one └ detail row; lines: {lines:?}"
+            lines.iter().any(|l| l.text.contains('⎿')),
+            "Write tool must emit at least one ⎿ guide prefix detail row; lines: {lines:?}"
         );
     }
 
@@ -3321,6 +3357,144 @@ mod tests {
         assert!(
             lines[0].text.starts_with("● Search("),
             "Search tool headline must start with ● Search(; lines: {lines:?}"
+        );
+    }
+
+    // ── ink-message-cards: new focused tests ─────────────────────────────────
+
+    #[test]
+    fn wrap_summary_lines_summarize_false_never_truncates() {
+        // When summarize=false, wrap_summary_lines must return ALL wrapped lines
+        // regardless of max_lines, and must NOT append an ellipsis.
+        let long_text = "word ".repeat(200); // produces many wrapped lines at width 40
+        let lines = wrap_summary_lines(long_text.trim(), 40, 6, false);
+        assert!(
+            lines.len() > 6,
+            "summarize=false must not truncate; got {} lines",
+            lines.len()
+        );
+        assert!(
+            lines.iter().all(|l| !l.ends_with('…')),
+            "summarize=false must not append ellipsis; lines: {lines:?}"
+        );
+    }
+
+    #[test]
+    fn wrap_summary_lines_summarize_true_truncates_with_ellipsis() {
+        // When summarize=true and content exceeds max_lines, the result must be
+        // capped at max_lines and the last line must end with '…'.
+        let long_text = "word ".repeat(200);
+        let lines = wrap_summary_lines(long_text.trim(), 40, 4, true);
+        assert_eq!(lines.len(), 4, "summarize=true must truncate to max_lines");
+        assert!(
+            lines.last().unwrap().ends_with('…'),
+            "summarize=true must append ellipsis on the last line; lines: {lines:?}"
+        );
+    }
+
+    #[test]
+    fn wrap_summary_lines_preserves_newlines_as_separate_lines() {
+        // Multi-line content (e.g. thinking block, error detail) must keep each
+        // logical line on its own output line rather than collapsing to a single
+        // space-separated run.
+        let text = "first line\nsecond line\n\nfourth line";
+        let lines = wrap_summary_lines(text, 80, 20, false);
+        assert!(
+            lines.iter().any(|l| l == "first line"),
+            "first line must be present; lines: {lines:?}"
+        );
+        assert!(
+            lines.iter().any(|l| l == "second line"),
+            "second line must be present; lines: {lines:?}"
+        );
+        assert!(
+            lines.iter().any(|l| l == "fourth line"),
+            "fourth line must be present after blank; lines: {lines:?}"
+        );
+        // Blank separating line must be preserved.
+        assert!(
+            lines.iter().any(|l| l.is_empty()),
+            "blank separator line must be preserved; lines: {lines:?}"
+        );
+        // Old collapsing behavior must NOT appear.
+        assert!(
+            !lines.iter().any(|l| l.contains("first line second line")),
+            "lines must not be collapsed together; lines: {lines:?}"
+        );
+    }
+
+    #[test]
+    fn text_style_from_ratatui_strips_syntect_bg_color() {
+        // Syntect themes carry grey block backgrounds; text_style_from_ratatui
+        // must discard bg so code spans do not render with grey blocks.
+        use ratatui::style::Color as RC;
+        let ratatui_style = RatatuiStyle::default()
+            .fg(RC::Green)
+            .bg(RC::Rgb(40, 40, 40));
+
+        let result = text_style_from_ratatui(ratatui_style);
+        let style = result.expect("fg=Green must yield a non-default TextStyle");
+        assert!(style.fg.is_some(), "fg must be preserved");
+        assert!(
+            style.bg.is_none(),
+            "bg must be stripped by text_style_from_ratatui"
+        );
+    }
+
+    #[test]
+    fn tool_guide_prefix_uses_ink_character() {
+        // All tool detail/result subordinate rows must use the Ink guide prefix
+        // "  ⎿  " (2 sp + U+23BF + 2 sp) instead of the old "  └ " prefix.
+        let call = ToolCallView {
+            use_id: use_id("00000000-0000-0000-0000-000000000099"),
+            input: Some(serde_json::json!({ "command": "cargo fmt" })),
+            result: Some(RejectedToolMessageView::from_result(
+                "formatted 3 files",
+                true,
+            )),
+            elapsed_secs: Some(0.4),
+        };
+
+        let lines = call.display_lines("bash", 120, false);
+        // Every subordinate line must use ⎿ and must NOT contain the old └.
+        let sub_lines: Vec<&str> = lines[1..].iter().map(|l| l.text.as_str()).collect();
+        assert!(
+            sub_lines.iter().any(|t| t.contains('⎿')),
+            "Subordinate detail rows must use ⎿ guide prefix; sub_lines: {sub_lines:?}"
+        );
+        assert!(
+            sub_lines.iter().all(|t| !t.contains('└')),
+            "Old └ marker must not appear in subordinate rows; sub_lines: {sub_lines:?}"
+        );
+    }
+
+    #[test]
+    fn grouped_tool_calls_guide_prefix_on_all_detail_rows() {
+        // In a multi-call tool group, every detail/result row across all calls
+        // must use the ⎿ guide prefix.
+        let view = GroupedToolCallView {
+            tool: "bash".into(),
+            calls: vec![
+                ToolCallView {
+                    use_id: use_id("00000000-0000-0000-0000-000000000041"),
+                    input: Some(serde_json::json!({ "command": "cargo check" })),
+                    result: Some(RejectedToolMessageView::from_result("ok", true)),
+                    elapsed_secs: Some(1.0),
+                },
+                ToolCallView {
+                    use_id: use_id("00000000-0000-0000-0000-000000000042"),
+                    input: Some(serde_json::json!({ "command": "cargo clippy" })),
+                    result: Some(RejectedToolMessageView::from_result("1 warning", true)),
+                    elapsed_secs: Some(2.0),
+                },
+            ],
+        };
+
+        let lines = view.display_lines(120, false);
+        // No line anywhere should contain the old └.
+        assert!(
+            lines.iter().all(|l| !l.text.contains('└')),
+            "Old └ must not appear in any grouped tool line; lines: {lines:?}"
         );
     }
 }
