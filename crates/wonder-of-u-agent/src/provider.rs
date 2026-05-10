@@ -95,6 +95,12 @@ fn auth_material_label(material: &AuthMaterial) -> &'static str {
 
 /// Default AWS Bedrock API base URL (us-east-1).
 pub const DEFAULT_BEDROCK_API_BASE: &str = "https://bedrock-runtime.us-east-1.amazonaws.com";
+/// Default local model API base URL (Ollama default endpoint).
+///
+/// Used as the last-resort fallback for the `local` provider when no
+/// environment override is present.  Ollama listens on `11434` by default
+/// and exposes an OpenAI-compatible `/v1` prefix.
+pub const DEFAULT_LOCAL_API_BASE: &str = "http://localhost:11434/v1";
 /// Represents provider selection
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct ProviderSelection {
@@ -344,6 +350,16 @@ impl ResolvedProviderExecution {
         })
     }
 
+    /// Returns the API key if one is present, or `None` for auth-free
+    /// providers (e.g. `local` with [`AuthMaterialKind::None`]).
+    ///
+    /// Callers that need to conditionally include an `Authorization` header
+    /// should prefer this over [`Self::api_key`] so that local/Ollama
+    /// deployments that do not require a key work out of the box.
+    pub(crate) fn optional_api_key(&self) -> Option<&str> {
+        self.auth.api_key()
+    }
+
     pub(crate) fn oauth_access_token(&self) -> Result<&str> {
         self.auth.oauth_access_token().ok_or_else(|| {
             WonderError::validation(format!(
@@ -467,6 +483,20 @@ impl ProviderRegistry {
                 api_key_env: None,
                 wire_protocol: WireProtocol::BedrockAnthropic,
                 strict_model_validation: true,
+            })
+            .expect("builtin provider");
+        registry
+            .register(ProviderDescriptor {
+                id: "local".into(),
+                display_name: "Local Models".into(),
+                auth_kind: AuthMaterialKind::None,
+                default_model: "llama3.2".into(),
+                // No enumerated catalogue — any non-empty model id is accepted.
+                models: vec![],
+                api_base: Some(DEFAULT_LOCAL_API_BASE.into()),
+                api_key_env: None,
+                wire_protocol: WireProtocol::OpenAiCompat,
+                strict_model_validation: false,
             })
             .expect("builtin provider");
         registry
@@ -741,7 +771,7 @@ impl ProviderResolver {
             selection.provider.as_deref(),
             selection.model.as_deref(),
         )?;
-        let api_base = self.resolve_api_base(descriptor, settings)?;
+        let api_base = self.resolve_api_base(descriptor, settings, &env)?;
         let auth = self
             .resolve_auth_material(descriptor, credentials, &env)?
             .ok_or_else(|| self.missing_auth_error(descriptor))?;
@@ -779,9 +809,16 @@ impl ProviderResolver {
             return Ok(Some(provider.to_string()));
         }
 
-        let ready = self
+        // Separate auth-requiring providers from auth-free ones (e.g. local).
+        // Auth-free providers are only auto-selected as a last resort so that
+        // a configured API key always takes precedence over the local fallback.
+        let (auth_free, auth_required): (Vec<_>, Vec<_>) = self
             .registry
             .providers()
+            .partition(|p| p.auth_kind == AuthMaterialKind::None);
+
+        let ready_auth = auth_required
+            .iter()
             .filter_map(|provider| {
                 self.resolve_auth(provider, credentials, env)
                     .ok()
@@ -790,11 +827,29 @@ impl ProviderResolver {
             })
             .collect::<Vec<_>>();
 
-        if ready.len() == 1 {
-            Ok(ready.first().map(|provider| (*provider).to_string()))
-        } else {
-            Ok(None)
+        if ready_auth.len() == 1 {
+            return Ok(ready_auth.first().map(|id| (*id).to_string()));
         }
+
+        // No auth-requiring provider is uniquely ready; fall back to any
+        // auth-free provider that is available (should be exactly one: local).
+        if ready_auth.is_empty() {
+            let ready_free = auth_free
+                .iter()
+                .filter_map(|provider| {
+                    self.resolve_auth(provider, credentials, env)
+                        .ok()
+                        .filter(|auth| auth.is_ready())
+                        .map(|_| provider.id.as_str())
+                })
+                .collect::<Vec<_>>();
+
+            if ready_free.len() == 1 {
+                return Ok(ready_free.first().map(|id| (*id).to_string()));
+            }
+        }
+
+        Ok(None)
     }
 
     fn resolve_model(
@@ -855,12 +910,52 @@ impl ProviderResolver {
         &self,
         provider: &ProviderDescriptor,
         settings: &AgentSettings,
+        env: &BTreeMap<String, String>,
     ) -> Result<String> {
-        settings
+        // Priority 1: per-provider settings override always wins regardless of
+        // provider kind.
+        if let Some(base) = settings
             .providers
             .get(&provider.id)
             .and_then(|config| config.api_base.clone())
-            .or_else(|| provider.api_base.clone())
+            .filter(|api_base| !api_base.trim().is_empty())
+        {
+            return Ok(base);
+        }
+
+        // Priority 2–4: environment-variable chain for the `local` provider.
+        // Resolution order matches the documented priority in the scope:
+        //   WONDER_OF_U_LOCAL_API_BASE → OLLAMA_HOST → LMSTUDIO_API_BASE → fallback
+        if provider.id == "local" {
+            if let Some(base) = env
+                .get("WONDER_OF_U_LOCAL_API_BASE")
+                .map(|v| v.trim())
+                .filter(|v| !v.is_empty())
+            {
+                return Ok(base.to_string());
+            }
+
+            if let Some(host) = env
+                .get("OLLAMA_HOST")
+                .map(|v| v.trim())
+                .filter(|v| !v.is_empty())
+            {
+                return Ok(ollama_host_to_openai_base(host));
+            }
+
+            if let Some(base) = env
+                .get("LMSTUDIO_API_BASE")
+                .map(|v| v.trim())
+                .filter(|v| !v.is_empty())
+            {
+                return Ok(base.to_string());
+            }
+        }
+
+        // Priority 5: the descriptor's own api_base (hardcoded fallback).
+        provider
+            .api_base
+            .clone()
             .filter(|api_base| !api_base.trim().is_empty())
             .ok_or_else(|| {
                 WonderError::validation(format!(
@@ -1192,6 +1287,28 @@ fn is_fast_model_id(model_id: &str) -> bool {
 
 fn oauth_access_token_expired(expires_at: Option<OffsetDateTime>) -> bool {
     expires_at.is_some_and(|value| value <= OffsetDateTime::now_utc())
+}
+
+/// Converts an `OLLAMA_HOST` value to an OpenAI-compatible base URL by
+/// appending `/v1` when the host does not already end with that path segment.
+///
+/// Handles trailing slashes and existing `/v1` suffixes gracefully.
+///
+/// # Examples
+///
+/// ```text
+/// "http://localhost:11434"       → "http://localhost:11434/v1"
+/// "http://localhost:11434/"      → "http://localhost:11434/v1"
+/// "http://localhost:11434/v1"    → "http://localhost:11434/v1"
+/// "http://localhost:11434/v1/"   → "http://localhost:11434/v1"
+/// ```
+fn ollama_host_to_openai_base(host: &str) -> String {
+    let trimmed = host.trim_end_matches('/');
+    if trimmed.ends_with("/v1") {
+        trimmed.to_string()
+    } else {
+        format!("{trimmed}/v1")
+    }
 }
 
 /// Resolves a named AWS profile from the environment variables available in
@@ -1738,6 +1855,16 @@ mod tests {
     fn all_builtin_providers_have_strict_model_validation_enabled() {
         let registry = ProviderRegistry::builtin();
         for provider in registry.providers() {
+            // The `local` provider intentionally uses lenient validation so
+            // that arbitrary Ollama / LM Studio model ids are accepted without
+            // enumeration.
+            if provider.id == "local" {
+                assert!(
+                    !provider.strict_model_validation,
+                    "builtin provider `local` should have strict_model_validation=false"
+                );
+                continue;
+            }
             assert!(
                 provider.strict_model_validation,
                 "builtin provider `{}` should have strict_model_validation=true",
@@ -2071,6 +2198,297 @@ mod tests {
         assert!(
             message.contains("AWS_PROFILE"),
             "error should mention profile option; got: {message}"
+        );
+    }
+
+    // ── provider-local-models ──────────────────────────────────────────────
+
+    #[test]
+    fn local_provider_registered_in_builtin_registry() {
+        let registry = ProviderRegistry::builtin();
+        let provider = registry.get("local").expect("local provider must exist");
+        assert_eq!(provider.display_name, "Local Models");
+        assert_eq!(provider.auth_kind, AuthMaterialKind::None);
+        assert_eq!(provider.wire_protocol, WireProtocol::OpenAiCompat);
+        assert!(!provider.strict_model_validation);
+        assert_eq!(provider.default_model, "llama3.2");
+        assert_eq!(provider.api_base.as_deref(), Some(DEFAULT_LOCAL_API_BASE),);
+    }
+
+    #[test]
+    fn local_provider_auth_state_is_not_required_with_no_credentials() {
+        let resolver = ProviderResolver::builtin();
+        let settings = AgentSettings {
+            selected_provider: Some("local".into()),
+            ..AgentSettings::default()
+        };
+
+        let report = resolver
+            .resolve_with_env(
+                &settings,
+                &StoredCredentials::default(),
+                std::iter::empty::<(&str, String)>(),
+            )
+            .expect("local provider should always resolve");
+
+        assert_eq!(
+            report.auth.status,
+            wonder_of_u_core::AuthStatus::NotRequired,
+            "local provider must not require auth"
+        );
+        assert_eq!(
+            report.readiness,
+            ProviderReadiness::Ready,
+            "local provider must be ready without any credentials"
+        );
+    }
+
+    #[test]
+    fn local_provider_accepts_arbitrary_model_id() {
+        let resolver = ProviderResolver::builtin();
+        let settings = AgentSettings {
+            selected_provider: Some("local".into()),
+            selected_model: Some("mistral-nemo:12b-instruct-2407-q4_K_M".into()),
+            ..AgentSettings::default()
+        };
+
+        let report = resolver
+            .resolve_with_env(
+                &settings,
+                &StoredCredentials::default(),
+                std::iter::empty::<(&str, String)>(),
+            )
+            .expect("arbitrary model id must be accepted by local provider");
+
+        assert_eq!(
+            report.model.as_deref(),
+            Some("mistral-nemo:12b-instruct-2407-q4_K_M")
+        );
+    }
+
+    #[test]
+    fn local_provider_uses_default_api_base_without_env() {
+        let resolver = ProviderResolver::builtin();
+        let settings = AgentSettings {
+            selected_provider: Some("local".into()),
+            ..AgentSettings::default()
+        };
+
+        let resolved = resolver
+            .resolve_execution_with_env(
+                &settings,
+                &StoredCredentials::default(),
+                std::iter::empty::<(&str, String)>(),
+                &ProviderSelection::default(),
+            )
+            .expect("local provider should resolve without env");
+
+        assert_eq!(resolved.api_base(), DEFAULT_LOCAL_API_BASE);
+    }
+
+    #[test]
+    fn local_provider_env_api_base_overrides_default() {
+        let resolver = ProviderResolver::builtin();
+        let settings = AgentSettings {
+            selected_provider: Some("local".into()),
+            ..AgentSettings::default()
+        };
+
+        let resolved = resolver
+            .resolve_execution_with_env(
+                &settings,
+                &StoredCredentials::default(),
+                [(
+                    "WONDER_OF_U_LOCAL_API_BASE",
+                    "http://myhost:8080/v1".to_string(),
+                )],
+                &ProviderSelection::default(),
+            )
+            .expect("local provider should resolve with WONDER_OF_U_LOCAL_API_BASE");
+
+        assert_eq!(resolved.api_base(), "http://myhost:8080/v1");
+    }
+
+    #[test]
+    fn local_provider_ollama_host_converted_to_v1_base() {
+        let resolver = ProviderResolver::builtin();
+        let settings = AgentSettings {
+            selected_provider: Some("local".into()),
+            ..AgentSettings::default()
+        };
+
+        // Without trailing /v1 — must be appended.
+        let resolved = resolver
+            .resolve_execution_with_env(
+                &settings,
+                &StoredCredentials::default(),
+                [("OLLAMA_HOST", "http://gpu-box:11434".to_string())],
+                &ProviderSelection::default(),
+            )
+            .expect("local provider should resolve via OLLAMA_HOST");
+
+        assert_eq!(resolved.api_base(), "http://gpu-box:11434/v1");
+    }
+
+    #[test]
+    fn local_provider_ollama_host_already_has_v1_suffix() {
+        let resolver = ProviderResolver::builtin();
+        let settings = AgentSettings {
+            selected_provider: Some("local".into()),
+            ..AgentSettings::default()
+        };
+
+        let resolved = resolver
+            .resolve_execution_with_env(
+                &settings,
+                &StoredCredentials::default(),
+                [("OLLAMA_HOST", "http://gpu-box:11434/v1".to_string())],
+                &ProviderSelection::default(),
+            )
+            .expect("local provider should not duplicate /v1");
+
+        assert_eq!(resolved.api_base(), "http://gpu-box:11434/v1");
+    }
+
+    #[test]
+    fn local_provider_wonder_env_takes_priority_over_ollama_host() {
+        let resolver = ProviderResolver::builtin();
+        let settings = AgentSettings {
+            selected_provider: Some("local".into()),
+            ..AgentSettings::default()
+        };
+
+        let resolved = resolver
+            .resolve_execution_with_env(
+                &settings,
+                &StoredCredentials::default(),
+                [
+                    (
+                        "WONDER_OF_U_LOCAL_API_BASE",
+                        "http://primary:9999/v1".to_string(),
+                    ),
+                    ("OLLAMA_HOST", "http://secondary:11434".to_string()),
+                ],
+                &ProviderSelection::default(),
+            )
+            .expect("WONDER_OF_U_LOCAL_API_BASE must beat OLLAMA_HOST");
+
+        assert_eq!(resolved.api_base(), "http://primary:9999/v1");
+    }
+
+    #[test]
+    fn local_provider_lmstudio_api_base_used_when_ollama_absent() {
+        let resolver = ProviderResolver::builtin();
+        let settings = AgentSettings {
+            selected_provider: Some("local".into()),
+            ..AgentSettings::default()
+        };
+
+        let resolved = resolver
+            .resolve_execution_with_env(
+                &settings,
+                &StoredCredentials::default(),
+                [("LMSTUDIO_API_BASE", "http://localhost:1234/v1".to_string())],
+                &ProviderSelection::default(),
+            )
+            .expect("local provider should resolve via LMSTUDIO_API_BASE");
+
+        assert_eq!(resolved.api_base(), "http://localhost:1234/v1");
+    }
+
+    #[test]
+    fn local_provider_settings_api_base_beats_all_env_vars() {
+        let resolver = ProviderResolver::builtin();
+        let settings = AgentSettings {
+            selected_provider: Some("local".into()),
+            providers: BTreeMap::from([(
+                "local".into(),
+                crate::ProviderOverride {
+                    model: None,
+                    api_base: Some("http://settings-override:4242/v1".into()),
+                },
+            )]),
+            ..AgentSettings::default()
+        };
+
+        let resolved = resolver
+            .resolve_execution_with_env(
+                &settings,
+                &StoredCredentials::default(),
+                [
+                    (
+                        "WONDER_OF_U_LOCAL_API_BASE",
+                        "http://env:9999/v1".to_string(),
+                    ),
+                    ("OLLAMA_HOST", "http://ollama:11434".to_string()),
+                ],
+                &ProviderSelection::default(),
+            )
+            .expect("settings api_base must beat all env vars");
+
+        assert_eq!(resolved.api_base(), "http://settings-override:4242/v1");
+    }
+
+    #[test]
+    fn local_provider_auto_selected_when_no_other_auth_configured() {
+        // With no API keys or OAuth tokens configured, the local provider
+        // should be auto-selected as the sole ready provider.
+        let resolver = ProviderResolver::builtin();
+
+        let report = resolver
+            .resolve_with_env(
+                &AgentSettings::default(),
+                &StoredCredentials::default(),
+                std::iter::empty::<(&str, String)>(),
+            )
+            .expect("local provider auto-selection should succeed");
+
+        assert_eq!(
+            report.provider.as_deref(),
+            Some("local"),
+            "local should be auto-selected when nothing else is configured"
+        );
+        assert_eq!(report.readiness, ProviderReadiness::Ready);
+    }
+
+    #[test]
+    fn local_provider_not_auto_selected_when_openai_api_key_present() {
+        // When an auth-requiring provider is ready, it should take precedence
+        // over the always-ready local fallback.
+        let resolver = ProviderResolver::builtin();
+
+        let report = resolver
+            .resolve_with_env(
+                &AgentSettings::default(),
+                &StoredCredentials::default(),
+                [("OPENAI_API_KEY", "sk-test-key".to_string())],
+            )
+            .expect("auto-selection with openai key should succeed");
+
+        assert_eq!(
+            report.provider.as_deref(),
+            Some("openai"),
+            "openai (with API key) must beat local in auto-selection"
+        );
+    }
+
+    #[test]
+    fn ollama_host_to_openai_base_conversion() {
+        assert_eq!(
+            ollama_host_to_openai_base("http://localhost:11434"),
+            "http://localhost:11434/v1"
+        );
+        assert_eq!(
+            ollama_host_to_openai_base("http://localhost:11434/"),
+            "http://localhost:11434/v1"
+        );
+        assert_eq!(
+            ollama_host_to_openai_base("http://localhost:11434/v1"),
+            "http://localhost:11434/v1"
+        );
+        assert_eq!(
+            ollama_host_to_openai_base("http://localhost:11434/v1/"),
+            "http://localhost:11434/v1"
         );
     }
 }
