@@ -244,8 +244,9 @@ impl MarkdownSummaryView {
                         wrap_summary_lines(text, max_width, MAX_PARAGRAPH_LINES, false);
                     let display_prefix = if first_block { prefix } else { "" };
                     if display_prefix.is_empty() {
-                        // Claude Code-style transcript paragraphs stay flush-left for user and
-                        // assistant narration instead of inheriting the generic detail indent.
+                        // Continuation blocks (second paragraph onward) and Tool-role
+                        // messages stay flush-left; only the first block of a
+                        // User/Assistant message carries the "● " bullet.
                         push_unprefixed_block(&mut lines, &block_lines, self.role, max_width);
                     } else {
                         push_wrapped_block(
@@ -2250,7 +2251,14 @@ fn wrap_summary_lines(
 
 fn role_prefix(role: MessageRole) -> &'static str {
     match role {
-        MessageRole::User | MessageRole::Assistant | MessageRole::Tool => "",
+        // Black-circle bullet mirrors Claude Code's fullscreen transcript style: the
+        // first line of every user/assistant paragraph is visually anchored by "● ".
+        // Continuation blocks (second paragraph onward) are rendered flush-left via
+        // the empty-prefix branch in `display_lines`.
+        MessageRole::User | MessageRole::Assistant => "● ",
+        // Tool headlines already carry their own "● Tool(args)" bullet, so no extra
+        // prefix is needed here.
+        MessageRole::Tool => "",
         MessageRole::System => "system> ",
         MessageRole::Progress => "progress> ",
         MessageRole::Error => "error> ",
@@ -2412,7 +2420,7 @@ mod tests {
         assert_eq!(lines.len(), 3);
         assert_eq!(
             lines[0],
-            MessageLineView::new("Heading • first item", MessageRole::Assistant,)
+            MessageLineView::new("● Heading • first item", MessageRole::Assistant,)
         );
         assert_eq!(lines[1].text, "fn main() {}");
         assert_eq!(lines[2].text, "println!(\"hi\");");
@@ -2473,13 +2481,16 @@ mod tests {
     }
 
     #[test]
-    fn markdown_summary_keeps_user_text_flush_left_without_prefix() {
+    fn markdown_summary_user_text_renders_with_bullet_prefix() {
+        // Claude Code-style visual parity: the first line of every user
+        // paragraph is prefixed with "● " so it is visually anchored in the
+        // transcript without a legacy "user> " role string.
         let view = MarkdownSummaryView::new(MessageRole::User, "review the diff and continue");
 
         assert_eq!(
             view.display_lines(80),
             vec![MessageLineView::new(
-                "review the diff and continue",
+                "● review the diff and continue",
                 MessageRole::User,
             )]
         );
@@ -2502,7 +2513,7 @@ mod tests {
 
         assert_eq!(
             lines[0],
-            MessageLineView::new("all set", MessageRole::Assistant)
+            MessageLineView::new("● all set", MessageRole::Assistant)
         );
         assert_eq!(
             lines[1],
@@ -2902,6 +2913,11 @@ mod tests {
             lines.iter().any(|l| l.text.contains("hi there")),
             "UserText content must appear in transcript; lines: {lines:?}"
         );
+        // Claude Code visual parity: first user line must start with the "●" bullet.
+        assert!(
+            lines.iter().any(|l| l.text.starts_with('●')),
+            "UserText first line must start with ● bullet; lines: {lines:?}"
+        );
     }
 
     #[test]
@@ -2921,6 +2937,11 @@ mod tests {
         assert!(
             lines.iter().any(|l| l.text.contains("Hello!")),
             "AssistantText content must appear in transcript; lines: {lines:?}"
+        );
+        // Claude Code visual parity: first assistant line must start with the "●" bullet.
+        assert!(
+            lines.iter().any(|l| l.text.starts_with('●')),
+            "AssistantText first line must start with ● bullet; lines: {lines:?}"
         );
     }
 
@@ -3098,6 +3119,208 @@ mod tests {
         assert!(
             texts.iter().any(|t| t.starts_with('●')),
             "Tool call must use ● bullet; lines: {texts:?}"
+        );
+        // Claude Code parity: user and assistant first-paragraph lines must also
+        // start with the "●" bullet so every message origin is visually anchored.
+        assert!(
+            texts
+                .iter()
+                .any(|t| t.starts_with('●') && t.contains("list my files")),
+            "User message must open with ● bullet; lines: {texts:?}"
+        );
+        assert!(
+            texts
+                .iter()
+                .any(|t| t.starts_with('●') && t.contains("Done")),
+            "Assistant message must open with ● bullet; lines: {texts:?}"
+        );
+    }
+
+    // ── Claude Code visual parity: new focused tests ─────────────────────────
+
+    #[test]
+    fn user_message_first_paragraph_gets_bullet_prefix() {
+        let view = MarkdownSummaryView::new(MessageRole::User, "implement the feature");
+
+        let lines = view.display_lines(80);
+        assert_eq!(lines.len(), 1);
+        assert_eq!(lines[0].text, "● implement the feature");
+        assert_eq!(lines[0].role, MessageRole::User);
+    }
+
+    #[test]
+    fn assistant_message_first_paragraph_gets_bullet_prefix() {
+        let view = MarkdownSummaryView::new(MessageRole::Assistant, "I'll take care of that.");
+
+        let lines = view.display_lines(80);
+        assert_eq!(lines.len(), 1);
+        assert_eq!(lines[0].text, "● I'll take care of that.");
+        assert_eq!(lines[0].role, MessageRole::Assistant);
+    }
+
+    #[test]
+    fn user_multiblock_only_first_block_has_bullet() {
+        // A user message with two paragraphs (separated by a blank line in the
+        // source) must show "● " only on the first block's first line; the
+        // second paragraph renders flush-left.
+        let view =
+            MarkdownSummaryView::new(MessageRole::User, "first paragraph\n\nsecond paragraph");
+
+        let lines = view.display_lines(80);
+        assert!(
+            lines.iter().any(|l| l.text.starts_with('●')),
+            "At least one line must have the ● bullet; lines: {lines:?}"
+        );
+        // Second block must NOT start with "●".
+        assert!(
+            lines
+                .iter()
+                .skip(1)
+                .any(|l| l.text.contains("second paragraph") && !l.text.starts_with('●')),
+            "Second paragraph must be flush-left (no bullet); lines: {lines:?}"
+        );
+    }
+
+    #[test]
+    fn assistant_bullet_continuation_is_indented_two_spaces_when_wrapped() {
+        // A very long assistant paragraph that must wrap at a narrow width
+        // should have the first line starting with "● " and subsequent wrapped
+        // lines indented by two spaces to align with the bullet body.
+        let view = MarkdownSummaryView::new(
+            MessageRole::Assistant,
+            "This is a very long assistant paragraph that will need to wrap.",
+        );
+
+        // Use a narrow width so the text wraps.
+        let lines = view.display_lines(20);
+        assert!(
+            lines[0].text.starts_with("● "),
+            "First wrapped line must begin with ● ; lines: {lines:?}"
+        );
+        if lines.len() > 1 {
+            assert!(
+                lines[1].text.starts_with("  "),
+                "Continuation wrapped line must be indented two spaces; lines: {lines:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn tool_list_row_shows_bullet_name_and_collapsed_detail() {
+        // Glob / list tool should render as "● List(target)" headline with a
+        // "└ ..." subordinate detail row, matching the Claude Code reference.
+        let call = ToolCallView {
+            use_id: use_id("00000000-0000-0000-0000-000000000010"),
+            input: Some(serde_json::json!({ "pattern": "**/*.rs", "path": "src" })),
+            result: Some(RejectedToolMessageView::from_result("57 paths", true)),
+            elapsed_secs: None,
+        };
+
+        let lines = call.display_lines("glob", 120, false);
+        assert!(
+            lines[0].text.starts_with("● List("),
+            "List tool headline must start with ● List(; lines: {lines:?}"
+        );
+        assert!(
+            lines.iter().any(|l| l.text.contains('└')),
+            "List tool must emit a └ detail row; lines: {lines:?}"
+        );
+    }
+
+    #[test]
+    fn tool_read_row_shows_bullet_read_and_collapsed_detail() {
+        // File read should render as "● Read(filename)" with a "└ path" and
+        // preview detail row.
+        let call = ToolCallView {
+            use_id: use_id("00000000-0000-0000-0000-000000000011"),
+            input: Some(serde_json::json!({ "path": "crates/core/src/lib.rs" })),
+            result: Some(RejectedToolMessageView::from_result("pub mod core;", true)),
+            elapsed_secs: Some(0.3),
+        };
+
+        let lines = call.display_lines("file_read", 120, false);
+        assert!(
+            lines[0].text.starts_with("● Read("),
+            "Read tool headline must start with ● Read(; lines: {lines:?}"
+        );
+        assert_eq!(lines[0].role, MessageRole::Tool);
+        assert!(
+            lines.iter().any(|l| l.text.contains('└')),
+            "Read tool must emit at least one └ detail row; lines: {lines:?}"
+        );
+    }
+
+    #[test]
+    fn tool_update_row_shows_bullet_edit_and_detail() {
+        // File write/edit should render as "● Edit(filename)" with "└ path"
+        // and an optional result detail row.
+        let call = ToolCallView {
+            use_id: use_id("00000000-0000-0000-0000-000000000012"),
+            input: Some(serde_json::json!({
+                "path": "crates/core/src/lib.rs",
+                "content": "pub mod new_core;",
+            })),
+            result: Some(RejectedToolMessageView::from_result(
+                "wrote crates/core/src/lib.rs",
+                true,
+            )),
+            elapsed_secs: None,
+        };
+
+        let lines = call.display_lines("file_write", 120, false);
+        assert!(
+            lines[0].text.starts_with("● Edit("),
+            "Write tool headline must start with ● Edit(; lines: {lines:?}"
+        );
+        assert!(
+            lines.iter().any(|l| l.text.contains('└')),
+            "Write tool must emit at least one └ detail row; lines: {lines:?}"
+        );
+    }
+
+    #[test]
+    fn expand_hint_uses_ctrl_o_keybinding() {
+        // The expand hint text must reference the actual keybinding ("ctrl+o")
+        // that is configured in wonder-of-u so the UI doesn't lie to the user.
+        let call = ToolCallView {
+            use_id: use_id("00000000-0000-0000-0000-000000000020"),
+            input: Some(serde_json::json!({ "path": "src/lib.rs" })),
+            result: Some(RejectedToolMessageView::from_result(
+                (1..=25)
+                    .map(|i| format!("line {i}"))
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+                true,
+            )),
+            elapsed_secs: None,
+        };
+
+        let lines = call.display_lines("file_read", 120, false);
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.text.contains("ctrl+o") && l.text.contains("expand")),
+            "Overflow hint must say 'ctrl+o' (the real keybinding) to expand; lines: {lines:?}"
+        );
+    }
+
+    #[test]
+    fn search_tool_renders_bullet_search_headline() {
+        // Grep / search tool should render as "● Search(query)".
+        let call = ToolCallView {
+            use_id: use_id("00000000-0000-0000-0000-000000000030"),
+            input: Some(serde_json::json!({ "query": "display_lines" })),
+            result: Some(RejectedToolMessageView::from_result(
+                "src/message/rich.rs:933",
+                true,
+            )),
+            elapsed_secs: Some(0.5),
+        };
+
+        let lines = call.display_lines("search", 120, false);
+        assert!(
+            lines[0].text.starts_with("● Search("),
+            "Search tool headline must start with ● Search(; lines: {lines:?}"
         );
     }
 }
