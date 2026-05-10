@@ -2233,6 +2233,9 @@ fn auth_kind_display(kind: AuthMaterialKind) -> &'static str {
         AuthMaterialKind::ApiKey => "api-key",
         AuthMaterialKind::OAuth => "oauth",
         AuthMaterialKind::AwsSigV4 => "aws-sigv4",
+        AuthMaterialKind::AwsBearer => "aws-bearer",
+        AuthMaterialKind::AwsProfile => "aws-profile",
+        AuthMaterialKind::GcpOAuth2 => "gcp-oauth2",
     }
 }
 

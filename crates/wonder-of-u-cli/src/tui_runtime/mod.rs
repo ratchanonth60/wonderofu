@@ -23,9 +23,9 @@ use ratatui::{
     prelude::{Color as RatatuiColor, Modifier, Style as RatatuiStyle},
 };
 use wonder_of_u_agent::{
-    CompletionRequest, CredentialStore, ProviderResolver, ProviderRuntime, ProviderSelection,
-    ProviderToolCall, ProviderToolResultMessage, ProviderToolSpec, SettingsStore,
-    ToolConversationRound, ToolUseRequest, ToolUseResponse, builtin_tool_registry,
+    CompletionRequest, CredentialStore, ProviderRegistry, ProviderResolver, ProviderRuntime,
+    ProviderSelection, ProviderToolCall, ProviderToolResultMessage, ProviderToolSpec,
+    SettingsStore, ToolConversationRound, ToolUseRequest, ToolUseResponse, builtin_tool_registry,
     poll_copilot_access_token, request_copilot_device_code,
 };
 use wonder_of_u_core::{

@@ -114,7 +114,25 @@ impl Command for LoginCommand {
             }
             AuthMaterialKind::AwsSigV4 => {
                 return Err(WonderError::validation(format!(
-                    "provider `{}` uses AWS SigV4 auth; set AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY environment variables",
+                    "provider `{}` uses AWS SigV4 auth; set AWS_BEARER_TOKEN_BEDROCK, or AWS_ACCESS_KEY_ID + AWS_SECRET_ACCESS_KEY, or AWS_PROFILE",
+                    args.provider
+                )));
+            }
+            AuthMaterialKind::AwsBearer => {
+                return Err(WonderError::validation(format!(
+                    "provider `{}` uses AWS bearer-token auth; set AWS_BEARER_TOKEN_BEDROCK",
+                    args.provider
+                )));
+            }
+            AuthMaterialKind::AwsProfile => {
+                return Err(WonderError::validation(format!(
+                    "provider `{}` uses AWS profile auth; set AWS_PROFILE and configure ~/.aws/credentials",
+                    args.provider
+                )));
+            }
+            AuthMaterialKind::GcpOAuth2 => {
+                return Err(WonderError::validation(format!(
+                    "provider `{}` uses GCP OAuth2; set VERTEXAI_PROJECT, VERTEXAI_LOCATION, and GOOGLE_APPLICATION_CREDENTIALS",
                     args.provider
                 )));
             }
@@ -329,9 +347,18 @@ pub(crate) fn set_model_selection(
     let model = model
         .or(selection_model)
         .unwrap_or_else(|| provider_config.default_model.clone());
-    provider_config.model(&model).ok_or_else(|| {
-        WonderError::validation(format!("unknown model `{model}` for provider `{provider}`"))
-    })?;
+    // Strict providers maintain a curated catalogue; reject unknown ids.
+    // Non-strict providers (gateways, local, native-dynamic) accept any
+    // non-empty model string—we just guard against blank input.
+    if provider_config.strict_model_validation {
+        provider_config.model(&model).ok_or_else(|| {
+            WonderError::validation(format!(
+                "unknown model `{model}` for provider `{provider}` (strict catalogue)"
+            ))
+        })?;
+    } else if model.trim().is_empty() {
+        return Err(WonderError::validation("model id cannot be empty"));
+    }
 
     let mut settings = settings;
     settings.selected_provider = Some(provider);
@@ -357,20 +384,35 @@ fn render_model_status(report: &wonder_of_u_agent::ProviderStatusReport) -> Stri
         format!("provider_readiness={}", report.readiness.label()),
     ];
     for provider in &report.available_providers {
-        let models = provider
-            .models
-            .iter()
-            .map(|model| model.id.as_str())
-            .collect::<Vec<_>>()
-            .join(",");
-        lines.push(format!(
+        // Non-strict providers accept any non-empty model id; display "<any>"
+        // rather than an empty catalogue to signal pass-through semantics.
+        let models = if provider.strict_model_validation {
+            provider
+                .models
+                .iter()
+                .map(|model| model.id.as_str())
+                .collect::<Vec<_>>()
+                .join(",")
+        } else {
+            "<any>".to_string()
+        };
+        let mut meta = format!(
             "provider[{}]={};auth={};default_model={};models={}",
             provider.id,
             provider.display_name,
             auth_kind_label(provider.auth_kind),
             provider.default_model,
-            models
-        ));
+            models,
+        );
+        // Surface the env var names so users know what to set without digging
+        // through docs.  Never print the value—only the variable name.
+        if let Some(env) = &provider.api_key_env {
+            meta.push_str(&format!(";api_key_env={env}"));
+        }
+        if let Some(env) = &provider.endpoint_env {
+            meta.push_str(&format!(";endpoint_env={env}"));
+        }
+        lines.push(meta);
     }
     lines.join("\n")
 }
@@ -382,17 +424,46 @@ fn render_model_picker_output(report: &wonder_of_u_agent::ProviderStatusReport) 
         format!("provider_readiness={}", report.readiness.label()),
     ];
     for provider in &report.available_providers {
-        for model in &provider.models {
+        if provider.strict_model_validation {
+            // Strict providers: enumerate the curated catalogue.
+            for model in &provider.models {
+                lines.push(format!(
+                    "model_option={}",
+                    json!({
+                        "provider": provider.id,
+                        "provider_display": provider.display_name,
+                        "model": model.id,
+                        "model_display": model.display_name,
+                        "default": provider.default_model == model.id,
+                        "selected": report.provider.as_deref() == Some(provider.id.as_str())
+                            && report.model.as_deref() == Some(model.id.as_str()),
+                        "auth": auth_kind_label(provider.auth_kind),
+                    })
+                ));
+            }
+        } else {
+            // Non-strict providers (gateways, local, native-dynamic): emit the
+            // default model as a representative picker entry.  Any non-empty
+            // model string is valid; the label signals pass-through semantics.
+            let model_id = &provider.default_model;
+            let active_model = report.model.as_deref().unwrap_or(model_id);
+            let is_active_provider = report.provider.as_deref() == Some(provider.id.as_str());
+            // Show either the currently-selected model (if this is the active
+            // provider) or the provider's default as the representative entry.
+            let display_model = if is_active_provider {
+                active_model
+            } else {
+                model_id.as_str()
+            };
             lines.push(format!(
                 "model_option={}",
                 json!({
                     "provider": provider.id,
                     "provider_display": provider.display_name,
-                    "model": model.id,
-                    "model_display": model.display_name,
-                    "default": provider.default_model == model.id,
-                    "selected": report.provider.as_deref() == Some(provider.id.as_str())
-                        && report.model.as_deref() == Some(model.id.as_str()),
+                    "model": display_model,
+                    "model_display": format!("{display_model} (any model accepted)"),
+                    "default": true,
+                    "selected": is_active_provider,
                     "auth": auth_kind_label(provider.auth_kind),
                 })
             ));
@@ -567,8 +638,19 @@ impl ConfigCommand {
                 provider.id,
                 auth_kind_label(provider.auth_kind)
             ));
+            lines.push(format!(
+                "provider[{}].strict_models={}",
+                provider.id, provider.strict_model_validation
+            ));
             if let Some(api_base) = provider.api_base {
                 lines.push(format!("provider[{}].api_base={api_base}", provider.id));
+            }
+            // Expose env var names (never their values) for discoverability.
+            if let Some(env) = &provider.api_key_env {
+                lines.push(format!("provider[{}].api_key_env={env}", provider.id));
+            }
+            if let Some(env) = &provider.endpoint_env {
+                lines.push(format!("provider[{}].endpoint_env={env}", provider.id));
             }
         }
 
@@ -650,6 +732,9 @@ fn auth_kind_label(kind: AuthMaterialKind) -> &'static str {
         AuthMaterialKind::ApiKey => "api_key",
         AuthMaterialKind::OAuth => "oauth",
         AuthMaterialKind::AwsSigV4 => "aws_sigv4",
+        AuthMaterialKind::AwsBearer => "aws_bearer",
+        AuthMaterialKind::AwsProfile => "aws_profile",
+        AuthMaterialKind::GcpOAuth2 => "gcp_oauth2",
     }
 }
 
@@ -658,6 +743,8 @@ mod tests {
     use crate::commands::browser_launch_disabled;
 
     use super::normalize_model_invocation;
+    use super::{render_model_picker_output, render_model_status};
+    use wonder_of_u_agent::{AgentSettings, AuthMaterial, ProviderResolver, StoredCredentials};
     use wonder_of_u_core::CommandInvocation;
 
     #[test]
@@ -693,6 +780,326 @@ mod tests {
         assert!(
             browser_launch_disabled(),
             "tests must never spawn a real system browser"
+        );
+    }
+
+    // ── render_model_status ──────────────────────────────────────────────────
+
+    /// Non-strict providers must show `models=<any>` rather than an empty
+    /// string, signalling pass-through semantics to callers parsing the output.
+    #[test]
+    fn render_model_status_shows_any_for_non_strict_providers() {
+        // Gemini is non-strict with an empty model catalogue.
+        let resolver = ProviderResolver::builtin();
+        let settings = AgentSettings {
+            selected_provider: Some("gemini".into()),
+            ..AgentSettings::default()
+        };
+        let credentials = StoredCredentials {
+            providers: [(
+                "gemini".into(),
+                AuthMaterial::ApiKey {
+                    key: "g-key".into(),
+                },
+            )]
+            .into(),
+        };
+        let report = resolver
+            .resolve_with_env(
+                &settings,
+                &credentials,
+                std::iter::empty::<(&str, String)>(),
+            )
+            .expect("gemini resolves with stored api key");
+
+        let output = render_model_status(&report);
+
+        assert!(
+            output.contains("models=<any>"),
+            "gemini (non-strict) must show models=<any>; got:\n{output}"
+        );
+        assert!(
+            output.contains("api_key_env=GEMINI_API_KEY"),
+            "must include env var hint; got:\n{output}"
+        );
+    }
+
+    /// Strict providers must still list their enumerated catalogue.
+    #[test]
+    fn render_model_status_shows_catalogue_for_strict_providers() {
+        let resolver = ProviderResolver::builtin();
+        let settings = AgentSettings {
+            selected_provider: Some("openai".into()),
+            ..AgentSettings::default()
+        };
+        let credentials = StoredCredentials {
+            providers: [(
+                "openai".into(),
+                AuthMaterial::ApiKey {
+                    key: "sk-key".into(),
+                },
+            )]
+            .into(),
+        };
+        let report = resolver
+            .resolve_with_env(
+                &settings,
+                &credentials,
+                std::iter::empty::<(&str, String)>(),
+            )
+            .expect("openai resolves with stored api key");
+
+        let output = render_model_status(&report);
+
+        // Find the provider[openai]=… line specifically (other providers may
+        // be present when env vars are set in the test environment).
+        let openai_line = output
+            .lines()
+            .find(|l| l.starts_with("provider[openai]="))
+            .expect("must have a provider[openai] line in render_model_status output");
+        assert!(
+            openai_line.contains("gpt-4.1"),
+            "openai (strict) must list known models; got line: {openai_line}"
+        );
+        assert!(
+            !openai_line.contains("models=<any>"),
+            "strict provider line must not contain models=<any>; got: {openai_line}"
+        );
+    }
+
+    // ── render_model_picker_output ───────────────────────────────────────────
+
+    /// Non-strict providers must appear in the model picker with their default
+    /// model even though their `models` list is empty.
+    #[test]
+    fn render_model_picker_output_includes_non_strict_provider() {
+        // Groq is a gateway provider: strict=false, models=[].
+        let resolver = ProviderResolver::builtin();
+        let settings = AgentSettings {
+            selected_provider: Some("groq".into()),
+            ..AgentSettings::default()
+        };
+        let credentials = StoredCredentials {
+            providers: [(
+                "groq".into(),
+                AuthMaterial::ApiKey {
+                    key: "gq-key".into(),
+                },
+            )]
+            .into(),
+        };
+        let report = resolver
+            .resolve_with_env(
+                &settings,
+                &credentials,
+                std::iter::empty::<(&str, String)>(),
+            )
+            .expect("groq resolves with stored api key");
+
+        let output = render_model_picker_output(&report);
+
+        assert!(
+            output.contains("model_picker=true"),
+            "must start with picker sentinel; got:\n{output}"
+        );
+        assert!(
+            output.contains("model_option="),
+            "non-strict groq must still emit a model_option line; got:\n{output}"
+        );
+        // The label should mention "any model accepted".
+        assert!(
+            output.contains("any model accepted"),
+            "non-strict option must communicate arbitrary-model semantics; got:\n{output}"
+        );
+    }
+
+    /// HF_TOKEN provider (huggingface) should appear in the picker and surface
+    /// the correct env var name as the auth label.
+    #[test]
+    fn render_model_picker_output_huggingface_env_auth_label() {
+        let resolver = ProviderResolver::builtin();
+        let settings = AgentSettings {
+            selected_provider: Some("huggingface".into()),
+            ..AgentSettings::default()
+        };
+        let credentials = StoredCredentials {
+            providers: [(
+                "huggingface".into(),
+                AuthMaterial::ApiKey {
+                    key: "hf-secret".into(),
+                },
+            )]
+            .into(),
+        };
+        let report = resolver
+            .resolve_with_env(
+                &settings,
+                &credentials,
+                std::iter::empty::<(&str, String)>(),
+            )
+            .expect("huggingface resolves with stored HF_TOKEN credential");
+
+        let output = render_model_picker_output(&report);
+
+        assert!(
+            output.contains("huggingface"),
+            "huggingface must be present in picker; got:\n{output}"
+        );
+        assert!(
+            output.contains("model_option="),
+            "must have at least one model_option; got:\n{output}"
+        );
+    }
+
+    /// Azure OpenAI: non-strict, endpoint from env, api-key from env.
+    /// The status output must mention the endpoint env var.
+    #[test]
+    fn render_model_status_azure_shows_endpoint_env_hint() {
+        let resolver = ProviderResolver::builtin();
+        let settings = AgentSettings {
+            selected_provider: Some("azure".into()),
+            ..AgentSettings::default()
+        };
+        let credentials = StoredCredentials {
+            providers: [(
+                "azure".into(),
+                AuthMaterial::ApiKey {
+                    key: "az-key".into(),
+                },
+            )]
+            .into(),
+        };
+        // Azure needs endpoint env to resolve; provide a dummy.
+        let report = resolver
+            .resolve_with_env(
+                &settings,
+                &credentials,
+                [(
+                    "AZURE_OPENAI_API_ENDPOINT",
+                    "https://my.openai.azure.com".to_string(),
+                )],
+            )
+            .expect("azure resolves with api key + endpoint env");
+
+        let output = render_model_status(&report);
+
+        assert!(
+            output.contains("models=<any>"),
+            "azure (non-strict) must show models=<any>; got:\n{output}"
+        );
+        assert!(
+            output.contains("endpoint_env=AZURE_OPENAI_API_ENDPOINT"),
+            "must include endpoint env hint; got:\n{output}"
+        );
+        assert!(
+            output.contains("api_key_env=AZURE_OPENAI_API_KEY"),
+            "must include api key env hint; got:\n{output}"
+        );
+    }
+
+    /// Local provider: no auth needed, accepts arbitrary model ids in picker.
+    #[test]
+    fn render_model_picker_output_local_provider_appears() {
+        let resolver = ProviderResolver::builtin();
+        let settings = AgentSettings {
+            selected_provider: Some("local".into()),
+            selected_model: Some("phi3:mini".into()),
+            ..AgentSettings::default()
+        };
+        let report = resolver
+            .resolve_with_env(
+                &settings,
+                &StoredCredentials::default(),
+                std::iter::empty::<(&str, String)>(),
+            )
+            .expect("local provider needs no auth");
+
+        let output = render_model_picker_output(&report);
+
+        assert!(
+            output.contains("model_picker=true"),
+            "local picker output must include sentinel; got:\n{output}"
+        );
+        assert!(
+            output.contains("local"),
+            "local provider must appear in picker output; got:\n{output}"
+        );
+        // The active model should be the custom one we set, not the default.
+        assert!(
+            output.contains("phi3:mini"),
+            "active custom model must appear; got:\n{output}"
+        );
+    }
+
+    /// Non-strict model selection must accept arbitrary model ids without
+    /// returning a validation error.
+    #[test]
+    fn set_model_selection_accepts_arbitrary_model_for_non_strict_provider() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        // Seed the storage dir with groq credentials.
+        use wonder_of_u_agent::{CredentialStore, SettingsStore};
+        CredentialStore::new(dir.path())
+            .set_api_key("groq", "groq-secret")
+            .expect("write groq credential");
+        let s = wonder_of_u_agent::AgentSettings {
+            selected_provider: Some("groq".into()),
+            selected_model: Some("mixtral-8x7b-32768".into()),
+            ..wonder_of_u_agent::AgentSettings::default()
+        };
+        SettingsStore::new(dir.path())
+            .write(&s)
+            .expect("write settings");
+
+        let result = super::set_model_selection(
+            Some(dir.path()),
+            Some("groq".into()),
+            Some("mixtral-8x7b-32768".into()),
+            None,
+        );
+
+        assert!(
+            result.is_ok(),
+            "non-strict provider should accept arbitrary model id; got: {:?}",
+            result
+        );
+        let output = result.unwrap();
+        assert!(
+            output.contains("provider_selection=groq:mixtral-8x7b-32768"),
+            "output must confirm selection; got:\n{output}"
+        );
+    }
+
+    /// Strict provider must still reject unknown model ids.
+    #[test]
+    fn set_model_selection_rejects_unknown_model_for_strict_provider() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        use wonder_of_u_agent::{CredentialStore, SettingsStore};
+        CredentialStore::new(dir.path())
+            .set_api_key("openai", "sk-secret")
+            .expect("write openai credential");
+        let s = wonder_of_u_agent::AgentSettings {
+            selected_provider: Some("openai".into()),
+            ..wonder_of_u_agent::AgentSettings::default()
+        };
+        SettingsStore::new(dir.path())
+            .write(&s)
+            .expect("write settings");
+
+        let result = super::set_model_selection(
+            Some(dir.path()),
+            Some("openai".into()),
+            Some("nonexistent-model-xyz".into()),
+            None,
+        );
+
+        assert!(
+            result.is_err(),
+            "strict provider must reject unknown model; got ok"
+        );
+        let msg = result.unwrap_err().to_string();
+        assert!(
+            msg.contains("strict catalogue"),
+            "error must mention strict catalogue; got: {msg}"
         );
     }
 }
