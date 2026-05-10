@@ -4167,17 +4167,11 @@ mod tests {
         let text = frame.to_plain_text();
 
         // Every integration-panel header must appear at most once.
-        for header in &[
-            "─ Tools ─",
-            "─ MCP ─",
-            "─ LSP ─",
-            "─ Todo ─",
-            "─ Session ─",
-        ] {
+        for header in &["─ Tools ─", "─ MCP ─", "─ LSP ─", "─ Todo ─", "─ Session ─"]
+        {
             let count = text.matches(header).count();
             assert_eq!(
-                count,
-                1,
+                count, 1,
                 "'{header}' must appear exactly once; found {count} times in:\n{text}"
             );
         }

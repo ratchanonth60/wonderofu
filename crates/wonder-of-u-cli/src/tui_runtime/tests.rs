@@ -7177,9 +7177,17 @@ fn mcp_sidebar_lines_with_servers() {
 
 #[test]
 fn tool_sidebar_lines_produces_summary() {
-    use wonder_of_u_core::FeatureSet;
-    let features = FeatureSet::first_release();
-    let lines = tool_sidebar_lines(&features, None);
+    let dir = wonder_of_u_test_support::unique_test_dir("tool-sidebar-summary");
+    let context = ToolContext {
+        session_id: SessionId::new(),
+        cwd: dir,
+        permission_mode: PermissionMode::Default,
+        additional_working_directories: Vec::new(),
+        permission_rules: Vec::new(),
+        features: FeatureSet::first_release(),
+        bash_session_store: None,
+    };
+    let lines = tool_sidebar_lines(&context);
     // Must not be empty and must not be an error line.
     assert!(!lines.is_empty());
     assert!(

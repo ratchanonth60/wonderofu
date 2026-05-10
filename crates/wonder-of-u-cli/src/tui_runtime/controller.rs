@@ -71,6 +71,19 @@ pub(super) struct TuiController<'a> {
     pub(super) sidebar_visible: bool,
     /// Whether collapsed tool output previews should render fully expanded inline.
     pub(super) expand_tool_output: bool,
+    /// Cached live integration summaries shown in the sidebar.
+    ///
+    /// Some sections read small config files or scan PATH; cache them outside
+    /// `view()` so typing/rendering never performs blocking discovery work.
+    pub(super) sidebar_cache: SidebarPanelCache,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub(super) struct SidebarPanelCache {
+    pub(super) tool_lines: Vec<String>,
+    pub(super) mcp_lines: Vec<String>,
+    pub(super) lsp_lines: Vec<String>,
+    pub(super) todo_lines: Vec<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -239,10 +252,12 @@ impl<'a> TuiController<'a> {
             setup_cancelled_this_session: false,
             sidebar_visible: true,
             expand_tool_output: false,
+            sidebar_cache: SidebarPanelCache::default(),
         };
         controller.hydrate_initial_settings()?;
         controller.refresh_runtime_state()?;
         controller.rebuild_ephemeral_state();
+        controller.refresh_sidebar_panel_cache();
         controller.persist_state_snapshot()?;
         controller.maybe_auto_open_setup()?;
         Ok(controller)
@@ -314,6 +329,9 @@ impl<'a> TuiController<'a> {
                 self.tick_copilot_oauth_poll()?;
                 self.needs_render |= self.refresh_global_search_if_ready()?;
                 if self.refresh_runtime_state()? {
+                    self.needs_render = true;
+                }
+                if self.refresh_sidebar_panel_cache() {
                     self.needs_render = true;
                 }
                 Ok(())
@@ -2620,13 +2638,29 @@ impl<'a> TuiController<'a> {
 
         // Populate tool, MCP, LSP, and todo sidebar sections.
         if let Some(sb) = view.sidebar.as_mut() {
-            sb.tool_lines = tool_sidebar_lines(&self.state.features, self.storage_dir.as_deref());
-            sb.mcp_lines = mcp_sidebar_lines(self.storage_dir.as_deref());
-            sb.lsp_lines = lsp_sidebar_lines(&self.state.session.cwd);
-            sb.todo_lines = todo_sidebar_lines(&self.state.session.cwd);
+            sb.tool_lines = self.sidebar_cache.tool_lines.clone();
+            sb.mcp_lines = self.sidebar_cache.mcp_lines.clone();
+            sb.lsp_lines = self.sidebar_cache.lsp_lines.clone();
+            sb.todo_lines = self.sidebar_cache.todo_lines.clone();
         }
 
         view
+    }
+
+    pub(super) fn refresh_sidebar_panel_cache(&mut self) -> bool {
+        let tool_context = self.tool_context();
+        let next = SidebarPanelCache {
+            tool_lines: tool_sidebar_lines(&tool_context),
+            mcp_lines: mcp_sidebar_lines(self.storage_dir.as_deref()),
+            lsp_lines: lsp_sidebar_lines(&self.state.session.cwd),
+            todo_lines: todo_sidebar_lines(&self.state.session.cwd),
+        };
+        if self.sidebar_cache == next {
+            false
+        } else {
+            self.sidebar_cache = next;
+            true
+        }
     }
 
     pub(super) fn push_notification(
@@ -4844,10 +4878,7 @@ pub(super) const LSP_SERVERS: &[(&str, &str)] = &[
 /// Shows `N enabled / M registered` on the first line, then a breakdown of
 /// enabled tools by [`ToolKind`].  Falls back to an error line if the registry
 /// cannot be built.
-pub(super) fn tool_sidebar_lines(
-    features: &FeatureSet,
-    _storage_dir: Option<&std::path::Path>,
-) -> Vec<String> {
+pub(super) fn tool_sidebar_lines(context: &ToolContext) -> Vec<String> {
     let registry = match builtin_tool_registry() {
         Ok(r) => r,
         Err(e) => return vec![format!("⚠ tools unavailable: {e}")],
@@ -4856,8 +4887,9 @@ pub(super) fn tool_sidebar_lines(
     let all_specs = registry.all_specs();
     let registered = all_specs.len();
 
-    // Count enabled tools using the current feature set.
-    let enabled_specs = registry.enabled_specs(features);
+    // Match the provider tool loop so this count reflects tools actually
+    // offered to the model after feature and static permission filtering.
+    let enabled_specs = provider_tool_specs(&registry, context, None);
     let enabled = enabled_specs.len();
 
     let mut lines = vec![format!("  {enabled} enabled / {registered} registered")];
@@ -4926,9 +4958,8 @@ pub(super) fn tool_sidebar_lines(
 
 /// Build the MCP sidebar section from the stored config (no server spawning).
 ///
-/// Reads `McpConfigStore` once per render.  The file is small and the read is
-/// O(servers) so the cost is negligible.  Shows a concise enabled/total count
-/// plus one line per server name.
+/// Reads `McpConfigStore` only during sidebar cache refreshes. Shows a concise
+/// enabled/total count plus one line per server name.
 pub(super) fn mcp_sidebar_lines(storage_dir: Option<&std::path::Path>) -> Vec<String> {
     let Some(dir) = storage_dir else {
         return vec!["  mcp: no storage dir".into()];
