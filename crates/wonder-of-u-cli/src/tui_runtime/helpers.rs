@@ -287,13 +287,20 @@ pub(super) fn prompt_cursor_position(
         wonder_of_u_tui::Rect::new(0, 0, effective_width.max(1), height.max(1)),
         capped_height,
     );
-    // Ink-style borderless prompt: content fills the area directly — no +1 inset
-    // for border columns/rows.  The warning row (when visible) sits at prompt.y
-    // and bumps the typing area down by one.
-    let content_x = layout.prompt.x;
-    let content_y = layout.prompt.y.saturating_add(warning_height);
-    let content_width = layout.prompt.width;
-    let content_height = layout.prompt.height;
+    // Rounded prompt: content is inset by one cell inside the border.  The
+    // warning row (when visible) sits at prompt.y and bumps the box down by one.
+    let content_x = layout.prompt.x.saturating_add(1);
+    let content_y = layout
+        .prompt
+        .y
+        .saturating_add(warning_height)
+        .saturating_add(1);
+    let content_width = layout.prompt.width.saturating_sub(2);
+    let content_height = layout
+        .prompt
+        .height
+        .saturating_sub(warning_height)
+        .saturating_sub(2);
 
     let cursor_text = prompt.chars().take(cursor).collect::<String>();
     let mut line = 0u16;
@@ -364,10 +371,14 @@ pub(super) fn history_search_cursor_position(
         wonder_of_u_tui::Rect::new(0, 0, effective_width.max(1), height.max(1)),
         capped_height,
     );
-    // Ink-style borderless prompt: content fills the area directly.
-    let content_x = layout.prompt.x;
-    let content_y = layout.prompt.y.saturating_add(warning_height);
-    let content_width = layout.prompt.width;
+    // Rounded prompt: content is inset by one cell inside the border.
+    let content_x = layout.prompt.x.saturating_add(1);
+    let content_y = layout
+        .prompt
+        .y
+        .saturating_add(warning_height)
+        .saturating_add(1);
+    let content_width = layout.prompt.width.saturating_sub(2);
     let query_prefix = "search: ".chars().count();
     (
         content_x
