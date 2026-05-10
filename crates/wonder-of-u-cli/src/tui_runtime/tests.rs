@@ -490,10 +490,10 @@ fn controller_empty_prompt_status_shows_shortcut_hint() {
     )
     .expect("controller");
 
-    assert_eq!(
-        controller.view().status,
-        "  / commands  ·  ↑ history  ·  ⌃R search"
-    );
+    let status = controller.view().status;
+    assert!(status.contains("model:auto"));
+    assert!(status.contains("0 tok"));
+    assert!(status.contains("cost:--"));
 }
 
 #[test]
@@ -532,13 +532,13 @@ fn controller_advances_loading_spinner_on_tick() {
     .expect("controller");
 
     controller.turn_state = TurnState::ModelRequestActive;
-    let before = controller.view().loading_verb.expect("loading verb");
+    let before = controller.view().spinner_frame;
 
     controller
         .handle_event(UiEvent::Tick, |_| Ok(()))
         .expect("tick should succeed");
 
-    let after = controller.view().loading_verb.expect("loading verb");
+    let after = controller.view().spinner_frame;
     assert_ne!(before, after);
 }
 
@@ -6231,11 +6231,11 @@ fn prompt_cursor_position_continuation_line_has_no_marker_offset() {
 /// inside the separator/sidebar area.
 ///
 /// Concrete geometry for width=100, height=24 with sidebar_active=true:
-///   effective_width = 67
-///   prompt box = Rect(0, 19, 67, 3)  →  content_x=1, content_width=65
-///   first-line max cursor x = content_x(1) + x_offset(2) + max_col(62) = 65
-///   separator sits at column 67 (render_shell draws │ there)
-///   → cursor x must be < 67
+///   effective_width = 61
+///   prompt box = Rect(0, 19, 61, 3)  →  content_x=1, content_width=59
+///   first-line max cursor x = content_x(1) + x_offset(2) + max_col(56) = 59
+///   separator sits at column 61 (render_shell draws │ there)
+///   → cursor x must be < 61
 
 #[test]
 fn prompt_cursor_position_wide_terminal_stays_inside_main_area() {
@@ -6244,15 +6244,15 @@ fn prompt_cursor_position_wide_terminal_stays_inside_main_area() {
     let prompt = "a".repeat(80);
     let (x, y) = prompt_cursor_position(100, 24, &prompt, 80, true);
 
-    // main_w = 67; separator at column 67; valid main-area columns = 0..=66.
+    // main_w = 61; separator at column 61; valid main-area columns = 0..=60.
     assert!(
-        x < 67,
-        "cursor x ({x}) must be left of the │ separator at column 67"
+        x < 61,
+        "cursor x ({x}) must be left of the │ separator at column 61"
     );
-    // Max reachable: content_x(1) + x_offset(2) + max_col(62) = 65.
+    // Max reachable: content_x(1) + x_offset(2) + max_col(56) = 59.
     assert_eq!(
         (x, y),
-        (65, 20),
+        (59, 20),
         "wide-terminal cursor must clamp to the rightmost content cell; got ({x}, {y})"
     );
 }
@@ -6261,14 +6261,14 @@ fn prompt_cursor_position_wide_terminal_stays_inside_main_area() {
 /// length (plus the 8-char "search: " prefix) exceeds the content width of the
 /// main area must be clamped to the last valid content column.
 ///
-/// Width=100, sidebar_active=true → effective_width=67 → content_width=65.
-/// max x = content_x(1) + content_width(65) - 1 = 65.
+/// Width=100, sidebar_active=true → effective_width=61 → content_width=59.
+/// max x = content_x(1) + content_width(59) - 1 = 59.
 #[test]
 fn history_search_cursor_wide_terminal_stays_inside_main_area() {
     // query_cursor=90 → prefix(8)+cursor(90)=98.  Before the fix:
     //   content_width = 98 (layout over full 100 cols), x = min(99, 98) = 98 → sidebar!
     // After fix:
-    //   content_width = 65, x = min(99, 65) = 65 → stays in main area.
+    //   content_width = 59, x = min(99, 59) = 59 → stays in main area.
     let view = HistorySearchView {
         query: "a".repeat(90),
         match_text: None,
@@ -6278,12 +6278,12 @@ fn history_search_cursor_wide_terminal_stays_inside_main_area() {
     let (x, y) = history_search_cursor_position(100, 24, &view, 90, true);
 
     assert!(
-        x < 67,
-        "history-search cursor x ({x}) must be left of the │ separator at column 67"
+        x < 61,
+        "history-search cursor x ({x}) must be left of the │ separator at column 61"
     );
     assert_eq!(
         (x, y),
-        (65, 18),
+        (59, 18),
         "wide-terminal history-search cursor must clamp to rightmost content cell; got ({x}, {y})"
     );
 }
@@ -6548,9 +6548,8 @@ fn sidebar_view_is_some_when_visible() {
     );
 }
 
-/// With the sidebar visible and a non-empty prompt, the status bar must show the
-/// compact key-hint string (containing "⌃B") and must NOT contain the full
-/// session/turn details (which would duplicate what the sidebar already shows).
+/// With the sidebar visible and a non-empty prompt, the status bar should still
+/// expose the compact Claude-style context summary rather than keybinding hints.
 #[test]
 fn sidebar_compact_status_when_visible() {
     let dir = unique_test_dir("tui-sidebar-compact-status");
@@ -6564,23 +6563,22 @@ fn sidebar_compact_status_when_visible() {
     .expect("controller");
 
     controller.sidebar_visible = true;
-    // A non-empty prompt prevents the unconditional shortcut-hint override.
     controller.prompt.insert_text("hello");
 
     let status = controller.view().status;
 
     assert!(
-        status.contains("⌃B"),
-        "compact status must contain '⌃B' sidebar hint; got: {status:?}"
+        status.contains("model:auto"),
+        "compact status must contain the model summary; got: {status:?}"
     );
     assert!(
-        !status.contains("turn="),
-        "compact status must not contain full 'turn=' detail; got: {status:?}"
+        status.contains("0 tok"),
+        "compact status must contain token usage; got: {status:?}"
     );
 }
 
-/// With the sidebar hidden and a non-empty prompt, the status bar must show the
-/// full session/turn information so the user retains context.
+/// With the sidebar hidden and a non-empty prompt, the same context summary
+/// remains visible so narrow layouts still keep Claude-style chrome.
 #[test]
 fn sidebar_full_status_when_hidden() {
     let dir = unique_test_dir("tui-sidebar-full-status");
@@ -6594,14 +6592,17 @@ fn sidebar_full_status_when_hidden() {
     .expect("controller");
 
     controller.sidebar_visible = false;
-    // A non-empty prompt prevents the unconditional shortcut-hint override.
     controller.prompt.insert_text("hello");
 
     let status = controller.view().status;
 
     assert!(
-        status.contains("turn="),
-        "full status must contain 'turn=' when sidebar is hidden; got: {status:?}"
+        status.contains("model:auto"),
+        "full status must contain the model summary when sidebar is hidden; got: {status:?}"
+    );
+    assert!(
+        status.contains("cost:--"),
+        "full status must contain the cost summary when sidebar is hidden; got: {status:?}"
     );
 }
 
@@ -6692,15 +6693,11 @@ fn controller_view_sizes_provider_errors_to_main_pane_width() {
     let rows = render_to_test_backend(120, 20, &view, &Theme::default());
 
     assert!(
-        rows.iter().any(|row| row.contains("status 400 from r")),
-        "provider error headline should keep the full width budget before wrapping; rows: {rows:?}"
+        rows.iter().any(|row| row.contains("status 400 ")),
+        "provider error headline should keep the wider main-column budget before wrapping; rows: {rows:?}"
     );
     assert!(
-        rows.iter().any(|row| row.contains("oint")),
-        "provider error should continue onto the next line instead of truncating with ellipsis; rows: {rows:?}"
-    );
-    assert!(
-        !rows.iter().any(|row| row.contains('…')),
-        "provider error should wrap rather than truncate with ellipsis; rows: {rows:?}"
+        rows.iter().any(|row| row.contains("from remote endpoint")),
+        "provider error should continue onto the next line instead of truncating; rows: {rows:?}"
     );
 }

@@ -35,7 +35,7 @@ use wonder_of_u_core::{
     PendingToolApprovalState, PendingToolConversationRound, PermissionDecision, PermissionMode,
     PermissionRequest, PermissionRuleSource, ProviderReadiness, QueuePlacement, Result, SessionId,
     TaskState, TaskStatus, ToolContext, ToolQuery, ToolResult, ToolUseId, WonderError,
-    parse_slash_command, session_footer_text, session_status_text,
+    parse_slash_command, session_footer_text,
 };
 use wonder_of_u_storage::{TaskStore, TranscriptStore};
 use wonder_of_u_tools::provider_tool_specs;
@@ -44,9 +44,9 @@ use wonder_of_u_tui::{
     KeyBindingContext, KeyBindingResolver, KeyCode, KeyEvent, MouseEventKind, NotificationInput,
     NotificationLifetime, NotificationQueue, NotificationSeverity, PermissionSummaryView,
     PickerListEntry, PickerListView, PromptSuggestion, PromptSuggestionState, Rect, ResolvedKey,
-    ShellLayout, ShellView, SlashSuggestionEntry, SlashSuggestionsOverlay, SpinnerMode,
-    SpinnerView, TextBuffer, Theme, TranscriptScrollView, TurnState, UiEvent, VimMode, VimState,
-    message_lines, message_lines_for_width, shell_main_area_width,
+    ShellLayout, ShellView, SlashSuggestionEntry, SlashSuggestionsOverlay, TextBuffer, Theme,
+    TranscriptScrollView, TurnState, UiEvent, VimMode, VimState, message_lines_for_width,
+    shell_main_area_width,
 };
 
 use crate::commands;

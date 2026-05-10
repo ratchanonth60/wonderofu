@@ -2251,6 +2251,7 @@ impl<'a> TuiController<'a> {
         if !self.sidebar_visible {
             view.sidebar = None;
         }
+        view.spinner_frame = self.loading_frame;
         view.history_search = self
             .history_search
             .as_ref()
@@ -2285,6 +2286,26 @@ impl<'a> TuiController<'a> {
             }
             sb.session_lines = session_lines;
 
+            // Section 2 – Context: compact usage summary plus queue/task counts.
+            let mut context_lines = vec![
+                format!(
+                    "model  {}",
+                    model_status_label(self.state.provider.as_deref(), self.state.model.as_deref())
+                ),
+                format!("tokens {}", self.state.costs.usage.total_tokens()),
+                format!(
+                    "cost   {}",
+                    estimated_cost_label(self.state.costs.estimated_cost_usd)
+                ),
+            ];
+            if !self.state.queued_commands.is_empty() {
+                context_lines.push(format!("queued {}", self.state.queued_commands.len()));
+            }
+            if !self.state.background_tasks.is_empty() {
+                context_lines.push(format!("tasks  {}", self.state.background_tasks.len()));
+            }
+            sb.context_lines = context_lines;
+
             // Section 4 – Status: turn-state indicator + last error summary.
             let state_icon = match self.turn_state {
                 TurnState::Idle | TurnState::EditingInput => "●",
@@ -2298,6 +2319,12 @@ impl<'a> TuiController<'a> {
                 "{state_icon} {}",
                 turn_state_label(self.turn_state)
             )];
+            if let Some(verb) = loading_verb_label(self.turn_state) {
+                sb.status_lines.push(format!("  {verb}…"));
+            }
+            if let Some(note) = &self.status_note {
+                sb.status_lines.push(format!("  {note}"));
+            }
 
             // Section 6 – Workspace: runtime label, git branch, truncated cwd.
             let mut workspace_lines = vec![
@@ -2309,8 +2336,8 @@ impl<'a> TuiController<'a> {
             }
             // Truncate cwd to 30 chars so it fits the sidebar column.
             if let Some(cwd) = self.state.session.cwd.to_str() {
-                let label: String = if cwd.len() > 30 {
-                    format!("…{}", &cwd[cwd.len() - 29..])
+                let label: String = if cwd.len() > 36 {
+                    format!("…{}", &cwd[cwd.len() - 35..])
                 } else {
                     cwd.to_string()
                 };
@@ -2319,49 +2346,9 @@ impl<'a> TuiController<'a> {
             sb.workspace_lines = workspace_lines;
         }
 
-        // When the sidebar is showing, the bottom bar is reduced to key hints so
-        // the rich turn/session info is not duplicated.  When the sidebar is
-        // hidden, show the full session status line so the user still has context.
-        let view_status = if self.sidebar_visible {
-            "/ commands  ⌃B sidebar  ⌃C exit".to_string()
-        } else {
-            let mut s = session_status_text(&self.state);
-            s.push_str(" | turn=");
-            s.push_str(turn_state_label(self.turn_state));
-            if let Some(note) = &self.status_note {
-                s.push_str(" | ");
-                s.push_str(note);
-            }
-            s
-        };
-        view.status = view_status;
-        view.loading = matches!(
-            self.turn_state,
-            TurnState::ModelRequestActive
-                | TurnState::CommandQueued
-                | TurnState::ToolPermissionPending
-        );
-        view.loading_verb = match self.turn_state {
-            TurnState::ModelRequestActive => Some(
-                SpinnerView::new(SpinnerMode::Thinking, "thinking")
-                    .frame(self.loading_frame)
-                    .render_line(),
-            ),
-            TurnState::CommandQueued => Some(
-                SpinnerView::new(SpinnerMode::Requesting, "running")
-                    .frame(self.loading_frame)
-                    .render_line(),
-            ),
-            TurnState::ToolPermissionPending => Some(
-                SpinnerView::new(SpinnerMode::Stalled, "waiting")
-                    .frame(self.loading_frame)
-                    .render_line(),
-            ),
-            _ => None,
-        };
-        if self.prompt.is_empty() && !matches!(self.turn_state, TurnState::ModelRequestActive) {
-            view.status = "  / commands  ·  ↑ history  ·  ⌃R search".to_string();
-        }
+        view.status = chrome_status_text(&self.state);
+        view.loading = is_loading_turn_state(self.turn_state);
+        view.loading_verb = loading_verb_label(self.turn_state).map(str::to_string);
 
         let mut footer = session_footer_text(&self.state);
         footer.push_str(if self.persistence.persisted {
@@ -4227,8 +4214,16 @@ impl<'a> TuiController<'a> {
             .saturating_add(2);
         let cap = (height / 3).max(3);
         let prompt_height = uncapped.min(cap);
-        let layout = ShellLayout::split(Rect::new(0, 0, width, height), prompt_height);
-        let total = message_lines(&self.state.messages).len();
+        let layout = ShellLayout::split(
+            Rect::new(
+                0,
+                0,
+                shell_main_area_width(width, self.sidebar_visible),
+                height,
+            ),
+            prompt_height,
+        );
+        let total = self.transcript_line_count(shell_main_area_width(width, self.sidebar_visible));
         self.scroll_state
             .on_resize(usize::from(layout.messages.height), total);
     }
@@ -4239,7 +4234,10 @@ impl<'a> TuiController<'a> {
     /// Call this after any operation that adds or removes messages from
     /// `self.state.messages`.
     pub(super) fn notify_transcript_changed(&mut self) {
-        let total = message_lines(&self.state.messages).len();
+        let total = self.transcript_line_count(shell_main_area_width(
+            self.last_terminal_size.0.max(1),
+            self.sidebar_visible,
+        ));
         self.scroll_state.on_messages_changed(total);
     }
 
@@ -4260,7 +4258,16 @@ impl<'a> TuiController<'a> {
             .saturating_add(2);
         let cap = (height / 3).max(3);
         let prompt_height = uncapped.min(cap);
-        ShellLayout::split(Rect::new(0, 0, width, height), prompt_height).messages
+        ShellLayout::split(
+            Rect::new(
+                0,
+                0,
+                shell_main_area_width(width, self.sidebar_visible),
+                height,
+            ),
+            prompt_height,
+        )
+        .messages
     }
 
     /// Handles a mouse event from the terminal, scrolling the transcript on
@@ -4303,6 +4310,80 @@ impl<'a> TuiController<'a> {
         self.scroll_state.scroll_by(delta);
         self.needs_render = true;
     }
+
+    fn transcript_line_count(&self, terminal_width: u16) -> usize {
+        let summary_width = usize::from(terminal_width.max(1));
+        let mut total = if self.state.messages.is_empty() {
+            0
+        } else {
+            message_lines_for_width(&self.state.messages, summary_width).len()
+        };
+        if is_loading_turn_state(self.turn_state) {
+            total = total.saturating_add(1);
+        }
+        total
+    }
+}
+
+fn is_loading_turn_state(state: TurnState) -> bool {
+    matches!(
+        state,
+        TurnState::ModelRequestActive | TurnState::CommandQueued | TurnState::ToolPermissionPending
+    )
+}
+
+fn loading_verb_label(state: TurnState) -> Option<&'static str> {
+    match state {
+        TurnState::ModelRequestActive => Some("thinking"),
+        TurnState::CommandQueued => Some("running"),
+        TurnState::ToolPermissionPending => Some("waiting"),
+        _ => None,
+    }
+}
+
+fn model_status_label(provider: Option<&str>, model: Option<&str>) -> String {
+    match (provider, model) {
+        (Some(provider), Some(model)) => format!("{provider}:{model}"),
+        (None, Some(model)) => model.to_string(),
+        (Some(provider), None) => provider.to_string(),
+        (None, None) => "model:auto".into(),
+    }
+}
+
+fn estimated_cost_label(cost: Option<f64>) -> String {
+    cost.map_or_else(|| "cost:--".into(), |cost| format!("${cost:.2}"))
+}
+
+fn compact_cwd_label(path: &Path) -> String {
+    let display = path.display().to_string();
+    if display.chars().count() <= 24 {
+        return display;
+    }
+
+    let tail = display
+        .chars()
+        .rev()
+        .take(23)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect::<String>();
+    format!("…{tail}")
+}
+
+fn chrome_status_text(state: &AppState) -> String {
+    let mut parts = vec![
+        model_status_label(state.provider.as_deref(), state.model.as_deref()),
+        compact_cwd_label(&state.session.cwd),
+        format!("{} tok", state.costs.usage.total_tokens()),
+        estimated_cost_label(state.costs.estimated_cost_usd),
+    ];
+
+    if state.messages.is_empty() {
+        parts.push("ready".into());
+    }
+
+    parts.join(" | ")
 }
 
 /// Build the full list of slash-command suggestions from the command registry.
