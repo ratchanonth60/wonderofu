@@ -533,7 +533,7 @@ mod tests {
 
         // Claude visual parity: user and assistant messages open with a "● " bullet.
         // The timestamp line follows the first assistant content line.
-        // Tool/error rows use their own "● Tool(args)" + "  └ detail" chrome.
+        // Tool/error rows use their own "● Tool(args)" + "  ⎿  detail" chrome.
         assert_eq!(
             message_lines(&messages, false),
             vec![
@@ -554,7 +554,7 @@ mod tests {
                     ],
                 ),
                 MessageLineView::new("● Bash", MessageRole::Error,),
-                MessageLineView::new("  └ permission denied", MessageRole::Error,),
+                MessageLineView::new("  ⎿  permission denied", MessageRole::Error,),
             ]
         );
     }
@@ -680,7 +680,7 @@ mod tests {
             message_lines(&messages, false),
             vec![
                 MessageLineView::new("● Bash(echo hi)", MessageRole::Tool,),
-                MessageLineView::new("  └ echo hi", MessageRole::System),
+                MessageLineView::new("  ⎿  echo hi", MessageRole::System),
             ]
         );
     }
