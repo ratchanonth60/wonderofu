@@ -143,7 +143,7 @@ fn provider_env_hint(p: &wonder_of_u_agent::ProviderDescriptor) -> String {
             "hint=set_AWS_PROFILE_and_configure_credentials_file".into()
         }
         AuthMaterialKind::GcpOAuth2 => {
-            "hint=set_VERTEXAI_PROJECT+VERTEXAI_LOCATION+GOOGLE_APPLICATION_CREDENTIALS".into()
+            "hint=set_VERTEXAI_PROJECT+VERTEXAI_LOCATION+GOOGLE_BEARER_TOKEN_or_GOOGLE_APPLICATION_CREDENTIALS".into()
         }
     }
 }

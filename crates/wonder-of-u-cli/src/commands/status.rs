@@ -354,19 +354,14 @@ impl Command for StatusCommand {
             } else {
                 "missing"
             };
+            let mut hint = format!("provider_hint[{}]=state={state}", p.id);
             if let Some(env) = &p.api_key_env {
-                lines.push(format!(
-                    "provider_hint[{}]=state={state};api_key_env={env}",
-                    p.id
-                ));
-            } else if let Some(env) = &p.endpoint_env {
-                lines.push(format!(
-                    "provider_hint[{}]=state={state};endpoint_env={env}",
-                    p.id
-                ));
-            } else {
-                lines.push(format!("provider_hint[{}]=state={state}", p.id));
+                hint.push_str(&format!(";api_key_env={env}"));
             }
+            if let Some(env) = &p.endpoint_env {
+                hint.push_str(&format!(";endpoint_env={env}"));
+            }
+            lines.push(hint);
         }
 
         let (_, plugins, skills) = load_catalogs(&context.cwd, self.storage_dir.as_deref())?;
