@@ -113,6 +113,8 @@ pub enum Commands {
         /// Stores the command
         command: Option<VimCommand>,
     },
+    /// Print the TUI keyboard shortcut reference.
+    Keybindings,
     /// Execute a non-interactive model prompt.
     Prompt {
         #[arg(long)]
@@ -724,6 +726,10 @@ fn run_with_terminal_mode<W: Write>(
             writeln!(writer, "{rendered}")?;
             Ok(())
         }
+        LaunchPlan::Keybindings => {
+            writeln!(writer, "{}", commands::keybindings::show())?;
+            Ok(())
+        }
         LaunchPlan::Tui { session_id } => tui_runtime::run_tui(
             writer,
             &commands::registry(storage_dir.clone())?,
@@ -806,6 +812,7 @@ enum LaunchPlan {
     Vim {
         command: Option<VimCommand>,
     },
+    Keybindings,
     Tui {
         session_id: Option<String>,
     },
@@ -827,6 +834,7 @@ fn launch_plan(command: Option<Commands>, interactive_terminal: bool) -> Result<
         Some(Commands::OutputStyle { command }) => Ok(LaunchPlan::OutputStyle { command }),
         Some(Commands::Theme { command }) => Ok(LaunchPlan::Theme { command }),
         Some(Commands::Vim { command }) => Ok(LaunchPlan::Vim { command }),
+        Some(Commands::Keybindings) => Ok(LaunchPlan::Keybindings),
         Some(Commands::Tui { session_id }) => Ok(LaunchPlan::Tui { session_id }),
         Some(Commands::Memory { command }) => Ok(LaunchPlan::Memory { command }),
         Some(Commands::Resume { session_id }) if interactive_terminal => Ok(LaunchPlan::Tui {
@@ -965,6 +973,9 @@ fn to_invocation(command: Commands) -> Result<CommandInvocation> {
         }
         Commands::Vim { .. } => {
             unreachable!("vim is handled directly by the top-level CLI")
+        }
+        Commands::Keybindings => {
+            unreachable!("keybindings is handled directly by the top-level CLI")
         }
         Commands::OutputStyle { .. } => {
             unreachable!("output-style is handled directly by the top-level CLI")
@@ -1703,6 +1714,13 @@ mod tests {
     }
 
     #[test]
+    fn keybindings_subcommand_uses_direct_launch_plan() {
+        let plan = launch_plan(Some(Commands::Keybindings), false).expect("launch plan");
+
+        assert_eq!(plan, LaunchPlan::Keybindings);
+    }
+
+    #[test]
     fn noninteractive_resume_keeps_summary_invocation() {
         let plan = launch_plan(
             Some(Commands::Resume {
@@ -1742,6 +1760,18 @@ mod tests {
             launch_plan(Some(Commands::Memory { command: None }), false).expect("launch plan");
 
         assert_eq!(plan, LaunchPlan::Memory { command: None });
+    }
+
+    #[test]
+    fn keybindings_command_prints_shortcut_reference() {
+        let mut output = Vec::new();
+
+        run_from(["wonder-of-u", "keybindings"], &mut output).expect("run keybindings");
+
+        let text = String::from_utf8(output).expect("utf8");
+        assert!(text.contains("## Keybindings"));
+        assert!(text.contains("Ctrl+C / Ctrl+D"));
+        assert!(text.contains("Enter: send message"));
     }
 
     #[test]
