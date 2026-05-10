@@ -546,7 +546,7 @@ impl ProviderRegistry {
                 "huggingface",
                 "Hugging Face",
                 "https://api-inference.huggingface.co/v1",
-                "HF_API_KEY",
+                "HF_TOKEN",
                 "Qwen/Qwen2.5-72B-Instruct",
             ),
             (
@@ -2009,7 +2009,7 @@ mod tests {
             .resolve_with_env(
                 &settings,
                 &StoredCredentials::default(),
-                [("HF_API_KEY", "test-hf-key".to_string())],
+                [("HF_TOKEN", "test-hf-key".to_string())],
             )
             .expect("resolve huggingface provider");
 
