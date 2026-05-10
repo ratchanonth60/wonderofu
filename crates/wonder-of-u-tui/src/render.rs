@@ -240,16 +240,18 @@ pub struct ShellView {
 impl ShellView {
     /// Returns the height the prompt area should occupy.
     ///
-    /// Ink-style borderless layout: the area is exactly `line_count` rows tall
-    /// (minimum 1 so the cursor always has a home row).  No border rows are
-    /// added since `draw_prompt_view` no longer renders a rounded box.
+    /// Rounded prompt layout: content rows plus top/bottom border rows.
+    /// Minimum height is 3 so the box can always render a single input row.
     #[must_use]
     pub fn prompt_height(&self) -> u16 {
         let line_count = match &self.history_search {
             Some(search) => history_search_line_count(search),
             None => text_line_count(&self.prompt),
         };
-        u16::try_from(line_count).unwrap_or(u16::MAX).max(1)
+        u16::try_from(line_count)
+            .unwrap_or(u16::MAX)
+            .saturating_add(2)
+            .max(3)
     }
     /// Handles from app state
     #[must_use]
@@ -624,11 +626,28 @@ fn draw_prompt_view(frame: &mut FrameBuffer, area: Rect, view: &ShellView, theme
 
     frame.fill_rect(area, ' ', theme.background);
 
-    // Ink-style borderless prompt: render content lines directly into the full
-    // area with no rounded-box chrome or " prompt " title.  The `› ` prefix on
-    // the first line (added by `prompt_panel_lines`) provides the only visual
-    // indicator of the input region, matching the Claude Code/Ink flow layout.
-    draw_lines(frame, area, &prompt_panel_lines(view, theme));
+    // Narrow / short fallback: skip the box chrome and write lines directly.
+    if area.width < 3 || area.height < 3 {
+        draw_lines(frame, area, &prompt_panel_lines(view, theme));
+        return;
+    }
+
+    draw_rounded_border(frame, area, theme.border);
+    frame.write_str(
+        area.x.saturating_add(2),
+        area.y,
+        " prompt ",
+        theme.footer,
+        area.width.saturating_sub(4),
+    );
+
+    let content = Rect::new(
+        area.x.saturating_add(1),
+        area.y.saturating_add(1),
+        area.width.saturating_sub(2),
+        area.height.saturating_sub(2),
+    );
+    draw_lines(frame, content, &prompt_panel_lines(view, theme));
 }
 
 fn draw_prompt_warning(
@@ -2051,9 +2070,9 @@ mod tests {
                 "   ██╗    ██╗  ██████╗  ██╗",
                 "   ██║    ██║ ██╔═══██╗ ██║",
                 "   ██║ █╗ ██║ ██║   ██║ ██║",
-                "   ██║███╗██║ ██║   ██║ ╚██╗ █",
-                "   ╚███╔███╔╝ ╚██████╔╝  ╚████",
-                "›",
+                "╭─ prompt ───────────────────╮",
+                "│›                           │",
+                "╰────────────────────────────╯",
                 "             ctrl-c interrupt",
             ]
             .join("\n")
@@ -2105,11 +2124,11 @@ mod tests {
                 "hello",
                 "",
                 "",
-                "",
-                "",
                 "Tasks",
                 "[running] shell: index workspace",
-                "› /status",
+                "╭─ prompt ─────────────────────────────────────╮",
+                "│› /status                                     │",
+                "╰──────────────────────────────────────────────╯",
                 "              cwd=/workspace · ctrl-c interrupt",
             ]
             .join("\n")
@@ -2204,13 +2223,13 @@ mod tests {
                 "",
                 "",
                 "",
-                "",
-                "",
                 "Queued",
                 "1. /status",
                 "2. draft migration plan",
                 "+2 more queued",
-                "› /plan",
+                "╭─ prompt ───────────────────────────────╮",
+                "│› /plan                                 │",
+                "╰────────────────────────────────────────╯",
                 "        cwd=/workspace · ctrl-c interrupt",
             ]
             .join("\n")
@@ -2253,7 +2272,6 @@ mod tests {
             frame.to_plain_text(),
             [
                 "",
-                "",
                 " ╭─Confirm action───────────────────────╮",
                 " │Approve command execution             │",
                 " │This cannot be undone                 │",
@@ -2261,8 +2279,9 @@ mod tests {
                 " ╰──────────────────────────────────────╯",
                 "",
                 "",
-                "",
-                "› continue?",
+                "╭─ prompt ───────────────────────────────╮",
+                "│› continue?                             │",
+                "╰────────────────────────────────────────╯",
                 "        cwd=/workspace · ctrl-c interrupt",
             ]
             .join("\n")
@@ -2316,11 +2335,11 @@ mod tests {
                 "",
                 "",
                 "",
-                "",
-                "",
-                "search: pla",
-                "match 2/3",
-                "draft plan",
+                "╭─ prompt ───────────────────────────────╮",
+                "│search: pla                             │",
+                "│match 2/3                               │",
+                "│draft plan                              │",
+                "╰────────────────────────────────────────╯",
                 "        cwd=/workspace · ctrl-c interrupt",
             ]
             .join("\n")
@@ -2329,8 +2348,8 @@ mod tests {
 
     #[test]
     fn transcript_snapshot_keeps_latest_visible_lines() {
-        // height=9, CHROME_HEIGHT=1 → available=8, prompt_height=1 (borderless),
-        // messages_height=7.  With 8 messages only the tail 7 are visible, so
+        // height=9, CHROME_HEIGHT=1 → available=8, prompt_height=3 (boxed),
+        // messages_height=5.  With 8 messages only the tail 5 are visible, so
         // "line 1" is pushed off the top.
         let view = ShellView {
             title: "Session: Tail".into(),
@@ -2407,9 +2426,9 @@ mod tests {
                 "",
                 "",
                 "",
-                "",
-                "",
-                "›",
+                "╭─ prompt ─────────────────────────────────────╮",
+                "│›                                             │",
+                "╰──────────────────────────────────────────────╯",
                 "              cwd=/workspace · ctrl-c interrupt",
             ]
             .join("\n")
@@ -2471,9 +2490,9 @@ mod tests {
                 "                      │tests passed            │",
                 "                      ╰────────────────────────╯",
                 "",
-                "",
-                "",
-                "›",
+                "╭─ prompt ─────────────────────────────────────╮",
+                "│›                                             │",
+                "╰──────────────────────────────────────────────╯",
                 "              cwd=/workspace · ctrl-c interrupt",
             ]
             .join("\n")
@@ -2707,9 +2726,9 @@ mod tests {
 
     #[test]
     fn transcript_scrolled_up_shows_earlier_window() {
-        // height=10, CHROME_HEIGHT=1 → available=9, prompt_height=1 (borderless),
-        // messages_height=8.  offset_from_bottom=1:
-        //   start = (10-8).saturating_sub(1) = 1 → shows lines 02–09.
+        // height=10, CHROME_HEIGHT=1 → available=9, prompt_height=3 (boxed),
+        // messages_height=6.  offset_from_bottom=1:
+        //   start = (10-6).saturating_sub(1) = 3 → shows lines 04–09.
         let view = ShellView {
             title: "Session: Scrolled".into(),
             messages: make_long_transcript(10),
@@ -2725,10 +2744,10 @@ mod tests {
 
         let frame = render_snapshot(20, 10, &view, &Theme::default());
         let text = frame.to_plain_text();
-        assert!(text.contains("line 02"), "window start must be visible");
+        assert!(text.contains("line 04"), "window start must be visible");
         assert!(text.contains("line 09"), "window end must be visible");
         assert!(
-            !text.contains("line 01"),
+            !text.contains("line 03"),
             "line before window must be hidden"
         );
         assert!(!text.contains("line 10"), "newest line must not appear");
@@ -2847,32 +2866,32 @@ mod tests {
 
     #[test]
     fn prompt_height_single_line_is_line_count() {
-        // Ink-style borderless: a single-line prompt occupies exactly 1 row.
+        // Rounded prompt: a single-line prompt occupies one content row plus borders.
         let view = ShellView {
             prompt: "hello".into(),
-            ..ShellView::default()
-        };
-        assert_eq!(view.prompt_height(), 1);
-    }
-
-    #[test]
-    fn prompt_height_multiline_counts_all_lines() {
-        // 3-line prompt → exactly 3 rows (no border overhead).
-        let view = ShellView {
-            prompt: "line one\nline two\nline three".into(),
             ..ShellView::default()
         };
         assert_eq!(view.prompt_height(), 3);
     }
 
     #[test]
+    fn prompt_height_multiline_counts_all_lines() {
+        // 3-line prompt → 3 content rows + 2 border rows.
+        let view = ShellView {
+            prompt: "line one\nline two\nline three".into(),
+            ..ShellView::default()
+        };
+        assert_eq!(view.prompt_height(), 5);
+    }
+
+    #[test]
     fn prompt_height_empty_prompt_returns_one() {
-        // An empty prompt still needs 1 row for the › cursor row.
+        // An empty prompt still needs one input row plus rounded borders.
         let view = ShellView {
             prompt: String::new(),
             ..ShellView::default()
         };
-        assert_eq!(view.prompt_height(), 1);
+        assert_eq!(view.prompt_height(), 3);
     }
 
     #[test]
@@ -2906,8 +2925,8 @@ mod tests {
 
     #[test]
     fn multiline_prompt_first_line_has_marker_continuation_lines_do_not() {
-        // Ink-style borderless: prompt_height = 3 (3 content lines, no borders).
-        // At height=16 the one-third cap = max(16/3, 3) = 5, which fits all 3 rows.
+        // Rounded prompt: prompt_height = 5 (3 content lines + borders).
+        // At height=16 the one-third cap = max(16/3, 3) = 5, which fits all rows.
         let view = ShellView {
             title: "Session: ML".into(),
             messages: Vec::new(),
@@ -3338,10 +3357,10 @@ mod tests {
         let frame = render_snapshot(119, 6, &view, &Theme::default());
         let text = frame.to_plain_text();
 
-        // Prompt marker must appear — content starts at column 0 with no sidebar offset.
+        // Prompt marker must appear inside the rounded box with no sidebar offset.
         let prompt_line = text
             .lines()
-            .find(|l| l.starts_with('›'))
+            .find(|l| l.contains("› hello"))
             .expect("prompt marker must be present");
 
         // Sidebar must be suppressed on narrow terminal.
@@ -3349,23 +3368,23 @@ mod tests {
             !text.contains("─ Providers ─"),
             "sidebar must be suppressed below MIN_SIDEBAR_WIDTH; rendered:\n{text}"
         );
-        // The prompt marker must be at the start of the line (no sidebar indentation).
+        // The prompt box must be at the start of the line (no sidebar indentation).
         assert!(
-            prompt_line.starts_with('›'),
-            "prompt must start at column 0 on narrow terminal; got: {prompt_line:?}"
+            prompt_line.starts_with("│›"),
+            "prompt content must start in the full-width prompt box on narrow terminal; got: {prompt_line:?}"
         );
     }
 
     #[test]
     fn prompt_view_does_not_panic_on_tiny_terminal() {
-        // With a borderless prompt there is no fallback path: content is always
-        // rendered directly.  Verify no panic and that the '›' marker appears.
+        // Tiny prompt areas fall back to direct content rendering when there is no
+        // room for rounded chrome. Verify no panic and that the '›' marker appears.
         let view = ShellView {
             prompt: "hi".into(),
             ..ShellView::default()
         };
 
-        // height=3 → chrome=1, available=2, prompt_height=1, messages=1.
+        // height=3 → chrome=1, available=2, prompt is reduced to keep one message row.
         // The prompt area is height=1, which draws directly without any box chrome.
         let frame = render_snapshot(10, 3, &view, &Theme::default());
         let text = frame.to_plain_text();
@@ -3375,10 +3394,10 @@ mod tests {
             text.contains('›'),
             "prompt marker must appear on tiny terminal; rendered:\n{text}"
         );
-        // No rounded-box corners should ever appear with the borderless prompt.
+        // No rounded-box corners should appear in the tiny fallback path.
         assert!(
             !text.contains('╭'),
-            "box corners must never appear with Ink-style borderless prompt; rendered:\n{text}"
+            "box corners must not appear in tiny fallback prompt; rendered:\n{text}"
         );
     }
 
@@ -3589,12 +3608,11 @@ mod tests {
             .lines()
             .position(|line| line.contains("⚠ Context window 80% full"))
             .expect("warning row");
-        // Ink-style borderless: prompt area starts with '›' marker directly.
-        let prompt_row = text
+        let prompt_border_row = text
             .lines()
-            .position(|line| line.starts_with('›'))
-            .expect("prompt row");
-        assert_eq!(warning_row.saturating_add(1), prompt_row);
+            .position(|line| line.starts_with('╭'))
+            .expect("prompt border row");
+        assert_eq!(warning_row.saturating_add(1), prompt_border_row);
     }
 
     // ── Claude visual parity: no persistent header in normal chat mode ───────
@@ -3807,16 +3825,15 @@ mod tests {
         let text = frame.to_plain_text();
         let lines: Vec<&str> = text.lines().collect();
 
-        // The loading indicator must appear above the prompt marker.
+        // The loading indicator must appear above the rounded prompt.
         let spinner_row = lines
             .iter()
             .position(|l| l.contains("thinking"))
             .expect("spinner row must appear");
-        // Ink-style borderless: first prompt line starts with '›'.
         let prompt_border_row = lines
             .iter()
-            .position(|l| l.starts_with('›'))
-            .expect("prompt marker must appear");
+            .position(|l| l.starts_with('╭'))
+            .expect("prompt border must appear");
 
         assert!(
             spinner_row < prompt_border_row,
