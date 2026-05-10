@@ -102,6 +102,26 @@ impl MessageEnvelope {
             },
         )
     }
+
+    /// Creates a hook progress transcript entry.
+    #[must_use]
+    pub fn hook_progress(
+        session_id: SessionId,
+        event: impl Into<String>,
+        tool_name: impl Into<String>,
+        hook_count: u32,
+        success: bool,
+    ) -> Self {
+        Self::new(
+            session_id,
+            MessagePayload::HookProgress {
+                event: event.into(),
+                tool_name: tool_name.into(),
+                hook_count,
+                success,
+            },
+        )
+    }
 }
 
 /// First-slice message variants. Later renderers can add display-specific data
@@ -196,6 +216,17 @@ pub enum MessagePayload {
         success: bool,
         /// Stores the output
         output: String,
+    },
+    /// Hook execution progress appended to the transcript when hooks fire.
+    HookProgress {
+        /// Stores the triggering hook event.
+        event: String,
+        /// Stores the tool that triggered the hook event.
+        tool_name: String,
+        /// Stores the number of hooks that ran.
+        hook_count: u32,
+        /// Stores whether every hook passed.
+        success: bool,
     },
     /// Represents compact boundary
     CompactBoundary {

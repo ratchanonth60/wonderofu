@@ -447,6 +447,30 @@ pub(crate) fn contextualize_message(state: &AppState, message: MessageEnvelope) 
         )
 }
 
+fn append_hook_progress_message(
+    state: &mut AppState,
+    messages: &mut Vec<MessageEnvelope>,
+    event: &str,
+    tool_name: &str,
+    hook_count: u32,
+    success: bool,
+) -> Result<()> {
+    if hook_count == 0 {
+        return Ok(());
+    }
+
+    messages.push(append_contextual_message(
+        state,
+        MessagePayload::HookProgress {
+            event: event.into(),
+            tool_name: tool_name.into(),
+            hook_count,
+            success,
+        },
+    )?);
+    Ok(())
+}
+
 pub(crate) fn persist_messages_and_state(
     storage_dir: Option<&Path>,
     state: &AppState,
@@ -729,13 +753,22 @@ fn execute_tool_call(
         } else {
             // PreToolUse hooks run before permission checks so they can augment
             // or block the call before any user interaction.
-            match run_hooks(
+            let pre_hook_report = run_hooks(
                 PRE_TOOL_USE,
                 &call.provider_call.tool_name,
                 &call.provider_call.arguments,
                 &context.cwd,
                 storage_dir,
-            ) {
+            );
+            append_hook_progress_message(
+                state,
+                &mut messages,
+                PRE_TOOL_USE,
+                &call.provider_call.tool_name,
+                pre_hook_report.hook_count,
+                pre_hook_report.success,
+            )?;
+            match pre_hook_report.outcome {
                 HookOutcome::Block { reason } => {
                     ToolResult::failure(call.use_id, format!("hook blocked tool: {reason}"))
                 }
@@ -797,13 +830,21 @@ fn execute_tool_call(
                     } else {
                         POST_TOOL_USE_FAILURE
                     };
-                    run_hooks(
+                    let post_hook_report = run_hooks(
                         post_event,
                         &call.provider_call.tool_name,
                         &call.provider_call.arguments,
                         &context.cwd,
                         storage_dir,
                     );
+                    append_hook_progress_message(
+                        state,
+                        &mut messages,
+                        post_event,
+                        &call.provider_call.tool_name,
+                        post_hook_report.hook_count,
+                        post_hook_report.success,
+                    )?;
 
                     tool_result
                 }

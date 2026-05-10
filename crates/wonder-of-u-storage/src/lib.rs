@@ -916,6 +916,18 @@ fn session_memory_text(payload: &MessagePayload) -> Option<(SessionMemorySource,
         MessagePayload::HookResult { hook, output, .. } => {
             Some((SessionMemorySource::Tool, format!("{hook} {output}")))
         }
+        MessagePayload::HookProgress {
+            event,
+            tool_name,
+            hook_count,
+            success,
+        } => Some((
+            SessionMemorySource::System,
+            format!(
+                "{event} {hook_count} for {tool_name} {}",
+                if *success { "ok" } else { "error" }
+            ),
+        )),
         MessagePayload::CompactBoundary { summary } => {
             Some((SessionMemorySource::System, summary.clone()))
         }

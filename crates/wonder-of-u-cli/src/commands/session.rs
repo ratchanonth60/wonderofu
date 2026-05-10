@@ -929,6 +929,7 @@ fn payload_distribution(messages: &[MessageEnvelope]) -> String {
             | MessagePayload::BashOutput { .. }
             | MessagePayload::HookResult { .. } => tool += 1,
             MessagePayload::Progress { .. }
+            | MessagePayload::HookProgress { .. }
             | MessagePayload::Task { .. }
             | MessagePayload::Permission { .. }
             | MessagePayload::PlanApproval { .. }
@@ -1026,6 +1027,15 @@ fn message_summary(message: &MessageEnvelope) -> String {
             output,
         } => format!(
             "hook {hook} {} {output}",
+            if *success { "ok" } else { "error" }
+        ),
+        MessagePayload::HookProgress {
+            event,
+            tool_name,
+            hook_count,
+            success,
+        } => format!(
+            "hook progress {event} {hook_count} for {tool_name} ({})",
             if *success { "ok" } else { "error" }
         ),
         MessagePayload::CompactBoundary { summary } => format!("summary {summary}"),

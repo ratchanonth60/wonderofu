@@ -609,6 +609,7 @@ fn render_context_summary(state: &AppState) -> String {
             MessagePayload::System { .. }
             | MessagePayload::Progress { .. }
             | MessagePayload::HookResult { .. }
+            | MessagePayload::HookProgress { .. }
             | MessagePayload::PlanApproval { .. }
             | MessagePayload::ProviderError { .. } => {}
         }
