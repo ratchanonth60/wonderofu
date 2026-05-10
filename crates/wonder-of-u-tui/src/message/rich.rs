@@ -74,6 +74,9 @@ pub fn rich_message_views(messages: &[MessageEnvelope]) -> Vec<RichMessageView> 
 
 fn single_message_view(message: &MessageEnvelope) -> RichMessageView {
     match &message.payload {
+        MessagePayload::UserText { content } => {
+            RichMessageView::Markdown(MarkdownSummaryView::new(MessageRole::User, content))
+        }
         MessagePayload::AssistantText { content } => {
             if let Some(view) = SystemErrorView::detect(MessageRole::Assistant, content) {
                 RichMessageView::SystemError(view)
@@ -174,13 +177,19 @@ impl MarkdownSummaryView {
                     let block_lines =
                         wrap_summary_lines(text, max_width, MAX_PARAGRAPH_LINES, false);
                     let display_prefix = if first_block { prefix } else { "" };
-                    push_wrapped_block(
-                        &mut lines,
-                        display_prefix,
-                        &block_lines,
-                        self.role,
-                        max_width,
-                    );
+                    if display_prefix.is_empty() {
+                        // Claude Code-style transcript paragraphs stay flush-left for user and
+                        // assistant narration instead of inheriting the generic detail indent.
+                        push_unprefixed_block(&mut lines, &block_lines, self.role, max_width);
+                    } else {
+                        push_wrapped_block(
+                            &mut lines,
+                            display_prefix,
+                            &block_lines,
+                            self.role,
+                            max_width,
+                        );
+                    }
                 }
                 MarkdownBlockView::Code(code) => {
                     let label = code.label();
@@ -1391,6 +1400,26 @@ fn push_wrapped_block(
     }
 }
 
+fn push_unprefixed_block(
+    output: &mut Vec<MessageLineView>,
+    source_lines: &[String],
+    role: MessageRole,
+    max_width: usize,
+) {
+    for source in source_lines {
+        let wrapped = wrap_text_hard(source, max_width.max(1));
+        if wrapped.is_empty() {
+            output.push(MessageLineView::new(String::new(), role));
+        } else {
+            output.extend(
+                wrapped
+                    .into_iter()
+                    .map(|segment| MessageLineView::new(segment, role)),
+            );
+        }
+    }
+}
+
 fn push_line(text: impl Into<String>, role: MessageRole, max_width: usize) -> Vec<MessageLineView> {
     vec![MessageLineView::new(
         truncate_visible_end(&text.into(), max_width.max(1)),
@@ -1454,10 +1483,8 @@ fn wrap_summary_lines(
 
 fn role_prefix(role: MessageRole) -> &'static str {
     match role {
-        MessageRole::User => "user> ",
-        MessageRole::Assistant => "assistant> ",
+        MessageRole::User | MessageRole::Assistant | MessageRole::Tool => "",
         MessageRole::System => "system> ",
-        MessageRole::Tool => "tool> ",
         MessageRole::Progress => "progress> ",
         MessageRole::Error => "error> ",
     }
@@ -1575,10 +1602,23 @@ mod tests {
         assert_eq!(
             view.display_lines(80),
             vec![
-                MessageLineView::new("assistant> Heading • first item", MessageRole::Assistant,),
+                MessageLineView::new("Heading • first item", MessageRole::Assistant,),
                 MessageLineView::new("code[rust]> fn main() {}", MessageRole::Assistant),
                 MessageLineView::new("            +1 more line", MessageRole::Assistant),
             ]
+        );
+    }
+
+    #[test]
+    fn markdown_summary_keeps_user_text_flush_left_without_prefix() {
+        let view = MarkdownSummaryView::new(MessageRole::User, "review the diff and continue");
+
+        assert_eq!(
+            view.display_lines(80),
+            vec![MessageLineView::new(
+                "review the diff and continue",
+                MessageRole::User,
+            )]
         );
     }
 

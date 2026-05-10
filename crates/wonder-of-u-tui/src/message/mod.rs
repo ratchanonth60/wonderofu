@@ -443,6 +443,12 @@ mod tests {
         let messages = vec![
             MessageEnvelope::new(
                 session_id,
+                MessagePayload::UserText {
+                    content: "review changes".into(),
+                },
+            ),
+            MessageEnvelope::new(
+                session_id,
                 MessagePayload::AssistantText {
                     content: "line one\nline two".into(),
                 },
@@ -461,7 +467,8 @@ mod tests {
         assert_eq!(
             message_lines(&messages),
             vec![
-                MessageLineView::new("assistant> line one line two", MessageRole::Assistant),
+                MessageLineView::new("review changes", MessageRole::User),
+                MessageLineView::new("line one line two", MessageRole::Assistant),
                 MessageLineView::new("● Bash", MessageRole::Error,),
                 MessageLineView::new("  └ permission denied", MessageRole::Error,),
             ]
