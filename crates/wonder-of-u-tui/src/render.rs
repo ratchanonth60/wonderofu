@@ -251,14 +251,13 @@ pub fn render_shell(frame: &mut FrameBuffer, view: &ShellView, theme: &Theme) {
     // to the narrower left column — the prompt box keeps its full allocated width.
     let main_area = if let Some(sidebar) = &view.sidebar {
         if area.width >= MIN_SIDEBAR_WIDTH {
+            // The sidebar box itself provides the left border, replacing the
+            // old bare │ separator.  Give it SIDEBAR_WIDTH + 1 columns so the
+            // left ╭/│/╰ aligns exactly where the separator used to be.
             let main_w = area.width.saturating_sub(SIDEBAR_WIDTH + 1);
             let sep_x = area.x.saturating_add(main_w);
-            // Full-height vertical separator between main content and sidebar.
-            for row in 0..area.height {
-                frame.put(sep_x, area.y.saturating_add(row), '│', theme.border);
-            }
             let sidebar_area =
-                Rect::new(sep_x.saturating_add(1), area.y, SIDEBAR_WIDTH, area.height);
+                Rect::new(sep_x, area.y, SIDEBAR_WIDTH + 1, area.height);
             draw_shell_sidebar(frame, sidebar_area, sidebar, theme);
             Rect::new(area.x, area.y, main_w, area.height)
         } else {
@@ -485,13 +484,22 @@ pub fn shell_main_area_width(terminal_width: u16, has_sidebar: bool) -> u16 {
 
 /// Draws the right-side sidebar showing keybinding hints and session metadata.
 ///
-/// The sidebar receives the full terminal height, so all hint rows are always
-/// visible regardless of the current prompt size.
+/// The sidebar is drawn inside a rounded-corner box (matching the prompt input
+/// style) so it blends naturally with the rest of the chrome.  Content is
+/// rendered inside the inner area (inset 1 on all sides).
 fn draw_shell_sidebar(frame: &mut FrameBuffer, area: Rect, sidebar: &SidebarView, theme: &Theme) {
     if area.is_empty() {
         return;
     }
-    draw_lines(frame, area, &sidebar_section_lines(sidebar, theme));
+
+    // Rounded border — same style as the prompt box.
+    draw_rounded_border(frame, area, theme.border);
+
+    // Content inside the border (inset 1 on all sides).
+    let inner = area.inset(1);
+    if !inner.is_empty() {
+        draw_lines(frame, inner, &sidebar_section_lines(sidebar, theme));
+    }
 }
 
 /// Builds the ordered list of styled lines for the sidebar panel.
@@ -2176,7 +2184,10 @@ mod tests {
             ..ShellView::default()
         };
 
-        let frame = render_snapshot(100, 8, &view, &Theme::default());
+        // Use a taller terminal so the rounded-border box has enough inner rows
+        // to show all three sidebar sections (Providers, Status, Controls).
+        // The rounded border takes 2 rows (top + bottom), leaving 12 inner rows.
+        let frame = render_snapshot(100, 14, &view, &Theme::default());
         let text = frame.to_plain_text();
 
         assert!(
@@ -2194,6 +2205,11 @@ mod tests {
         assert!(
             text.contains("ready"),
             "auth-ok label must appear; rendered:\n{text}"
+        );
+        // Sidebar rounded border corners must be visible.
+        assert!(
+            text.contains('╭') && text.contains('╰'),
+            "rounded border corners must appear; rendered:\n{text}"
         );
         // Prompt content must still be visible in the main (left) column.
         assert!(
