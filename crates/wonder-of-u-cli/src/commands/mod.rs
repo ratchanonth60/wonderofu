@@ -14,12 +14,14 @@ use wonder_of_u_core::{
 
 mod advanced;
 pub(crate) mod auth;
+pub(crate) mod copy;
 pub(crate) mod cost;
 mod doctor;
 mod extras;
 mod features;
 mod help;
 pub(crate) mod hooks;
+pub(crate) mod keybindings;
 mod mcp;
 pub mod memory;
 pub(crate) mod output_style;
