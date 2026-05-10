@@ -204,6 +204,12 @@ pub enum Commands {
         /// Stores the format
         format: String,
     },
+    /// Copy the last assistant response from a persisted session to the clipboard.
+    Copy {
+        #[arg(long)]
+        /// Stores the session id
+        session_id: Option<String>,
+    },
     /// Rename a persisted session.
     Rename {
         #[arg()]
@@ -730,6 +736,11 @@ fn run_with_terminal_mode<W: Write>(
             storage_dir.as_deref(),
             tui_runtime::TuiLaunchOptions { session_id },
         ),
+        LaunchPlan::Copy { session_id } => {
+            commands::copy::copy_last_response(storage_dir.as_deref(), session_id.as_deref())?;
+            writeln!(writer, "Copied last assistant response to clipboard")?;
+            Ok(())
+        }
         LaunchPlan::Memory { command } => {
             let storage_dir = storage_dir.ok_or_else(|| {
                 WonderError::validation(
@@ -809,6 +820,9 @@ enum LaunchPlan {
     Tui {
         session_id: Option<String>,
     },
+    Copy {
+        session_id: Option<String>,
+    },
     Invocation(CommandInvocation),
     Memory {
         command: Option<MemoryCommand>,
@@ -828,6 +842,7 @@ fn launch_plan(command: Option<Commands>, interactive_terminal: bool) -> Result<
         Some(Commands::Theme { command }) => Ok(LaunchPlan::Theme { command }),
         Some(Commands::Vim { command }) => Ok(LaunchPlan::Vim { command }),
         Some(Commands::Tui { session_id }) => Ok(LaunchPlan::Tui { session_id }),
+        Some(Commands::Copy { session_id }) => Ok(LaunchPlan::Copy { session_id }),
         Some(Commands::Memory { command }) => Ok(LaunchPlan::Memory { command }),
         Some(Commands::Resume { session_id }) if interactive_terminal => Ok(LaunchPlan::Tui {
             session_id: Some(session_id),
@@ -965,6 +980,9 @@ fn to_invocation(command: Commands) -> Result<CommandInvocation> {
         }
         Commands::Vim { .. } => {
             unreachable!("vim is handled directly by the top-level CLI")
+        }
+        Commands::Copy { .. } => {
+            unreachable!("copy is handled directly by the top-level CLI")
         }
         Commands::OutputStyle { .. } => {
             unreachable!("output-style is handled directly by the top-level CLI")
@@ -1700,6 +1718,24 @@ mod tests {
             launch_plan(Some(Commands::OutputStyle { command: None }), false).expect("launch plan");
 
         assert_eq!(plan, LaunchPlan::OutputStyle { command: None });
+    }
+
+    #[test]
+    fn copy_subcommand_uses_direct_launch_plan() {
+        let plan = launch_plan(
+            Some(Commands::Copy {
+                session_id: Some("session-123".into()),
+            }),
+            false,
+        )
+        .expect("launch plan");
+
+        assert_eq!(
+            plan,
+            LaunchPlan::Copy {
+                session_id: Some("session-123".into()),
+            }
+        );
     }
 
     #[test]
