@@ -71,6 +71,12 @@ pub enum Commands {
         /// Stores the command
         command: Option<OutputStyleCliCommand>,
     },
+    /// Show or manage environment variables injected into agent context.
+    Env {
+        #[command(subcommand)]
+        /// Stores the command
+        command: Option<EnvCliCommand>,
+    },
     /// Inspect persisted provider settings and overrides.
     Config {
         #[command(subcommand)]
@@ -362,6 +368,24 @@ pub enum OutputStyleCliCommand {
         #[arg()]
         /// Stores the output style name
         name: String,
+    },
+}
+/// Enumerates env command
+#[derive(Debug, Clone, Eq, PartialEq, Subcommand)]
+pub enum EnvCliCommand {
+    /// Show current environment configuration.
+    Show,
+    /// Persist an environment variable assignment.
+    Set {
+        #[arg()]
+        /// Stores the KEY=VALUE assignment
+        assignment: String,
+    },
+    /// Remove a persisted environment variable.
+    Unset {
+        #[arg()]
+        /// Stores the environment variable name
+        key: String,
     },
 }
 /// Enumerates config command
@@ -702,6 +726,20 @@ fn run_with_terminal_mode<W: Write>(
             writeln!(writer, "{rendered}")?;
             Ok(())
         }
+        LaunchPlan::Env { command } => {
+            let rendered = match command.unwrap_or(EnvCliCommand::Show) {
+                EnvCliCommand::Show => commands::env::show(storage_dir.as_deref())?,
+                EnvCliCommand::Set { assignment } => {
+                    let (key, value) = parse_env_assignment(&assignment)?;
+                    commands::env::set_var(storage_dir.as_deref(), key, value)?
+                }
+                EnvCliCommand::Unset { key } => {
+                    commands::env::unset_var(storage_dir.as_deref(), &key)?
+                }
+            };
+            writeln!(writer, "{rendered}")?;
+            Ok(())
+        }
         LaunchPlan::Theme { command } => {
             let rendered = match command.unwrap_or(ThemeCommand::Show) {
                 ThemeCommand::Show => commands::theme::show(storage_dir.as_deref())?,
@@ -806,6 +844,9 @@ enum LaunchPlan {
     OutputStyle {
         command: Option<OutputStyleCliCommand>,
     },
+    Env {
+        command: Option<EnvCliCommand>,
+    },
     Theme {
         command: Option<ThemeCommand>,
     },
@@ -832,6 +873,7 @@ fn launch_plan(command: Option<Commands>, interactive_terminal: bool) -> Result<
         None => Ok(LaunchPlan::Invocation(to_invocation(Commands::Doctor)?)),
         Some(Commands::Cost { all } | Commands::Usage { all }) => Ok(LaunchPlan::Cost { all }),
         Some(Commands::OutputStyle { command }) => Ok(LaunchPlan::OutputStyle { command }),
+        Some(Commands::Env { command }) => Ok(LaunchPlan::Env { command }),
         Some(Commands::Theme { command }) => Ok(LaunchPlan::Theme { command }),
         Some(Commands::Vim { command }) => Ok(LaunchPlan::Vim { command }),
         Some(Commands::Keybindings) => Ok(LaunchPlan::Keybindings),
@@ -899,6 +941,12 @@ fn render_command_output<W: Write>(output: CommandOutput, writer: &mut W) -> Res
         }
         CommandOutput::Noop => Ok(()),
     }
+}
+
+fn parse_env_assignment(assignment: &str) -> Result<(&str, &str)> {
+    assignment.split_once('=').ok_or_else(|| {
+        WonderError::validation("environment variable assignment must use KEY=VALUE syntax")
+    })
 }
 
 fn to_invocation(command: Commands) -> Result<CommandInvocation> {
@@ -979,6 +1027,9 @@ fn to_invocation(command: Commands) -> Result<CommandInvocation> {
         }
         Commands::OutputStyle { .. } => {
             unreachable!("output-style is handled directly by the top-level CLI")
+        }
+        Commands::Env { .. } => {
+            unreachable!("env is handled directly by the top-level CLI")
         }
         Commands::Prompt {
             provider,
@@ -1721,6 +1772,13 @@ mod tests {
     }
 
     #[test]
+    fn env_subcommand_uses_direct_launch_plan() {
+        let plan = launch_plan(Some(Commands::Env { command: None }), false).expect("launch plan");
+
+        assert_eq!(plan, LaunchPlan::Env { command: None });
+    }
+
+    #[test]
     fn noninteractive_resume_keeps_summary_invocation() {
         let plan = launch_plan(
             Some(Commands::Resume {
@@ -2039,6 +2097,114 @@ mod tests {
         .expect_err("unknown output style should fail");
 
         assert!(error.to_string().contains("unknown output style: html"));
+    }
+
+    #[test]
+    fn env_show_command_displays_persisted_and_system_values() {
+        let dir = unique_test_dir("cli-env-command-show");
+        let storage_dir = dir.to_string_lossy().into_owned();
+        let _provider = EnvVarGuard::set("WONDER_PROVIDER", "anthropic");
+        wonder_of_u_agent::SettingsStore::new(&dir)
+            .write(&wonder_of_u_agent::AgentSettings {
+                env_vars: std::collections::HashMap::from([(
+                    "WONDER_MODEL".into(),
+                    "sonnet".into(),
+                )]),
+                ..wonder_of_u_agent::AgentSettings::default()
+            })
+            .expect("write settings");
+
+        let mut output = Vec::new();
+        run_from(
+            vec![
+                "wonder-of-u".to_string(),
+                "--storage-dir".to_string(),
+                storage_dir,
+                "env".to_string(),
+            ],
+            &mut output,
+        )
+        .expect("run env show");
+
+        let text = String::from_utf8(output).expect("utf8");
+        assert!(text.contains("persisted.WONDER_MODEL=sonnet"));
+        assert!(text.contains("system.WONDER_PROVIDER=anthropic"));
+    }
+
+    #[test]
+    fn env_set_and_unset_commands_persist_changes() {
+        let dir = unique_test_dir("cli-env-command-set-unset");
+        let storage_dir = dir.to_string_lossy().into_owned();
+
+        let mut set_output = Vec::new();
+        run_from(
+            vec![
+                "wonder-of-u".to_string(),
+                "--storage-dir".to_string(),
+                storage_dir.clone(),
+                "env".to_string(),
+                "set".to_string(),
+                "FOO=bar".to_string(),
+            ],
+            &mut set_output,
+        )
+        .expect("run env set");
+
+        assert_eq!(
+            wonder_of_u_agent::SettingsStore::new(&dir)
+                .read()
+                .expect("read settings")
+                .env_vars
+                .get("FOO"),
+            Some(&"bar".to_string())
+        );
+
+        let mut unset_output = Vec::new();
+        run_from(
+            vec![
+                "wonder-of-u".to_string(),
+                "--storage-dir".to_string(),
+                storage_dir,
+                "env".to_string(),
+                "unset".to_string(),
+                "FOO".to_string(),
+            ],
+            &mut unset_output,
+        )
+        .expect("run env unset");
+
+        assert!(
+            !wonder_of_u_agent::SettingsStore::new(&dir)
+                .read()
+                .expect("read settings")
+                .env_vars
+                .contains_key("FOO")
+        );
+    }
+
+    #[test]
+    fn env_set_command_rejects_invalid_assignment() {
+        let dir = unique_test_dir("cli-env-command-invalid-assignment");
+        let storage_dir = dir.to_string_lossy().into_owned();
+
+        let error = run_from(
+            vec![
+                "wonder-of-u".to_string(),
+                "--storage-dir".to_string(),
+                storage_dir,
+                "env".to_string(),
+                "set".to_string(),
+                "BROKEN".to_string(),
+            ],
+            &mut Vec::new(),
+        )
+        .expect_err("invalid assignment");
+
+        assert!(
+            error
+                .to_string()
+                .contains("environment variable assignment must use KEY=VALUE syntax")
+        );
     }
 
     #[test]
