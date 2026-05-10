@@ -12,6 +12,7 @@ use syntect::{
     highlighting::{FontStyle, Theme, ThemeSet},
     parsing::{SyntaxReference, SyntaxSet},
 };
+use time::OffsetDateTime;
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 use wonder_of_u_core::{MessageEnvelope, MessagePayload, ToolUseId};
@@ -116,7 +117,11 @@ fn single_message_view(message: &MessageEnvelope) -> RichMessageView {
             if let Some(view) = SystemErrorView::detect(MessageRole::Assistant, content) {
                 RichMessageView::SystemError(view)
             } else {
-                RichMessageView::Markdown(MarkdownSummaryView::new(MessageRole::Assistant, content))
+                RichMessageView::Markdown(MarkdownSummaryView::with_timestamp(
+                    MessageRole::Assistant,
+                    content,
+                    Some(message.timestamp),
+                ))
             }
         }
         MessagePayload::System { content } => {
@@ -191,6 +196,8 @@ fn grouped_tool_call_view(messages: &[MessageEnvelope]) -> Option<(GroupedToolCa
 pub struct MarkdownSummaryView {
     /// Stores the role
     pub role: MessageRole,
+    /// Stores the optional timestamp shown after the first assistant line.
+    pub timestamp: Option<OffsetDateTime>,
     /// Stores the blocks
     pub blocks: Vec<MarkdownBlockView>,
 }
@@ -199,8 +206,14 @@ impl MarkdownSummaryView {
     /// Creates a new value
     #[must_use]
     pub fn new(role: MessageRole, text: &str) -> Self {
+        Self::with_timestamp(role, text, None)
+    }
+
+    #[must_use]
+    fn with_timestamp(role: MessageRole, text: &str, timestamp: Option<OffsetDateTime>) -> Self {
         Self {
             role,
+            timestamp,
             blocks: parse_markdown_blocks(text),
         }
     }
@@ -252,6 +265,15 @@ impl MarkdownSummaryView {
 
         if lines.is_empty() {
             lines.push(MessageLineView::new(prefix.to_string(), self.role));
+        }
+
+        if let Some(timestamp) = self
+            .timestamp
+            .filter(|_| self.role == MessageRole::Assistant)
+        {
+            if self.blocks.iter().any(markdown_block_has_content) {
+                lines.insert(1.min(lines.len()), timestamp_line(timestamp, max_width));
+            }
         }
 
         lines
@@ -1797,6 +1819,39 @@ fn role_prefix(role: MessageRole) -> &'static str {
     }
 }
 
+fn markdown_block_has_content(block: &MarkdownBlockView) -> bool {
+    match block {
+        MarkdownBlockView::Paragraph(text) => !text.trim().is_empty(),
+        MarkdownBlockView::Code(code) => !code.code.trim().is_empty(),
+    }
+}
+
+fn timestamp_line(timestamp: OffsetDateTime, max_width: usize) -> MessageLineView {
+    let timestamp = format_message_timestamp(timestamp);
+    let padding = " ".repeat(max_width.saturating_sub(line_width(&timestamp)));
+    MessageLineView::with_spans(
+        MessageRole::System,
+        vec![
+            MessageSpanView::new(padding, None),
+            MessageSpanView::new(
+                timestamp,
+                Some(TextStyle::default().fg(Color::DarkGrey).dim()),
+            ),
+        ],
+    )
+}
+
+fn format_message_timestamp(timestamp: OffsetDateTime) -> String {
+    let hour = timestamp.hour();
+    let minute = timestamp.minute();
+    let meridiem = if hour < 12 { "AM" } else { "PM" };
+    let hour = match hour % 12 {
+        0 => 12,
+        value => value,
+    };
+    format!("{hour:02}:{minute:02} {meridiem}")
+}
+
 fn summarize_tool_input(value: &Value) -> String {
     if let Some(command) = value
         .get("command")
@@ -1953,6 +2008,40 @@ mod tests {
                 "review the diff and continue",
                 MessageRole::User,
             )]
+        );
+    }
+
+    #[test]
+    fn rich_message_views_show_timestamp_line_for_assistant_text_messages() {
+        let session_id = SessionId::new();
+        let mut message = MessageEnvelope::new(
+            session_id,
+            MessagePayload::AssistantText {
+                content: "all set".into(),
+            },
+        );
+        message.timestamp =
+            OffsetDateTime::UNIX_EPOCH + Duration::hours(12) + Duration::minutes(45);
+
+        let views = rich_message_views(&[message], false);
+        let lines = views[0].display_lines(20, false);
+
+        assert_eq!(
+            lines[0],
+            MessageLineView::new("all set", MessageRole::Assistant)
+        );
+        assert_eq!(
+            lines[1],
+            MessageLineView::with_spans(
+                MessageRole::System,
+                vec![
+                    MessageSpanView::new(" ".repeat(12), None),
+                    MessageSpanView::new(
+                        "12:45 PM",
+                        Some(TextStyle::default().fg(Color::DarkGrey).dim()),
+                    ),
+                ],
+            )
         );
     }
 
