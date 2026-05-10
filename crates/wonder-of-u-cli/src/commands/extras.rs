@@ -14,8 +14,8 @@ use serde_json::{Value, json};
 use time::OffsetDateTime;
 use wonder_of_u_agent::{AuthMaterial, CredentialStore, SettingsStore};
 use wonder_of_u_core::{
-    Command, CommandContext, CommandInvocation, CommandKind, CommandOutput, CommandSpec,
-    MessageEnvelope, MessagePayload, Result, SessionId, ToolSpec,
+    AppState, Command, CommandContext, CommandInvocation, CommandKind, CommandOutput, CommandSpec,
+    MessageEnvelope, MessagePayload, Result, SessionId, ToolSpec, WonderError,
 };
 use wonder_of_u_storage::{STORAGE_SCHEMA_VERSION, SessionMetadata, StoragePaths, TranscriptStore};
 
@@ -2195,6 +2195,48 @@ fn thinking_blocks(messages: &[MessageEnvelope]) -> Vec<String> {
         .collect()
 }
 
+/// Renders the `/thinking` slash-command response for the current session state.
+pub fn execute_thinking_command(app: &AppState, arg: Option<&str>) -> Result<String> {
+    let current = app.thinking_enabled;
+    match arg {
+        Some("on") => Ok("Thinking enabled — Claude will reason before responding".into()),
+        Some("off") => Ok("Thinking disabled".into()),
+        None | Some("") => Ok(format!(
+            "Thinking is currently {}",
+            if current { "enabled" } else { "disabled" }
+        )),
+        Some(other) => Err(WonderError::Validation(format!(
+            "Unknown argument: {other}. Use 'on' or 'off'"
+        ))),
+    }
+}
+
+/// Renders session-local token usage and estimated cost statistics.
+pub fn execute_stats_command(app: &AppState) -> Result<String> {
+    let usage = app.costs.usage;
+    let cost = app.costs.estimated_cost_usd.unwrap_or_default();
+    let model = app.model.as_deref().unwrap_or("unknown");
+    let provider = app.provider.as_deref().unwrap_or("unknown");
+
+    let mut lines = vec![
+        "Session Statistics".into(),
+        "─────────────────────────────".into(),
+        format!("Provider:  {provider}"),
+        format!("Model:     {model}"),
+        "─────────────────────────────".into(),
+        format!("Input tokens:        {:>10}", usage.input_tokens),
+        format!("Output tokens:       {:>10}", usage.output_tokens),
+        format!("Cache create tokens: {:>10}", usage.cache_creation_tokens),
+        format!("Cache read tokens:   {:>10}", usage.cache_read_tokens),
+        format!("Total tokens:        {:>10}", usage.total_tokens()),
+        "─────────────────────────────".into(),
+    ];
+    if cost > 0.0 {
+        lines.push(format!("Estimated cost:      ${cost:.4}"));
+    }
+    Ok(lines.join("\n"))
+}
+
 fn synthesize_metadata(
     session_id: SessionId,
     messages: &[MessageEnvelope],
@@ -2749,7 +2791,7 @@ mod tests {
     use futures::executor::block_on;
     use serde_json::json;
     use tempfile::tempdir;
-    use wonder_of_u_core::{FeatureSet, PermissionMode, SessionId};
+    use wonder_of_u_core::{FeatureSet, PermissionMode, SessionId, TokenUsage};
     use wonder_of_u_storage::TranscriptStore;
 
     use super::*;
@@ -2916,5 +2958,58 @@ mod tests {
 
         let blocks = thinking_blocks(&messages);
         assert_eq!(blocks.last().map(String::as_str), Some("second"));
+    }
+
+    #[test]
+    fn thinking_command_reports_and_validates_state() {
+        let mut app = AppState::new(PathBuf::from("/workspace"));
+        assert_eq!(
+            execute_thinking_command(&app, None).expect("report thinking state"),
+            "Thinking is currently disabled"
+        );
+
+        app.set_thinking_enabled(true);
+        assert_eq!(
+            execute_thinking_command(&app, Some("")).expect("report thinking state"),
+            "Thinking is currently enabled"
+        );
+        assert_eq!(
+            execute_thinking_command(&app, Some("on")).expect("enable thinking"),
+            "Thinking enabled — Claude will reason before responding"
+        );
+        assert_eq!(
+            execute_thinking_command(&app, Some("off")).expect("disable thinking"),
+            "Thinking disabled"
+        );
+        assert!(matches!(
+            execute_thinking_command(&app, Some("maybe")),
+            Err(WonderError::Validation(message))
+                if message == "Unknown argument: maybe. Use 'on' or 'off'"
+        ));
+    }
+
+    #[test]
+    fn stats_command_renders_session_usage_table() {
+        let mut app = AppState::new(PathBuf::from("/workspace"));
+        app.provider = Some("openai".into());
+        app.model = Some("gpt-4.1".into());
+        app.record_cost_usage(
+            TokenUsage {
+                input_tokens: 128,
+                output_tokens: 32,
+                cache_creation_tokens: 16,
+                cache_read_tokens: 8,
+            },
+            Some(0.42),
+        );
+
+        let rendered = execute_stats_command(&app).expect("render stats");
+
+        assert!(rendered.contains("Session Statistics"));
+        assert!(rendered.contains("Provider:  openai"));
+        assert!(rendered.contains("Model:     gpt-4.1"));
+        assert!(rendered.contains("Input tokens:               128"));
+        assert!(rendered.contains("Total tokens:               184"));
+        assert!(rendered.contains("Estimated cost:      $0.4200"));
     }
 }

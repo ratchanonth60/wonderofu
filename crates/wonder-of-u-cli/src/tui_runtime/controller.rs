@@ -60,6 +60,8 @@ pub(super) struct TuiController<'a> {
     /// Whether the right-side sidebar companion panel is currently visible.
     /// Ephemeral per TUI session; never persisted.
     pub(super) sidebar_visible: bool,
+    /// Whether collapsed tool output previews should render fully expanded inline.
+    pub(super) expand_tool_output: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -220,6 +222,7 @@ impl<'a> TuiController<'a> {
             last_terminal_size: (0, 0),
             setup_cancelled_this_session: false,
             sidebar_visible: true,
+            expand_tool_output: false,
         };
         controller.hydrate_initial_settings()?;
         controller.refresh_runtime_state()?;
@@ -552,6 +555,10 @@ impl<'a> TuiController<'a> {
                 Ok(())
             }
             wonder_of_u_tui::SystemAction::HistorySearch => self.open_or_step_history_search(),
+            wonder_of_u_tui::SystemAction::ExpandToolOutput => {
+                self.toggle_expand_tool_output();
+                Ok(())
+            }
         }
     }
 
@@ -1048,6 +1055,8 @@ impl<'a> TuiController<'a> {
             match response {
                 ToolUseResponse::Final(response) => {
                     self.state.pending_tool_approval = None;
+                    self.state
+                        .set_context_window_size(response.context_window_size);
                     self.state.record_cost_usage(response.usage, None);
                     let assistant_message = append_contextual_message(
                         &mut self.state,
@@ -1062,6 +1071,8 @@ impl<'a> TuiController<'a> {
                     return Ok(());
                 }
                 ToolUseResponse::ToolCalls(batch) => {
+                    self.state
+                        .set_context_window_size(batch.context_window_size);
                     self.state.record_cost_usage(batch.usage, None);
                     let local_calls = batch
                         .calls
@@ -1290,6 +1301,8 @@ impl<'a> TuiController<'a> {
             response
         };
 
+        self.state
+            .set_context_window_size(response.context_window_size);
         self.state.record_cost_usage(response.usage, None);
         let assistant_message = self
             .state
@@ -1372,6 +1385,8 @@ impl<'a> TuiController<'a> {
             match response {
                 ToolUseResponse::Final(response) => {
                     self.state.pending_tool_approval = None;
+                    self.state
+                        .set_context_window_size(response.context_window_size);
                     self.state.record_cost_usage(response.usage, None);
                     let assistant_message = append_contextual_message(
                         &mut self.state,
@@ -1389,6 +1404,8 @@ impl<'a> TuiController<'a> {
                     return Ok(());
                 }
                 ToolUseResponse::ToolCalls(batch) => {
+                    self.state
+                        .set_context_window_size(batch.context_window_size);
                     self.state.record_cost_usage(batch.usage, None);
                     let local_calls = batch
                         .calls
@@ -1548,6 +1565,52 @@ impl<'a> TuiController<'a> {
                     self.toggle_sidebar();
                 }
             }
+            return Ok(());
+        }
+        if trimmed == "/thinking" || trimmed.starts_with("/thinking ") {
+            let arg = trimmed
+                .strip_prefix("/thinking")
+                .map(str::trim)
+                .unwrap_or("");
+            let output =
+                commands::execute_thinking_command(&self.state, (!arg.is_empty()).then_some(arg))?;
+            match arg {
+                "on" => {
+                    self.state.set_thinking_enabled(true);
+                    self.status_note = Some("thinking on".into());
+                }
+                "off" => {
+                    self.state.set_thinking_enabled(false);
+                    self.status_note = Some("thinking off".into());
+                }
+                "" => {
+                    self.status_note = Some(format!(
+                        "thinking {}",
+                        if self.state.thinking_enabled {
+                            "on"
+                        } else {
+                            "off"
+                        }
+                    ));
+                }
+                _ => {}
+            }
+            // TODO: Include `self.state.thinking_enabled` in provider completion requests.
+            self.dismiss_dialog();
+            self.record_command_message(input, Some(&output))?;
+            self.needs_render = true;
+            return Ok(());
+        }
+        if trimmed == "/stats" || trimmed.starts_with("/stats ") {
+            let arg = trimmed.strip_prefix("/stats").map(str::trim).unwrap_or("");
+            if !arg.is_empty() {
+                return Err(WonderError::validation("/stats does not take arguments"));
+            }
+            let output = commands::execute_stats_command(&self.state)?;
+            self.dismiss_dialog();
+            self.record_command_message(input, Some(&output))?;
+            self.status_note = Some("session stats".into());
+            self.needs_render = true;
             return Ok(());
         }
         // Handle /login as a TUI-local shortcut when no CLI flags are present.
@@ -2282,14 +2345,15 @@ impl<'a> TuiController<'a> {
             .as_ref()
             .and_then(|search| current_history_search_match(search, &history_entries))
             .map_or_else(|| self.prompt.text(), ToString::to_string);
-        let mut view = ShellView::from_app_state(&self.state, prompt);
+        let mut view = ShellView::from_app_state(&self.state, prompt, self.expand_tool_output);
         let terminal_width = self.last_terminal_size.0;
         let summary_width = if terminal_width == 0 {
             80
         } else {
             usize::from(shell_main_area_width(terminal_width, self.sidebar_visible)).max(1)
         };
-        view.messages = message_lines_for_width(&self.state.messages, summary_width);
+        view.messages =
+            message_lines_for_width(&self.state.messages, summary_width, self.expand_tool_output);
         if !self.sidebar_visible {
             view.sidebar = None;
         }
@@ -2328,25 +2392,10 @@ impl<'a> TuiController<'a> {
             }
             sb.session_lines = session_lines;
 
-            // Section 2 – Context: compact usage summary plus queue/task counts.
-            let mut context_lines = vec![
-                format!(
-                    "model  {}",
-                    model_status_label(self.state.provider.as_deref(), self.state.model.as_deref())
-                ),
-                format!("tokens {}", self.state.costs.usage.total_tokens()),
-                format!(
-                    "cost   {}",
-                    estimated_cost_label(self.state.costs.estimated_cost_usd)
-                ),
-            ];
-            if !self.state.queued_commands.is_empty() {
-                context_lines.push(format!("queued {}", self.state.queued_commands.len()));
-            }
-            if !self.state.background_tasks.is_empty() {
-                context_lines.push(format!("tasks  {}", self.state.background_tasks.len()));
-            }
-            sb.context_lines = context_lines;
+            sb.context_lines = context_sidebar_lines(
+                self.state.costs.usage.total_tokens(),
+                self.state.context_window_size,
+            );
 
             // Section 4 – Status: turn-state indicator + last error summary.
             let state_icon = match self.turn_state {
@@ -4186,6 +4235,7 @@ impl<'a> TuiController<'a> {
                 &view,
                 search.query.cursor(),
                 sidebar_active,
+                context_warning_visible(&self.state),
             );
         }
         prompt_cursor_position(
@@ -4194,6 +4244,7 @@ impl<'a> TuiController<'a> {
             &self.prompt.text(),
             self.prompt.cursor(),
             sidebar_active,
+            context_warning_visible(&self.state),
         )
     }
 
@@ -4209,6 +4260,18 @@ impl<'a> TuiController<'a> {
         } else {
             "sidebar off".into()
         });
+        self.needs_render = true;
+    }
+
+    /// Flips inline tool output expansion and sets a transient status note.
+    pub(super) fn toggle_expand_tool_output(&mut self) {
+        self.expand_tool_output = !self.expand_tool_output;
+        self.status_note = Some(if self.expand_tool_output {
+            "tool output expanded".into()
+        } else {
+            "tool output collapsed".into()
+        });
+        self.notify_transcript_changed();
         self.needs_render = true;
     }
 
@@ -4299,7 +4362,10 @@ impl<'a> TuiController<'a> {
             .unwrap_or(u16::MAX)
             .saturating_add(2);
         let cap = (height / 3).max(3);
-        let prompt_height = uncapped.min(cap);
+        let warning_height = u16::from(context_warning_visible(&self.state));
+        let prompt_height = uncapped
+            .saturating_add(warning_height)
+            .min(cap.saturating_add(warning_height));
         ShellLayout::split(
             Rect::new(
                 0,
@@ -4358,7 +4424,8 @@ impl<'a> TuiController<'a> {
         let mut total = if self.state.messages.is_empty() {
             0
         } else {
-            message_lines_for_width(&self.state.messages, summary_width).len()
+            message_lines_for_width(&self.state.messages, summary_width, self.expand_tool_output)
+                .len()
         };
         if is_loading_turn_state(self.turn_state) {
             total = total.saturating_add(1);
@@ -4394,6 +4461,48 @@ fn model_status_label(provider: Option<&str>, model: Option<&str>) -> String {
 
 fn estimated_cost_label(cost: Option<f64>) -> String {
     cost.map_or_else(|| "cost:--".into(), |cost| format!("${cost:.2}"))
+}
+
+fn context_sidebar_lines(used_tokens: u64, max_tokens: Option<u64>) -> Vec<String> {
+    let Some(max_tokens) = max_tokens.filter(|max_tokens| *max_tokens > 0) else {
+        return vec!["Context: unknown".into()];
+    };
+    let percentage = used_tokens.saturating_mul(100) / max_tokens;
+    let filled = ((used_tokens.saturating_mul(24)) / max_tokens).min(24) as usize;
+    vec![
+        format!(
+            "{} / {} tokens",
+            format_token_count(used_tokens),
+            format_token_count(max_tokens)
+        ),
+        format!(
+            "[{}{}] {}%",
+            "#".repeat(filled),
+            "-".repeat(24usize.saturating_sub(filled)),
+            percentage.min(100)
+        ),
+    ]
+}
+
+fn context_warning_visible(state: &AppState) -> bool {
+    state
+        .context_window_size
+        .filter(|max_tokens| *max_tokens > 0)
+        .is_some_and(|max_tokens| {
+            state.costs.usage.total_tokens().saturating_mul(100) / max_tokens >= 75
+        })
+}
+
+fn format_token_count(value: u64) -> String {
+    let digits = value.to_string();
+    let mut formatted = String::with_capacity(digits.len() + digits.len() / 3);
+    for (index, digit) in digits.chars().enumerate() {
+        if index > 0 && (digits.len() - index).is_multiple_of(3) {
+            formatted.push(',');
+        }
+        formatted.push(digit);
+    }
+    formatted
 }
 
 fn compact_cwd_label(path: &Path) -> String {
