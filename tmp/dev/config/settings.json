@@ -1,0 +1,10 @@
+{
+  "schema_version": 0,
+  "theme": "midnight",
+  "output_style": "plain",
+  "vim_mode": true,
+  "fast_mode": false,
+  "env_vars": {
+    "FOO": "bar"
+  }
+}

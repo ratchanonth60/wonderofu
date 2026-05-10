@@ -531,11 +531,14 @@ mod tests {
             ),
         ];
 
+        // Claude visual parity: user and assistant messages open with a "● " bullet.
+        // The timestamp line follows the first assistant content line.
+        // Tool/error rows use their own "● Tool(args)" + "  └ detail" chrome.
         assert_eq!(
             message_lines(&messages, false),
             vec![
-                MessageLineView::new("review changes", MessageRole::User),
-                MessageLineView::new("line one line two", MessageRole::Assistant),
+                MessageLineView::new("● review changes", MessageRole::User),
+                MessageLineView::new("● line one line two", MessageRole::Assistant),
                 MessageLineView::with_spans(
                     MessageRole::System,
                     vec![

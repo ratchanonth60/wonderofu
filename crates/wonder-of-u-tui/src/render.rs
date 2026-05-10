@@ -3485,4 +3485,236 @@ mod tests {
             .expect("prompt row");
         assert_eq!(warning_row.saturating_add(1), prompt_row);
     }
+
+    // ── Claude visual parity: no persistent header in normal chat mode ───────
+
+    #[test]
+    fn session_title_header_absent_when_messages_present() {
+        // Once the conversation has messages the "▸ wonder-of-u …" header must
+        // NOT appear — Claude Code fullscreen layout starts the transcript at row 0.
+        let view = ShellView {
+            title: "Session: MyProject".into(),
+            messages: vec![MessageLineView::new(
+                "● hello world",
+                MessageRole::Assistant,
+            )],
+            prompt: "ask me".into(),
+            footer: "▸▸ default (shift+tab to cycle)".into(),
+            ..ShellView::default()
+        };
+
+        let frame = render_snapshot(60, 8, &view, &Theme::default());
+        let text = frame.to_plain_text();
+
+        assert!(
+            !text.contains("▸ wonder-of-u"),
+            "persistent header must not appear when messages are present; rendered:\n{text}"
+        );
+        // The transcript content should start at the very top row.
+        let first_line = text.lines().next().unwrap_or("");
+        assert!(
+            first_line.contains("hello world"),
+            "transcript must begin at row 0 when messages exist; rendered:\n{text}"
+        );
+    }
+
+    #[test]
+    fn session_title_header_present_on_welcome_screen() {
+        // On the empty/welcome state the "▸ wonder-of-u …" header must appear.
+        let view = ShellView {
+            title: "Session: MyProject".into(),
+            messages: Vec::new(),
+            prompt: String::new(),
+            footer: String::new(),
+            ..ShellView::default()
+        };
+
+        let frame = render_snapshot(40, 10, &view, &Theme::default());
+        let text = frame.to_plain_text();
+
+        assert!(
+            text.contains("▸ wonder-of-u"),
+            "welcome header must appear when there are no messages; rendered:\n{text}"
+        );
+    }
+
+    // ── Claude visual parity: compact footer (▸▸ … shift+tab …) ────────────
+
+    #[test]
+    fn compact_footer_uses_hint_text_not_verbose_metadata() {
+        // The footer row must surface the compact hint supplied by ShellView::footer,
+        // not verbose fields like `storage=` or `turn=` from the old status bar.
+        let view = ShellView {
+            messages: vec![MessageLineView::new("● hi", MessageRole::User)],
+            prompt: String::new(),
+            footer: "▸▸ default (shift+tab to cycle) · ⌃C exit".into(),
+            status: "turn=idle storage=/home/user/.wonder cwd=/workspace".into(),
+            ..ShellView::default()
+        };
+
+        let frame = render_snapshot(60, 6, &view, &Theme::default());
+        let text = frame.to_plain_text();
+
+        assert!(
+            text.contains("shift+tab to cycle"),
+            "compact footer hint must appear; rendered:\n{text}"
+        );
+        // Verbose session metadata fields must stay out of the footer row.
+        assert!(
+            !text.contains("storage="),
+            "verbose storage field must not appear in footer; rendered:\n{text}"
+        );
+        assert!(
+            !text.contains("turn="),
+            "verbose turn field must not appear in footer; rendered:\n{text}"
+        );
+    }
+
+    #[test]
+    fn compact_footer_scroll_badge_prepended_when_scrolled_up() {
+        // When the transcript is scrolled away from the tail, the footer row
+        // should include the scroll badge ("↑ N lines · Ctrl+End bottom").
+        let view = ShellView {
+            messages: (0..20)
+                .map(|i| MessageLineView::new(format!("line {i}"), MessageRole::Assistant))
+                .collect(),
+            prompt: String::new(),
+            footer: "▸▸ default".into(),
+            scroll: TranscriptScrollView {
+                offset_from_bottom: 5,
+                total_lines: 20,
+                visible_lines: 10,
+            },
+            ..ShellView::default()
+        };
+
+        let frame = render_snapshot(80, 8, &view, &Theme::default());
+        let text = frame.to_plain_text();
+
+        assert!(
+            text.contains("↑ 5 lines"),
+            "scroll badge must appear when scrolled up; rendered:\n{text}"
+        );
+        assert!(
+            text.contains("Ctrl+End bottom"),
+            "scroll badge must contain Ctrl+End hint; rendered:\n{text}"
+        );
+    }
+
+    // ── Claude visual parity: ● bullet rows for user/assistant ──────────────
+
+    #[test]
+    fn user_message_rendered_with_bullet_prefix() {
+        // User messages must open with "● " so they match the Claude Code style.
+        // This tests the render path that uses MessageRole::User colouring.
+        let view = ShellView {
+            messages: vec![MessageLineView::new("● fix the tests", MessageRole::User)],
+            prompt: String::new(),
+            ..ShellView::default()
+        };
+
+        let frame = render_snapshot(40, 6, &view, &Theme::default());
+        let text = frame.to_plain_text();
+
+        assert!(
+            text.contains("● fix the tests"),
+            "user message bullet must appear in transcript; rendered:\n{text}"
+        );
+    }
+
+    #[test]
+    fn assistant_message_rendered_with_bullet_prefix() {
+        // Assistant messages must also open with "● " (Claude Code style).
+        let view = ShellView {
+            messages: vec![MessageLineView::new(
+                "● I've updated the file",
+                MessageRole::Assistant,
+            )],
+            prompt: String::new(),
+            ..ShellView::default()
+        };
+
+        let frame = render_snapshot(40, 6, &view, &Theme::default());
+        let text = frame.to_plain_text();
+
+        assert!(
+            text.contains("● I've updated the file"),
+            "assistant message bullet must appear in transcript; rendered:\n{text}"
+        );
+    }
+
+    // ── Claude visual parity: tool rows ─────────────────────────────────────
+
+    #[test]
+    fn tool_row_headline_and_detail_rendered() {
+        // Tool calls must produce a "● Tool(args)" headline row followed by an
+        // indented "  └ detail" row — matching the Claude Code tool activity style.
+        let view = ShellView {
+            messages: vec![
+                MessageLineView::new("● Bash(ls -la)", MessageRole::Tool),
+                MessageLineView::new("  └ success", MessageRole::Tool),
+            ],
+            prompt: String::new(),
+            ..ShellView::default()
+        };
+
+        let frame = render_snapshot(40, 6, &view, &Theme::default());
+        let text = frame.to_plain_text();
+
+        assert!(
+            text.contains("● Bash(ls -la)"),
+            "tool headline must appear; rendered:\n{text}"
+        );
+        assert!(
+            text.contains("└ success"),
+            "tool detail must appear indented; rendered:\n{text}"
+        );
+    }
+
+    // ── Claude visual parity: loading row position ───────────────────────────
+
+    #[test]
+    fn loading_row_appears_directly_above_prompt_not_in_transcript() {
+        // The spinner row must be rendered between the last transcript line and
+        // the prompt box top border — never mixed into the scrollable transcript.
+        let view = ShellView {
+            messages: vec![MessageLineView::new(
+                "● earlier message",
+                MessageRole::Assistant,
+            )],
+            prompt: String::new(),
+            loading: true,
+            loading_verb: Some("thinking".into()),
+            spinner_frame: 1,
+            loading_elapsed_secs: 5,
+            loading_total_tokens: 0,
+            footer: "▸▸ default (shift+tab to cycle) · ⌃C exit".into(),
+            ..ShellView::default()
+        };
+
+        let frame = render_snapshot(60, 8, &view, &Theme::default());
+        let text = frame.to_plain_text();
+        let lines: Vec<&str> = text.lines().collect();
+
+        // The loading indicator must appear above the prompt border.
+        let spinner_row = lines
+            .iter()
+            .position(|l| l.contains("thinking"))
+            .expect("spinner row must appear");
+        let prompt_border_row = lines
+            .iter()
+            .position(|l| l.starts_with('╭'))
+            .expect("prompt border must appear");
+
+        assert!(
+            spinner_row < prompt_border_row,
+            "loading row ({spinner_row}) must be above prompt border ({prompt_border_row}); rendered:\n{text}"
+        );
+
+        // The earlier transcript message must still be visible.
+        assert!(
+            text.contains("earlier message"),
+            "transcript must still show earlier message during loading; rendered:\n{text}"
+        );
+    }
 }
