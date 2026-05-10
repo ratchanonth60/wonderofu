@@ -781,6 +781,10 @@ pub struct AppState {
     /// Stores the configured effort level for thinking-capable models.
     #[serde(default)]
     pub thinking_effort: ThinkingEffort,
+    /// When enabled, instructs the model to minimise token usage in every
+    /// reply.  Injected as a system-prompt prefix so no user message is needed.
+    #[serde(default)]
+    pub optimize_token_mode: bool,
     /// Optional advisor/secondary model for multi-model reasoning.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub advisor_model: Option<String>,
@@ -820,6 +824,7 @@ impl AppState {
             fast_mode: false,
             thinking_enabled: false,
             thinking_effort: ThinkingEffort::default(),
+            optimize_token_mode: false,
             advisor_model: None,
             auth: AuthState::default(),
             pending_tool_approval: None,
@@ -921,21 +926,43 @@ impl AppState {
         self.advisor_model = model;
         self.session.updated_at = OffsetDateTime::now_utc();
     }
+
+    /// Toggles or sets the token-optimisation mode for this session.
+    pub fn set_optimize_token_mode(&mut self, enabled: bool) {
+        self.optimize_token_mode = enabled;
+        self.session.updated_at = OffsetDateTime::now_utc();
+    }
+
     /// Handles effective system prompt
     #[must_use]
     pub fn effective_system_prompt(&self, explicit: Option<String>) -> Option<String> {
         const BRIEF_MODE_PROMPT: &str =
             "Be brief. Keep user-facing output concise and direct unless the user asks for detail.";
+        // Instruct the model to minimise token usage when optimize-token mode is on.
+        // Placed before the brief hint so both can coexist in priority order.
+        const OPTIMIZE_TOKEN_PROMPT: &str = "Minimize token usage. Omit preambles, filler words, \
+            padding, and unnecessary repetition. Respond with only the essential information \
+            requested, in the most compact form possible.";
 
         let explicit = explicit
             .as_deref()
             .map(str::trim)
             .filter(|value| !value.is_empty());
-        match (self.brief_mode, explicit) {
-            (false, None) => None,
-            (false, Some(prompt)) => Some(prompt.to_string()),
-            (true, None) => Some(BRIEF_MODE_PROMPT.into()),
-            (true, Some(prompt)) => Some(format!("{prompt}\n\n{BRIEF_MODE_PROMPT}")),
+
+        // Build up injected prefixes; optimize-token comes first, brief appended after.
+        let mut injected: Vec<&str> = Vec::new();
+        if self.optimize_token_mode {
+            injected.push(OPTIMIZE_TOKEN_PROMPT);
+        }
+        if self.brief_mode {
+            injected.push(BRIEF_MODE_PROMPT);
+        }
+
+        match (injected.is_empty(), explicit) {
+            (true, None) => None,
+            (true, Some(prompt)) => Some(prompt.to_string()),
+            (false, None) => Some(injected.join("\n\n")),
+            (false, Some(prompt)) => Some(format!("{prompt}\n\n{}", injected.join("\n\n"))),
         }
     }
 
@@ -1420,5 +1447,56 @@ mod tests {
         state.set_fast_mode(true);
 
         assert!(state.fast_mode);
+    }
+
+    #[test]
+    fn set_optimize_token_mode_updates_state() {
+        let mut state = AppState::new(PathBuf::from("/workspace"));
+        assert!(!state.optimize_token_mode);
+
+        state.set_optimize_token_mode(true);
+
+        assert!(state.optimize_token_mode);
+    }
+
+    #[test]
+    fn effective_system_prompt_adds_optimize_token_guidance() {
+        let mut state = AppState::new(PathBuf::from("/workspace"));
+        assert_eq!(state.effective_system_prompt(None), None);
+
+        state.set_optimize_token_mode(true);
+        let prompt = state
+            .effective_system_prompt(None)
+            .expect("optimize-token prompt");
+        assert!(
+            prompt.contains("Minimize token usage"),
+            "should contain token-minimisation instruction"
+        );
+
+        // Explicit system prompt is preserved and the hint is appended.
+        let combined = state
+            .effective_system_prompt(Some("You are a helpful assistant.".into()))
+            .expect("combined");
+        assert!(combined.contains("You are a helpful assistant."));
+        assert!(combined.contains("Minimize token usage"));
+    }
+
+    #[test]
+    fn effective_system_prompt_combines_optimize_token_and_brief() {
+        let mut state = AppState::new(PathBuf::from("/workspace"));
+        state.set_optimize_token_mode(true);
+        state.set_brief_mode(true);
+
+        let prompt = state
+            .effective_system_prompt(None)
+            .expect("combined modes prompt");
+
+        // Both hints must be present; optimize-token comes first.
+        let opt_pos = prompt.find("Minimize token usage").expect("opt pos");
+        let brief_pos = prompt.find("Be brief.").expect("brief pos");
+        assert!(
+            opt_pos < brief_pos,
+            "optimize-token hint should precede brief hint"
+        );
     }
 }

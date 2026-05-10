@@ -1235,6 +1235,19 @@ pub(super) fn parse_brief_mode_hint(text: &str) -> Option<bool> {
     }
 }
 
+/// Parses `optimize_token_mode=<value>` from command output, returning `Some`
+/// when a recognised value is present and `None` otherwise.
+pub(super) fn parse_optimize_token_mode_hint(text: &str) -> Option<bool> {
+    let value = text
+        .lines()
+        .find_map(|line| line.strip_prefix("optimize_token_mode="))?;
+    match value.trim() {
+        "true" | "on" | "enabled" => Some(true),
+        "false" | "off" | "disabled" => Some(false),
+        _ => None,
+    }
+}
+
 pub(super) fn parse_insights_hint(text: &str) -> bool {
     text.lines()
         .any(|line| line.trim() == "insights_prompt_ready=true")
@@ -1448,6 +1461,7 @@ pub(super) fn parse_known_notice(text: &str) -> Option<(String, Vec<String>, &'s
         ("## Color", "Color", "color"),
         ("## Fast", "Fast", "fast"),
         ("## Brief", "Brief", "brief"),
+        ("## Optimize Token", "Optimize Token", "optimize token"),
         ("## Effort", "Effort", "effort"),
         ("## Feedback", "Feedback", "feedback"),
         ("## Insights", "Insights", "insights"),

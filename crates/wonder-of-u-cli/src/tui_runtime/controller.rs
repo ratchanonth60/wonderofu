@@ -1815,6 +1815,7 @@ impl<'a> TuiController<'a> {
                 || dialog.title == "Color"
                 || dialog.title == "Fast"
                 || dialog.title == "Brief"
+                || dialog.title == "Optimize Token"
                 || dialog.title == "Effort"
                 || dialog.title == "Feedback"
                 || dialog.title == "Insights"
@@ -1844,6 +1845,13 @@ impl<'a> TuiController<'a> {
             self.status_note = Some(format!("fast {}", if enabled { "on" } else { "off" }));
         } else if let Some(enabled) = parse_brief_mode_hint(text.as_deref().unwrap_or_default()) {
             self.status_note = Some(format!("brief {}", if enabled { "on" } else { "off" }));
+        } else if let Some(enabled) =
+            parse_optimize_token_mode_hint(text.as_deref().unwrap_or_default())
+        {
+            self.status_note = Some(format!(
+                "optimize token {}",
+                if enabled { "on" } else { "off" }
+            ));
         } else if let Some(effort) = parse_effort_hint(text.as_deref().unwrap_or_default()) {
             self.status_note = Some(format!("effort {effort}"));
         } else if let Some(color) = parse_session_color_hint(text.as_deref().unwrap_or_default()) {
@@ -2014,6 +2022,9 @@ impl<'a> TuiController<'a> {
         }
         if let Some(enabled) = parse_brief_mode_hint(text) {
             self.state.set_brief_mode(enabled);
+        }
+        if let Some(enabled) = parse_optimize_token_mode_hint(text) {
+            self.state.set_optimize_token_mode(enabled);
         }
         if let Some(effort) = parse_effort_hint(text) {
             self.state
@@ -2443,6 +2454,7 @@ impl<'a> TuiController<'a> {
             effort_level: self.state.effort_level.clone(),
             brief_mode: self.state.brief_mode,
             fast_mode: self.state.fast_mode,
+            optimize_token_mode: self.state.optimize_token_mode,
             session_tags: self.state.session.tags.clone(),
             additional_working_directories: self.state.additional_working_directories.clone(),
         }

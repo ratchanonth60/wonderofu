@@ -178,6 +178,34 @@ impl BriefCommand {
     }
 }
 
+/// Toggles token-optimisation mode for the current session.
+///
+/// When enabled a system-prompt instruction is injected that tells the model
+/// to minimise output tokens — omitting preambles, filler, and unnecessary
+/// repetition.  The canonical name preserves the original spelling
+/// (`optimize-tonken`); the alias `optimize-token` is also accepted.
+pub struct OptimizeTonkenCommand;
+
+impl OptimizeTonkenCommand {
+    /// Constant fn
+    pub const fn new() -> Self {
+        Self
+    }
+
+    /// Handles command spec
+    pub fn command_spec() -> CommandSpec {
+        let mut spec = CommandSpec::new(
+            "optimize-tonken",
+            "Toggle token-optimisation mode (minimise output tokens) for the current session",
+            CommandKind::Local,
+        );
+        // Accept the correctly-spelled alias too so neither spelling is wrong.
+        spec.aliases.push("optimize-token".into());
+        spec.interactive_only = true;
+        spec
+    }
+}
+
 /// Represents fast command
 pub struct FastCommand {
     storage_dir: Option<PathBuf>,
@@ -678,6 +706,31 @@ impl Command for BriefCommand {
         match parse_brief_action(invocation.args.trim(), context.brief_mode)? {
             BriefAction::Show => Ok(CommandOutput::Text(render_brief_status(context.brief_mode))),
             BriefAction::Set(enabled) => Ok(CommandOutput::Text(render_brief_transition(enabled))),
+        }
+    }
+}
+
+#[async_trait]
+impl Command for OptimizeTonkenCommand {
+    fn spec(&self) -> CommandSpec {
+        Self::command_spec()
+    }
+
+    async fn execute(
+        &self,
+        context: CommandContext,
+        invocation: CommandInvocation,
+    ) -> Result<CommandOutput> {
+        match parse_optimize_tonken_action(
+            invocation.args.trim(),
+            context.optimize_token_mode,
+        )? {
+            OptimizeTonkenAction::Show => Ok(CommandOutput::Text(
+                render_optimize_tonken_status(context.optimize_token_mode),
+            )),
+            OptimizeTonkenAction::Set(enabled) => Ok(CommandOutput::Text(
+                render_optimize_tonken_transition(enabled),
+            )),
         }
     }
 }
@@ -1676,6 +1729,12 @@ enum FastAction {
     Set(bool),
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum OptimizeTonkenAction {
+    Show,
+    Set(bool),
+}
+
 fn parse_brief_action(args: &str, current: bool) -> Result<BriefAction> {
     let trimmed = args.trim();
     if trimmed.is_empty() || trimmed == "toggle" {
@@ -1702,6 +1761,21 @@ fn parse_fast_action(args: &str, current: bool) -> Result<FastAction> {
         "off" | "disable" | "disabled" => Ok(FastAction::Set(false)),
         other => Err(WonderError::validation(format!(
             "unknown fast action: {other}"
+        ))),
+    }
+}
+
+fn parse_optimize_tonken_action(args: &str, current: bool) -> Result<OptimizeTonkenAction> {
+    let trimmed = args.trim();
+    if trimmed.is_empty() || trimmed == "toggle" {
+        return Ok(OptimizeTonkenAction::Set(!current));
+    }
+    match trimmed {
+        "show" | "status" | "current" => Ok(OptimizeTonkenAction::Show),
+        "on" | "enable" | "enabled" => Ok(OptimizeTonkenAction::Set(true)),
+        "off" | "disable" | "disabled" => Ok(OptimizeTonkenAction::Set(false)),
+        other => Err(WonderError::validation(format!(
+            "unknown optimize-tonken action: {other}"
         ))),
     }
 }
@@ -1895,6 +1969,36 @@ fn render_brief_transition(enabled: bool) -> String {
     format!(
         "brief_mode={enabled}\nstatus=brief mode {}\nnote=session prompts now request concise output",
         if enabled { "enabled" } else { "disabled" }
+    )
+}
+
+fn optimize_token_mode_label(enabled: bool) -> &'static str {
+    if enabled { "on" } else { "off" }
+}
+
+fn render_optimize_tonken_status(enabled: bool) -> String {
+    [
+        "## Optimize Token".into(),
+        format!("optimize_token_mode={enabled}"),
+        format!("current_optimize_token={}", optimize_token_mode_label(enabled)),
+        String::new(),
+        "When enabled, a system-prompt instruction is injected that tells the model to minimise".into(),
+        "output tokens — omitting preambles, filler words, and unnecessary repetition.".into(),
+        "Use '/optimize-tonken on' to enable, '/optimize-tonken off' to disable, or".into(),
+        "'/optimize-tonken' (no args) to toggle.  '/optimize-token' is also accepted.".into(),
+    ]
+    .join("\n")
+}
+
+fn render_optimize_tonken_transition(enabled: bool) -> String {
+    format!(
+        "optimize_token_mode={enabled}\nstatus=optimize token mode {}\nnote={}",
+        if enabled { "enabled" } else { "disabled" },
+        if enabled {
+            "session prompts now instruct the model to minimise output tokens"
+        } else {
+            "token-optimisation mode disabled; model will respond normally"
+        },
     )
 }
 
@@ -3472,15 +3576,16 @@ mod tests {
         SecurityReviewCommand, TerminalSetupCommand, ensure_hooks_file, ensure_keybindings_file,
         load_keybinding_resolver, normalize_color_invocation, normalize_effort_invocation,
         normalize_permissions_invocation, normalize_theme_invocation, normalize_vim_invocation,
-        parse_brief_action, parse_effort_level_name, parse_fast_action, parse_plan_action,
-        parse_session_color_name, render_brief_status, render_brief_transition,
+        parse_brief_action, parse_effort_level_name, parse_fast_action, parse_optimize_tonken_action,
+        parse_plan_action, parse_session_color_name, render_brief_status, render_brief_transition,
         render_color_status, render_color_transition, render_commit_enqueue,
         render_commit_push_pr_enqueue, render_effort_status, render_effort_transition,
         render_fast_status, render_fast_transition, render_hooks_summary,
-        render_keybindings_summary, render_plan_display, render_privacy_settings_summary,
-        render_review_enqueue, render_security_review_enqueue, render_statusline_enqueue,
-        render_terminal_setup_notice, render_theme_status, resolve_hooks_path,
-        resolve_keybindings_path, resolve_plan_path, write_persisted_effort, write_persisted_fast,
+        render_keybindings_summary, render_optimize_tonken_status, render_optimize_tonken_transition,
+        render_plan_display, render_privacy_settings_summary, render_review_enqueue,
+        render_security_review_enqueue, render_statusline_enqueue, render_terminal_setup_notice,
+        render_theme_status, resolve_hooks_path, resolve_keybindings_path, resolve_plan_path,
+        write_persisted_effort, write_persisted_fast, OptimizeTonkenAction,
     };
 
     fn test_context(cwd: &Path) -> CommandContext {
@@ -3496,6 +3601,7 @@ mod tests {
             effort_level: None,
             brief_mode: false,
             fast_mode: false,
+            optimize_token_mode: false,
             session_tags: Vec::new(),
             additional_working_directories: Vec::new(),
         }
@@ -3612,6 +3718,7 @@ mod tests {
             effort_level: None,
             brief_mode: false,
             fast_mode: false,
+            optimize_token_mode: false,
             session_tags: Vec::new(),
             additional_working_directories: Vec::new(),
         };
@@ -3656,6 +3763,7 @@ mod tests {
             effort_level: None,
             brief_mode: false,
             fast_mode: false,
+            optimize_token_mode: false,
             session_tags: Vec::new(),
             additional_working_directories: Vec::new(),
         };
@@ -3784,7 +3892,72 @@ mod tests {
     }
 
     #[test]
-    fn fast_defaults_to_toggle_and_accepts_show() {
+    fn optimize_tonken_defaults_to_toggle_and_accepts_show() {
+        assert_eq!(
+            parse_optimize_tonken_action("", false).expect("toggle on"),
+            OptimizeTonkenAction::Set(true)
+        );
+        assert_eq!(
+            parse_optimize_tonken_action("toggle", true).expect("toggle off"),
+            OptimizeTonkenAction::Set(false)
+        );
+        assert_eq!(
+            parse_optimize_tonken_action("show", false).expect("show"),
+            OptimizeTonkenAction::Show
+        );
+        assert_eq!(
+            parse_optimize_tonken_action("on", false).expect("on"),
+            OptimizeTonkenAction::Set(true)
+        );
+        assert_eq!(
+            parse_optimize_tonken_action("off", true).expect("off"),
+            OptimizeTonkenAction::Set(false)
+        );
+    }
+
+    #[test]
+    fn optimize_tonken_action_rejects_unknown_arg() {
+        assert!(parse_optimize_tonken_action("maybe", false).is_err());
+    }
+
+    #[test]
+    fn optimize_tonken_status_renders_notice_heading_and_hint_lines() {
+        let rendered = render_optimize_tonken_status(true);
+
+        assert!(rendered.starts_with("## Optimize Token"));
+        assert!(rendered.contains("optimize_token_mode=true"));
+        assert!(rendered.contains("current_optimize_token=on"));
+        assert!(rendered.contains("minimise"));
+    }
+
+    #[test]
+    fn optimize_tonken_status_shows_off_when_disabled() {
+        let rendered = render_optimize_tonken_status(false);
+
+        assert!(rendered.contains("optimize_token_mode=false"));
+        assert!(rendered.contains("current_optimize_token=off"));
+    }
+
+    #[test]
+    fn optimize_tonken_transition_reports_enabled_state() {
+        let rendered = render_optimize_tonken_transition(true);
+
+        assert!(rendered.contains("optimize_token_mode=true"));
+        assert!(rendered.contains("status=optimize token mode enabled"));
+        assert!(rendered.contains("minimise output tokens"));
+    }
+
+    #[test]
+    fn optimize_tonken_transition_reports_disabled_state() {
+        let rendered = render_optimize_tonken_transition(false);
+
+        assert!(rendered.contains("optimize_token_mode=false"));
+        assert!(rendered.contains("status=optimize token mode disabled"));
+        assert!(rendered.contains("respond normally"));
+    }
+
+    #[test]
+    fn fast_action_defaults_to_toggle_and_accepts_show() {
         assert_eq!(
             parse_fast_action("", false).expect("toggle on"),
             super::FastAction::Set(true)
