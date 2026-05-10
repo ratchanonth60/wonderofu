@@ -73,6 +73,27 @@ pub enum HookOutcome {
     Block { reason: String },
 }
 
+/// Summary of hook execution for one event.
+#[derive(Clone, Debug, PartialEq)]
+pub struct HookRunReport {
+    /// Overall hook outcome for tool execution.
+    pub outcome: HookOutcome,
+    /// Number of hooks that actually ran.
+    pub hook_count: u32,
+    /// Whether every executed hook passed.
+    pub success: bool,
+}
+
+impl HookRunReport {
+    fn allow() -> Self {
+        Self {
+            outcome: HookOutcome::Allow,
+            hook_count: 0,
+            success: true,
+        }
+    }
+}
+
 // ── Event constants ──────────────────────────────────────────────────────────
 
 pub const PRE_TOOL_USE: &str = "PreToolUse";
@@ -94,19 +115,19 @@ pub fn run_hooks(
     tool_input: &Value,
     cwd: &Path,
     storage_dir: Option<&Path>,
-) -> HookOutcome {
+) -> HookRunReport {
     let config = match load_config(storage_dir) {
         Ok(c) => c,
-        Err(_) => return HookOutcome::Allow,
+        Err(_) => return HookRunReport::allow(),
     };
 
     if config.disable_all_hooks {
-        return HookOutcome::Allow;
+        return HookRunReport::allow();
     }
 
     let matchers = match config.hooks.get(event) {
         Some(m) => m,
-        None => return HookOutcome::Allow,
+        None => return HookRunReport::allow(),
     };
 
     let hook_input = json!({
@@ -115,6 +136,7 @@ pub fn run_hooks(
         "tool_input": tool_input,
     });
     let hook_input_str = hook_input.to_string();
+    let mut report = HookRunReport::allow();
 
     for matcher in matchers {
         if !tool_name_matches(tool_name, matcher.matcher.as_deref()) {
@@ -122,17 +144,22 @@ pub fn run_hooks(
         }
         for action in &matcher.hooks {
             if let HookActionConfig::Command { command, .. } = action {
-                if let HookOutcome::Block { reason } =
-                    exec_command_hook(command, &hook_input_str, cwd)
-                {
-                    return HookOutcome::Block { reason };
+                report.hook_count = report.hook_count.saturating_add(1);
+                match exec_command_hook(command, &hook_input_str, cwd) {
+                    CommandHookOutcome::Passed => {}
+                    CommandHookOutcome::Failed => report.success = false,
+                    CommandHookOutcome::Block { reason } => {
+                        report.success = false;
+                        report.outcome = HookOutcome::Block { reason };
+                        return report;
+                    }
                 }
             }
             // Prompt/Agent/Http hooks are not yet executed.
         }
     }
 
-    HookOutcome::Allow
+    report
 }
 
 // ── Internal helpers ─────────────────────────────────────────────────────────
@@ -178,7 +205,13 @@ fn tool_name_matches(tool_name: &str, pattern: Option<&str>) -> bool {
 ///
 /// The subprocess is given at most 60 seconds.  Exit code 2 with valid JSON
 /// `{"continue": false}` in stdout is the only blocking path.
-fn exec_command_hook(command: &str, hook_input_json: &str, cwd: &Path) -> HookOutcome {
+enum CommandHookOutcome {
+    Passed,
+    Failed,
+    Block { reason: String },
+}
+
+fn exec_command_hook(command: &str, hook_input_json: &str, cwd: &Path) -> CommandHookOutcome {
     let Ok(mut child) = ProcessCommand::new("sh")
         .arg("-c")
         .arg(command)
@@ -188,7 +221,7 @@ fn exec_command_hook(command: &str, hook_input_json: &str, cwd: &Path) -> HookOu
         .stderr(Stdio::inherit())
         .spawn()
     else {
-        return HookOutcome::Allow;
+        return CommandHookOutcome::Failed;
     };
 
     // Poll with a 60-second hard timeout.
@@ -197,6 +230,9 @@ fn exec_command_hook(command: &str, hook_input_json: &str, cwd: &Path) -> HookOu
         match child.try_wait() {
             Ok(Some(status)) => {
                 let code = status.code().unwrap_or(0);
+                if code == 0 {
+                    return CommandHookOutcome::Passed;
+                }
                 if code == 2 {
                     // Read stdout and check for explicit block.
                     use std::io::Read;
@@ -205,19 +241,19 @@ fn exec_command_hook(command: &str, hook_input_json: &str, cwd: &Path) -> HookOu
                         let _ = stdout.read_to_string(&mut out);
                     }
                     if let Some(reason) = parse_block_reason(&out) {
-                        return HookOutcome::Block { reason };
+                        return CommandHookOutcome::Block { reason };
                     }
                 }
-                return HookOutcome::Allow;
+                return CommandHookOutcome::Failed;
             }
             Ok(None) => {
                 if std::time::Instant::now() >= deadline {
                     let _ = child.kill();
-                    return HookOutcome::Allow;
+                    return CommandHookOutcome::Failed;
                 }
                 std::thread::sleep(Duration::from_millis(50));
             }
-            Err(_) => return HookOutcome::Allow,
+            Err(_) => return CommandHookOutcome::Failed,
         }
     }
 }
@@ -260,7 +296,9 @@ mod tests {
             dir.path(),
             Some(dir.path()),
         );
-        assert_eq!(outcome, HookOutcome::Allow);
+        assert_eq!(outcome.outcome, HookOutcome::Allow);
+        assert_eq!(outcome.hook_count, 0);
+        assert!(outcome.success);
     }
 
     #[test]
@@ -274,7 +312,9 @@ mod tests {
             dir.path(),
             Some(dir.path()),
         );
-        assert_eq!(outcome, HookOutcome::Allow);
+        assert_eq!(outcome.outcome, HookOutcome::Allow);
+        assert_eq!(outcome.hook_count, 0);
+        assert!(outcome.success);
     }
 
     #[test]
@@ -291,7 +331,9 @@ mod tests {
             dir.path(),
             Some(dir.path()),
         );
-        assert_eq!(outcome, HookOutcome::Allow);
+        assert_eq!(outcome.outcome, HookOutcome::Allow);
+        assert_eq!(outcome.hook_count, 0);
+        assert!(outcome.success);
     }
 
     #[test]
@@ -308,7 +350,9 @@ mod tests {
             dir.path(),
             Some(dir.path()),
         );
-        assert_eq!(outcome, HookOutcome::Allow);
+        assert_eq!(outcome.outcome, HookOutcome::Allow);
+        assert_eq!(outcome.hook_count, 1);
+        assert!(outcome.success);
     }
 
     #[test]
@@ -326,11 +370,13 @@ mod tests {
             Some(dir.path()),
         );
         assert_eq!(
-            outcome,
+            outcome.outcome,
             HookOutcome::Block {
                 reason: "not allowed".into()
             }
         );
+        assert_eq!(outcome.hook_count, 1);
+        assert!(!outcome.success);
     }
 
     #[test]
@@ -348,7 +394,9 @@ mod tests {
             dir.path(),
             Some(dir.path()),
         );
-        assert_eq!(outcome, HookOutcome::Allow);
+        assert_eq!(outcome.outcome, HookOutcome::Allow);
+        assert_eq!(outcome.hook_count, 1);
+        assert!(!outcome.success);
     }
 
     #[test]

@@ -140,6 +140,19 @@ fn single_message_view(message: &MessageEnvelope) -> RichMessageView {
         MessagePayload::CompactBoundary { summary } => {
             RichMessageView::Boundary(TranscriptBoundaryView::new(summary))
         }
+        MessagePayload::HookProgress {
+            event,
+            tool_name,
+            hook_count,
+            success,
+        } => {
+            let icon = if *success { "⚙" } else { "⚠" };
+            let noun = if *hook_count == 1 { "hook" } else { "hooks" };
+            RichMessageView::Fallback(vec![MessageLineView::new(
+                format!("{icon} {hook_count} {event} {noun} ran for {tool_name}"),
+                MessageRole::System,
+            )])
+        }
         _ => {
             let mut lines = Vec::new();
             render_message(message, &mut lines);
@@ -2064,6 +2077,29 @@ mod tests {
                 MessageLineView::new("  step one step two", MessageRole::Progress),
             ]
         );
+    }
+
+    #[test]
+    fn hook_progress_messages_render_as_non_empty_system_lines() {
+        let session_id = SessionId::new();
+        let views = rich_message_views(
+            &[MessageEnvelope::new(
+                session_id,
+                MessagePayload::HookProgress {
+                    event: "PreToolUse".into(),
+                    tool_name: "bash".into(),
+                    hook_count: 1,
+                    success: true,
+                },
+            )],
+            false,
+        );
+        let lines = views[0].display_lines(80, false);
+
+        assert!(!lines.is_empty());
+        assert_eq!(lines[0].role, MessageRole::System);
+        assert!(!lines[0].text.trim().is_empty());
+        assert!(lines[0].text.contains("hook"));
     }
 
     #[test]
