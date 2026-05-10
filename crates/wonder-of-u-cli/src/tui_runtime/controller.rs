@@ -2618,6 +2618,14 @@ impl<'a> TuiController<'a> {
             sb.provider_lines = provider_lines;
         }
 
+        // Populate tool, MCP, LSP, and todo sidebar sections.
+        if let Some(sb) = view.sidebar.as_mut() {
+            sb.tool_lines = tool_sidebar_lines(&self.state.features, self.storage_dir.as_deref());
+            sb.mcp_lines = mcp_sidebar_lines(self.storage_dir.as_deref());
+            sb.lsp_lines = lsp_sidebar_lines(&self.state.session.cwd);
+            sb.todo_lines = todo_sidebar_lines(&self.state.session.cwd);
+        }
+
         view
     }
 
@@ -4818,4 +4826,237 @@ pub(super) fn build_slash_suggestions(registry: &CommandRegistry) -> Vec<PromptS
                 .with_keywords(spec.aliases.iter().map(|a| format!("/{a}")))
         })
         .collect()
+}
+
+// ── Sidebar data helpers ──────────────────────────────────────────────────────
+
+/// Known LSP binaries and their display labels.
+pub(super) const LSP_SERVERS: &[(&str, &str)] = &[
+    ("rust-analyzer", "Rust"),
+    ("typescript-language-server", "TypeScript"),
+    ("pyright-langserver", "Python"),
+    ("gopls", "Go"),
+    ("clangd", "C/C++"),
+];
+
+/// Compile a compact tools summary for the sidebar.
+///
+/// Shows `N enabled / M registered` on the first line, then a breakdown of
+/// enabled tools by [`ToolKind`].  Falls back to an error line if the registry
+/// cannot be built.
+pub(super) fn tool_sidebar_lines(
+    features: &FeatureSet,
+    _storage_dir: Option<&std::path::Path>,
+) -> Vec<String> {
+    let registry = match builtin_tool_registry() {
+        Ok(r) => r,
+        Err(e) => return vec![format!("⚠ tools unavailable: {e}")],
+    };
+
+    let all_specs = registry.all_specs();
+    let registered = all_specs.len();
+
+    // Count enabled tools using the current feature set.
+    let enabled_specs = registry.enabled_specs(features);
+    let enabled = enabled_specs.len();
+
+    let mut lines = vec![format!("  {enabled} enabled / {registered} registered")];
+
+    // Breakdown by source – compact one-liner per non-zero category.
+    let native = enabled_specs
+        .iter()
+        .filter(|s| s.source == ToolSource::Native)
+        .count();
+    let mcp = enabled_specs
+        .iter()
+        .filter(|s| s.source == ToolSource::Mcp)
+        .count();
+    let skill = enabled_specs
+        .iter()
+        .filter(|s| s.source == ToolSource::Skill)
+        .count();
+    let plugin = enabled_specs
+        .iter()
+        .filter(|s| s.source == ToolSource::Plugin)
+        .count();
+
+    // Breakdown by kind for native tools (most informative for users).
+    let shell = enabled_specs
+        .iter()
+        .filter(|s| s.kind == ToolKind::Shell)
+        .count();
+    let file = enabled_specs
+        .iter()
+        .filter(|s| s.kind == ToolKind::FileRead || s.kind == ToolKind::FileWrite)
+        .count();
+    let web = enabled_specs
+        .iter()
+        .filter(|s| s.kind == ToolKind::Web)
+        .count();
+
+    if native > 0 {
+        let mut parts: Vec<String> = Vec::new();
+        if shell > 0 {
+            parts.push(format!("{shell}sh"));
+        }
+        if file > 0 {
+            parts.push(format!("{file}fs"));
+        }
+        if web > 0 {
+            parts.push(format!("{web}web"));
+        }
+        let rest = native.saturating_sub(shell + file + web);
+        if rest > 0 {
+            parts.push(format!("{rest}other"));
+        }
+        lines.push(format!("  native: {}", parts.join(" ")));
+    }
+    if mcp > 0 {
+        lines.push(format!("  mcp: {mcp}"));
+    }
+    if skill > 0 {
+        lines.push(format!("  skill: {skill}"));
+    }
+    if plugin > 0 {
+        lines.push(format!("  plugin: {plugin}"));
+    }
+
+    lines
+}
+
+/// Build the MCP sidebar section from the stored config (no server spawning).
+///
+/// Reads `McpConfigStore` once per render.  The file is small and the read is
+/// O(servers) so the cost is negligible.  Shows a concise enabled/total count
+/// plus one line per server name.
+pub(super) fn mcp_sidebar_lines(storage_dir: Option<&std::path::Path>) -> Vec<String> {
+    let Some(dir) = storage_dir else {
+        return vec!["  mcp: no storage dir".into()];
+    };
+
+    let store = McpConfigStore::new(dir);
+    let config = match store.read() {
+        Ok(c) => c,
+        Err(e) => return vec![format!("⚠ mcp config unavailable: {e}")],
+    };
+
+    let total = config.servers.len();
+    let enabled = config.servers.iter().filter(|s| s.enabled).count();
+
+    if total == 0 {
+        return vec!["  no servers configured".into()];
+    }
+
+    let mut lines = vec![format!("  {enabled}/{total} servers enabled")];
+    for server in &config.servers {
+        let icon = if server.enabled { "✓" } else { "  " };
+        // Truncate long names so they fit the sidebar column.
+        let name: String = server.name.chars().take(20).collect();
+        lines.push(format!("{icon} {name}"));
+    }
+    lines
+}
+
+/// Check PATH for common LSP binaries and return one line per entry.
+///
+/// Each line is `✓ Label` when the binary is found or `  Label (not found)`
+/// otherwise.  Never probes network or spawns processes.
+pub(super) fn lsp_sidebar_lines(cwd: &std::path::Path) -> Vec<String> {
+    // Annotate with project-type hints so users know which servers matter.
+    let project_hints: &[(&str, &str)] = &[
+        ("Cargo.toml", "rust-analyzer"),
+        ("package.json", "typescript-language-server"),
+        ("pyproject.toml", "pyright-langserver"),
+        ("go.mod", "gopls"),
+    ];
+
+    let mut lines = Vec::new();
+    for (binary, label) in LSP_SERVERS {
+        let found = binary_on_path(binary);
+        // Show a hint when the binary is relevant to this project.
+        let is_relevant = project_hints
+            .iter()
+            .any(|(marker, bin)| *bin == *binary && cwd.join(marker).exists());
+        if found {
+            lines.push(format!("✓ {label}"));
+        } else if is_relevant {
+            // Missing but relevant – highlight so users notice.
+            lines.push(format!("⚠ {label} (not found)"));
+        } else {
+            lines.push(format!("  {label} (not found)"));
+        }
+    }
+    lines
+}
+
+/// Parse `todos.md` in `cwd` and return compact `[x]`/`[ ]` lines.
+///
+/// At most [`TODO_SIDEBAR_CAP`] items are shown; the rest are summarised as
+/// `+N more`.  Returns an empty `Vec` when the file does not exist (not an
+/// error – the Todo section is simply hidden).
+pub(super) fn todo_sidebar_lines(cwd: &std::path::Path) -> Vec<String> {
+    let path = cwd.join("todos.md");
+    if !path.exists() {
+        return Vec::new();
+    }
+
+    let content = match std::fs::read_to_string(&path) {
+        Ok(c) => c,
+        Err(e) => return vec![format!("⚠ todos unreadable: {e}")],
+    };
+
+    parse_todo_lines(&content)
+}
+
+/// Maximum number of todo items shown in the sidebar before `+N more` cap.
+const TODO_SIDEBAR_CAP: usize = 6;
+
+/// Extract and format todo checkbox lines from markdown content.
+///
+/// Recognises `- [ ] …` and `- [x] …` (case-insensitive `x`).  Leading
+/// whitespace before the `-` is ignored so nested items are included.
+pub(super) fn parse_todo_lines(content: &str) -> Vec<String> {
+    let items: Vec<(bool, &str)> = content
+        .lines()
+        .filter_map(|line| {
+            let trimmed = line.trim_start();
+            trimmed
+                .strip_prefix("- [x] ")
+                .or_else(|| trimmed.strip_prefix("- [X] "))
+                .map(|t| (true, t))
+                .or_else(|| trimmed.strip_prefix("- [ ] ").map(|t| (false, t)))
+        })
+        .collect();
+
+    let total = items.len();
+    let shown = items.len().min(TODO_SIDEBAR_CAP);
+    let mut lines: Vec<String> = items[..shown]
+        .iter()
+        .map(|(done, text)| {
+            // Truncate long task descriptions so they fit the sidebar column.
+            let label: String = text.chars().take(22).collect();
+            if *done {
+                format!("✓ {label}")
+            } else {
+                format!("  {label}")
+            }
+        })
+        .collect();
+
+    let remaining = total.saturating_sub(shown);
+    if remaining > 0 {
+        lines.push(format!("  +{remaining} more"));
+    }
+    lines
+}
+
+/// Return `true` when `name` resolves to an executable file on `PATH`.
+///
+/// Mirrors the same logic used in `commands/advanced.rs` so LSP availability
+/// checks are consistent across the CLI surface.
+pub(super) fn binary_on_path(name: &str) -> bool {
+    let Some(paths) = std::env::var_os("PATH") else {
+        return false;
+    };
+    std::env::split_paths(&paths).any(|dir| dir.join(name).is_file())
 }
