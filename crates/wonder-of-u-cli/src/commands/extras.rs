@@ -14,8 +14,9 @@ use serde_json::{Value, json};
 use time::OffsetDateTime;
 use wonder_of_u_agent::{AuthMaterial, CredentialStore, SettingsStore};
 use wonder_of_u_core::{
-    AppState, Command, CommandContext, CommandInvocation, CommandKind, CommandOutput, CommandSpec,
-    MessageEnvelope, MessagePayload, Result, SessionId, ToolSpec, WonderError,
+    AppState, AuthMaterialKind, AuthState, Command, CommandContext, CommandInvocation, CommandKind,
+    CommandOutput, CommandSpec, MessageEnvelope, MessagePayload, Result, SessionId, ToolSpec,
+    WonderError, permission_mode_label,
 };
 use wonder_of_u_storage::{STORAGE_SCHEMA_VERSION, SessionMetadata, StoragePaths, TranscriptStore};
 
@@ -2195,6 +2196,57 @@ fn thinking_blocks(messages: &[MessageEnvelope]) -> Vec<String> {
         .collect()
 }
 
+const HELP_SLASH_COMMANDS: &[(&str, &str)] = &[
+    ("/help", "Show this help"),
+    ("/clear", "Clear conversation history"),
+    ("/compact", "Compact conversation context"),
+    ("/thinking", "Toggle extended thinking on/off"),
+    ("/stats", "Show session statistics"),
+    ("/login", "Authenticate with a provider"),
+    ("/logout", "Sign out"),
+    ("/doctor", "Run diagnostic checks"),
+    ("/model", "Switch AI model"),
+    ("/search", "(ctrl+f) Search workspace files"),
+    ("/status", "Show provider status"),
+    ("/review", "Start code review mode"),
+    ("/exit", "Exit the TUI"),
+];
+
+const HELP_KEYBOARD_SHORTCUTS: &[(&str, &str)] = &[
+    ("ctrl+c", "Interrupt current operation"),
+    ("ctrl+l", "Clear screen"),
+    ("ctrl+r", "History search"),
+    ("ctrl+f", "Global file search"),
+    ("ctrl+o", "Expand/collapse tool output"),
+    ("esc", "Cancel / close overlay"),
+    ("enter", "Submit prompt"),
+    ("shift+enter", "Insert newline"),
+    ("↑/↓", "Scroll transcript"),
+];
+
+/// Renders the `/help` slash-command response for the TUI transcript.
+pub fn execute_help_command() -> Result<String> {
+    let mut lines = vec!["Slash Commands".into()];
+    append_help_rows(&mut lines, HELP_SLASH_COMMANDS);
+    lines.push(String::new());
+    lines.push("Keyboard Shortcuts".into());
+    append_help_rows(&mut lines, HELP_KEYBOARD_SHORTCUTS);
+    Ok(lines.join("\n"))
+}
+
+fn append_help_rows(lines: &mut Vec<String>, rows: &[(&str, &str)]) {
+    let label_width = rows
+        .iter()
+        .map(|(label, _)| label.chars().count())
+        .max()
+        .unwrap_or_default()
+        + 2;
+    lines.extend(
+        rows.iter()
+            .map(|(label, description)| format!("{label:<label_width$}{description}")),
+    );
+}
+
 /// Renders the `/thinking` slash-command response for the current session state.
 pub fn execute_thinking_command(app: &AppState, arg: Option<&str>) -> Result<String> {
     let current = app.thinking_enabled;
@@ -2235,6 +2287,104 @@ pub fn execute_stats_command(app: &AppState) -> Result<String> {
         lines.push(format!("Estimated cost:      ${cost:.4}"));
     }
     Ok(lines.join("\n"))
+}
+
+/// Renders the `/settings` slash-command response for the current session state.
+pub fn execute_settings_command(app: &AppState) -> Result<String> {
+    let usage = app.costs.usage;
+    let provider = app.provider.as_deref().unwrap_or("unknown");
+    let model = app.model.as_deref().unwrap_or("unknown");
+    let storage = storage_root(None)
+        .map(|root| StoragePaths::new(root).sessions_dir())
+        .map(|path| home_relative_path(&path))
+        .unwrap_or_else(|| "unavailable".into());
+    let total_cost = app.costs.estimated_cost_usd.unwrap_or_default();
+
+    Ok([
+        "── Configuration ──────────────────────────────".into(),
+        format_settings_row("Provider:", provider),
+        format_settings_row("Model:", model),
+        format_settings_row("Storage:", &storage),
+        format_settings_row("Permission:", permission_mode_label(app.permission_mode)),
+        format_settings_row("Thinking:", if app.thinking_enabled { "on" } else { "off" }),
+        String::new(),
+        "── Session Usage ───────────────────────────────".into(),
+        format_settings_row("Input tokens:", &format_token_count(usage.input_tokens)),
+        format_settings_row("Output tokens:", &format_token_count(usage.output_tokens)),
+        format_settings_row("Cache read:", &format_token_count(usage.cache_read_tokens)),
+        format_settings_row(
+            "Cache write:",
+            &format_token_count(usage.cache_creation_tokens),
+        ),
+        format_settings_row("Total cost:", &format!("${total_cost:.4}")),
+        String::new(),
+        "── Provider Status ─────────────────────────────".into(),
+        format_settings_row("Auth:", &render_auth_status(&app.auth)),
+        format_settings_row(
+            "Context:",
+            &render_context_status(usage.total_tokens(), app.context_window_size),
+        ),
+    ]
+    .join("\n"))
+}
+
+fn format_settings_row(label: &str, value: &str) -> String {
+    format!("  {label:<14}{value}")
+}
+
+fn render_auth_status(auth: &AuthState) -> String {
+    let symbol = if auth.is_ready() { "✓" } else { "!" };
+    let status = match auth.status_label() {
+        "not_required" => "ready",
+        other => other,
+    };
+    format!("{symbol} {status} ({})", auth_kind_display(auth.kind))
+}
+
+fn auth_kind_display(kind: AuthMaterialKind) -> &'static str {
+    match kind {
+        AuthMaterialKind::None => "none",
+        AuthMaterialKind::ApiKey => "api-key",
+        AuthMaterialKind::OAuth => "oauth",
+        AuthMaterialKind::AwsSigV4 => "aws-sigv4",
+    }
+}
+
+fn render_context_status(used_tokens: u64, max_tokens: Option<u64>) -> String {
+    let Some(max_tokens) = max_tokens.filter(|max_tokens| *max_tokens > 0) else {
+        return "unknown".into();
+    };
+    let percentage = used_tokens.saturating_mul(100) / max_tokens;
+    format!(
+        "{} / {} tokens ({}%)",
+        format_token_count(used_tokens),
+        format_token_count(max_tokens),
+        percentage.min(100)
+    )
+}
+
+fn format_token_count(value: u64) -> String {
+    let digits = value.to_string();
+    let mut formatted = String::with_capacity(digits.len() + digits.len() / 3);
+    for (index, digit) in digits.chars().enumerate() {
+        if index > 0 && (digits.len() - index) % 3 == 0 {
+            formatted.push(',');
+        }
+        formatted.push(digit);
+    }
+    formatted
+}
+
+fn home_relative_path(path: &Path) -> String {
+    let Some(home) = env::var_os("HOME").filter(|home| !home.is_empty()) else {
+        return path.display().to_string();
+    };
+    let home = PathBuf::from(home);
+    match path.strip_prefix(&home) {
+        Ok(suffix) if suffix.as_os_str().is_empty() => "~".into(),
+        Ok(suffix) => format!("~/{}", suffix.display()),
+        Err(_) => path.display().to_string(),
+    }
 }
 
 fn synthesize_metadata(
@@ -2989,6 +3139,19 @@ mod tests {
     }
 
     #[test]
+    fn help_command_lists_expected_slash_commands_and_shortcuts() {
+        let rendered = execute_help_command().expect("render help");
+
+        assert!(rendered.contains("Slash Commands"));
+        assert!(rendered.contains("/help"));
+        assert!(rendered.contains("/search"));
+        assert!(rendered.contains("/exit"));
+        assert!(rendered.contains("Keyboard Shortcuts"));
+        assert!(rendered.contains("ctrl+f"));
+        assert!(rendered.contains("shift+enter"));
+    }
+
+    #[test]
     fn stats_command_renders_session_usage_table() {
         let mut app = AppState::new(PathBuf::from("/workspace"));
         app.provider = Some("openai".into());
@@ -3011,5 +3174,36 @@ mod tests {
         assert!(rendered.contains("Input tokens:               128"));
         assert!(rendered.contains("Total tokens:               184"));
         assert!(rendered.contains("Estimated cost:      $0.4200"));
+    }
+
+    #[test]
+    fn settings_command_renders_configuration_and_usage_sections() {
+        let mut app = AppState::new(PathBuf::from("/workspace"));
+        app.provider = Some("anthropic".into());
+        app.model = Some("claude-3-5-sonnet-20241022".into());
+        app.permission_mode = PermissionMode::Default;
+        app.auth = AuthState::ready(
+            AuthMaterialKind::ApiKey,
+            wonder_of_u_core::AuthSource::Environment,
+        );
+        app.set_context_window_size(Some(200_000));
+        app.record_cost_usage(
+            TokenUsage {
+                input_tokens: 12_450,
+                output_tokens: 3_821,
+                cache_creation_tokens: 1_200,
+                cache_read_tokens: 8_100,
+            },
+            Some(0.0412),
+        );
+
+        let rendered = execute_settings_command(&app).expect("render settings");
+
+        assert!(rendered.contains("Configuration"));
+        assert!(rendered.contains("Session Usage"));
+        assert!(rendered.contains("Provider Status"));
+        assert!(rendered.contains("Auth:"));
+        assert!(rendered.contains("12,450"));
+        assert!(rendered.contains("$0.0412"));
     }
 }

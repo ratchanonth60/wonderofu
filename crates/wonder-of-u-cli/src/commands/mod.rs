@@ -45,7 +45,9 @@ use extras::{
     StickersCommand, SummaryCommand, TeleportCommand, ThinkbackCommand, ThinkbackPlayCommand,
     UltraplanCommand,
 };
-pub(crate) use extras::{execute_stats_command, execute_thinking_command};
+pub(crate) use extras::{
+    execute_help_command, execute_settings_command, execute_stats_command, execute_thinking_command,
+};
 use features::FeaturesCommand;
 use help::HelpCommand;
 use mcp::McpCommand;

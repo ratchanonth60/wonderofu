@@ -342,7 +342,11 @@ fn render_message(message: &MessageEnvelope, output: &mut Vec<MessageLineView>) 
                 MessageRole::User,
             ));
             if let Some(result) = result {
-                push_prefixed_lines(output, "result> ", result, MessageRole::Assistant);
+                if input.trim() == "/help" {
+                    push_prefixed_lines(output, "", result, MessageRole::System);
+                } else {
+                    push_prefixed_lines(output, "result> ", result, MessageRole::Assistant);
+                }
             }
         }
         MessagePayload::HookResult {
@@ -464,6 +468,7 @@ const fn status_rank(status: TaskStatus) -> u8 {
 mod tests {
     use std::path::PathBuf;
 
+    use ::time::{Duration, OffsetDateTime};
     use wonder_of_u_core::{
         AppState, MessagePayload, QueuePlacement, SessionId, TaskState, TokenUsage, ToolUseId,
     };
@@ -475,6 +480,14 @@ mod tests {
         let session_id = SessionId::new();
         let use_id =
             ToolUseId::parse("00000000-0000-0000-0000-000000000001").expect("valid tool use id");
+        let mut assistant = MessageEnvelope::new(
+            session_id,
+            MessagePayload::AssistantText {
+                content: "line one\nline two".into(),
+            },
+        );
+        assistant.timestamp =
+            OffsetDateTime::UNIX_EPOCH + Duration::hours(12) + Duration::minutes(45);
         let messages = vec![
             MessageEnvelope::new(
                 session_id,
@@ -482,12 +495,7 @@ mod tests {
                     content: "review changes".into(),
                 },
             ),
-            MessageEnvelope::new(
-                session_id,
-                MessagePayload::AssistantText {
-                    content: "line one\nline two".into(),
-                },
-            ),
+            assistant,
             MessageEnvelope::new(
                 session_id,
                 MessagePayload::ToolResult {
@@ -504,6 +512,20 @@ mod tests {
             vec![
                 MessageLineView::new("review changes", MessageRole::User),
                 MessageLineView::new("line one line two", MessageRole::Assistant),
+                MessageLineView::with_spans(
+                    MessageRole::System,
+                    vec![
+                        MessageSpanView::new(" ".repeat(72), None),
+                        MessageSpanView::new(
+                            "12:45 PM",
+                            Some(
+                                crate::style::TextStyle::default()
+                                    .fg(crate::style::Color::DarkGrey)
+                                    .dim(),
+                            ),
+                        ),
+                    ],
+                ),
                 MessageLineView::new("● Bash", MessageRole::Error,),
                 MessageLineView::new("  └ permission denied", MessageRole::Error,),
             ]
