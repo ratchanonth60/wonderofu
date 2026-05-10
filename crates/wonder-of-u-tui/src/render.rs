@@ -134,14 +134,6 @@ pub struct SidebarView {
     pub control_lines: Vec<String>,
     /// Section 12 – Tasks: background task count + hints.
     pub task_lines: Vec<String>,
-    /// Section 9 – Tools: loaded/enabled tool counts and kind breakdown.
-    pub tool_lines: Vec<String>,
-    /// Section 10 – MCP: configured server summary (name, enabled/disabled).
-    pub mcp_lines: Vec<String>,
-    /// Section 11 – LSP: PATH availability for common language servers.
-    pub lsp_lines: Vec<String>,
-    /// Section 12 – Todo: compact `[x]`/`[ ]` items from `todos.md` in cwd.
-    pub todo_lines: Vec<String>,
 }
 
 /// Context-saving suggestions shown below the context visualization bar.
@@ -335,12 +327,6 @@ impl ShellView {
                 status_lines,
                 control_lines,
                 task_lines,
-                // Sections 9-12 are populated by the controller on every render
-                // using live runtime data; the TUI-side default is empty.
-                tool_lines: Vec::new(),
-                mcp_lines: Vec::new(),
-                lsp_lines: Vec::new(),
-                todo_lines: Vec::new(),
             }
         };
         Self {
@@ -859,24 +845,6 @@ fn sidebar_section_lines(sidebar: &SidebarView, theme: &Theme) -> Vec<StyledLine
         &mut out,
         "─ Tasks ─",
         &sidebar.task_lines,
-        dim,
-        accent,
-        theme,
-    );
-    push_sidebar_text_section(
-        &mut out,
-        "─ Tools ─",
-        &sidebar.tool_lines,
-        dim,
-        accent,
-        theme,
-    );
-    push_sidebar_text_section(&mut out, "─ MCP ─", &sidebar.mcp_lines, dim, accent, theme);
-    push_sidebar_text_section(&mut out, "─ LSP ─", &sidebar.lsp_lines, dim, accent, theme);
-    push_sidebar_text_section(
-        &mut out,
-        "─ Todo ─",
-        &sidebar.todo_lines,
         dim,
         accent,
         theme,
@@ -4172,6 +4140,45 @@ mod tests {
             assert!(
                 !text.contains(absent),
                 "{absent} must not appear on narrow terminal; rendered:\n{text}"
+            );
+        }
+    }
+
+    /// Each section header must appear exactly once even when all sections are
+    /// populated.  A previous merge accidentally inserted duplicate render calls
+    /// for Tools/MCP/LSP/Todo at the end of `sidebar_section_lines`; this test
+    /// is the regression guard.
+    #[test]
+    fn sidebar_section_headers_appear_exactly_once() {
+        let view = ShellView {
+            prompt: "dup-check".into(),
+            sidebar: Some(SidebarView {
+                tool_lines: vec!["✓ Bash".into()],
+                mcp_lines: vec!["✓ filesystem".into()],
+                lsp_lines: vec!["✓ rust-analyzer".into()],
+                todo_lines: vec!["◈ Fix lint".into()],
+                session_lines: vec!["◈ abc12345".into()],
+                ..SidebarView::default()
+            }),
+            ..ShellView::default()
+        };
+
+        let frame = render_snapshot(100, 40, &view, &Theme::default());
+        let text = frame.to_plain_text();
+
+        // Every integration-panel header must appear at most once.
+        for header in &[
+            "─ Tools ─",
+            "─ MCP ─",
+            "─ LSP ─",
+            "─ Todo ─",
+            "─ Session ─",
+        ] {
+            let count = text.matches(header).count();
+            assert_eq!(
+                count,
+                1,
+                "'{header}' must appear exactly once; found {count} times in:\n{text}"
             );
         }
     }
