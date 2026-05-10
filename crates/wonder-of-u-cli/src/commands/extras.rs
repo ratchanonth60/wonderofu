@@ -2197,11 +2197,16 @@ fn thinking_blocks(messages: &[MessageEnvelope]) -> Vec<String> {
 }
 
 const HELP_SLASH_COMMANDS: &[(&str, &str)] = &[
-    ("/help", "Show slash-command help"),
-    ("/settings", "Show current config and session usage"),
-    ("/stats", "Show current session statistics"),
-    ("/thinking", "Toggle or inspect thinking mode"),
-    ("/search", "Search workspace files"),
+    ("/help", "Show this help"),
+    ("/clear", "Clear conversation history"),
+    ("/compact", "Compact conversation context"),
+    ("/thinking", "Toggle extended thinking on/off"),
+    ("/stats", "Show session statistics"),
+    ("/login", "Authenticate with a provider"),
+    ("/logout", "Sign out"),
+    ("/doctor", "Run diagnostic checks"),
+    ("/model", "Switch AI model"),
+    ("/search", "(ctrl+f) Search workspace files"),
     ("/status", "Show provider status"),
     ("/review", "Start code review mode"),
     ("/exit", "Exit the TUI"),
@@ -3131,6 +3136,19 @@ mod tests {
             Err(WonderError::Validation(message))
                 if message == "Unknown argument: maybe. Use 'on' or 'off'"
         ));
+    }
+
+    #[test]
+    fn help_command_lists_expected_slash_commands_and_shortcuts() {
+        let rendered = execute_help_command().expect("render help");
+
+        assert!(rendered.contains("Slash Commands"));
+        assert!(rendered.contains("/help"));
+        assert!(rendered.contains("/search"));
+        assert!(rendered.contains("/exit"));
+        assert!(rendered.contains("Keyboard Shortcuts"));
+        assert!(rendered.contains("ctrl+f"));
+        assert!(rendered.contains("shift+enter"));
     }
 
     #[test]

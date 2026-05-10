@@ -342,7 +342,11 @@ fn render_message(message: &MessageEnvelope, output: &mut Vec<MessageLineView>) 
                 MessageRole::User,
             ));
             if let Some(result) = result {
-                push_prefixed_lines(output, "result> ", result, MessageRole::Assistant);
+                if input.trim() == "/help" {
+                    push_prefixed_lines(output, "", result, MessageRole::System);
+                } else {
+                    push_prefixed_lines(output, "result> ", result, MessageRole::Assistant);
+                }
             }
         }
         MessagePayload::HookResult {
