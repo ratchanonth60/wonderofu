@@ -388,8 +388,13 @@ pub fn render_shell(frame: &mut FrameBuffer, view: &ShellView, theme: &Theme) {
         layout.prompt
     };
     draw_prompt_view(frame, prompt_area, view, theme);
+    // layout.status is a zero-height placeholder (CHROME_HEIGHT = 1); this is a
+    // no-op but kept so callers that still pass status data are unaffected.
     draw_status_line(frame, layout.status, &status_line_text(view), theme.status);
-    draw_footer_line(frame, layout.footer, &view.footer, theme);
+    // Compact footer: combine the caller-supplied hint with a scroll indicator
+    // when the user has scrolled up from tail.
+    let footer_display = compact_footer_text(view);
+    draw_footer_line(frame, layout.footer, &footer_display, theme);
     draw_notification_stack(frame, layout.messages, &view.notifications, theme);
 
     if let Some(dialog) = &view.dialog {
@@ -478,7 +483,11 @@ fn draw_message_view(frame: &mut FrameBuffer, area: Rect, view: &ShellView, them
 
     frame.fill_rect(area, ' ', theme.background);
 
-    let title_height = u16::from(!view.title.is_empty() && area.height > 0);
+    // Only show the session title header on the welcome / empty-state screen.
+    // Once the user has sent messages the transcript starts at the very top of
+    // the area (Claude Code fullscreen style) — no persistent chrome header.
+    let title_height =
+        u16::from(!view.title.is_empty() && view.messages.is_empty() && area.height > 0);
     if title_height == 1 {
         frame.write_str(
             area.x,
@@ -1461,6 +1470,28 @@ fn status_line_text(view: &ShellView) -> String {
     }
 }
 
+/// Builds the single compact footer row displayed at the bottom of the shell.
+///
+/// Combines the caller-supplied hint text from [`ShellView::footer`] with a
+/// lightweight scroll indicator when the transcript is scrolled up from tail.
+/// The scroll indicator is prepended so it appears on the left (or near the
+/// left after right-alignment in [`draw_footer_line`]).
+fn compact_footer_text(view: &ShellView) -> String {
+    if view.scroll.is_following_tail() {
+        view.footer.clone()
+    } else {
+        let scroll_badge = format!(
+            "↑ {} lines · Ctrl+End bottom",
+            view.scroll.offset_from_bottom
+        );
+        if view.footer.is_empty() {
+            scroll_badge
+        } else {
+            format!("{scroll_badge} | {}", view.footer)
+        }
+    }
+}
+
 fn shell_header_text(title: &str) -> String {
     let session = title.strip_prefix("Session: ").unwrap_or(title).trim();
     if session.is_empty() {
@@ -1834,10 +1865,10 @@ mod tests {
                 "",
                 "   ██╗    ██╗  ██████╗  ██╗",
                 "   ██║    ██║ ██╔═══██╗ ██║",
+                "   ██║ █╗ ██║ ██║   ██║ ██║",
                 "╭─ prompt ───────────────────╮",
                 "│›                           │",
                 "╰────────────────────────────╯",
-                "○ prompt | 0 messages",
                 "             ctrl-c interrupt",
             ]
             .join("\n")
@@ -1883,15 +1914,15 @@ mod tests {
         assert_eq!(
             frame.to_plain_text(),
             [
-                "▸ wonder-of-u  Demo",
                 "system> ready",
                 "hello",
+                "",
+                "",
                 "Tasks",
                 "[running] shell: index workspace",
                 "╭─ prompt ─────────────────────────────────────╮",
                 "│› /status                                     │",
                 "╰──────────────────────────────────────────────╯",
-                "○ prompt | 2 messages",
                 "              cwd=/workspace · ctrl-c interrupt",
             ]
             .join("\n")
@@ -1980,8 +2011,9 @@ mod tests {
         assert_eq!(
             frame.to_plain_text(),
             [
-                "▸ wonder-of-u  Demo",
                 "ready",
+                "",
+                "",
                 "",
                 "Queued",
                 "1. /status",
@@ -1990,7 +2022,6 @@ mod tests {
                 "╭─ prompt ───────────────────────────────╮",
                 "│› /plan                                 │",
                 "╰────────────────────────────────────────╯",
-                "○ prompt | 1 messages",
                 "        cwd=/workspace · ctrl-c interrupt",
             ]
             .join("\n")
@@ -2037,10 +2068,10 @@ mod tests {
                 " │[Confirm]  Cancel                     │",
                 " ╰──────────────────────────────────────╯",
                 "",
+                "",
                 "╭─ prompt ───────────────────────────────╮",
                 "│› continue?                             │",
                 "╰────────────────────────────────────────╯",
-                "○ permission | 1 messages",
                 "        cwd=/workspace · ctrl-c interrupt",
             ]
             .join("\n")
@@ -2082,8 +2113,9 @@ mod tests {
         assert_eq!(
             frame.to_plain_text(),
             [
-                "▸ wonder-of-u  Search",
                 "ready",
+                "",
+                "",
                 "",
                 "",
                 "",
@@ -2096,7 +2128,6 @@ mod tests {
                 "│match 2/3                               │",
                 "│draft plan                              │",
                 "╰────────────────────────────────────────╯",
-                "○ prompt | 1 messages",
                 "        cwd=/workspace · ctrl-c interrupt",
             ]
             .join("\n")
@@ -2170,15 +2201,15 @@ mod tests {
         assert_eq!(
             frame.to_plain_text(),
             [
-                "▸ wonder-of-u  Demo",
                 "● Run(Tests)",
                 "  └ cargo test -p wonder-of-u-tui",
                 "  └ tests passed",
                 "",
+                "",
+                "",
                 "╭─ prompt ─────────────────────────────────────╮",
                 "│›                                             │",
                 "╰──────────────────────────────────────────────╯",
-                "○ prompt | 3 messages",
                 "              cwd=/workspace · ctrl-c interrupt",
             ]
             .join("\n")
@@ -2230,17 +2261,17 @@ mod tests {
         assert_eq!(
             frame.to_plain_text(),
             [
-                "▸ wonder-of-u  Demo",
-                "ready              ╭─info Source status────────╮",
+                "ready",
+                "                   ╭─info Source status────────╮",
                 "                   │workspace index refreshed  │",
                 "                   ╰───────────────────────────╯",
                 "                      ╭─ok Task update • focus─╮",
                 "                      │tests passed            │",
                 "                      ╰────────────────────────╯",
+                "",
                 "╭─ prompt ─────────────────────────────────────╮",
                 "│›                                             │",
                 "╰──────────────────────────────────────────────╯",
-                "○ prompt | 1 messages",
                 "              cwd=/workspace · ctrl-c interrupt",
             ]
             .join("\n")
@@ -2327,8 +2358,8 @@ mod tests {
         let frame = render_snapshot(32, 8, &view, &Theme::default());
 
         let text = frame.to_plain_text();
+        // The spinner prefix still appears in the transcript (status row removed with CHROME_HEIGHT=1).
         assert!(text.contains("· thinking…"));
-        assert!(text.contains("● turn=active"));
     }
 
     // ── scroll rendering ─────────────────────────────────────────────────────
@@ -2364,7 +2395,8 @@ mod tests {
 
     #[test]
     fn transcript_scrolled_up_shows_earlier_window() {
-        // 10 lines, render_snapshot(20, 12) → 6 visible transcript rows (box layout).
+        // 10 lines, render_snapshot(20, 10) → 6 visible transcript rows (CHROME_HEIGHT=1:
+        // available=9, prompt=3, messages=6, title=0 for non-empty messages).
         // offset_from_bottom = 3 → start = (10 - 6) - 3 = 1 → shows lines 02–07.
         let view = ShellView {
             title: "Session: Scrolled".into(),
@@ -2379,7 +2411,7 @@ mod tests {
             ..ShellView::default()
         };
 
-        let frame = render_snapshot(20, 12, &view, &Theme::default());
+        let frame = render_snapshot(20, 10, &view, &Theme::default());
         let text = frame.to_plain_text();
         assert!(text.contains("line 02"), "window start must be visible");
         assert!(text.contains("line 07"), "window end must be visible");
