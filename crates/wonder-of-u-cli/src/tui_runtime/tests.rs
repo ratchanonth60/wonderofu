@@ -7042,3 +7042,175 @@ fn login_copilot_opens_oauth_dialog() {
         }
     }
 }
+
+// ── Sidebar helper tests ──────────────────────────────────────────────────────
+
+#[test]
+fn parse_todo_lines_happy_path() {
+    let md = "# Tasks\n- [x] done task\n- [ ] pending task\n- [X] also done\n";
+    let lines = parse_todo_lines(md);
+    assert_eq!(lines[0], "✓ done task");
+    assert_eq!(lines[1], "  pending task");
+    assert_eq!(lines[2], "✓ also done");
+}
+
+#[test]
+fn parse_todo_lines_empty_file_returns_empty() {
+    assert!(parse_todo_lines("").is_empty());
+    assert!(parse_todo_lines("# No todos here\nJust prose.\n").is_empty());
+}
+
+#[test]
+fn parse_todo_lines_caps_at_six_and_shows_more() {
+    // 8 items → 6 shown + "+2 more"
+    let md = (1..=8)
+        .map(|i| format!("- [ ] task {i}\n"))
+        .collect::<String>();
+    let lines = parse_todo_lines(&md);
+    assert_eq!(lines.len(), 7, "expected 6 items + '+2 more' trailer");
+    assert_eq!(lines[6], "  +2 more");
+}
+
+#[test]
+fn parse_todo_lines_truncates_long_descriptions() {
+    let long_task = "a".repeat(40);
+    let md = format!("- [ ] {long_task}\n");
+    let lines = parse_todo_lines(&md);
+    assert_eq!(lines.len(), 1);
+    // Label should be at most 22 chars (prefix "  " is separate).
+    let label = lines[0].trim_start();
+    assert!(
+        label.chars().count() <= 22,
+        "label too long: {label:?} ({} chars)",
+        label.chars().count()
+    );
+}
+
+#[test]
+fn todo_sidebar_lines_missing_file_returns_empty() {
+    let dir = wonder_of_u_test_support::unique_test_dir("todo-missing");
+    let lines = todo_sidebar_lines(&dir);
+    assert!(lines.is_empty(), "missing todos.md should yield empty vec");
+}
+
+#[test]
+fn todo_sidebar_lines_reads_file() {
+    let dir = wonder_of_u_test_support::unique_test_dir("todo-reads");
+    std::fs::write(dir.join("todos.md"), "- [x] done\n- [ ] pending\n").expect("write todos.md");
+    let lines = todo_sidebar_lines(&dir);
+    assert_eq!(lines[0], "✓ done");
+    assert_eq!(lines[1], "  pending");
+}
+
+#[test]
+fn mcp_sidebar_lines_no_storage_dir() {
+    let lines = mcp_sidebar_lines(None);
+    assert_eq!(lines.len(), 1);
+    assert!(lines[0].contains("no storage dir"));
+}
+
+#[test]
+fn mcp_sidebar_lines_empty_config() {
+    let dir = wonder_of_u_test_support::unique_test_dir("mcp-empty");
+    let lines = mcp_sidebar_lines(Some(&dir));
+    assert_eq!(lines.len(), 1);
+    assert!(
+        lines[0].contains("no servers configured"),
+        "got: {:?}",
+        lines
+    );
+}
+
+#[test]
+fn mcp_sidebar_lines_with_servers() {
+    use std::collections::BTreeMap;
+    use wonder_of_u_mcp::{McpConfigStore, McpServerConfig};
+
+    let dir = wonder_of_u_test_support::unique_test_dir("mcp-servers");
+    let store = McpConfigStore::new(&dir);
+    let config = wonder_of_u_mcp::McpConfig {
+        servers: vec![
+            McpServerConfig {
+                name: "demo".into(),
+                command: "demo-server".into(),
+                args: vec![],
+                env: BTreeMap::new(),
+                enabled: true,
+                cwd: None,
+                protocol_version: None,
+            },
+            McpServerConfig {
+                name: "disabled-srv".into(),
+                command: "other-server".into(),
+                args: vec![],
+                env: BTreeMap::new(),
+                enabled: false,
+                cwd: None,
+                protocol_version: None,
+            },
+        ],
+        ..wonder_of_u_mcp::McpConfig::default()
+    };
+    store.write(&config).expect("write mcp config");
+
+    let lines = mcp_sidebar_lines(Some(&dir));
+    // First line: "N/M servers enabled"
+    assert!(lines[0].contains("1/2"), "summary line: {:?}", lines[0]);
+    assert!(
+        lines[0].contains("servers enabled"),
+        "summary line: {:?}",
+        lines[0]
+    );
+    // Enabled server has ✓ prefix
+    let demo_line = lines
+        .iter()
+        .find(|l| l.contains("demo"))
+        .expect("demo line");
+    assert!(demo_line.starts_with('✓'), "enabled server: {demo_line:?}");
+    // Disabled server has space prefix
+    let dis_line = lines
+        .iter()
+        .find(|l| l.contains("disabled-srv"))
+        .expect("disabled line");
+    assert!(!dis_line.starts_with('✓'), "disabled server: {dis_line:?}");
+}
+
+#[test]
+fn tool_sidebar_lines_produces_summary() {
+    use wonder_of_u_core::FeatureSet;
+    let features = FeatureSet::first_release();
+    let lines = tool_sidebar_lines(&features, None);
+    // Must not be empty and must not be an error line.
+    assert!(!lines.is_empty());
+    assert!(
+        !lines[0].starts_with('⚠'),
+        "unexpected error line: {:?}",
+        lines[0]
+    );
+    // First line should contain "enabled / registered".
+    assert!(
+        lines[0].contains("enabled") && lines[0].contains("registered"),
+        "first line: {:?}",
+        lines[0]
+    );
+}
+
+#[test]
+fn lsp_sidebar_lines_never_panics() {
+    // Just ensure it runs without panicking; actual binary presence is env-dependent.
+    let dir = wonder_of_u_test_support::unique_test_dir("lsp-check");
+    let lines = lsp_sidebar_lines(&dir);
+    assert_eq!(
+        lines.len(),
+        LSP_SERVERS.len(),
+        "should produce one line per known LSP server"
+    );
+}
+
+#[test]
+fn binary_on_path_returns_false_for_nonexistent() {
+    assert!(
+        !binary_on_path("__wonder_of_u_definitely_not_a_real_binary__"),
+        "nonexistent binary must not be found on PATH"
+    );
+}
