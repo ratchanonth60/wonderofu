@@ -166,6 +166,14 @@ pub struct ShellView {
     pub loading_verb: Option<String>,
     /// Stores the animated spinner frame for transcript-local loading rows.
     pub spinner_frame: u64,
+    /// Elapsed seconds since loading started; `0` when not loading.
+    ///
+    /// Shown in the Claude-style progress row as `· 27s` when non-zero.
+    pub loading_elapsed_secs: u64,
+    /// Current cumulative token count to show inside the loading progress row.
+    ///
+    /// `0` suppresses the token segment entirely.
+    pub loading_total_tokens: u64,
     /// Stores the footer
     pub footer: String,
     /// Stores the queued panel
@@ -290,6 +298,8 @@ impl ShellView {
             loading: false,
             loading_verb: None,
             spinner_frame: 0,
+            loading_elapsed_secs: 0,
+            loading_total_tokens: 0,
             footer: footer_text(app),
             queued_panel: queued_panel_view(app),
             task_panel: task_panel_view(app),
@@ -370,7 +380,39 @@ pub fn render_shell(frame: &mut FrameBuffer, view: &ShellView, theme: &Theme) {
         .min(max_prompt);
     let layout = ShellLayout::split(main_area, prompt_height);
 
-    draw_message_view(frame, layout.messages, view, theme);
+    // When loading, reserve the bottom row of the message area for the Claude-style
+    // progress row (e.g. `✱ thinking… · 05s · esc to interrupt`).  This keeps the
+    // loading indicator visually close to the prompt without cluttering the transcript.
+    let (messages_render_area, loading_row_area) = if view.loading && layout.messages.height >= 1 {
+        // Reduce the transcript area by one row and carve out the loading row just
+        // above the prompt box (at layout.messages.bottom() - 1).
+        let transcript_h = layout.messages.height.saturating_sub(1);
+        let loading_y = layout.messages.y.saturating_add(transcript_h);
+        (
+            Rect::new(
+                layout.messages.x,
+                layout.messages.y,
+                layout.messages.width,
+                transcript_h,
+            ),
+            Some(Rect::new(
+                layout.messages.x,
+                loading_y,
+                layout.messages.width,
+                1,
+            )),
+        )
+    } else {
+        (layout.messages, None)
+    };
+
+    draw_message_view(frame, messages_render_area, view, theme);
+
+    // Draw the dedicated loading progress row, if active.
+    if let Some(loading_area) = loading_row_area {
+        draw_loading_progress_row(frame, loading_area, view, theme);
+    }
+
     let prompt_area = if let Some(warning) = view
         .prompt_warning
         .as_ref()
@@ -388,8 +430,13 @@ pub fn render_shell(frame: &mut FrameBuffer, view: &ShellView, theme: &Theme) {
         layout.prompt
     };
     draw_prompt_view(frame, prompt_area, view, theme);
+    // layout.status is a zero-height placeholder (CHROME_HEIGHT = 1); this is a
+    // no-op but kept so callers that still pass status data are unaffected.
     draw_status_line(frame, layout.status, &status_line_text(view), theme.status);
-    draw_footer_line(frame, layout.footer, &view.footer, theme);
+    // Compact footer: combine the caller-supplied hint with a scroll indicator
+    // when the user has scrolled up from tail.
+    let footer_display = compact_footer_text(view);
+    draw_footer_line(frame, layout.footer, &footer_display, theme);
     draw_notification_stack(frame, layout.messages, &view.notifications, theme);
 
     if let Some(dialog) = &view.dialog {
@@ -478,7 +525,11 @@ fn draw_message_view(frame: &mut FrameBuffer, area: Rect, view: &ShellView, them
 
     frame.fill_rect(area, ' ', theme.background);
 
-    let title_height = u16::from(!view.title.is_empty() && area.height > 0);
+    // Only show the session title header on the welcome / empty-state screen.
+    // Once the user has sent messages the transcript starts at the very top of
+    // the area (Claude Code fullscreen style) — no persistent chrome header.
+    let title_height =
+        u16::from(!view.title.is_empty() && view.messages.is_empty() && area.height > 0);
     if title_height == 1 {
         frame.write_str(
             area.x,
@@ -1461,6 +1512,28 @@ fn status_line_text(view: &ShellView) -> String {
     }
 }
 
+/// Builds the single compact footer row displayed at the bottom of the shell.
+///
+/// Combines the caller-supplied hint text from [`ShellView::footer`] with a
+/// lightweight scroll indicator when the transcript is scrolled up from tail.
+/// The scroll indicator is prepended so it appears on the left (or near the
+/// left after right-alignment in [`draw_footer_line`]).
+fn compact_footer_text(view: &ShellView) -> String {
+    if view.scroll.is_following_tail() {
+        view.footer.clone()
+    } else {
+        let scroll_badge = format!(
+            "↑ {} lines · Ctrl+End bottom",
+            view.scroll.offset_from_bottom
+        );
+        if view.footer.is_empty() {
+            scroll_badge
+        } else {
+            format!("{scroll_badge} | {}", view.footer)
+        }
+    }
+}
+
 fn shell_header_text(title: &str) -> String {
     let session = title.strip_prefix("Session: ").unwrap_or(title).trim();
     if session.is_empty() {
@@ -1471,32 +1544,68 @@ fn shell_header_text(title: &str) -> String {
 }
 
 fn message_panel_lines(view: &ShellView, theme: &Theme) -> Vec<StyledLine> {
-    let mut lines = if view.messages.is_empty() {
+    if view.messages.is_empty() {
         welcome_panel_lines(theme)
     } else {
         message_lines_to_styled(&view.messages, theme)
-    };
-
-    if view.loading {
-        lines.push(StyledLine::plain(
-            loading_spinner_line(view),
-            style_for_message(theme, MessageRole::Progress),
-        ));
     }
-
-    lines
 }
 
-fn loading_spinner_line(view: &ShellView) -> String {
+/// Renders the Claude-style progress row directly above the prompt box.
+///
+/// Format: `{spinner} {verb}… · {elapsed} · {tokens} tokens · esc to interrupt`
+///
+/// # Layout
+///
+/// The row is a single terminal line carved from the bottom of the message area
+/// by [`render_shell`] whenever `view.loading` is `true`.  It degrades gracefully
+/// on narrow terminals — the text is simply clipped at `area.width`.
+fn draw_loading_progress_row(frame: &mut FrameBuffer, area: Rect, view: &ShellView, theme: &Theme) {
+    if area.is_empty() {
+        return;
+    }
+
+    let text = build_loading_progress_text(view);
+    frame.fill_rect(area, ' ', theme.background);
+    // Dim progress style — matches the transcript-level progress role colour.
+    let style = {
+        let mut s = theme.status;
+        s.dim = true;
+        s
+    };
+    frame.write_str(area.x, area.y, &text, style, area.width);
+}
+
+/// Builds the plain-text content of the loading progress row.
+///
+/// Produces a spinner-animated string of the form:
+/// `{glyph} {verb}… · {elapsed} · {tokens} tokens · esc to interrupt`
+///
+/// The elapsed and token segments are omitted when their values are zero.
+fn build_loading_progress_text(view: &ShellView) -> String {
     let mode = match view.loading_verb.as_deref() {
         Some("running") => SpinnerMode::Requesting,
         Some("waiting") => SpinnerMode::Stalled,
         _ => SpinnerMode::Thinking,
     };
     let verb = view.loading_verb.as_deref().unwrap_or("thinking");
-    SpinnerView::new(mode, format!("{verb}…"))
+    let mut spinner = SpinnerView::new(mode, format!("{verb}…"))
         .frame(view.spinner_frame)
-        .render_line()
+        .suffix("esc to interrupt");
+
+    // Include elapsed time when loading has been active for at least 1 second.
+    if view.loading_elapsed_secs > 0 {
+        spinner = spinner.elapsed_ms(view.loading_elapsed_secs.saturating_mul(1_000));
+    }
+
+    // Include cumulative token count when non-zero.
+    if view.loading_total_tokens > 0 {
+        #[allow(clippy::cast_possible_truncation)]
+        let token_count = view.loading_total_tokens.min(usize::MAX as u64) as usize;
+        spinner = spinner.token_count(token_count);
+    }
+
+    spinner.render_line()
 }
 
 fn welcome_panel_lines(theme: &Theme) -> Vec<StyledLine> {
@@ -1811,6 +1920,8 @@ mod tests {
             loading: false,
             loading_verb: None,
             spinner_frame: 0,
+            loading_elapsed_secs: 0,
+            loading_total_tokens: 0,
             footer: "ctrl-c interrupt".into(),
             queued_panel: None,
             task_panel: None,
@@ -1834,10 +1945,10 @@ mod tests {
                 "",
                 "   ██╗    ██╗  ██████╗  ██╗",
                 "   ██║    ██║ ██╔═══██╗ ██║",
+                "   ██║ █╗ ██║ ██║   ██║ ██║",
                 "╭─ prompt ───────────────────╮",
                 "│›                           │",
                 "╰────────────────────────────╯",
-                "○ prompt | 0 messages",
                 "             ctrl-c interrupt",
             ]
             .join("\n")
@@ -1858,6 +1969,8 @@ mod tests {
             loading: false,
             loading_verb: None,
             spinner_frame: 0,
+            loading_elapsed_secs: 0,
+            loading_total_tokens: 0,
             footer: "cwd=/workspace | ctrl-c interrupt".into(),
             queued_panel: None,
             task_panel: Some(TaskPanelView {
@@ -1883,15 +1996,15 @@ mod tests {
         assert_eq!(
             frame.to_plain_text(),
             [
-                "▸ wonder-of-u  Demo",
                 "system> ready",
                 "hello",
+                "",
+                "",
                 "Tasks",
                 "[running] shell: index workspace",
                 "╭─ prompt ─────────────────────────────────────╮",
                 "│› /status                                     │",
                 "╰──────────────────────────────────────────────╯",
-                "○ prompt | 2 messages",
                 "              cwd=/workspace · ctrl-c interrupt",
             ]
             .join("\n")
@@ -1954,6 +2067,8 @@ mod tests {
             loading: false,
             loading_verb: None,
             spinner_frame: 0,
+            loading_elapsed_secs: 0,
+            loading_total_tokens: 0,
             footer: "cwd=/workspace | ctrl-c interrupt".into(),
             queued_panel: Some(TaskPanelView {
                 title: "Queued".into(),
@@ -1980,8 +2095,9 @@ mod tests {
         assert_eq!(
             frame.to_plain_text(),
             [
-                "▸ wonder-of-u  Demo",
                 "ready",
+                "",
+                "",
                 "",
                 "Queued",
                 "1. /status",
@@ -1990,7 +2106,6 @@ mod tests {
                 "╭─ prompt ───────────────────────────────╮",
                 "│› /plan                                 │",
                 "╰────────────────────────────────────────╯",
-                "○ prompt | 1 messages",
                 "        cwd=/workspace · ctrl-c interrupt",
             ]
             .join("\n")
@@ -2008,6 +2123,8 @@ mod tests {
             loading: false,
             loading_verb: None,
             spinner_frame: 0,
+            loading_elapsed_secs: 0,
+            loading_total_tokens: 0,
             footer: "cwd=/workspace | ctrl-c interrupt".into(),
             queued_panel: None,
             task_panel: None,
@@ -2037,10 +2154,10 @@ mod tests {
                 " │[Confirm]  Cancel                     │",
                 " ╰──────────────────────────────────────╯",
                 "",
+                "",
                 "╭─ prompt ───────────────────────────────╮",
                 "│› continue?                             │",
                 "╰────────────────────────────────────────╯",
-                "○ permission | 1 messages",
                 "        cwd=/workspace · ctrl-c interrupt",
             ]
             .join("\n")
@@ -2063,6 +2180,8 @@ mod tests {
             loading: false,
             loading_verb: None,
             spinner_frame: 0,
+            loading_elapsed_secs: 0,
+            loading_total_tokens: 0,
             footer: "cwd=/workspace | ctrl-c interrupt".into(),
             queued_panel: None,
             task_panel: None,
@@ -2082,8 +2201,9 @@ mod tests {
         assert_eq!(
             frame.to_plain_text(),
             [
-                "▸ wonder-of-u  Search",
                 "ready",
+                "",
+                "",
                 "",
                 "",
                 "",
@@ -2096,7 +2216,6 @@ mod tests {
                 "│match 2/3                               │",
                 "│draft plan                              │",
                 "╰────────────────────────────────────────╯",
-                "○ prompt | 1 messages",
                 "        cwd=/workspace · ctrl-c interrupt",
             ]
             .join("\n")
@@ -2116,6 +2235,8 @@ mod tests {
             loading: false,
             loading_verb: None,
             spinner_frame: 0,
+            loading_elapsed_secs: 0,
+            loading_total_tokens: 0,
             footer: "cwd=/workspace | ctrl-c interrupt".into(),
             queued_panel: None,
             task_panel: None,
@@ -2151,6 +2272,8 @@ mod tests {
             loading: false,
             loading_verb: None,
             spinner_frame: 0,
+            loading_elapsed_secs: 0,
+            loading_total_tokens: 0,
             footer: "cwd=/workspace | ctrl-c interrupt".into(),
             queued_panel: None,
             task_panel: None,
@@ -2170,15 +2293,15 @@ mod tests {
         assert_eq!(
             frame.to_plain_text(),
             [
-                "▸ wonder-of-u  Demo",
                 "● Run(Tests)",
                 "  └ cargo test -p wonder-of-u-tui",
                 "  └ tests passed",
                 "",
+                "",
+                "",
                 "╭─ prompt ─────────────────────────────────────╮",
                 "│›                                             │",
                 "╰──────────────────────────────────────────────╯",
-                "○ prompt | 3 messages",
                 "              cwd=/workspace · ctrl-c interrupt",
             ]
             .join("\n")
@@ -2196,6 +2319,8 @@ mod tests {
             loading: false,
             loading_verb: None,
             spinner_frame: 0,
+            loading_elapsed_secs: 0,
+            loading_total_tokens: 0,
             footer: "cwd=/workspace | ctrl-c interrupt".into(),
             queued_panel: None,
             task_panel: None,
@@ -2230,17 +2355,17 @@ mod tests {
         assert_eq!(
             frame.to_plain_text(),
             [
-                "▸ wonder-of-u  Demo",
-                "ready              ╭─info Source status────────╮",
+                "ready",
+                "                   ╭─info Source status────────╮",
                 "                   │workspace index refreshed  │",
                 "                   ╰───────────────────────────╯",
                 "                      ╭─ok Task update • focus─╮",
                 "                      │tests passed            │",
                 "                      ╰────────────────────────╯",
+                "",
                 "╭─ prompt ─────────────────────────────────────╮",
                 "│›                                             │",
                 "╰──────────────────────────────────────────────╯",
-                "○ prompt | 1 messages",
                 "              cwd=/workspace · ctrl-c interrupt",
             ]
             .join("\n")
@@ -2258,6 +2383,8 @@ mod tests {
             loading: false,
             loading_verb: None,
             spinner_frame: 0,
+            loading_elapsed_secs: 0,
+            loading_total_tokens: 0,
             footer: "cwd=/workspace | ctrl-c interrupt".into(),
             queued_panel: None,
             task_panel: None,
@@ -2310,6 +2437,8 @@ mod tests {
             loading: true,
             loading_verb: Some("thinking".into()),
             spinner_frame: 0,
+            loading_elapsed_secs: 0,
+            loading_total_tokens: 0,
             footer: String::new(),
             queued_panel: None,
             task_panel: None,
@@ -2327,8 +2456,114 @@ mod tests {
         let frame = render_snapshot(32, 8, &view, &Theme::default());
 
         let text = frame.to_plain_text();
+        // The spinner prefix still appears in the transcript (status row removed with CHROME_HEIGHT=1).
         assert!(text.contains("· thinking…"));
-        assert!(text.contains("● turn=active"));
+    }
+
+    #[test]
+    fn loading_progress_row_appears_above_prompt_when_loading() {
+        // The loading row should be rendered in the message area, directly above
+        // the prompt box — separate from the transcript content.
+        let view = ShellView {
+            title: "Session: Loading".into(),
+            messages: vec![MessageLineView::new("hello", MessageRole::Assistant)],
+            prompt: String::new(),
+            history_search: None,
+            status: "turn=active".into(),
+            loading: true,
+            loading_verb: Some("thinking".into()),
+            spinner_frame: 4,
+            loading_elapsed_secs: 3,
+            loading_total_tokens: 150,
+            footer: "▸▸ default (shift+tab to cycle) · ⌃C exit".into(),
+            queued_panel: None,
+            task_panel: None,
+            dialog: None,
+            picker_view: None,
+            picker_list: None,
+            notifications: Vec::new(),
+            slash_suggestions: None,
+            global_search: None,
+            scroll: TranscriptScrollView::default(),
+            sidebar: None,
+            prompt_warning: None,
+        };
+
+        let frame = render_snapshot(60, 10, &view, &Theme::default());
+        let text = frame.to_plain_text();
+
+        // Loading progress row must contain the spinner verb and "esc to interrupt".
+        assert!(
+            text.contains("thinking"),
+            "loading row must contain verb: {text}"
+        );
+        assert!(
+            text.contains("esc to interrupt"),
+            "loading row must contain suffix: {text}"
+        );
+        // Loading row must NOT appear inside the transcript (spinner moved out of messages).
+        // The transcript message "hello" must still appear.
+        assert!(
+            text.contains("hello"),
+            "transcript message must still appear"
+        );
+        // Compact footer hint must appear.
+        assert!(
+            text.contains("shift+tab to cycle"),
+            "compact footer hint must appear: {text}"
+        );
+        assert!(
+            !text.contains("storage="),
+            "verbose footer fields must not appear: {text}"
+        );
+    }
+
+    #[test]
+    fn loading_progress_row_includes_elapsed_and_tokens_when_nonzero() {
+        let view = ShellView {
+            loading: true,
+            loading_verb: Some("thinking".into()),
+            spinner_frame: 2,
+            loading_elapsed_secs: 7,
+            loading_total_tokens: 512,
+            ..ShellView::default()
+        };
+
+        let text = build_loading_progress_text(&view);
+        // Elapsed must appear (7 seconds → "00:07" mm:ss format).
+        assert!(
+            text.contains("00:07"),
+            "elapsed seconds must appear in loading row text: {text}"
+        );
+        // Token count must appear.
+        assert!(
+            text.contains("512"),
+            "token count must appear in loading row text: {text}"
+        );
+    }
+
+    #[test]
+    fn loading_progress_row_omits_elapsed_and_tokens_when_zero() {
+        let view = ShellView {
+            loading: true,
+            loading_verb: None,
+            spinner_frame: 0,
+            loading_elapsed_secs: 0,
+            loading_total_tokens: 0,
+            ..ShellView::default()
+        };
+
+        let text = build_loading_progress_text(&view);
+        // Neither elapsed nor token data should appear.
+        assert!(
+            !text.contains("tok"),
+            "token count must not appear when zero: {text}"
+        );
+        // The "esc to interrupt" suffix must always appear.
+        assert!(
+            text.contains("esc to interrupt"),
+            "suffix must always appear: {text}"
+        );
     }
 
     // ── scroll rendering ─────────────────────────────────────────────────────
@@ -2364,7 +2599,8 @@ mod tests {
 
     #[test]
     fn transcript_scrolled_up_shows_earlier_window() {
-        // 10 lines, render_snapshot(20, 12) → 6 visible transcript rows (box layout).
+        // 10 lines, render_snapshot(20, 10) → 6 visible transcript rows (CHROME_HEIGHT=1:
+        // available=9, prompt=3, messages=6, title=0 for non-empty messages).
         // offset_from_bottom = 3 → start = (10 - 6) - 3 = 1 → shows lines 02–07.
         let view = ShellView {
             title: "Session: Scrolled".into(),
@@ -2379,7 +2615,7 @@ mod tests {
             ..ShellView::default()
         };
 
-        let frame = render_snapshot(20, 12, &view, &Theme::default());
+        let frame = render_snapshot(20, 10, &view, &Theme::default());
         let text = frame.to_plain_text();
         assert!(text.contains("line 02"), "window start must be visible");
         assert!(text.contains("line 07"), "window end must be visible");
@@ -3248,5 +3484,237 @@ mod tests {
             .position(|line| line.starts_with('╭'))
             .expect("prompt row");
         assert_eq!(warning_row.saturating_add(1), prompt_row);
+    }
+
+    // ── Claude visual parity: no persistent header in normal chat mode ───────
+
+    #[test]
+    fn session_title_header_absent_when_messages_present() {
+        // Once the conversation has messages the "▸ wonder-of-u …" header must
+        // NOT appear — Claude Code fullscreen layout starts the transcript at row 0.
+        let view = ShellView {
+            title: "Session: MyProject".into(),
+            messages: vec![MessageLineView::new(
+                "● hello world",
+                MessageRole::Assistant,
+            )],
+            prompt: "ask me".into(),
+            footer: "▸▸ default (shift+tab to cycle)".into(),
+            ..ShellView::default()
+        };
+
+        let frame = render_snapshot(60, 8, &view, &Theme::default());
+        let text = frame.to_plain_text();
+
+        assert!(
+            !text.contains("▸ wonder-of-u"),
+            "persistent header must not appear when messages are present; rendered:\n{text}"
+        );
+        // The transcript content should start at the very top row.
+        let first_line = text.lines().next().unwrap_or("");
+        assert!(
+            first_line.contains("hello world"),
+            "transcript must begin at row 0 when messages exist; rendered:\n{text}"
+        );
+    }
+
+    #[test]
+    fn session_title_header_present_on_welcome_screen() {
+        // On the empty/welcome state the "▸ wonder-of-u …" header must appear.
+        let view = ShellView {
+            title: "Session: MyProject".into(),
+            messages: Vec::new(),
+            prompt: String::new(),
+            footer: String::new(),
+            ..ShellView::default()
+        };
+
+        let frame = render_snapshot(40, 10, &view, &Theme::default());
+        let text = frame.to_plain_text();
+
+        assert!(
+            text.contains("▸ wonder-of-u"),
+            "welcome header must appear when there are no messages; rendered:\n{text}"
+        );
+    }
+
+    // ── Claude visual parity: compact footer (▸▸ … shift+tab …) ────────────
+
+    #[test]
+    fn compact_footer_uses_hint_text_not_verbose_metadata() {
+        // The footer row must surface the compact hint supplied by ShellView::footer,
+        // not verbose fields like `storage=` or `turn=` from the old status bar.
+        let view = ShellView {
+            messages: vec![MessageLineView::new("● hi", MessageRole::User)],
+            prompt: String::new(),
+            footer: "▸▸ default (shift+tab to cycle) · ⌃C exit".into(),
+            status: "turn=idle storage=/home/user/.wonder cwd=/workspace".into(),
+            ..ShellView::default()
+        };
+
+        let frame = render_snapshot(60, 6, &view, &Theme::default());
+        let text = frame.to_plain_text();
+
+        assert!(
+            text.contains("shift+tab to cycle"),
+            "compact footer hint must appear; rendered:\n{text}"
+        );
+        // Verbose session metadata fields must stay out of the footer row.
+        assert!(
+            !text.contains("storage="),
+            "verbose storage field must not appear in footer; rendered:\n{text}"
+        );
+        assert!(
+            !text.contains("turn="),
+            "verbose turn field must not appear in footer; rendered:\n{text}"
+        );
+    }
+
+    #[test]
+    fn compact_footer_scroll_badge_prepended_when_scrolled_up() {
+        // When the transcript is scrolled away from the tail, the footer row
+        // should include the scroll badge ("↑ N lines · Ctrl+End bottom").
+        let view = ShellView {
+            messages: (0..20)
+                .map(|i| MessageLineView::new(format!("line {i}"), MessageRole::Assistant))
+                .collect(),
+            prompt: String::new(),
+            footer: "▸▸ default".into(),
+            scroll: TranscriptScrollView {
+                offset_from_bottom: 5,
+                total_lines: 20,
+                visible_lines: 10,
+            },
+            ..ShellView::default()
+        };
+
+        let frame = render_snapshot(80, 8, &view, &Theme::default());
+        let text = frame.to_plain_text();
+
+        assert!(
+            text.contains("↑ 5 lines"),
+            "scroll badge must appear when scrolled up; rendered:\n{text}"
+        );
+        assert!(
+            text.contains("Ctrl+End bottom"),
+            "scroll badge must contain Ctrl+End hint; rendered:\n{text}"
+        );
+    }
+
+    // ── Claude visual parity: ● bullet rows for user/assistant ──────────────
+
+    #[test]
+    fn user_message_rendered_with_bullet_prefix() {
+        // User messages must open with "● " so they match the Claude Code style.
+        // This tests the render path that uses MessageRole::User colouring.
+        let view = ShellView {
+            messages: vec![MessageLineView::new("● fix the tests", MessageRole::User)],
+            prompt: String::new(),
+            ..ShellView::default()
+        };
+
+        let frame = render_snapshot(40, 6, &view, &Theme::default());
+        let text = frame.to_plain_text();
+
+        assert!(
+            text.contains("● fix the tests"),
+            "user message bullet must appear in transcript; rendered:\n{text}"
+        );
+    }
+
+    #[test]
+    fn assistant_message_rendered_with_bullet_prefix() {
+        // Assistant messages must also open with "● " (Claude Code style).
+        let view = ShellView {
+            messages: vec![MessageLineView::new(
+                "● I've updated the file",
+                MessageRole::Assistant,
+            )],
+            prompt: String::new(),
+            ..ShellView::default()
+        };
+
+        let frame = render_snapshot(40, 6, &view, &Theme::default());
+        let text = frame.to_plain_text();
+
+        assert!(
+            text.contains("● I've updated the file"),
+            "assistant message bullet must appear in transcript; rendered:\n{text}"
+        );
+    }
+
+    // ── Claude visual parity: tool rows ─────────────────────────────────────
+
+    #[test]
+    fn tool_row_headline_and_detail_rendered() {
+        // Tool calls must produce a "● Tool(args)" headline row followed by an
+        // indented "  └ detail" row — matching the Claude Code tool activity style.
+        let view = ShellView {
+            messages: vec![
+                MessageLineView::new("● Bash(ls -la)", MessageRole::Tool),
+                MessageLineView::new("  └ success", MessageRole::Tool),
+            ],
+            prompt: String::new(),
+            ..ShellView::default()
+        };
+
+        let frame = render_snapshot(40, 6, &view, &Theme::default());
+        let text = frame.to_plain_text();
+
+        assert!(
+            text.contains("● Bash(ls -la)"),
+            "tool headline must appear; rendered:\n{text}"
+        );
+        assert!(
+            text.contains("└ success"),
+            "tool detail must appear indented; rendered:\n{text}"
+        );
+    }
+
+    // ── Claude visual parity: loading row position ───────────────────────────
+
+    #[test]
+    fn loading_row_appears_directly_above_prompt_not_in_transcript() {
+        // The spinner row must be rendered between the last transcript line and
+        // the prompt box top border — never mixed into the scrollable transcript.
+        let view = ShellView {
+            messages: vec![MessageLineView::new(
+                "● earlier message",
+                MessageRole::Assistant,
+            )],
+            prompt: String::new(),
+            loading: true,
+            loading_verb: Some("thinking".into()),
+            spinner_frame: 1,
+            loading_elapsed_secs: 5,
+            loading_total_tokens: 0,
+            footer: "▸▸ default (shift+tab to cycle) · ⌃C exit".into(),
+            ..ShellView::default()
+        };
+
+        let frame = render_snapshot(60, 8, &view, &Theme::default());
+        let text = frame.to_plain_text();
+        let lines: Vec<&str> = text.lines().collect();
+
+        // The loading indicator must appear above the prompt border.
+        let spinner_row = lines
+            .iter()
+            .position(|l| l.contains("thinking"))
+            .expect("spinner row must appear");
+        let prompt_border_row = lines
+            .iter()
+            .position(|l| l.starts_with('╭'))
+            .expect("prompt border must appear");
+
+        assert!(
+            spinner_row < prompt_border_row,
+            "loading row ({spinner_row}) must be above prompt border ({prompt_border_row}); rendered:\n{text}"
+        );
+
+        // The earlier transcript message must still be visible.
+        assert!(
+            text.contains("earlier message"),
+            "transcript must still show earlier message during loading; rendered:\n{text}"
+        );
     }
 }

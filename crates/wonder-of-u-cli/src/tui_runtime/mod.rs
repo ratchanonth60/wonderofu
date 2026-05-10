@@ -35,7 +35,7 @@ use wonder_of_u_core::{
     PendingToolApprovalState, PendingToolConversationRound, PermissionDecision, PermissionMode,
     PermissionRequest, PermissionRuleSource, ProviderReadiness, QueuePlacement, Result, SessionId,
     TaskState, TaskStatus, ToolContext, ToolQuery, ToolResult, ToolUseId, WonderError,
-    parse_slash_command, session_footer_text,
+    parse_slash_command,
 };
 use wonder_of_u_storage::{TaskStore, TranscriptStore};
 use wonder_of_u_tools::provider_tool_specs;

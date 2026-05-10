@@ -2533,58 +2533,23 @@ impl<'a> TuiController<'a> {
         view.loading = is_loading_turn_state(self.turn_state);
         view.loading_verb = loading_verb_label(self.turn_state).map(str::to_string);
 
-        let mut footer = session_footer_text(&self.state);
-        footer.push_str(if self.persistence.persisted {
-            " | storage=persisted"
-        } else {
-            " | storage=memory"
-        });
-        footer.push_str(" | ");
-        footer.push_str(runtime_label(
-            self.state.provider.as_deref(),
-            self.state.model.as_deref(),
-        ));
-        footer.push_str(" | vim:");
-        footer.push_str(if self.vim_enabled {
+        // Elapsed seconds: tick interval is 500 ms, so divide frame count by 2.
+        view.loading_elapsed_secs = self.loading_frame / 2;
+        // Cumulative token count from costs tracking (0 when no API calls yet).
+        view.loading_total_tokens = self.state.costs.usage.total_tokens();
+
+        // Compact Claude-style footer; verbose cwd/provider/model metadata lives in the sidebar.
+        let permission_label = permission_mode_output_label(self.state.permission_mode);
+        let vim_hint = if self.vim_enabled {
             match self.vim.mode() {
-                VimMode::Insert => "insert",
-                VimMode::Normal => "normal",
+                VimMode::Insert => " · vim:insert",
+                VimMode::Normal => " · vim:normal",
             }
         } else {
-            "off"
-        });
-        footer.push_str(" | theme:");
-        footer.push_str(match self.state.theme.as_deref() {
-            Some("midnight") => "midnight",
-            Some("light") => "light",
-            _ => "default",
-        });
-        footer.push_str(" | color:");
-        footer.push_str(match self.state.session_color.as_deref() {
-            Some("red") => "red",
-            Some("blue") => "blue",
-            Some("green") => "green",
-            Some("yellow") => "yellow",
-            Some("purple") => "purple",
-            Some("orange") => "orange",
-            Some("pink") => "pink",
-            Some("cyan") => "cyan",
-            _ => "default",
-        });
-        footer.push_str(" | effort:");
-        footer.push_str(match self.state.effort_level.as_deref() {
-            Some("low") => "low",
-            Some("medium") => "medium",
-            Some("high") => "high",
-            Some("max") => "max",
-            _ => "auto",
-        });
-        footer.push_str(" | fast:");
-        footer.push_str(if self.state.fast_mode { "on" } else { "off" });
-        footer.push_str(" | brief:");
-        footer.push_str(if self.state.brief_mode { "on" } else { "off" });
-        footer.push_str(" | ⌃C exit | ? help");
-        view.footer = footer;
+            ""
+        };
+        view.footer =
+            format!("▸▸ {permission_label}{vim_hint} (shift+tab to cycle) · ⌃B sidebar · ⌃C exit");
         let picker_list = self.current_picker_list_view();
         view.dialog = if picker_list.is_some() {
             None
