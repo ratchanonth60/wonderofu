@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 use async_trait::async_trait;
-use wonder_of_u_agent::{ProviderRegistry, ProviderResolver};
+use wonder_of_u_agent::ProviderResolver;
 use wonder_of_u_core::{
     AuthMaterialKind, Command, CommandContext, CommandInvocation, CommandKind, CommandOutput,
     CommandSpec, Result,
@@ -38,6 +38,74 @@ impl DoctorCommand {
     }
 }
 
+fn provider_id_list(providers: &[wonder_of_u_agent::ProviderDescriptor]) -> String {
+    providers
+        .iter()
+        .map(|provider| provider.id.as_str())
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+fn provider_inventory_lines(report: &wonder_of_u_agent::ProviderStatusReport) -> Vec<String> {
+    let configured_ids: std::collections::BTreeSet<&str> = report
+        .configured_providers
+        .iter()
+        .map(|provider| provider.id.as_str())
+        .collect();
+    let authenticated_ids: std::collections::BTreeSet<&str> = report
+        .authenticated_providers
+        .iter()
+        .map(|provider| provider.id.as_str())
+        .collect();
+    let ready_ids: std::collections::BTreeSet<&str> = report
+        .ready_providers
+        .iter()
+        .map(|provider| provider.id.as_str())
+        .collect();
+
+    let mut lines = vec![
+        format!("providers_registered={}", report.available_providers.len()),
+        format!("providers_configured={}", report.configured_providers.len()),
+        format!(
+            "providers_authenticated={}",
+            report.authenticated_providers.len()
+        ),
+        format!("providers_ready={}", report.ready_providers.len()),
+        format!(
+            "registered_providers={}",
+            provider_id_list(&report.available_providers)
+        ),
+        format!(
+            "configured_providers={}",
+            provider_id_list(&report.configured_providers)
+        ),
+        format!(
+            "authenticated_providers={}",
+            provider_id_list(&report.authenticated_providers)
+        ),
+        format!(
+            "ready_providers={}",
+            provider_id_list(&report.ready_providers)
+        ),
+    ];
+
+    for provider in &report.available_providers {
+        let hint = provider_env_hint(provider);
+        lines.push(format!(
+            "provider[{}]={};auth={};configured={};authenticated={};ready={};{}",
+            provider.id,
+            provider.display_name,
+            auth_kind_label(provider.auth_kind),
+            configured_ids.contains(provider.id.as_str()),
+            authenticated_ids.contains(provider.id.as_str()),
+            ready_ids.contains(provider.id.as_str()),
+            hint
+        ));
+    }
+
+    lines
+}
+
 #[async_trait]
 impl Command for DoctorCommand {
     fn spec(&self) -> CommandSpec {
@@ -67,37 +135,7 @@ impl Command for DoctorCommand {
             format!("auth_kind={}", report.auth.kind_label()),
             format!("auth_status={}", report.auth.status_label()),
         ];
-
-        // Enumerate every builtin provider with auth/env hints so the user can
-        // tell at a glance what env vars to set for providers they want to use.
-        // Never print secret values—only variable names and readiness state.
-        let registry = ProviderRegistry::builtin();
-        let ready_ids: std::collections::BTreeSet<&str> = report
-            .available_providers
-            .iter()
-            .map(|p| p.id.as_str())
-            .collect();
-
-        lines.push(format!(
-            "providers_registered={}",
-            registry.providers().count()
-        ));
-        lines.push(format!("providers_ready={}", ready_ids.len()));
-
-        for p in registry.providers() {
-            let ready = if ready_ids.contains(p.id.as_str()) {
-                "ready"
-            } else {
-                "missing"
-            };
-            let auth = auth_kind_label(p.auth_kind);
-            // Build a compact hint showing what the user needs to configure.
-            let hint = provider_env_hint(p);
-            lines.push(format!(
-                "provider[{}]={};auth={};state={};{}",
-                p.id, p.display_name, auth, ready, hint
-            ));
-        }
+        lines.extend(provider_inventory_lines(&report));
 
         Ok(CommandOutput::Text(lines.join("\n")))
     }
@@ -145,5 +183,34 @@ fn provider_env_hint(p: &wonder_of_u_agent::ProviderDescriptor) -> String {
         AuthMaterialKind::GcpOAuth2 => {
             "hint=set_VERTEXAI_PROJECT+VERTEXAI_LOCATION+GOOGLE_BEARER_TOKEN_or_GOOGLE_APPLICATION_CREDENTIALS".into()
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use wonder_of_u_agent::ProviderResolver;
+
+    use super::*;
+
+    #[test]
+    fn provider_inventory_lines_label_registered_and_ready_providers_separately() {
+        let report = ProviderResolver::builtin()
+            .resolve_with_env(
+                &wonder_of_u_agent::AgentSettings::default(),
+                &wonder_of_u_agent::StoredCredentials::default(),
+                std::iter::empty::<(&str, String)>(),
+            )
+            .expect("resolve report");
+
+        let rendered = provider_inventory_lines(&report).join("\n");
+
+        assert!(rendered.contains("providers_registered="));
+        assert!(rendered.contains("providers_ready=1"));
+        assert!(rendered.contains("ready_providers=local"));
+        assert!(
+            rendered.contains(
+                "provider[openai]=OpenAI;auth=api_key;configured=false;authenticated=false;ready=false;api_key_env=OPENAI_API_KEY"
+            )
+        );
     }
 }

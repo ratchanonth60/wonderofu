@@ -768,8 +768,14 @@ pub struct ProviderStatusReport {
     pub auth: AuthState,
     /// Stores the readiness
     pub readiness: ProviderReadiness,
-    /// Stores the available providers
+    /// Stores every provider registered in the resolver registry.
     pub available_providers: Vec<ProviderDescriptor>,
+    /// Stores providers with explicit settings, credentials, or env configuration.
+    pub configured_providers: Vec<ProviderDescriptor>,
+    /// Stores providers whose authentication material is ready.
+    pub authenticated_providers: Vec<ProviderDescriptor>,
+    /// Stores providers that can execute immediately.
+    pub ready_providers: Vec<ProviderDescriptor>,
 }
 
 impl ProviderStatusReport {
@@ -881,7 +887,7 @@ impl ProviderResolver {
             .collect::<BTreeMap<_, _>>();
 
         let provider = self.select_provider(settings, credentials, &env, None)?;
-        let available_providers = self.registry.providers().cloned().collect::<Vec<_>>();
+        let inventory = self.collect_provider_inventory(settings, credentials, &env)?;
 
         let Some(provider_id) = provider.clone() else {
             return Ok(ProviderStatusReport {
@@ -889,7 +895,10 @@ impl ProviderResolver {
                 model: None,
                 auth: AuthState::default(),
                 readiness: ProviderReadiness::Unconfigured,
-                available_providers,
+                available_providers: inventory.registered_providers,
+                configured_providers: inventory.configured_providers,
+                authenticated_providers: inventory.authenticated_providers,
+                ready_providers: inventory.ready_providers,
             });
         };
 
@@ -909,7 +918,10 @@ impl ProviderResolver {
             model: Some(model),
             auth,
             readiness,
-            available_providers,
+            available_providers: inventory.registered_providers,
+            configured_providers: inventory.configured_providers,
+            authenticated_providers: inventory.authenticated_providers,
+            ready_providers: inventory.ready_providers,
         })
     }
 
@@ -933,7 +945,7 @@ impl ProviderResolver {
 
         let provider =
             self.select_provider(settings, credentials, &env, selection.provider.as_deref())?;
-        let available_providers = self.registry.providers().cloned().collect::<Vec<_>>();
+        let inventory = self.collect_provider_inventory(settings, credentials, &env)?;
 
         let Some(provider_id) = provider.clone() else {
             return Ok(ProviderStatusReport {
@@ -941,7 +953,10 @@ impl ProviderResolver {
                 model: None,
                 auth: AuthState::default(),
                 readiness: ProviderReadiness::Unconfigured,
-                available_providers,
+                available_providers: inventory.registered_providers,
+                configured_providers: inventory.configured_providers,
+                authenticated_providers: inventory.authenticated_providers,
+                ready_providers: inventory.ready_providers,
             });
         };
 
@@ -966,7 +981,10 @@ impl ProviderResolver {
             model: Some(model),
             auth,
             readiness,
-            available_providers,
+            available_providers: inventory.registered_providers,
+            configured_providers: inventory.configured_providers,
+            authenticated_providers: inventory.authenticated_providers,
+            ready_providers: inventory.ready_providers,
         })
     }
 
@@ -1506,6 +1524,114 @@ impl ProviderResolver {
         }
     }
 
+    fn collect_provider_inventory(
+        &self,
+        settings: &AgentSettings,
+        credentials: &StoredCredentials,
+        env: &BTreeMap<String, String>,
+    ) -> Result<ProviderInventory> {
+        let mut inventory = ProviderInventory::default();
+
+        for provider in self.registry.providers() {
+            let provider = provider.clone();
+            let auth = self.resolve_auth(&provider, credentials, env)?;
+            let model_ready = self
+                .resolve_model(&provider, settings, Some(provider.id.as_str()), None)
+                .is_ok();
+            let api_base_ready = self.resolve_api_base(&provider, settings, env).is_ok();
+
+            if self.provider_has_explicit_config(&provider, settings, credentials, env) {
+                inventory.configured_providers.push(provider.clone());
+            }
+            if provider.auth_kind != AuthMaterialKind::None && auth.is_ready() {
+                inventory.authenticated_providers.push(provider.clone());
+            }
+            if auth.is_ready() && model_ready && api_base_ready {
+                inventory.ready_providers.push(provider.clone());
+            }
+            inventory.registered_providers.push(provider);
+        }
+
+        Ok(inventory)
+    }
+
+    fn provider_has_explicit_config(
+        &self,
+        provider: &ProviderDescriptor,
+        settings: &AgentSettings,
+        credentials: &StoredCredentials,
+        env: &BTreeMap<String, String>,
+    ) -> bool {
+        if settings.selected_provider.as_deref() == Some(provider.id.as_str()) {
+            return true;
+        }
+
+        if settings.providers.get(&provider.id).is_some_and(|config| {
+            config
+                .model
+                .as_deref()
+                .is_some_and(|value| !value.trim().is_empty())
+                || config
+                    .api_base
+                    .as_deref()
+                    .is_some_and(|value| !value.trim().is_empty())
+        }) {
+            return true;
+        }
+
+        if credentials.providers.contains_key(&provider.id) {
+            return true;
+        }
+
+        if provider.id == "local"
+            && [
+                "WONDER_OF_U_LOCAL_API_BASE",
+                "OLLAMA_HOST",
+                "LMSTUDIO_API_BASE",
+            ]
+            .into_iter()
+            .any(|var| env_var_is_set(env, var))
+        {
+            return true;
+        }
+
+        if provider
+            .api_key_env
+            .as_deref()
+            .is_some_and(|var| env_var_is_set(env, var))
+        {
+            return true;
+        }
+
+        if provider
+            .endpoint_env
+            .as_deref()
+            .is_some_and(|var| env_var_is_set(env, var))
+        {
+            return true;
+        }
+
+        match provider.auth_kind {
+            AuthMaterialKind::None | AuthMaterialKind::ApiKey | AuthMaterialKind::OAuth => false,
+            AuthMaterialKind::AwsSigV4 => {
+                env_var_is_set(env, "AWS_BEARER_TOKEN_BEDROCK")
+                    || (env_var_is_set(env, "AWS_ACCESS_KEY_ID")
+                        && env_var_is_set(env, "AWS_SECRET_ACCESS_KEY"))
+                    || env_var_is_set(env, "AWS_PROFILE")
+            }
+            AuthMaterialKind::AwsBearer => env_var_is_set(env, "AWS_BEARER_TOKEN_BEDROCK"),
+            AuthMaterialKind::AwsProfile => env_var_is_set(env, "AWS_PROFILE"),
+            AuthMaterialKind::GcpOAuth2 => [
+                "VERTEXAI_PROJECT",
+                "VERTEXAI_LOCATION",
+                "GOOGLE_BEARER_TOKEN",
+                "GOOGLE_APPLICATION_CREDENTIALS",
+            ]
+            .into_iter()
+            .any(|var| env_var_is_set(env, var)),
+        }
+    }
+
     fn missing_auth_error(&self, provider: &ProviderDescriptor) -> WonderError {
         match provider.auth_kind {
             AuthMaterialKind::AwsSigV4 => WonderError::validation(format!(
@@ -1546,6 +1672,14 @@ impl ProviderResolver {
     }
 }
 
+#[derive(Default)]
+struct ProviderInventory {
+    registered_providers: Vec<ProviderDescriptor>,
+    configured_providers: Vec<ProviderDescriptor>,
+    authenticated_providers: Vec<ProviderDescriptor>,
+    ready_providers: Vec<ProviderDescriptor>,
+}
+
 fn is_fast_model_id(model_id: &str) -> bool {
     let normalized = model_id.to_ascii_lowercase();
     normalized.contains("mini") || normalized.contains("haiku")
@@ -1553,6 +1687,12 @@ fn is_fast_model_id(model_id: &str) -> bool {
 
 fn oauth_access_token_expired(expires_at: Option<OffsetDateTime>) -> bool {
     expires_at.is_some_and(|value| value <= OffsetDateTime::now_utc())
+}
+
+fn env_var_is_set(env: &BTreeMap<String, String>, key: &str) -> bool {
+    env.get(key)
+        .map(String::as_str)
+        .is_some_and(|value| !value.trim().is_empty())
 }
 
 /// Converts an `OLLAMA_HOST` value to an OpenAI-compatible base URL by
@@ -1621,6 +1761,13 @@ mod tests {
     use wonder_of_u_core::{AuthStatus, ProviderReadiness};
 
     use super::*;
+
+    fn provider_ids(providers: &[ProviderDescriptor]) -> Vec<&str> {
+        providers
+            .iter()
+            .map(|provider| provider.id.as_str())
+            .collect()
+    }
 
     #[test]
     fn resolver_uses_stored_selection_and_credentials() {
@@ -2926,6 +3073,68 @@ mod tests {
             "local should be auto-selected when nothing else is configured"
         );
         assert_eq!(report.readiness, ProviderReadiness::Ready);
+    }
+
+    #[test]
+    fn status_report_separates_registered_configured_authenticated_and_ready_without_env() {
+        let resolver = ProviderResolver::builtin();
+
+        let report = resolver
+            .resolve_with_env(
+                &AgentSettings::default(),
+                &StoredCredentials::default(),
+                std::iter::empty::<(&str, String)>(),
+            )
+            .expect("status report without env");
+
+        assert!(provider_ids(&report.available_providers).contains(&"openai"));
+        assert_eq!(
+            provider_ids(&report.configured_providers),
+            Vec::<&str>::new()
+        );
+        assert_eq!(
+            provider_ids(&report.authenticated_providers),
+            Vec::<&str>::new()
+        );
+        assert_eq!(provider_ids(&report.ready_providers), vec!["local"]);
+    }
+
+    #[test]
+    fn status_report_marks_api_key_provider_authenticated_and_ready_with_env() {
+        let resolver = ProviderResolver::builtin();
+
+        let report = resolver
+            .resolve_with_env(
+                &AgentSettings::default(),
+                &StoredCredentials::default(),
+                [("OPENAI_API_KEY", "sk-test-key".to_string())],
+            )
+            .expect("status report with openai env");
+
+        assert!(provider_ids(&report.configured_providers).contains(&"openai"));
+        assert_eq!(
+            provider_ids(&report.authenticated_providers),
+            vec!["openai"]
+        );
+        assert!(provider_ids(&report.ready_providers).contains(&"openai"));
+        assert!(provider_ids(&report.ready_providers).contains(&"local"));
+    }
+
+    #[test]
+    fn status_report_tracks_authenticated_but_not_ready_provider_when_endpoint_missing() {
+        let resolver = ProviderResolver::builtin();
+
+        let report = resolver
+            .resolve_with_env(
+                &AgentSettings::default(),
+                &StoredCredentials::default(),
+                [("AZURE_OPENAI_API_KEY", "azure-test-key".to_string())],
+            )
+            .expect("status report with partial azure env");
+
+        assert!(provider_ids(&report.configured_providers).contains(&"azure"));
+        assert!(provider_ids(&report.authenticated_providers).contains(&"azure"));
+        assert!(!provider_ids(&report.ready_providers).contains(&"azure"));
     }
 
     #[test]

@@ -7,7 +7,7 @@ use std::{
 
 use async_trait::async_trait;
 use serde_json::json;
-use wonder_of_u_agent::{ProviderRegistry, ProviderResolver};
+use wonder_of_u_agent::ProviderResolver;
 use wonder_of_u_core::{
     Command, CommandContext, CommandInvocation, CommandKind, CommandOutput, CommandSpec, CostState,
     MESSAGE_SCHEMA_VERSION, Result,
@@ -85,6 +85,83 @@ impl StatusCommand {
             "Show runtime, storage, MCP, plugin, skill, and task status",
             CommandKind::NonInteractive,
         )
+    }
+}
+
+fn provider_id_list(providers: &[wonder_of_u_agent::ProviderDescriptor]) -> String {
+    providers
+        .iter()
+        .map(|provider| provider.id.as_str())
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+fn provider_inventory_lines(report: &wonder_of_u_agent::ProviderStatusReport) -> Vec<String> {
+    let configured_ids: BTreeSet<&str> = report
+        .configured_providers
+        .iter()
+        .map(|provider| provider.id.as_str())
+        .collect();
+    let authenticated_ids: BTreeSet<&str> = report
+        .authenticated_providers
+        .iter()
+        .map(|provider| provider.id.as_str())
+        .collect();
+    let ready_ids: BTreeSet<&str> = report
+        .ready_providers
+        .iter()
+        .map(|provider| provider.id.as_str())
+        .collect();
+
+    let mut lines = vec![
+        format!(
+            "registered_providers={}",
+            provider_id_list(&report.available_providers)
+        ),
+        format!(
+            "configured_providers={}",
+            provider_id_list(&report.configured_providers)
+        ),
+        format!(
+            "authenticated_providers={}",
+            provider_id_list(&report.authenticated_providers)
+        ),
+        format!(
+            "ready_providers={}",
+            provider_id_list(&report.ready_providers)
+        ),
+    ];
+
+    for provider in &report.available_providers {
+        let mut hint = format!(
+            "provider_status[{}]=configured={};authenticated={};ready={};auth={}",
+            provider.id,
+            configured_ids.contains(provider.id.as_str()),
+            authenticated_ids.contains(provider.id.as_str()),
+            ready_ids.contains(provider.id.as_str()),
+            auth_kind_label(provider.auth_kind),
+        );
+        if let Some(env) = &provider.api_key_env {
+            hint.push_str(&format!(";api_key_env={env}"));
+        }
+        if let Some(env) = &provider.endpoint_env {
+            hint.push_str(&format!(";endpoint_env={env}"));
+        }
+        lines.push(hint);
+    }
+
+    lines
+}
+
+fn auth_kind_label(kind: wonder_of_u_core::AuthMaterialKind) -> &'static str {
+    match kind {
+        wonder_of_u_core::AuthMaterialKind::None => "none",
+        wonder_of_u_core::AuthMaterialKind::ApiKey => "api_key",
+        wonder_of_u_core::AuthMaterialKind::OAuth => "oauth",
+        wonder_of_u_core::AuthMaterialKind::AwsSigV4 => "aws_sigv4",
+        wonder_of_u_core::AuthMaterialKind::AwsBearer => "aws_bearer",
+        wonder_of_u_core::AuthMaterialKind::AwsProfile => "aws_profile",
+        wonder_of_u_core::AuthMaterialKind::GcpOAuth2 => "gcp_oauth2",
     }
 }
 
@@ -331,38 +408,7 @@ impl Command for StatusCommand {
         if let Some(source) = report.auth.source_label() {
             lines.push(format!("auth_source={source}"));
         }
-        lines.push(format!(
-            "available_providers={}",
-            report
-                .available_providers
-                .iter()
-                .map(|provider| provider.id.as_str())
-                .collect::<Vec<_>>()
-                .join(",")
-        ));
-        // Emit per-provider env var hints for discoverability. Variable names
-        // only—never the values—so this output is safe to share in bug reports.
-        let registry = ProviderRegistry::builtin();
-        let ready_ids: BTreeSet<&str> = report
-            .available_providers
-            .iter()
-            .map(|p| p.id.as_str())
-            .collect();
-        for p in registry.providers() {
-            let state = if ready_ids.contains(p.id.as_str()) {
-                "ready"
-            } else {
-                "missing"
-            };
-            let mut hint = format!("provider_hint[{}]=state={state}", p.id);
-            if let Some(env) = &p.api_key_env {
-                hint.push_str(&format!(";api_key_env={env}"));
-            }
-            if let Some(env) = &p.endpoint_env {
-                hint.push_str(&format!(";endpoint_env={env}"));
-            }
-            lines.push(hint);
-        }
+        lines.extend(provider_inventory_lines(&report));
 
         let (_, plugins, skills) = load_catalogs(&context.cwd, self.storage_dir.as_deref())?;
         lines.push(format!("plugins={}", plugins.entries().len()));
@@ -1430,6 +1476,7 @@ fn count_files(path: impl AsRef<Path>, extension: Option<&str>) -> Result<usize>
 mod tests {
     use super::*;
     use futures::executor::block_on;
+    use wonder_of_u_agent::ProviderResolver;
     use wonder_of_u_core::{AppState, FeatureSet, PermissionMode, SessionId, TokenUsage};
     use wonder_of_u_storage::{SessionMetadata, SessionSnapshot};
     use wonder_of_u_test_support::unique_test_dir;
@@ -1606,6 +1653,29 @@ mod tests {
         assert!(rendered.contains("current_session_total_tokens=6"));
         assert!(rendered.contains("aggregate_total_tokens=6"));
         assert!(rendered.contains("Use /cost for raw token and estimated-cost details."));
+    }
+
+    #[test]
+    fn provider_inventory_lines_keep_registered_providers_distinct_from_ready_ones() {
+        let report = ProviderResolver::builtin()
+            .resolve_with_env(
+                &wonder_of_u_agent::AgentSettings::default(),
+                &wonder_of_u_agent::StoredCredentials::default(),
+                std::iter::empty::<(&str, String)>(),
+            )
+            .expect("resolve report");
+
+        let rendered = provider_inventory_lines(&report).join("\n");
+
+        assert!(rendered.contains("registered_providers="));
+        assert!(rendered.contains("ready_providers=local"));
+        assert!(rendered.contains("configured_providers="));
+        assert!(rendered.contains(
+            "provider_status[openai]=configured=false;authenticated=false;ready=false;auth=api_key"
+        ));
+        assert!(rendered.contains(
+            "provider_status[local]=configured=false;authenticated=false;ready=true;auth=none"
+        ));
     }
 
     #[test]
