@@ -1212,6 +1212,8 @@ impl AgentsCommand {
                     model: args.model.or(report.model),
                     cwd: context.cwd,
                     fleet_id: None,
+                    fleet_request_id: None,
+                    parent_task_id: None,
                     allowed_tools: None,
                     worktree_branch: None,
                 })?

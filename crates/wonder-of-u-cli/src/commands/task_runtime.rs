@@ -46,6 +46,10 @@ pub(crate) struct AgentTaskLaunch {
     pub model: Option<String>,
     pub cwd: PathBuf,
     pub fleet_id: Option<FleetId>,
+    /// Fleet member request id that triggered this launch.
+    pub fleet_request_id: Option<String>,
+    /// Parent agent task id (i.e. the task that queued this one via the `agent` tool).
+    pub parent_task_id: Option<TaskId>,
     pub allowed_tools: Option<Vec<String>>,
     /// Git worktree branch the agent will run inside, if any.
     pub worktree_branch: Option<String>,
@@ -237,6 +241,7 @@ impl TaskManager {
             &log_path,
             &self.store.paths().task_exit_path(task.id),
             &self.store.paths().task_heartbeat_path(task.id),
+            &[],
         )?;
         let process_identity = capture_process_identity(pid)?;
 
@@ -253,7 +258,6 @@ impl TaskManager {
     /// Handles start agent task
     pub fn start_agent_task(&self, launch: AgentTaskLaunch) -> Result<TaskState> {
         ensure_directory(&launch.cwd)?;
-        let command = agent_prompt_command(self.storage_dir(), &launch)?;
         let description = launch
             .description
             .clone()
@@ -261,17 +265,20 @@ impl TaskManager {
         let mut task = TaskState::pending_agent(
             description,
             AgentTaskState::prompt_subprocess(
-                launch.name,
-                launch.prompt,
-                launch.provider,
-                launch.model,
+                launch.name.clone(),
+                launch.prompt.clone(),
+                launch.provider.clone(),
+                launch.model.clone(),
             ),
         );
         task.fleet_id = launch.fleet_id;
+        task.fleet_request_id = launch.fleet_request_id.clone();
+        task.parent_id = launch.parent_task_id;
         task.cwd = Some(launch.cwd.clone());
-        task.command = Some(command);
-        task.output_log = Some(self.store.paths().task_log_path(task.id));
         task.worktree_branch = launch.worktree_branch.clone();
+        task.output_log = Some(self.store.paths().task_log_path(task.id));
+        // Build the subprocess command now that task.id is known (needed for env injection).
+        task.command = Some(agent_prompt_command(self.storage_dir(), &launch)?);
         self.store.write_task(&task)?;
         self.store
             .append_log(task.id, render_agent_task_header(&task))?;
@@ -280,12 +287,25 @@ impl TaskManager {
             .output_log
             .clone()
             .ok_or_else(|| WonderError::internal("task log path missing after initialization"))?;
+
+        // Inject fleet context env vars so the agent subprocess can write
+        // result sidecars and queue child requests with correct lineage.
+        let mut env_vars: Vec<(String, String)> =
+            vec![("WONDER_OF_U_TASK_ID".into(), task.id.to_string())];
+        if let Some(fleet_id) = launch.fleet_id {
+            env_vars.push(("WONDER_OF_U_FLEET_ID".into(), fleet_id.to_string()));
+        }
+        if let Some(ref req_id) = launch.fleet_request_id {
+            env_vars.push(("WONDER_OF_U_FLEET_REQUEST_ID".into(), req_id.clone()));
+        }
+
         let pid = spawn_background_task(
             task.command.as_deref().unwrap_or_default(),
             task.cwd.as_deref().unwrap_or(self.storage_dir()),
             &log_path,
             &self.store.paths().task_exit_path(task.id),
             &self.store.paths().task_heartbeat_path(task.id),
+            &env_vars,
         )?;
         let process_identity = capture_process_identity(pid)?;
 
@@ -807,6 +827,7 @@ fn spawn_background_task(
     log_path: &Path,
     exit_path: &Path,
     heartbeat_path: &Path,
+    env_vars: &[(String, String)],
 ) -> Result<u32> {
     let stdout = OpenOptions::new()
         .create(true)
@@ -819,6 +840,9 @@ fn spawn_background_task(
         .stdin(Stdio::null())
         .stdout(Stdio::from(stdout))
         .stderr(Stdio::from(stderr));
+    for (key, val) in env_vars {
+        child.env(key, val);
+    }
     Ok(child.spawn()?.id())
 }
 
@@ -1132,6 +1156,8 @@ mod tests {
                 model: Some("gpt-4.1".into()),
                 cwd: dir.clone(),
                 fleet_id: Some(fleet_id),
+                fleet_request_id: None,
+                parent_task_id: None,
                 allowed_tools: Some(vec!["bash".into(), "file_read".into()]),
                 worktree_branch: None,
             })
@@ -1204,6 +1230,8 @@ mod tests {
                 model: Some("gpt-4.1".into()),
                 cwd: dir.clone(),
                 fleet_id: None,
+                fleet_request_id: None,
+                parent_task_id: None,
                 allowed_tools: None,
                 worktree_branch: None,
             })

@@ -1,5 +1,6 @@
 use std::{
     collections::BTreeSet,
+    env,
     path::{Path, PathBuf},
 };
 
@@ -11,14 +12,15 @@ use wonder_of_u_agent::{
     ToolUseResponse,
 };
 use wonder_of_u_core::{
-    AppState, Command, CommandContext, CommandInvocation, CommandKind, CommandOutput, CommandSpec,
-    CoordinatorState, FeatureFlag, MessageEnvelope, MessagePayload, PermissionDecision,
-    PermissionMode, PromptSuggestion, QueryState, Result, ToolContext, ToolQuery, ToolResult,
+    AgentTaskResult, AGENT_TASK_RESULT_SCHEMA_VERSION, AppState, Command, CommandContext,
+    CommandInvocation, CommandKind, CommandOutput, CommandSpec, CoordinatorState, FeatureFlag,
+    FleetId, MessageEnvelope, MessagePayload, PermissionDecision, PermissionMode,
+    PromptSuggestion, QueryState, Result, TaskId, TaskStatus, ToolContext, ToolQuery, ToolResult,
     ToolUseId, WonderError, best_prompt_suggestion,
 };
 use wonder_of_u_storage::{
-    CostStore, SessionCostLedger, SessionMemoryIndexStore, SessionMetadata, SessionSnapshot,
-    TranscriptStore,
+    AgentTaskResultStore, CostStore, SessionCostLedger, SessionMemoryIndexStore, SessionMetadata,
+    SessionSnapshot, TranscriptStore,
 };
 use wonder_of_u_tools::{builtin_registry_with_mcp_catalog, provider_tool_specs};
 
@@ -188,7 +190,7 @@ pub(crate) fn execute_prompt_run(
         &input.session_title,
         input.entrypoint,
     )?;
-    let result = execute_prompt_turn(
+    let turn_result = execute_prompt_turn(
         storage_dir,
         &mut state,
         &mut persistence,
@@ -203,7 +205,17 @@ pub(crate) fn execute_prompt_run(
             user_prompt: input.prompt.clone(),
             request_prompt: input.prompt,
         },
-    )?;
+    );
+
+    // Best-effort: write a result sidecar so fleet inspectors can observe this task.
+    let task_status = if turn_result.is_ok() {
+        TaskStatus::Completed
+    } else {
+        TaskStatus::Failed
+    };
+    let _ = try_write_agent_task_result(storage_dir, &state, task_status);
+
+    let result = turn_result?;
 
     Ok(PromptExecutionResult {
         state,
@@ -215,6 +227,72 @@ pub(crate) fn execute_prompt_run(
         coordinator: result.coordinator,
         prompt_suggestion: result.prompt_suggestion,
     })
+}
+
+/// Writes an [`AgentTaskResult`] sidecar when the current process is an agent
+/// subprocess spawned by a fleet or agent tool invocation.
+///
+/// Reads `WONDER_OF_U_TASK_ID` from the environment; if absent, returns `Ok(())`
+/// silently (the process is not a fleet-managed agent).  All errors are returned
+/// to the caller so they can be discarded with `let _ = ...`.
+fn try_write_agent_task_result(
+    storage_dir: Option<&Path>,
+    state: &AppState,
+    status: TaskStatus,
+) -> Result<()> {
+    let Some(storage_dir) = storage_dir else {
+        return Ok(());
+    };
+    let task_id_str = match env::var("WONDER_OF_U_TASK_ID") {
+        Ok(v) => v,
+        Err(_) => return Ok(()), // not running inside a fleet-managed subprocess
+    };
+    let task_id = task_id_str
+        .parse::<TaskId>()
+        .map_err(|e| WonderError::validation(format!("invalid WONDER_OF_U_TASK_ID: {e}")))?;
+
+    let fleet_id = env::var("WONDER_OF_U_FLEET_ID")
+        .ok()
+        .and_then(|s| s.parse::<FleetId>().ok());
+    let fleet_request_id = env::var("WONDER_OF_U_FLEET_REQUEST_ID").ok();
+
+    // Extract the last assistant message text as the result output.
+    let output_text = state.messages.iter().rev().find_map(|msg| {
+        if let MessagePayload::AssistantText { content } = &msg.payload {
+            Some(content.clone())
+        } else {
+            None
+        }
+    });
+
+    const EXCERPT_MAX: usize = 300;
+    let output_excerpt = output_text
+        .as_deref()
+        .map(|t| {
+            // Truncate at a character boundary to form a concise excerpt.
+            if t.len() <= EXCERPT_MAX {
+                t.to_owned()
+            } else {
+                format!("{}…", &t[..EXCERPT_MAX])
+            }
+        })
+        .unwrap_or_default();
+
+    let result = AgentTaskResult {
+        schema_version: AGENT_TASK_RESULT_SCHEMA_VERSION,
+        task_id,
+        fleet_id,
+        fleet_request_id,
+        session_id: Some(state.session.id.to_string()),
+        status,
+        output_excerpt,
+        output_text,
+        provider: state.provider.clone(),
+        model: state.model.clone(),
+        finished_at: time::OffsetDateTime::now_utc(),
+    };
+
+    AgentTaskResultStore::new(storage_dir).write_result(&result)
 }
 
 pub(crate) fn execute_prompt_turn(

@@ -42,9 +42,9 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 use wonder_of_u_core::{
-    AppState, CostState, FLEET_SCHEMA_VERSION, FleetId, FleetMemberRequest, FleetRunState,
-    MESSAGE_SCHEMA_VERSION, MessageEnvelope, MessageId, MessagePayload, Result, SessionId, TaskId,
-    TaskState, WonderError,
+    AGENT_TASK_RESULT_SCHEMA_VERSION, AgentTaskResult, AppState, CostState, FLEET_SCHEMA_VERSION,
+    FleetId, FleetMemberRequest, FleetRunState, MESSAGE_SCHEMA_VERSION, MessageEnvelope, MessageId,
+    MessagePayload, Result, SessionId, TaskId, TaskState, TaskStatus, WonderError,
 };
 
 /// Schema version for storage
@@ -60,6 +60,7 @@ fn ensure_supported_schema(kind: &str, version: u16) -> Result<()> {
     let supported = match kind {
         "message" => MESSAGE_SCHEMA_VERSION,
         "fleet run" => FLEET_SCHEMA_VERSION,
+        "agent task result" => AGENT_TASK_RESULT_SCHEMA_VERSION,
         _ => STORAGE_SCHEMA_VERSION,
     };
 
@@ -303,6 +304,18 @@ impl StoragePaths {
     pub fn task_heartbeat_path(&self, task_id: TaskId) -> PathBuf {
         self.task_heartbeat_dir()
             .join(format!("{task_id}.heartbeat"))
+    }
+
+    /// Returns the directory where agent task result sidecars are stored.
+    #[must_use]
+    pub fn task_results_dir(&self) -> PathBuf {
+        self.tasks_dir().join("results")
+    }
+
+    /// Returns the path for an agent task result sidecar.
+    #[must_use]
+    pub fn task_result_path(&self, task_id: TaskId) -> PathBuf {
+        self.task_results_dir().join(format!("{task_id}.json"))
     }
     /// Handles paste path
     #[must_use]
@@ -1313,6 +1326,241 @@ impl TaskStore {
     }
 }
 
+// ── AgentTaskResultStore ──────────────────────────────────────────────────────
+
+/// Persistent store for agent task result sidecars.
+///
+/// Layout under the storage base directory:
+///
+/// ```text
+/// tasks/
+///   results/{task_id}.json   ← AgentTaskResult sidecars
+/// ```
+///
+/// Sidecars are written by the `prompt` command when it detects that it is
+/// running as a fleet agent subprocess (via `WONDER_OF_U_TASK_ID`).
+#[derive(Clone, Debug)]
+pub struct AgentTaskResultStore {
+    paths: StoragePaths,
+}
+
+impl AgentTaskResultStore {
+    /// Creates a new `AgentTaskResultStore` rooted at `base_dir`.
+    #[must_use]
+    pub fn new(base_dir: impl Into<PathBuf>) -> Self {
+        Self {
+            paths: StoragePaths::new(base_dir),
+        }
+    }
+
+    /// Returns the underlying path helper.
+    #[must_use]
+    pub fn paths(&self) -> &StoragePaths {
+        &self.paths
+    }
+
+    /// Ensures `tasks/results/` directory exists.
+    pub fn ensure_layout(&self) -> Result<()> {
+        fs::create_dir_all(self.paths.task_results_dir())?;
+        Ok(())
+    }
+
+    /// Atomically writes an [`AgentTaskResult`] sidecar.
+    pub fn write_result(&self, result: &AgentTaskResult) -> Result<()> {
+        self.ensure_layout()?;
+        write_json_atomically(&self.paths.task_result_path(result.task_id), result)
+    }
+
+    /// Reads an [`AgentTaskResult`] sidecar by task id.
+    ///
+    /// Returns `Err(not_found)` when no sidecar exists for `task_id`.
+    pub fn read_result(&self, task_id: TaskId) -> Result<AgentTaskResult> {
+        let path = self.paths.task_result_path(task_id);
+        if !path.exists() {
+            return Err(WonderError::not_found(
+                "agent task result",
+                task_id.to_string(),
+            ));
+        }
+        let result: AgentTaskResult = serde_json::from_str(&fs::read_to_string(path)?)?;
+        ensure_supported_schema("agent task result", result.schema_version)?;
+        Ok(result)
+    }
+
+    /// Lists all available agent task result sidecars, sorted by `finished_at`
+    /// descending.
+    ///
+    /// Returns an empty list when the results directory does not exist.
+    pub fn list_results(&self) -> Result<Vec<AgentTaskResult>> {
+        let dir = self.paths.task_results_dir();
+        match fs::read_dir(dir) {
+            Ok(entries) => {
+                let mut results = Vec::new();
+                for entry in entries {
+                    let entry = entry?;
+                    if !entry.file_type()?.is_file() {
+                        continue;
+                    }
+                    if entry.path().extension().and_then(OsStr::to_str) != Some("json") {
+                        continue;
+                    }
+                    let r: AgentTaskResult =
+                        serde_json::from_str(&fs::read_to_string(entry.path())?)?;
+                    results.push(r);
+                }
+                results.sort_by(|a, b| {
+                    b.finished_at
+                        .cmp(&a.finished_at)
+                        .then_with(|| a.task_id.cmp(&b.task_id))
+                });
+                Ok(results)
+            }
+            Err(error) if error.kind() == ErrorKind::NotFound => Ok(Vec::new()),
+            Err(error) => Err(error.into()),
+        }
+    }
+}
+
+// ── FleetInspector ────────────────────────────────────────────────────────────
+
+/// Classification of a single fleet member task's current state.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MemberObservationClass {
+    /// Task record missing or status is `Pending`.
+    Pending,
+    /// Task is actively running.
+    Running,
+    /// Task completed successfully.
+    Completed,
+    /// Task failed, was killed, or was cancelled.
+    Failed,
+}
+
+impl MemberObservationClass {
+    /// Returns `true` when this class represents a terminal state.
+    #[must_use]
+    pub const fn is_terminal(self) -> bool {
+        matches!(self, Self::Completed | Self::Failed)
+    }
+
+    /// Human-readable label.
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Pending => "pending",
+            Self::Running => "running",
+            Self::Completed => "completed",
+            Self::Failed => "failed",
+        }
+    }
+}
+
+/// Observation for a single fleet member task.
+#[derive(Clone, Debug)]
+pub struct FleetMemberObservation {
+    /// The member's task id.
+    pub task_id: TaskId,
+    /// Derived classification from the task status.
+    pub class: MemberObservationClass,
+    /// Live task state, if readable.
+    pub task: Option<TaskState>,
+    /// Result sidecar, if available.
+    pub result: Option<AgentTaskResult>,
+}
+
+/// Snapshot observation of a fleet run and all of its member tasks.
+#[derive(Clone, Debug)]
+pub struct FleetObservation {
+    /// The observed fleet id.
+    pub fleet_id: FleetId,
+    /// The fleet run state.
+    pub fleet: wonder_of_u_core::FleetRunState,
+    /// Per-member observations (in member_task_ids order).
+    pub members: Vec<FleetMemberObservation>,
+}
+
+impl FleetObservation {
+    /// Returns `true` when every member is in a terminal state.
+    #[must_use]
+    pub fn all_terminal(&self) -> bool {
+        self.members.iter().all(|m| m.class.is_terminal())
+    }
+
+    /// Counts members by class.
+    #[must_use]
+    pub fn count_by_class(&self, class: MemberObservationClass) -> usize {
+        self.members.iter().filter(|m| m.class == class).count()
+    }
+}
+
+/// Read-only inspector that correlates fleet runs, task states, and result
+/// sidecars into a single [`FleetObservation`].
+///
+/// Concurrency-safe: each call reads files independently; no shared state is
+/// held between calls.
+#[derive(Clone, Debug)]
+pub struct FleetInspector {
+    fleet_store: FleetStore,
+    task_store: TaskStore,
+    result_store: AgentTaskResultStore,
+}
+
+impl FleetInspector {
+    /// Creates a new `FleetInspector` rooted at `base_dir`.
+    #[must_use]
+    pub fn new(base_dir: impl Into<PathBuf>) -> Self {
+        let base_dir = base_dir.into();
+        Self {
+            fleet_store: FleetStore::new(&base_dir),
+            task_store: TaskStore::new(&base_dir),
+            result_store: AgentTaskResultStore::new(&base_dir),
+        }
+    }
+
+    /// Observes a fleet run: loads its [`FleetRunState`], then for each member
+    /// task id loads the [`TaskState`] and any available [`AgentTaskResult`]
+    /// sidecar.
+    ///
+    /// Individual task / result read failures are silenced — missing records
+    /// are represented as `None` in the observation so callers can still
+    /// inspect the members that are readable.
+    pub fn observe(&self, fleet_id: FleetId) -> Result<FleetObservation> {
+        let fleet = self.fleet_store.read_run(fleet_id)?;
+        let mut members = Vec::with_capacity(fleet.member_task_ids.len());
+        for &task_id in &fleet.member_task_ids {
+            let task = self.task_store.read_task(task_id).ok();
+            let result = self.result_store.read_result(task_id).ok();
+            let class = classify_member(task.as_ref());
+            members.push(FleetMemberObservation {
+                task_id,
+                class,
+                task,
+                result,
+            });
+        }
+        Ok(FleetObservation {
+            fleet_id,
+            fleet,
+            members,
+        })
+    }
+}
+
+/// Derives a [`MemberObservationClass`] from an optional [`TaskState`].
+fn classify_member(task: Option<&TaskState>) -> MemberObservationClass {
+    match task {
+        None => MemberObservationClass::Pending,
+        Some(t) => match t.status {
+            TaskStatus::Pending => MemberObservationClass::Pending,
+            TaskStatus::Running => MemberObservationClass::Running,
+            TaskStatus::Completed => MemberObservationClass::Completed,
+            TaskStatus::Failed | TaskStatus::Killed | TaskStatus::Cancelled => {
+                MemberObservationClass::Failed
+            }
+        },
+    }
+}
+
 /// Persistent store for fleet runs and pending member requests.
 ///
 /// Layout under the storage base directory:
@@ -1629,6 +1877,282 @@ mod fleet_store_tests {
         let fleet_id = FleetId::new();
         let err = store.read_run(fleet_id).expect_err("missing");
         assert!(err.to_string().contains("not found"));
+    }
+}
+
+#[cfg(test)]
+mod agent_task_result_store_tests {
+    use time::OffsetDateTime;
+    use wonder_of_u_core::{AGENT_TASK_RESULT_SCHEMA_VERSION, AgentTaskResult, TaskId, TaskStatus};
+    use wonder_of_u_test_support::unique_test_dir;
+
+    use super::*;
+
+    fn make_store(prefix: &str) -> AgentTaskResultStore {
+        AgentTaskResultStore::new(unique_test_dir(prefix))
+    }
+
+    #[test]
+    fn write_and_read_result() {
+        let store = make_store("result-write-read");
+        let task_id = TaskId::new();
+        let result = AgentTaskResult {
+            schema_version: AGENT_TASK_RESULT_SCHEMA_VERSION,
+            task_id,
+            fleet_id: None,
+            fleet_request_id: Some("req-1".into()),
+            session_id: None,
+            status: TaskStatus::Completed,
+            output_excerpt: "summary of work".into(),
+            output_text: Some("full output text here".into()),
+            provider: Some("anthropic".into()),
+            model: None,
+            finished_at: OffsetDateTime::now_utc(),
+        };
+        store.write_result(&result).expect("write");
+        let loaded = store.read_result(task_id).expect("read");
+        assert_eq!(loaded.task_id, task_id);
+        assert_eq!(loaded.status, TaskStatus::Completed);
+        assert_eq!(loaded.fleet_request_id.as_deref(), Some("req-1"));
+        assert_eq!(loaded.output_text.as_deref(), Some("full output text here"));
+    }
+
+    #[test]
+    fn read_missing_result_returns_not_found() {
+        let store = make_store("result-missing");
+        store.ensure_layout().expect("layout");
+        let err = store.read_result(TaskId::new()).expect_err("missing");
+        assert!(err.to_string().contains("not found"));
+    }
+
+    #[test]
+    fn list_results_empty_when_dir_absent() {
+        let store = make_store("result-list-absent");
+        let results = store.list_results().expect("list");
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn list_results_sorted_by_finished_at_desc() {
+        let store = make_store("result-list-sorted");
+        for i in 0u32..3 {
+            let task_id = TaskId::new();
+            // Vary finished_at by sleeping a small amount — or use fixed offsets.
+            let finished_at = OffsetDateTime::from_unix_timestamp(1_700_000_000 + i64::from(i))
+                .expect("timestamp");
+            let r = AgentTaskResult {
+                schema_version: AGENT_TASK_RESULT_SCHEMA_VERSION,
+                task_id,
+                fleet_id: None,
+                fleet_request_id: None,
+                session_id: None,
+                status: TaskStatus::Completed,
+                output_excerpt: format!("result {i}"),
+                output_text: None,
+                provider: None,
+                model: None,
+                finished_at,
+            };
+            store.write_result(&r).expect("write");
+        }
+        let results = store.list_results().expect("list");
+        assert_eq!(results.len(), 3);
+        // Most recent first.
+        for window in results.windows(2) {
+            assert!(window[0].finished_at >= window[1].finished_at);
+        }
+    }
+
+    #[test]
+    fn failed_result_round_trips() {
+        let store = make_store("result-failed");
+        let task_id = TaskId::new();
+        let result = AgentTaskResult {
+            schema_version: AGENT_TASK_RESULT_SCHEMA_VERSION,
+            task_id,
+            fleet_id: None,
+            fleet_request_id: None,
+            session_id: None,
+            status: TaskStatus::Failed,
+            output_excerpt: String::new(),
+            output_text: None,
+            provider: None,
+            model: None,
+            finished_at: OffsetDateTime::now_utc(),
+        };
+        store.write_result(&result).expect("write");
+        let loaded = store.read_result(task_id).expect("read");
+        assert_eq!(loaded.status, TaskStatus::Failed);
+    }
+}
+
+#[cfg(test)]
+mod fleet_inspector_tests {
+    use time::OffsetDateTime;
+    use wonder_of_u_core::{
+        AGENT_TASK_RESULT_SCHEMA_VERSION, AgentTaskResult, AgentRuntime, AgentTaskState, FleetId,
+        FleetRunState, PermissionMode, TaskId, TaskKind, TaskState, TaskStatus,
+    };
+    use wonder_of_u_test_support::unique_test_dir;
+
+    use super::*;
+
+    fn setup(prefix: &str) -> (PathBuf, FleetInspector) {
+        let dir = unique_test_dir(prefix);
+        let inspector = FleetInspector::new(&dir);
+        (dir, inspector)
+    }
+
+    fn write_minimal_fleet(dir: &Path, fleet_id: FleetId, task_ids: &[TaskId]) {
+        let fleet_store = FleetStore::new(dir);
+        let mut run = FleetRunState::new("test fleet", PermissionMode::Default, None);
+        // Override the auto-generated id with the one we were given.
+        run.id = fleet_id;
+        run.member_task_ids = task_ids.to_vec();
+        fleet_store.write_run(&run).expect("write fleet");
+    }
+
+    fn write_task_with_status(dir: &Path, task_id: TaskId, status: TaskStatus) {
+        let task_store = TaskStore::new(dir);
+        let task = TaskState {
+            id: task_id,
+            kind: TaskKind::LocalAgent,
+            description: "test agent".into(),
+            status,
+            fleet_id: None,
+            fleet_request_id: None,
+            parent_id: None,
+            cwd: None,
+            command: None,
+            status_message: None,
+            pid: None,
+            process_identity: None,
+            last_heartbeat_at: None,
+            exit_code: None,
+            agent: Some(AgentTaskState {
+                name: "test".into(),
+                prompt: None,
+                provider: None,
+                model: None,
+                runtime: AgentRuntime::PromptSubprocess,
+            }),
+            remote: None,
+            output_log: None,
+            worktree_branch: None,
+            started_at: OffsetDateTime::now_utc(),
+            finished_at: if status.is_terminal() {
+                Some(OffsetDateTime::now_utc())
+            } else {
+                None
+            },
+        };
+        task_store.write_task(&task).expect("write task");
+    }
+
+    fn write_result(dir: &Path, task_id: TaskId, status: TaskStatus) {
+        let result_store = AgentTaskResultStore::new(dir);
+        let result = AgentTaskResult {
+            schema_version: AGENT_TASK_RESULT_SCHEMA_VERSION,
+            task_id,
+            fleet_id: None,
+            fleet_request_id: None,
+            session_id: None,
+            status,
+            output_excerpt: "done".into(),
+            output_text: None,
+            provider: None,
+            model: None,
+            finished_at: OffsetDateTime::now_utc(),
+        };
+        result_store.write_result(&result).expect("write result");
+    }
+
+    #[test]
+    fn observe_pending_task_classified_pending() {
+        let (dir, inspector) = setup("inspector-pending");
+        let fleet_id = FleetId::new();
+        let task_id = TaskId::new();
+        write_minimal_fleet(&dir, fleet_id, &[task_id]);
+        write_task_with_status(&dir, task_id, TaskStatus::Pending);
+
+        let obs = inspector.observe(fleet_id).expect("observe");
+        assert_eq!(obs.members.len(), 1);
+        assert_eq!(obs.members[0].class, MemberObservationClass::Pending);
+    }
+
+    #[test]
+    fn observe_running_task_classified_running() {
+        let (dir, inspector) = setup("inspector-running");
+        let fleet_id = FleetId::new();
+        let task_id = TaskId::new();
+        write_minimal_fleet(&dir, fleet_id, &[task_id]);
+        write_task_with_status(&dir, task_id, TaskStatus::Running);
+
+        let obs = inspector.observe(fleet_id).expect("observe");
+        assert_eq!(obs.members[0].class, MemberObservationClass::Running);
+        assert!(!obs.all_terminal());
+    }
+
+    #[test]
+    fn observe_completed_task_with_result_sidecar() {
+        let (dir, inspector) = setup("inspector-completed");
+        let fleet_id = FleetId::new();
+        let task_id = TaskId::new();
+        write_minimal_fleet(&dir, fleet_id, &[task_id]);
+        write_task_with_status(&dir, task_id, TaskStatus::Completed);
+        write_result(&dir, task_id, TaskStatus::Completed);
+
+        let obs = inspector.observe(fleet_id).expect("observe");
+        assert_eq!(obs.members[0].class, MemberObservationClass::Completed);
+        assert!(obs.members[0].result.is_some());
+        assert!(obs.all_terminal());
+    }
+
+    #[test]
+    fn observe_failed_task_classified_failed() {
+        let (dir, inspector) = setup("inspector-failed");
+        let fleet_id = FleetId::new();
+        let task_id = TaskId::new();
+        write_minimal_fleet(&dir, fleet_id, &[task_id]);
+        write_task_with_status(&dir, task_id, TaskStatus::Failed);
+
+        let obs = inspector.observe(fleet_id).expect("observe");
+        assert_eq!(obs.members[0].class, MemberObservationClass::Failed);
+        assert!(obs.all_terminal());
+    }
+
+    #[test]
+    fn observe_missing_task_classified_pending() {
+        // Task id listed in fleet but no task file written yet.
+        let (dir, inspector) = setup("inspector-no-task");
+        let fleet_id = FleetId::new();
+        let task_id = TaskId::new();
+        write_minimal_fleet(&dir, fleet_id, &[task_id]);
+        // Do NOT write a task file.
+
+        let obs = inspector.observe(fleet_id).expect("observe");
+        assert_eq!(obs.members[0].class, MemberObservationClass::Pending);
+        assert!(obs.members[0].task.is_none());
+        assert!(obs.members[0].result.is_none());
+    }
+
+    #[test]
+    fn observe_count_by_class_aggregates_correctly() {
+        let (dir, inspector) = setup("inspector-counts");
+        let fleet_id = FleetId::new();
+        let t1 = TaskId::new();
+        let t2 = TaskId::new();
+        let t3 = TaskId::new();
+        write_minimal_fleet(&dir, fleet_id, &[t1, t2, t3]);
+        write_task_with_status(&dir, t1, TaskStatus::Completed);
+        write_task_with_status(&dir, t2, TaskStatus::Failed);
+        write_task_with_status(&dir, t3, TaskStatus::Running);
+
+        let obs = inspector.observe(fleet_id).expect("observe");
+        assert_eq!(obs.count_by_class(MemberObservationClass::Completed), 1);
+        assert_eq!(obs.count_by_class(MemberObservationClass::Failed), 1);
+        assert_eq!(obs.count_by_class(MemberObservationClass::Running), 1);
+        assert!(!obs.all_terminal());
     }
 }
 /// Stores paste store

@@ -10,6 +10,7 @@ mod communication_tools;
 mod cron_remote;
 mod extended;
 mod files;
+mod fleet_tools;
 mod orchestration;
 mod plan_tool;
 mod search;
@@ -35,6 +36,8 @@ use wonder_of_u_core::{FeatureFlag, Result, Tool, ToolKind, ToolRegistry, ToolSp
 pub use agent_tool::{AgentInput, AgentTool};
 /// Re-exports items from `ask_user_tool`
 pub use ask_user_tool::{AskUserInput, AskUserTool};
+/// Re-exports items from `fleet_tools`
+pub use fleet_tools::{FleetResultsInput, FleetResultsTool, FleetWaitInput, FleetWaitTool};
 /// Re-exports items from `bash`
 pub use bash::{BashInput, BashTool};
 /// Re-exports items from `communication_tools`
@@ -162,6 +165,8 @@ pub fn builtin_tools() -> Vec<Arc<dyn Tool>> {
         Arc::new(TaskStopTool),
         Arc::new(SkillTool),
         Arc::new(AgentTool),
+        Arc::new(FleetResultsTool),
+        Arc::new(FleetWaitTool),
         Arc::new(SendMessageTool),
         Arc::new(TeamCreateTool),
         Arc::new(TeamDeleteTool),
@@ -356,6 +361,8 @@ mod tests {
                 "task_stop",
                 "skill",
                 "agent",
+                "fleet_results",
+                "fleet_wait",
                 "send_message",
                 "team_create",
                 "team_delete",

@@ -12,6 +12,60 @@ use time::OffsetDateTime;
 
 use crate::{FleetId, PermissionMode, TaskId, TaskStatus};
 
+// ── Agent task result ────────────────────────────────────────────────────────
+
+/// Schema version for [`AgentTaskResult`] sidecar files.
+pub const AGENT_TASK_RESULT_SCHEMA_VERSION: u16 = 1;
+
+fn default_agent_task_result_schema_version() -> u16 {
+    AGENT_TASK_RESULT_SCHEMA_VERSION
+}
+
+/// Sidecar record written when a prompt-subprocess agent completes.
+///
+/// Stored at `tasks/results/{task_id}.json` by the `prompt` command path
+/// when the subprocess detects that it is running as a fleet agent task
+/// (i.e. `WONDER_OF_U_TASK_ID` env var is set).
+///
+/// # Back-compatibility
+///
+/// All optional fields use `#[serde(default, skip_serializing_if)]` so older
+/// readers that do not know a new field will silently ignore it.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct AgentTaskResult {
+    /// Storage schema guard – always [`AGENT_TASK_RESULT_SCHEMA_VERSION`].
+    #[serde(default = "default_agent_task_result_schema_version")]
+    pub schema_version: u16,
+    /// The agent [`TaskId`] this result belongs to.
+    pub task_id: TaskId,
+    /// Fleet run the task was part of, if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fleet_id: Option<FleetId>,
+    /// Fleet member request id that triggered this task, if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fleet_request_id: Option<String>,
+    /// Session id for the agent's conversation, if captured.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
+    /// Terminal status of the task.
+    pub status: TaskStatus,
+    /// Short excerpt of the agent's last assistant output (≤ 300 chars).
+    #[serde(default)]
+    pub output_excerpt: String,
+    /// Full assistant output text, if available.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_text: Option<String>,
+    /// Provider used for this agent run.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
+    /// Model used for this agent run.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    /// When the agent completed (UTC).
+    #[serde(with = "time::serde::rfc3339")]
+    pub finished_at: OffsetDateTime,
+}
+
 // ── Worktree isolation types ─────────────────────────────────────────────────
 
 /// Isolation mode for a fleet agent member.
@@ -249,6 +303,18 @@ pub struct FleetMemberRequest {
     /// `fleet dispatch` skips requests with a non-empty `depends_on`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub depends_on: Vec<String>,
+    /// Task id of the parent agent that queued this request, if any.
+    ///
+    /// Set by the `agent` tool when the caller is itself an agent subprocess
+    /// (detected via `WONDER_OF_U_TASK_ID` env var).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_task_id: Option<TaskId>,
+    /// Explicit allowed-tool list to pass to the spawned agent subprocess.
+    ///
+    /// When `None` the dispatcher applies the role's tool restrictions (if any)
+    /// or leaves the subprocess unrestricted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub allowed_tools: Option<Vec<String>>,
     /// Optional worktree isolation configuration for this member.
     ///
     /// When set, `fleet dispatch` / `fleet reconcile` creates (or resumes) a
@@ -275,6 +341,8 @@ impl FleetMemberRequest {
             provider: None,
             cwd: None,
             depends_on: Vec::new(),
+            parent_task_id: None,
+            allowed_tools: None,
             isolation: None,
             queued_at: OffsetDateTime::now_utc(),
         }
@@ -579,5 +647,122 @@ mod tests {
         let req: FleetMemberRequest =
             serde_json::from_value(raw).expect("deserialize legacy request");
         assert!(req.isolation.is_none());
+    }
+
+    // ── FleetMemberRequest new fields ─────────────────────────────────────────
+
+    #[test]
+    fn fleet_member_request_parent_task_id_round_trips() {
+        let parent = TaskId::new();
+        let mut req = FleetMemberRequest::new("child task");
+        req.parent_task_id = Some(parent);
+
+        let json = serde_json::to_string(&req).expect("serialize");
+        let decoded: FleetMemberRequest = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(decoded.parent_task_id, Some(parent));
+    }
+
+    #[test]
+    fn fleet_member_request_allowed_tools_round_trips() {
+        let mut req = FleetMemberRequest::new("restricted task");
+        req.allowed_tools = Some(vec!["bash".into(), "read_file".into()]);
+
+        let json = serde_json::to_string(&req).expect("serialize");
+        let decoded: FleetMemberRequest = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(
+            decoded.allowed_tools.as_deref(),
+            Some(["bash".to_string(), "read_file".to_string()].as_slice())
+        );
+    }
+
+    #[test]
+    fn fleet_member_request_none_parent_and_tools_not_serialized() {
+        let req = FleetMemberRequest::new("plain task");
+        let json = serde_json::to_string(&req).expect("serialize");
+        assert!(!json.contains("parent_task_id"), "should be omitted: {json}");
+        assert!(!json.contains("allowed_tools"), "should be omitted: {json}");
+    }
+
+    #[test]
+    fn fleet_member_request_old_json_missing_lineage_fields_deserializes() {
+        // Simulate a request written before parent_task_id / allowed_tools existed.
+        let raw = serde_json::json!({
+            "id": "550e8400-e29b-41d4-a716-446655440001",
+            "prompt": "legacy prompt",
+            "queued_at": "2025-01-01T00:00:00Z"
+        });
+        let req: FleetMemberRequest =
+            serde_json::from_value(raw).expect("deserialize request without lineage fields");
+        assert!(req.parent_task_id.is_none());
+        assert!(req.allowed_tools.is_none());
+    }
+
+    // ── AgentTaskResult serde ─────────────────────────────────────────────────
+
+    #[test]
+    fn agent_task_result_serde_round_trip() {
+        use time::OffsetDateTime;
+        let task_id = TaskId::new();
+        let fleet_id = FleetId::new();
+        let result = AgentTaskResult {
+            schema_version: AGENT_TASK_RESULT_SCHEMA_VERSION,
+            task_id,
+            fleet_id: Some(fleet_id),
+            fleet_request_id: Some("req-abc".into()),
+            session_id: Some("sess-xyz".into()),
+            status: TaskStatus::Completed,
+            output_excerpt: "hello world".into(),
+            output_text: Some("hello world full output".into()),
+            provider: Some("anthropic".into()),
+            model: Some("claude-opus-4-5".into()),
+            finished_at: OffsetDateTime::now_utc(),
+        };
+
+        let json = serde_json::to_string(&result).expect("serialize");
+        let decoded: AgentTaskResult = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(decoded.task_id, task_id);
+        assert_eq!(decoded.fleet_id, Some(fleet_id));
+        assert_eq!(decoded.fleet_request_id.as_deref(), Some("req-abc"));
+        assert_eq!(decoded.status, TaskStatus::Completed);
+        assert_eq!(decoded.schema_version, AGENT_TASK_RESULT_SCHEMA_VERSION);
+    }
+
+    #[test]
+    fn agent_task_result_minimal_json_deserializes() {
+        // Minimum valid JSON with only required fields.
+        let task_id = TaskId::new();
+        let raw = serde_json::json!({
+            "task_id": task_id.to_string(),
+            "status": "completed",
+            "finished_at": "2025-01-01T00:00:00Z"
+        });
+        let result: AgentTaskResult =
+            serde_json::from_value(raw).expect("deserialize minimal AgentTaskResult");
+        assert_eq!(result.task_id, task_id);
+        assert_eq!(result.schema_version, AGENT_TASK_RESULT_SCHEMA_VERSION);
+        assert!(result.fleet_id.is_none());
+        assert!(result.output_text.is_none());
+    }
+
+    #[test]
+    fn agent_task_result_optional_fields_not_serialized_when_none() {
+        use time::OffsetDateTime;
+        let result = AgentTaskResult {
+            schema_version: AGENT_TASK_RESULT_SCHEMA_VERSION,
+            task_id: TaskId::new(),
+            fleet_id: None,
+            fleet_request_id: None,
+            session_id: None,
+            status: TaskStatus::Failed,
+            output_excerpt: String::new(),
+            output_text: None,
+            provider: None,
+            model: None,
+            finished_at: OffsetDateTime::now_utc(),
+        };
+        let json = serde_json::to_string(&result).expect("serialize");
+        assert!(!json.contains("fleet_id"), "absent fleet_id should be omitted: {json}");
+        assert!(!json.contains("output_text"), "absent output_text should be omitted: {json}");
+        assert!(!json.contains("\"provider\""), "absent provider should be omitted: {json}");
     }
 }
