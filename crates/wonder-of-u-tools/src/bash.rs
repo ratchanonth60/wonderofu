@@ -559,10 +559,7 @@ mod tests {
         // specific var is acceptable because each call to unique_test_dir returns
         // a distinct path, and the var is read only once per execute() call.
         unsafe {
-            std::env::set_var(
-                "WONDER_OF_U_STORAGE_DIR",
-                storage_dir.display().to_string(),
-            );
+            std::env::set_var("WONDER_OF_U_STORAGE_DIR", storage_dir.display().to_string());
         }
 
         let dir = unique_test_dir("tools-bash-background");

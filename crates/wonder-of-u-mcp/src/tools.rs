@@ -203,9 +203,7 @@ impl Tool for McpResourceReadTool {
         let root = storage_root()?;
         let content = match (&input.resource_name, &input.server, &input.uri) {
             // Direct read by server + URI (upstream ReadMcpResourceTool parity).
-            (None, Some(server), Some(uri)) => {
-                read_resource_by_server_uri(&root, server, uri)?
-            }
+            (None, Some(server), Some(uri)) => read_resource_by_server_uri(&root, server, uri)?,
             // Catalog search by qualified name.
             _ => {
                 let name = input.resource_name.as_deref().expect("validated");
@@ -260,7 +258,11 @@ fn read_resource_in_storage(storage_root: &Path, resource_name: &str) -> Result<
 ///
 /// This mirrors the upstream `ReadMcpResourceTool { server, uri }` dispatch path and lets
 /// callers skip the full catalog round-trip when they already know the resource address.
-fn read_resource_by_server_uri(storage_root: &Path, server_name: &str, uri: &str) -> Result<String> {
+fn read_resource_by_server_uri(
+    storage_root: &Path,
+    server_name: &str,
+    uri: &str,
+) -> Result<String> {
     let store = McpConfigStore::new(storage_root);
     let config = store.read()?;
 
