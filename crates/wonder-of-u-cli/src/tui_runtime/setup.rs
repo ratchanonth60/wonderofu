@@ -136,8 +136,17 @@ impl ProviderFormState {
 pub(super) enum SetupItemAction {
     /// Execute a slash-command to open an existing flow (e.g. `/model`).
     Dispatch(String),
-    /// Show a placeholder notice while the full form is deferred.
+    /// Show a placeholder notice while the full TUI form is not yet implemented.
+    ///
+    /// Distinct from [`Deferred`] — these items are locally applicable and will
+    /// eventually get a first-class TUI flow; they are simply not built yet.
     Placeholder(String),
+    /// Item intentionally not implemented because it is a cloud/remote-only feature.
+    ///
+    /// Rendered with a `"deferred"` badge to distinguish from items that are merely
+    /// not-yet-implemented.  Upstream cloud/telemetry screens (Grove, telemetry,
+    /// auto-mode, channels, chrome-onboarding, bypass-permissions) fall here.
+    Deferred(String),
     /// Open the two-stage provider form to collect an API key or base URL.
     ProviderForm(ProviderFormKind),
     /// Open the Copilot device-code OAuth dialog.
@@ -200,24 +209,87 @@ impl SetupOverlayState {
 
 /// Maps a setup menu item `id` to its concrete [`SetupItemAction`].
 ///
-/// Items with existing TUI flows resolve to `Dispatch("/<command>")`.
-/// Items with native provider forms resolve to `ProviderForm(kind)`.
-/// Deferred items carry a descriptive `Placeholder` message.
+/// Items with existing TUI flows resolve to [`SetupItemAction::Dispatch`].
+/// Items with native provider forms resolve to [`SetupItemAction::ProviderForm`].
+/// Items that are local-first but lack a TUI form yet use [`SetupItemAction::Placeholder`].
+/// Cloud-only / remote-only upstream features use [`SetupItemAction::Deferred`] and
+/// are tagged `"deferred"` in the picker so users understand they are intentionally
+/// out-of-scope for this local-first TUI, not simply unfinished.
 pub(super) fn action_for_item_id(id: &str, _command: &str) -> SetupItemAction {
     match id {
+        // ── Local-first dispatch flows (existing TUI pickers) ─────────────────
         "model" => SetupItemAction::Dispatch("/model".into()),
         "theme" => SetupItemAction::Dispatch("/theme".into()),
         "permissions" => SetupItemAction::Dispatch("/permissions".into()),
         "memory" => SetupItemAction::Dispatch("/memory".into()),
         "terminal-setup" => SetupItemAction::Dispatch("/terminal-setup".into()),
         "keybindings" => SetupItemAction::Dispatch("/keybindings".into()),
+
+        // Re-dispatch onboarding back to /setup — the setup hub *is* the TUI
+        // onboarding wizard; no separate first-run screen is needed.
+        "onboarding" => SetupItemAction::Dispatch("/setup".into()),
+
+        // ── Provider login / base-URL forms ───────────────────────────────────
         // Opens the two-stage API-key entry form.
         "login" => SetupItemAction::ProviderForm(ProviderFormKind::ApiKey),
-        // Opens the two-stage API-base URL override form.
+        // "api-key" is an upstream alias for the same API-key entry flow.
+        "api-key" => SetupItemAction::ProviderForm(ProviderFormKind::ApiKey),
+        // Opens the two-stage API-base URL override form (also used by local providers
+        // such as Ollama and Llama.cpp that expose an OpenAI-compatible endpoint).
         "api-base" => SetupItemAction::ProviderForm(ProviderFormKind::ApiBase),
-        // Copilot OAuth uses the built-in device-code flow.
+        // Local-provider (Ollama / Llama.cpp) setup: the only knob the TUI can
+        // configure is the base URL, so we reuse the ApiBase form.
+        "local-provider" => SetupItemAction::ProviderForm(ProviderFormKind::ApiBase),
+
+        // ── Copilot OAuth ─────────────────────────────────────────────────────
         "copilot-oauth" => SetupItemAction::CopilotOAuth,
-        _ => SetupItemAction::Placeholder(format!("'{id}' setup is not yet available in the TUI.")),
+
+        // ── Trust — implicit in the local-first TUI ───────────────────────────
+        // Upstream shows a workspace-trust dialog; in the TUI the user is
+        // already running the binary locally, so trust is granted implicitly.
+        "trust" => SetupItemAction::Placeholder(
+            "Workspace trust is accepted implicitly in the local-first TUI. \
+             No action required."
+                .into(),
+        ),
+
+        // ── Intentionally deferred: cloud / remote-only upstream features ─────
+        // These items exist in the upstream Ink UI but are out-of-scope for the
+        // local-first TUI.  They get the `"deferred"` badge in the picker.
+        "grove" => SetupItemAction::Deferred(
+            "Grove (cloud sync) is a remote feature not applicable to the \
+             local-first TUI."
+                .into(),
+        ),
+        "telemetry" => SetupItemAction::Deferred(
+            "Telemetry opt-in is a cloud/remote feature not applicable to the \
+             local-first TUI."
+                .into(),
+        ),
+        "bypass-permissions" => SetupItemAction::Deferred(
+            "Bypass-permissions is a cloud-managed feature not applicable to the \
+             local-first TUI."
+                .into(),
+        ),
+        "auto-mode" => SetupItemAction::Deferred(
+            "Auto-mode is a cloud feature not applicable to the local-first TUI.".into(),
+        ),
+        "channels" => SetupItemAction::Deferred(
+            "Release channels are a cloud/remote feature not applicable to the \
+             local-first TUI."
+                .into(),
+        ),
+        "chrome-onboarding" => SetupItemAction::Deferred(
+            "Chrome onboarding is a cloud feature not applicable to the \
+             local-first TUI."
+                .into(),
+        ),
+
+        // ── Catch-all for any unrecognised future IDs ─────────────────────────
+        _ => SetupItemAction::Placeholder(format!(
+            "'{id}' setup is not yet available in the TUI. \
+             Run /help to see available commands."
+        )),
     }
 }
 
@@ -284,6 +356,105 @@ mod tests {
                 msg.contains("totally-unknown-xyz"),
                 "placeholder message should name the unknown id; got: {msg:?}"
             );
+        }
+    }
+
+    // ── New local-first parity items ──────────────────────────────────────────
+
+    /// `"onboarding"` re-dispatches to `/setup` so that the TUI setup hub
+    /// serves as the onboarding wizard (no separate first-run screen needed).
+    #[test]
+    fn action_for_item_id_onboarding_dispatches_setup() {
+        let action = action_for_item_id("onboarding", "/setup");
+        assert_eq!(
+            action,
+            SetupItemAction::Dispatch("/setup".into()),
+            "'onboarding' should re-dispatch to /setup; got {action:?}"
+        );
+    }
+
+    /// `"api-key"` is an upstream alias for the API-key entry form; it must
+    /// behave identically to `"login"`.
+    #[test]
+    fn action_for_item_id_api_key_alias_opens_api_key_form() {
+        let action = action_for_item_id("api-key", "/setup");
+        assert_eq!(
+            action,
+            SetupItemAction::ProviderForm(ProviderFormKind::ApiKey),
+            "'api-key' alias must open ProviderForm(ApiKey); got {action:?}"
+        );
+    }
+
+    /// `"local-provider"` (Ollama/Llama.cpp) uses the `ApiBase` form because
+    /// the only configurable knob is the base URL.
+    #[test]
+    fn action_for_item_id_local_provider_opens_api_base_form() {
+        let action = action_for_item_id("local-provider", "/setup");
+        assert_eq!(
+            action,
+            SetupItemAction::ProviderForm(ProviderFormKind::ApiBase),
+            "'local-provider' must open ProviderForm(ApiBase); got {action:?}"
+        );
+    }
+
+    /// `"trust"` resolves to a `Placeholder` that explains trust is implicit —
+    /// not a `Deferred` (it is locally applicable, just no UI form is needed).
+    #[test]
+    fn action_for_item_id_trust_returns_placeholder_with_explanation() {
+        let action = action_for_item_id("trust", "/setup");
+        match &action {
+            SetupItemAction::Placeholder(msg) => {
+                assert!(
+                    msg.contains("implicit"),
+                    "trust placeholder must explain it is implicit; got: {msg:?}"
+                );
+            }
+            other => panic!("'trust' should be Placeholder, got {other:?}"),
+        }
+    }
+
+    /// Each intentionally-deferred cloud/remote item must resolve to `Deferred`
+    /// and the message must name the feature being deferred.
+    #[test]
+    fn action_for_item_id_deferred_cloud_items() {
+        let deferred_cases = [
+            ("grove", "Grove"),
+            ("telemetry", "Telemetry"),
+            ("bypass-permissions", "Bypass-permissions"),
+            ("auto-mode", "Auto-mode"),
+            ("channels", "Release channels"),
+            ("chrome-onboarding", "Chrome onboarding"),
+        ];
+        for (id, expected_mention) in deferred_cases {
+            let action = action_for_item_id(id, "/setup");
+            match &action {
+                SetupItemAction::Deferred(msg) => {
+                    assert!(
+                        msg.contains(expected_mention),
+                        "deferred message for '{id}' should mention '{expected_mention}'; got: {msg:?}"
+                    );
+                }
+                other => panic!("'{id}' should be Deferred, got {other:?}"),
+            }
+        }
+    }
+
+    /// The catch-all message for truly unknown IDs must reference the unknown
+    /// id and suggest `/help`.
+    #[test]
+    fn action_for_item_id_unknown_id_catch_all_mentions_help() {
+        let action = action_for_item_id("unknown-future-feature", "/setup");
+        if let SetupItemAction::Placeholder(msg) = &action {
+            assert!(
+                msg.contains("unknown-future-feature"),
+                "catch-all must name the unknown id; got: {msg:?}"
+            );
+            assert!(
+                msg.contains("/help"),
+                "catch-all must suggest /help; got: {msg:?}"
+            );
+        } else {
+            panic!("unknown id should give Placeholder; got {action:?}");
         }
     }
 

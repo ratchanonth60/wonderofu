@@ -7615,3 +7615,395 @@ fn doctor_output_includes_all_provider_env_hints() {
         "local provider must show no_auth_required hint; got:\n{output}"
     );
 }
+
+// ── Setup parity: new local-first item routing ────────────────────────────────
+
+/// Helper: create a `SetupOverlayState` containing exactly one item with the
+/// given id/action, then open it on a fresh controller.
+fn controller_with_synthetic_setup_item(
+    item_id: &str,
+    item_label: &str,
+    action: crate::tui_runtime::setup::SetupItemAction,
+) -> (TuiController<'static>, PathBuf) {
+    use crate::tui_runtime::setup::{SetupItem, SetupOverlayState};
+
+    let dir = unique_test_dir("tui-setup-synthetic");
+    let registry = Box::new(commands::registry(Some(dir.clone())).expect("registry"));
+    let registry: &'static _ = Box::leak(registry);
+    let mut controller = TuiController::new(
+        test_context(&dir),
+        registry,
+        Some(dir.as_path()),
+        TuiLaunchOptions { session_id: None },
+    )
+    .expect("controller");
+    controller.pending_setup_overlay = Some(SetupOverlayState::new(
+        vec![SetupItem {
+            id: item_id.into(),
+            label: item_label.into(),
+            description: String::new(),
+            action,
+        }],
+        "test-provider".into(),
+        "ready".into(),
+    ));
+    (controller, dir)
+}
+
+/// `"api-key"` (upstream alias) must open the `ProviderForm(ApiKey)` flow, not a
+/// placeholder — verifies parity with the `"login"` alias.
+#[test]
+fn setup_overlay_action_for_api_key_alias_opens_provider_form() {
+    use crate::tui_runtime::setup::{ProviderFormKind, SetupItemAction};
+
+    let (mut controller, _dir) = controller_with_synthetic_setup_item(
+        "api-key",
+        "API Key",
+        SetupItemAction::ProviderForm(ProviderFormKind::ApiKey),
+    );
+
+    send_dialog_key(
+        &mut controller,
+        picker_key(KeyCode::Enter),
+        Some(ResolvedKey::Edit(EditAction::InsertNewline)),
+    );
+
+    assert!(
+        controller.pending_setup_overlay.is_none(),
+        "setup overlay should close after Enter"
+    );
+    assert!(
+        controller.pending_provider_form.is_some(),
+        "'api-key' item must open provider form"
+    );
+    let form = controller.pending_provider_form.as_ref().unwrap();
+    assert_eq!(form.kind, ProviderFormKind::ApiKey);
+}
+
+/// `"local-provider"` (Ollama / Llama.cpp) must open the `ProviderForm(ApiBase)`
+/// flow — the only TUI-configurable knob for local providers is the base URL.
+#[test]
+fn setup_overlay_action_for_local_provider_opens_api_base_form() {
+    use crate::tui_runtime::setup::{ProviderFormKind, SetupItemAction};
+
+    let (mut controller, _dir) = controller_with_synthetic_setup_item(
+        "local-provider",
+        "Local Provider",
+        SetupItemAction::ProviderForm(ProviderFormKind::ApiBase),
+    );
+
+    send_dialog_key(
+        &mut controller,
+        picker_key(KeyCode::Enter),
+        Some(ResolvedKey::Edit(EditAction::InsertNewline)),
+    );
+
+    assert!(
+        controller.pending_setup_overlay.is_none(),
+        "setup overlay should close after Enter"
+    );
+    assert!(
+        controller.pending_provider_form.is_some(),
+        "'local-provider' item must open provider form"
+    );
+    let form = controller.pending_provider_form.as_ref().unwrap();
+    assert_eq!(form.kind, ProviderFormKind::ApiBase);
+}
+
+/// Deferred items (cloud/remote-only) must carry the `"deferred"` badge in the
+/// picker list and show a notice dialog (not a provider form) when confirmed.
+#[test]
+fn setup_overlay_deferred_item_shows_deferred_tag_and_notice() {
+    use crate::tui_runtime::setup::SetupItemAction;
+
+    let deferred_msg =
+        "Grove (cloud sync) is a remote feature not applicable to the local-first TUI.";
+    let (mut controller, _dir) = controller_with_synthetic_setup_item(
+        "grove",
+        "Grove",
+        SetupItemAction::Deferred(deferred_msg.into()),
+    );
+
+    // Confirm the tag is "deferred" in the picker view before confirming.
+    {
+        let picker = controller
+            .current_picker_list_view()
+            .expect("picker list must be present while setup overlay is open");
+        let entry = picker.entries.first().expect("at least one entry");
+        assert_eq!(
+            entry.tag.as_deref(),
+            Some("deferred"),
+            "deferred action must produce 'deferred' tag; got {:?}",
+            entry.tag
+        );
+    }
+
+    // Confirm: setup overlay closes and a notice dialog appears.
+    send_dialog_key(
+        &mut controller,
+        picker_key(KeyCode::Enter),
+        Some(ResolvedKey::Edit(EditAction::InsertNewline)),
+    );
+
+    assert!(
+        controller.pending_setup_overlay.is_none(),
+        "setup overlay must close after confirming a deferred item"
+    );
+    assert!(
+        controller.dialog.is_some(),
+        "a notice dialog must appear for a deferred item"
+    );
+    assert!(
+        controller.pending_provider_form.is_none(),
+        "provider form must NOT open for a deferred item"
+    );
+
+    // Status note must mention "deferred".
+    let note = controller.status_note.clone().unwrap_or_default();
+    assert!(
+        note.contains("deferred"),
+        "status note must mention 'deferred'; got: {note:?}"
+    );
+}
+
+/// `"trust"` resolves to a `Placeholder` (not `Deferred`) and shows a notice
+/// explaining that trust is implicit in the local-first TUI.
+#[test]
+fn setup_overlay_trust_item_shows_coming_soon_tag_and_notice() {
+    use crate::tui_runtime::setup::SetupItemAction;
+
+    let (mut controller, _dir) = controller_with_synthetic_setup_item(
+        "trust",
+        "Workspace Trust",
+        SetupItemAction::Placeholder(
+            "Workspace trust is accepted implicitly in the local-first TUI. \
+             No action required."
+                .into(),
+        ),
+    );
+
+    // Placeholder items show "coming soon" (local, not yet built — unlike cloud deferred).
+    {
+        let picker = controller
+            .current_picker_list_view()
+            .expect("picker list present");
+        let entry = picker.entries.first().expect("entry");
+        assert_eq!(
+            entry.tag.as_deref(),
+            Some("coming soon"),
+            "trust Placeholder must show 'coming soon' tag; got {:?}",
+            entry.tag
+        );
+    }
+
+    // Confirm: a notice dialog appears (not a form).
+    send_dialog_key(
+        &mut controller,
+        picker_key(KeyCode::Enter),
+        Some(ResolvedKey::Edit(EditAction::InsertNewline)),
+    );
+
+    assert!(
+        controller.dialog.is_some(),
+        "notice dialog must appear for trust item"
+    );
+    assert!(
+        controller.pending_provider_form.is_none(),
+        "no form for trust item"
+    );
+}
+
+/// `action_for_item_id("onboarding", …)` must return `Dispatch("/setup")`.
+/// This is verified via the unit module but also sanity-checked here at the
+/// integration level.
+#[test]
+fn setup_item_action_for_onboarding_is_dispatch_setup() {
+    use crate::tui_runtime::setup::{SetupItemAction, action_for_item_id};
+
+    let action = action_for_item_id("onboarding", "/setup");
+    assert_eq!(
+        action,
+        SetupItemAction::Dispatch("/setup".into()),
+        "'onboarding' must dispatch to /setup; got {action:?}"
+    );
+}
+
+/// `action_for_item_id("api-key", …)` must equal `ProviderForm(ApiKey)`.
+#[test]
+fn setup_item_action_for_api_key_alias_is_provider_form() {
+    use crate::tui_runtime::setup::{ProviderFormKind, SetupItemAction, action_for_item_id};
+
+    let action = action_for_item_id("api-key", "/setup");
+    assert_eq!(
+        action,
+        SetupItemAction::ProviderForm(ProviderFormKind::ApiKey),
+        "'api-key' must be ProviderForm(ApiKey); got {action:?}"
+    );
+}
+
+/// `action_for_item_id("local-provider", …)` must equal `ProviderForm(ApiBase)`.
+#[test]
+fn setup_item_action_for_local_provider_is_api_base_form() {
+    use crate::tui_runtime::setup::{ProviderFormKind, SetupItemAction, action_for_item_id};
+
+    let action = action_for_item_id("local-provider", "/setup");
+    assert_eq!(
+        action,
+        SetupItemAction::ProviderForm(ProviderFormKind::ApiBase),
+        "'local-provider' must be ProviderForm(ApiBase); got {action:?}"
+    );
+}
+
+/// All six intentionally-deferred cloud IDs must resolve to `Deferred`, not
+/// `Placeholder` or anything else.
+#[test]
+fn setup_item_action_deferred_cloud_ids_return_deferred_variant() {
+    use crate::tui_runtime::setup::{SetupItemAction, action_for_item_id};
+
+    for id in &[
+        "grove",
+        "telemetry",
+        "bypass-permissions",
+        "auto-mode",
+        "channels",
+        "chrome-onboarding",
+    ] {
+        let action = action_for_item_id(id, "/setup");
+        assert!(
+            matches!(action, SetupItemAction::Deferred(_)),
+            "'{id}' must be Deferred; got {action:?}"
+        );
+    }
+}
+
+// ── provider_form_picker_view: stage rendering ────────────────────────────────
+
+/// Stage 1 (`PickProvider`) must render a titled picker listing at least one
+/// provider entry; none should be tagged.
+#[test]
+fn provider_form_picker_view_stage1_shows_provider_list() {
+    let (mut controller, _dir) = open_setup_overlay_controller();
+    controller.open_provider_form(crate::tui_runtime::setup::ProviderFormKind::ApiKey);
+
+    let view = controller
+        .current_picker_list_view()
+        .expect("picker list present in stage-1");
+
+    assert!(
+        view.title.contains("API Key"),
+        "stage-1 title must include 'API Key'; got {:?}",
+        view.title
+    );
+    assert!(
+        !view.entries.is_empty(),
+        "stage-1 must list at least one provider"
+    );
+    // In stage-1 no entry should carry a tag (tag is only set on stage-2 selected row).
+    for entry in &view.entries {
+        assert!(
+            entry.tag.is_none(),
+            "stage-1 entries must have no tag; {:?} has tag {:?}",
+            entry.label,
+            entry.tag
+        );
+    }
+}
+
+/// Stage 2 (`EnterValue`) for `ApiKey` must mask input as bullets and show
+/// the selected provider with a `"selected"` tag.
+#[test]
+fn provider_form_picker_view_stage2_api_key_masked_and_tagged() {
+    use crate::tui_runtime::setup::ProviderFormStage;
+
+    let (mut controller, _dir) = open_setup_overlay_controller();
+    controller.open_provider_form(crate::tui_runtime::setup::ProviderFormKind::ApiKey);
+
+    // Advance to stage-2 with Tab.
+    send_dialog_key(&mut controller, picker_key(KeyCode::Tab), None);
+    {
+        let form = controller
+            .pending_provider_form
+            .as_ref()
+            .expect("form open");
+        assert_eq!(
+            form.stage,
+            ProviderFormStage::EnterValue,
+            "must be in stage-2"
+        );
+    }
+
+    // Type a fake key.
+    for c in "sk-testXYZ".chars() {
+        send_dialog_key(
+            &mut controller,
+            picker_key(KeyCode::Char(c)),
+            Some(ResolvedKey::InsertChar(c)),
+        );
+    }
+
+    let view = controller
+        .current_picker_list_view()
+        .expect("picker list present in stage-2");
+
+    // query (displayed in input box) must be fully masked bullets.
+    assert!(
+        !view.query.contains("sk-testXYZ"),
+        "stage-2 query must not contain raw key; got {:?}",
+        view.query
+    );
+    assert!(
+        view.query.chars().all(|c| c == '\u{2022}'),
+        "stage-2 query must be all bullet characters; got {:?}",
+        view.query
+    );
+
+    // The selected-provider row must carry a "selected" tag.
+    let tagged = view.entries.iter().find(|e| e.tag.is_some());
+    assert!(
+        tagged.is_some(),
+        "stage-2 must have a 'selected' tagged entry"
+    );
+    assert_eq!(
+        tagged.unwrap().tag.as_deref(),
+        Some("selected"),
+        "tagged entry must have tag 'selected'"
+    );
+}
+
+/// Stage 2 for `ApiBase` must show the URL in plain text (not masked).
+#[test]
+fn provider_form_picker_view_stage2_api_base_shows_plain_url() {
+    use crate::tui_runtime::setup::ProviderFormStage;
+
+    let (mut controller, _dir) = open_setup_overlay_controller();
+    controller.open_provider_form(crate::tui_runtime::setup::ProviderFormKind::ApiBase);
+
+    // Advance to stage-2 with Tab.
+    send_dialog_key(&mut controller, picker_key(KeyCode::Tab), None);
+    {
+        let form = controller
+            .pending_provider_form
+            .as_ref()
+            .expect("form open");
+        assert_eq!(form.stage, ProviderFormStage::EnterValue);
+    }
+
+    let url = "http://localhost:11434/v1";
+    for c in url.chars() {
+        send_dialog_key(
+            &mut controller,
+            picker_key(KeyCode::Char(c)),
+            Some(ResolvedKey::InsertChar(c)),
+        );
+    }
+
+    let view = controller
+        .current_picker_list_view()
+        .expect("picker list present");
+
+    assert!(
+        view.query.contains("localhost:11434"),
+        "ApiBase stage-2 query must show URL in plain text; got {:?}",
+        view.query
+    );
+}

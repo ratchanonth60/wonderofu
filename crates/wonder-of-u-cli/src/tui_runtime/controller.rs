@@ -3473,6 +3473,25 @@ impl<'a> TuiController<'a> {
                 );
                 self.needs_render = true;
             }
+            SetupItemAction::Deferred(message) => {
+                // Show a notice dialog explaining that this cloud/remote feature is
+                // intentionally out-of-scope for the local-first TUI.
+                let body: Vec<String> = message.lines().map(str::to_string).collect();
+                self.dialog = Some(DialogView::notice(item.label.clone(), body.clone()));
+                self.status_note = Some(format!(
+                    "setup: {} (deferred)",
+                    item.label.to_ascii_lowercase()
+                ));
+                self.push_notification(
+                    format!("setup-deferred:{}", item.id),
+                    NotificationSeverity::Info,
+                    item.label,
+                    body,
+                    Some(SHELL_NOTIFICATION_TTL),
+                    false,
+                );
+                self.needs_render = true;
+            }
             SetupItemAction::ProviderForm(kind) => {
                 self.open_provider_form(kind);
             }
@@ -4120,7 +4139,12 @@ impl<'a> TuiController<'a> {
                         description: item.description.clone(),
                         tag: match &item.action {
                             SetupItemAction::Dispatch(_) => None,
+                            // Not-yet-implemented local items get "coming soon".
                             SetupItemAction::Placeholder(_) => Some("coming soon".into()),
+                            // Cloud/remote-only features are clearly labelled "deferred"
+                            // so users know they are intentionally out-of-scope, not
+                            // merely unfinished.
+                            SetupItemAction::Deferred(_) => Some("deferred".into()),
                             SetupItemAction::ProviderForm(_) => None,
                             SetupItemAction::CopilotOAuth => None,
                         },
