@@ -74,7 +74,9 @@ impl FleetResultsTool {
                 )
                 .property(
                     "max_output_chars",
-                    ToolSchema::integer("Truncate per-member output to this many chars. Default 2000."),
+                    ToolSchema::integer(
+                        "Truncate per-member output to this many chars. Default 2000.",
+                    ),
                 ),
         );
         spec.required_features.insert(FeatureFlag::Fleet);
@@ -157,7 +159,10 @@ impl Tool for FleetResultsTool {
                 .as_ref()
                 .and_then(|r| r.fleet_request_id.clone())
                 .or_else(|| {
-                    member.task.as_ref().and_then(|t| t.fleet_request_id.clone())
+                    member
+                        .task
+                        .as_ref()
+                        .and_then(|t| t.fleet_request_id.clone())
                 })
                 .unwrap_or_else(|| member.task_id.to_string());
 
@@ -363,16 +368,14 @@ mod tests {
 
     #[test]
     fn fleet_results_input_defaults() {
-        let input: FleetResultsInput =
-            serde_json::from_value(json!({})).expect("default parse");
+        let input: FleetResultsInput = serde_json::from_value(json!({})).expect("default parse");
         assert!(!input.include_logs);
         assert_eq!(input.max_output_chars, 2000);
     }
 
     #[test]
     fn fleet_wait_input_defaults() {
-        let input: FleetWaitInput =
-            serde_json::from_value(json!({})).expect("default parse");
+        let input: FleetWaitInput = serde_json::from_value(json!({})).expect("default parse");
         assert_eq!(input.timeout_secs, 120);
         assert_eq!(input.poll_interval_secs, 2);
     }

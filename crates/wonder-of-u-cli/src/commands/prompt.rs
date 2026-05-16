@@ -12,11 +12,11 @@ use wonder_of_u_agent::{
     ToolUseResponse,
 };
 use wonder_of_u_core::{
-    AgentTaskResult, AGENT_TASK_RESULT_SCHEMA_VERSION, AppState, Command, CommandContext,
+    AGENT_TASK_RESULT_SCHEMA_VERSION, AgentTaskResult, AppState, Command, CommandContext,
     CommandInvocation, CommandKind, CommandOutput, CommandSpec, CoordinatorState, FeatureFlag,
-    FleetId, MessageEnvelope, MessagePayload, PermissionDecision, PermissionMode,
-    PromptSuggestion, QueryState, Result, TaskId, TaskStatus, ToolContext, ToolQuery, ToolResult,
-    ToolUseId, WonderError, best_prompt_suggestion,
+    FleetId, MessageEnvelope, MessagePayload, PermissionDecision, PermissionMode, PromptSuggestion,
+    QueryState, Result, TaskId, TaskStatus, ToolContext, ToolQuery, ToolResult, ToolUseId,
+    WonderError, best_prompt_suggestion,
 };
 use wonder_of_u_storage::{
     AgentTaskResultStore, CostStore, SessionCostLedger, SessionMemoryIndexStore, SessionMetadata,
@@ -268,14 +268,7 @@ fn try_write_agent_task_result(
     const EXCERPT_MAX: usize = 300;
     let output_excerpt = output_text
         .as_deref()
-        .map(|t| {
-            // Truncate at a character boundary to form a concise excerpt.
-            if t.len() <= EXCERPT_MAX {
-                t.to_owned()
-            } else {
-                format!("{}…", &t[..EXCERPT_MAX])
-            }
-        })
+        .map(|t| truncate_chars(t, EXCERPT_MAX))
         .unwrap_or_default();
 
     let result = AgentTaskResult {

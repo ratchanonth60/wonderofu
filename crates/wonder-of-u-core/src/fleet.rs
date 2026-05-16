@@ -679,7 +679,10 @@ mod tests {
     fn fleet_member_request_none_parent_and_tools_not_serialized() {
         let req = FleetMemberRequest::new("plain task");
         let json = serde_json::to_string(&req).expect("serialize");
-        assert!(!json.contains("parent_task_id"), "should be omitted: {json}");
+        assert!(
+            !json.contains("parent_task_id"),
+            "should be omitted: {json}"
+        );
         assert!(!json.contains("allowed_tools"), "should be omitted: {json}");
     }
 
@@ -761,8 +764,17 @@ mod tests {
             finished_at: OffsetDateTime::now_utc(),
         };
         let json = serde_json::to_string(&result).expect("serialize");
-        assert!(!json.contains("fleet_id"), "absent fleet_id should be omitted: {json}");
-        assert!(!json.contains("output_text"), "absent output_text should be omitted: {json}");
-        assert!(!json.contains("\"provider\""), "absent provider should be omitted: {json}");
+        assert!(
+            !json.contains("fleet_id"),
+            "absent fleet_id should be omitted: {json}"
+        );
+        assert!(
+            !json.contains("output_text"),
+            "absent output_text should be omitted: {json}"
+        );
+        assert!(
+            !json.contains("\"provider\""),
+            "absent provider should be omitted: {json}"
+        );
     }
 }

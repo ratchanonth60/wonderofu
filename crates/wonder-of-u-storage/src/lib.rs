@@ -1404,9 +1404,10 @@ impl AgentTaskResultStore {
                     if entry.path().extension().and_then(OsStr::to_str) != Some("json") {
                         continue;
                     }
-                    let r: AgentTaskResult =
+                    let result: AgentTaskResult =
                         serde_json::from_str(&fs::read_to_string(entry.path())?)?;
-                    results.push(r);
+                    ensure_supported_schema("agent task result", result.schema_version)?;
+                    results.push(result);
                 }
                 results.sort_by(|a, b| {
                     b.finished_at
@@ -1964,6 +1965,33 @@ mod agent_task_result_store_tests {
     }
 
     #[test]
+    fn list_results_rejects_unsupported_schema() {
+        let store = make_store("result-list-schema");
+        store.ensure_layout().expect("layout");
+        let task_id = TaskId::new();
+        let path = store.paths().task_result_path(task_id);
+        let result = AgentTaskResult {
+            schema_version: AGENT_TASK_RESULT_SCHEMA_VERSION,
+            task_id,
+            fleet_id: None,
+            fleet_request_id: None,
+            session_id: None,
+            status: TaskStatus::Completed,
+            output_excerpt: String::new(),
+            output_text: None,
+            provider: None,
+            model: None,
+            finished_at: OffsetDateTime::now_utc(),
+        };
+        let mut value = serde_json::to_value(&result).expect("result json");
+        value["schema_version"] = serde_json::json!(AGENT_TASK_RESULT_SCHEMA_VERSION + 1);
+        fs::write(path, value.to_string()).expect("write unsupported schema");
+
+        let err = store.list_results().expect_err("unsupported schema");
+        assert!(err.to_string().contains("unsupported"), "got: {err}");
+    }
+
+    #[test]
     fn failed_result_round_trips() {
         let store = make_store("result-failed");
         let task_id = TaskId::new();
@@ -1990,7 +2018,7 @@ mod agent_task_result_store_tests {
 mod fleet_inspector_tests {
     use time::OffsetDateTime;
     use wonder_of_u_core::{
-        AGENT_TASK_RESULT_SCHEMA_VERSION, AgentTaskResult, AgentRuntime, AgentTaskState, FleetId,
+        AGENT_TASK_RESULT_SCHEMA_VERSION, AgentRuntime, AgentTaskResult, AgentTaskState, FleetId,
         FleetRunState, PermissionMode, TaskId, TaskKind, TaskState, TaskStatus,
     };
     use wonder_of_u_test_support::unique_test_dir;

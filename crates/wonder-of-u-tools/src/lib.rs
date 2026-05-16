@@ -36,8 +36,6 @@ use wonder_of_u_core::{FeatureFlag, Result, Tool, ToolKind, ToolRegistry, ToolSp
 pub use agent_tool::{AgentInput, AgentTool};
 /// Re-exports items from `ask_user_tool`
 pub use ask_user_tool::{AskUserInput, AskUserTool};
-/// Re-exports items from `fleet_tools`
-pub use fleet_tools::{FleetResultsInput, FleetResultsTool, FleetWaitInput, FleetWaitTool};
 /// Re-exports items from `bash`
 pub use bash::{BashInput, BashTool};
 /// Re-exports items from `communication_tools`
@@ -60,6 +58,8 @@ pub use files::{
     FileEditInput, FileEditTool, FileReadInput, FileReadTool, FileWriteInput, FileWriteMode,
     FileWriteTool,
 };
+/// Re-exports items from `fleet_tools`
+pub use fleet_tools::{FleetResultsInput, FleetResultsTool, FleetWaitInput, FleetWaitTool};
 /// Re-exports items from `orchestration`
 pub use orchestration::{
     BYTES_PER_TOKEN, DEFAULT_MAX_CONCURRENT_TOOL_USES, DEFAULT_MAX_RESULT_SIZE_CHARS,
