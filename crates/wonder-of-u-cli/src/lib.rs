@@ -320,6 +320,22 @@ pub enum Commands {
         /// Stores the command
         command: Vec<String>,
     },
+    /// Import a TypeScript-upstream Claude Code transcript (JSONL) into Rust
+    /// storage schema.
+    ///
+    /// This is an explicit one-shot migration command.  The normal session load
+    /// path is never involved; strict Rust schema validation stays intact.
+    Import {
+        /// Path to the TS JSONL transcript file.
+        #[arg(long)]
+        source: PathBuf,
+        /// Parse and report without writing any data.
+        #[arg(long, default_value_t = false)]
+        dry_run: bool,
+        /// Override the session ID for all imported messages (UUID format).
+        #[arg(long)]
+        session_id: Option<String>,
+    },
 }
 /// Enumerates model command
 #[derive(Debug, Clone, Subcommand)]
@@ -800,6 +816,21 @@ fn run_with_terminal_mode<W: Write>(
                 MemoryCommand::Path => commands::memory::path_cmd_with_writer(&storage_dir, writer),
             }
         }
+        LaunchPlan::Import {
+            source,
+            dry_run,
+            session_id,
+        } => {
+            use wonder_of_u_core::SessionId;
+            let override_session = session_id.as_deref().map(SessionId::parse).transpose()?;
+            commands::import::run_import(
+                &source,
+                storage_dir.as_deref(),
+                dry_run,
+                override_session,
+                writer,
+            )
+        }
         LaunchPlan::Invocation(invocation) => run_registered_invocation(
             invocation,
             &commands::registry(storage_dir.clone())?,
@@ -875,6 +906,11 @@ enum LaunchPlan {
     Memory {
         command: Option<MemoryCommand>,
     },
+    Import {
+        source: PathBuf,
+        dry_run: bool,
+        session_id: Option<String>,
+    },
 }
 
 fn terminal_is_interactive() -> bool {
@@ -894,6 +930,15 @@ fn launch_plan(command: Option<Commands>, interactive_terminal: bool) -> Result<
         Some(Commands::Tui { session_id }) => Ok(LaunchPlan::Tui { session_id }),
         Some(Commands::Copy { session_id }) => Ok(LaunchPlan::Copy { session_id }),
         Some(Commands::Memory { command }) => Ok(LaunchPlan::Memory { command }),
+        Some(Commands::Import {
+            source,
+            dry_run,
+            session_id,
+        }) => Ok(LaunchPlan::Import {
+            source,
+            dry_run,
+            session_id,
+        }),
         Some(Commands::Resume { session_id }) if interactive_terminal => Ok(LaunchPlan::Tui {
             session_id: Some(session_id),
         }),
@@ -1471,6 +1516,9 @@ fn to_invocation(command: Commands) -> Result<CommandInvocation> {
         },
         Commands::Exit => commands::invocation_from_tokens("exit", std::iter::empty::<String>()),
         Commands::Slash { command } => invocation_from_slash_tokens(command)?,
+        // Import is handled directly by LaunchPlan::Import in run_with_terminal_mode and
+        // never reaches to_invocation.
+        Commands::Import { .. } => unreachable!("import is handled via LaunchPlan::Import"),
     })
 }
 

@@ -1,13 +1,14 @@
 //! Google Gemini native REST API wire-protocol.
 //!
-//! Implements the `generateContent` endpoint at
-//! `https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent`.
+//! Implements two endpoints on the Gemini REST API:
 //!
-//! The API key is passed as the `key` query parameter.  Streaming and tool-use
-//! are not yet supported through this module; callers receive a clear
-//! `validation` error that explains the limitation.
+//! * **Non-streaming** – `…/models/{model}:generateContent`
+//! * **Streaming** – `…/models/{model}:streamGenerateContent?alt=sse`
+//!
+//! The API key is passed as the `key` query parameter.  Tool-use is not yet
+//! supported; callers receive a descriptive `validation` error.
 
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, io::BufReader};
 
 use percent_encoding::{NON_ALPHANUMERIC, utf8_percent_encode};
 use serde_json::{Value, json};
@@ -15,7 +16,10 @@ use wonder_of_u_core::{Result, TokenUsage, WonderError};
 
 use crate::ResolvedProviderExecution;
 
-use super::{CompletionRequest, CompletionResponse, HttpRequest, context_window_for_model};
+use super::{
+    CompletionRequest, CompletionResponse, HttpRequest, StreamingHttpResponse, consume_sse,
+    context_window_for_model,
+};
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -28,14 +32,42 @@ pub(super) fn build_gemini_request(
     resolved: &ResolvedProviderExecution,
     request: &CompletionRequest,
 ) -> Result<HttpRequest> {
+    build_gemini_request_internal(resolved, request, false)
+}
+
+/// Builds a streaming `streamGenerateContent` request for the Gemini REST API.
+///
+/// The body is identical to the non-streaming request; only the endpoint
+/// action changes (`streamGenerateContent` instead of `generateContent`) and
+/// `alt=sse` is appended so the server returns Server-Sent Events rather than
+/// a newline-delimited JSON array.
+pub(super) fn build_gemini_stream_request(
+    resolved: &ResolvedProviderExecution,
+    request: &CompletionRequest,
+) -> Result<HttpRequest> {
+    build_gemini_request_internal(resolved, request, true)
+}
+
+fn build_gemini_request_internal(
+    resolved: &ResolvedProviderExecution,
+    request: &CompletionRequest,
+    stream: bool,
+) -> Result<HttpRequest> {
     let api_key = resolved.api_key()?;
     // Percent-encode the model name so `/` in model IDs doesn't break routing.
     let model_encoded = utf8_percent_encode(resolved.model(), NON_ALPHANUMERIC).to_string();
+    let (action, extra) = if stream {
+        ("streamGenerateContent", "&alt=sse")
+    } else {
+        ("generateContent", "")
+    };
     let url = format!(
-        "{}/v1beta/models/{}:generateContent?key={}",
+        "{}/v1beta/models/{}:{}?key={}{}",
         resolved.api_base().trim_end_matches('/'),
         model_encoded,
+        action,
         api_key,
+        extra,
     );
 
     let mut contents = vec![json!({
@@ -156,18 +188,101 @@ pub(super) fn parse_gemini_response(
     })
 }
 
-/// Streaming is not yet supported for the Gemini native protocol.
+/// Parses a `streamGenerateContent` SSE response into a [`CompletionResponse`].
 ///
-/// Returns a descriptive validation error so callers can surface a clear
-/// message rather than a generic panic or silent failure.
-pub(super) fn gemini_streaming_unsupported() -> WonderError {
-    WonderError::validation(
-        "streaming is not yet supported for the `gemini_native` wire protocol; \
-         use a provider with `open_ai_compat` or `anthropic_compat` for streaming",
-    )
+/// Each SSE data event carries a partial `generateContent`-shaped JSON object.
+/// Text is extracted from every chunk's `candidates[0].content.parts[*].text`
+/// fields.  `finishReason` and `usageMetadata` are taken from the last chunk
+/// that supplies them (the terminal event from the Gemini API).
+///
+/// The `on_text_delta` callback is invoked for each non-empty text chunk so
+/// callers can display incremental output.
+pub(super) fn parse_gemini_stream_response<F>(
+    resolved: &ResolvedProviderExecution,
+    response: StreamingHttpResponse,
+    on_text_delta: &mut F,
+) -> Result<CompletionResponse>
+where
+    F: FnMut(&str) -> Result<()>,
+{
+    let mut output_text = String::new();
+    let mut stop_reason: Option<String> = None;
+    let mut input_tokens: u64 = 0;
+    let mut output_tokens: u64 = 0;
+
+    consume_sse(BufReader::new(response.reader), |_, data| {
+        let json: Value = serde_json::from_str(data)
+            .map_err(|e| WonderError::validation(format!("invalid Gemini stream chunk: {e}")))?;
+
+        // Each SSE chunk has the same shape as a non-streaming generateContent
+        // response; text lives in candidates[0].content.parts[*].text.
+        let chunk_text = json
+            .pointer("/candidates/0/content/parts")
+            .and_then(Value::as_array)
+            .map(|parts| {
+                parts
+                    .iter()
+                    .filter_map(|p| p.pointer("/text").and_then(Value::as_str))
+                    .collect::<String>()
+            })
+            .unwrap_or_default();
+
+        if !chunk_text.is_empty() {
+            output_text.push_str(&chunk_text);
+            on_text_delta(&chunk_text)?;
+        }
+
+        // The terminal chunk carries finishReason; earlier chunks may omit it.
+        if let Some(reason) = json
+            .pointer("/candidates/0/finishReason")
+            .and_then(Value::as_str)
+            .filter(|r| !r.is_empty() && *r != "FINISH_REASON_UNSPECIFIED")
+        {
+            stop_reason = Some(reason.to_string());
+        }
+
+        // usageMetadata is only present on the final chunk.
+        if let Some(n) = json
+            .pointer("/usageMetadata/promptTokenCount")
+            .and_then(Value::as_u64)
+        {
+            input_tokens = n;
+        }
+        if let Some(n) = json
+            .pointer("/usageMetadata/candidatesTokenCount")
+            .and_then(Value::as_u64)
+        {
+            output_tokens = n;
+        }
+
+        Ok(true)
+    })?;
+
+    if output_text.trim().is_empty() {
+        return Err(WonderError::validation(
+            "Gemini streaming response did not contain any text content",
+        ));
+    }
+
+    Ok(CompletionResponse {
+        provider: resolved.provider_id().to_string(),
+        model: resolved.model().to_string(),
+        context_window_size: Some(context_window_for_model(resolved.model())),
+        output_text,
+        stop_reason,
+        usage: TokenUsage {
+            input_tokens,
+            output_tokens,
+            ..TokenUsage::default()
+        },
+    })
 }
 
 /// Tool-use is not yet supported for the Gemini native protocol.
+///
+/// Returns a descriptive validation error so callers can surface a clear
+/// message.  Function-calling schema translation is non-trivial; use a
+/// provider with `open_ai_compat` or `anthropic_compat` for tool use.
 pub(super) fn gemini_tool_use_unsupported() -> WonderError {
     WonderError::validation(
         "tool-use is not yet supported for the `gemini_native` wire protocol; \

@@ -1409,6 +1409,100 @@ mod tests {
     }
 
     #[test]
+    fn skill_metadata_includes_args_in_result() {
+        let dir = unique_test_dir("tools-skill-args");
+        let skill_dir = dir.join(".wonder/skills/summarize");
+        fs::create_dir_all(&skill_dir).expect("skill dir");
+        fs::write(
+            skill_dir.join("skill.json"),
+            json!({
+                "schema_version": 1,
+                "name": "summarize",
+                "description": "Summarize content",
+                "prompt": "Produce a concise summary.",
+                "allowed_tools": [],
+            })
+            .to_string(),
+        )
+        .expect("manifest");
+
+        let tool = SkillTool;
+        let result = block_on(tool.execute(
+            tool_context(dir),
+            ToolUseId::new(),
+            json!({ "skill": "summarize", "args": "some context" }),
+        ))
+        .expect("execute");
+
+        assert!(result.success);
+        // args must be in metadata so callers can log/audit the invocation.
+        assert_eq!(result.metadata["args"], "some context");
+        assert_eq!(result.metadata["skill"], "summarize");
+        assert_eq!(result.metadata["execution_supported"], false);
+    }
+
+    #[test]
+    fn skill_execution_unsupported_note_present_in_content() {
+        let dir = unique_test_dir("tools-skill-note");
+        let skill_dir = dir.join(".wonder/skills/lint");
+        fs::create_dir_all(&skill_dir).expect("skill dir");
+        fs::write(
+            skill_dir.join("skill.json"),
+            json!({
+                "schema_version": 1,
+                "name": "lint",
+                "description": "Run linter",
+                "prompt": "Check code style.",
+            })
+            .to_string(),
+        )
+        .expect("manifest");
+
+        let tool = SkillTool;
+        let result = block_on(tool.execute(
+            tool_context(dir),
+            ToolUseId::new(),
+            json!({ "skill": "lint" }),
+        ))
+        .expect("execute");
+
+        assert!(result.success);
+        assert!(
+            result.content.contains("status=metadata_only"),
+            "content should contain status=metadata_only; got: {}",
+            result.content
+        );
+        assert!(
+            result.content.contains("note="),
+            "content should contain a note= line; got: {}",
+            result.content
+        );
+        // The note must explicitly flag that execution is unsupported here.
+        assert!(
+            result.content.contains("unsupported"),
+            "note should mention unsupported; got: {}",
+            result.content
+        );
+    }
+
+    #[test]
+    fn skill_unknown_with_args_returns_structured_failure() {
+        let dir = unique_test_dir("tools-skill-unknown-args");
+        let tool = SkillTool;
+        let result = block_on(tool.execute(
+            tool_context(dir),
+            ToolUseId::new(),
+            json!({ "skill": "no-such-skill", "args": "some args" }),
+        ))
+        .expect("execute");
+
+        assert!(!result.success);
+        assert_eq!(result.metadata["supported"], false);
+        assert_eq!(result.metadata["reason"], "unknown_skill");
+        assert_eq!(result.metadata["skill"], "no-such-skill");
+    }
+
+    #[test]
     fn tool_search_supports_select_and_keyword_queries() {
         let tool = ToolSearchTool;
         let context = tool_context(unique_test_dir("tools-tool-search"));

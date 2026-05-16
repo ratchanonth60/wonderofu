@@ -7231,7 +7231,7 @@ fn tool_sidebar_lines_produces_summary() {
         features: FeatureSet::first_release(),
         bash_session_store: None,
     };
-    let lines = tool_sidebar_lines(&context);
+    let lines = tool_sidebar_lines(&context, None);
     // Must not be empty and must not be an error line.
     assert!(!lines.is_empty());
     assert!(

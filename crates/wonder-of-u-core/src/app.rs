@@ -1156,7 +1156,7 @@ impl StateStore {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::MessageEnvelope;
+    use crate::{FeatureFlag, MessageEnvelope};
 
     #[test]
     fn app_state_accepts_messages_for_current_session() {
@@ -1497,6 +1497,87 @@ mod tests {
         assert!(
             opt_pos < brief_pos,
             "optimize-token hint should precede brief hint"
+        );
+    }
+
+    // ── Remote-cloud-transport deferred-guarantee anchors ─────────────────────
+    // These tests encode the decision recorded in docs/adr-remote-cloud-transport.md.
+    // They must stay green until all implementation gates in the ADR are cleared.
+
+    /// `RemoteTaskState::deferred` for `RemoteAgent` must surface
+    /// `TaskBackendSupport::Deferred` on the transport leg and include the
+    /// phrase "not implemented" in the reason — the canonical signal that no
+    /// live CCR transport exists yet.
+    #[test]
+    fn remote_task_state_remote_agent_deferred_transport_is_deferred_and_reason_mentions_not_implemented()
+     {
+        let state = RemoteTaskState::deferred(RemoteTaskType::RemoteAgent, None);
+
+        assert_eq!(
+            state.transport.support,
+            TaskBackendSupport::Deferred,
+            "RemoteAgent transport support must be Deferred (CCR transport absent)"
+        );
+        assert!(
+            state.transport.reason.contains("not implemented"),
+            "transport reason must mention 'not implemented'; got: {:?}",
+            state.transport.reason
+        );
+        // RemoteAgent has no monitor or checker legs — assert those stay absent
+        // so callers never accidentally treat missing legs as supported.
+        assert!(
+            state.monitor.is_none(),
+            "RemoteAgent must not have a monitor leg"
+        );
+        assert!(
+            state.checker.is_none(),
+            "RemoteAgent must not have a checker leg"
+        );
+    }
+
+    /// Every `RemoteTaskType::label()` value must be unique and must not
+    /// change — downstream systems (serialisation, parity ledger, log
+    /// parsers) depend on these strings being stable identifiers.
+    #[test]
+    fn remote_task_type_labels_are_unique_and_stable() {
+        let variants = [
+            RemoteTaskType::RemoteAgent,
+            RemoteTaskType::BackgroundPr,
+            RemoteTaskType::AutofixPr,
+            RemoteTaskType::Ultraplan,
+            RemoteTaskType::Ultrareview,
+        ];
+        let labels: Vec<&'static str> = variants.iter().map(|v| v.label()).collect();
+
+        // Uniqueness: no two variants share the same label.
+        let mut seen = std::collections::HashSet::new();
+        for label in &labels {
+            assert!(
+                seen.insert(*label),
+                "duplicate RemoteTaskType label: {label:?}"
+            );
+        }
+
+        // Stability: hard-code the expected strings so any accidental rename
+        // causes a test failure before it reaches the parity ledger.
+        assert_eq!(RemoteTaskType::RemoteAgent.label(), "remote-agent");
+        assert_eq!(RemoteTaskType::BackgroundPr.label(), "background-pr");
+        assert_eq!(RemoteTaskType::AutofixPr.label(), "autofix-pr");
+        assert_eq!(RemoteTaskType::Ultraplan.label(), "ultraplan");
+        assert_eq!(RemoteTaskType::Ultrareview.label(), "ultrareview");
+    }
+
+    /// `FeatureSet::first_release()` must **not** include
+    /// `FeatureFlag::RemoteTriggers`.  This flag is the canonical gate for
+    /// activating live CCR transport; it must stay absent until every blocker
+    /// listed in docs/adr-remote-cloud-transport.md is resolved.
+    #[test]
+    fn first_release_feature_set_does_not_contain_remote_triggers() {
+        let features = FeatureSet::first_release();
+        assert!(
+            !features.contains(FeatureFlag::RemoteTriggers),
+            "FeatureFlag::RemoteTriggers must not be in first_release() \
+             until CCR transport blockers are cleared (see docs/adr-remote-cloud-transport.md)"
         );
     }
 }

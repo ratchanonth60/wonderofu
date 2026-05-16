@@ -8,7 +8,7 @@ use clap::Parser;
 use wonder_of_u_agent::{
     CompletionRequest, CompletionResponse, ProviderRuntime, ProviderSelection, ProviderToolCall,
     ProviderToolResultMessage, ProviderToolSpec, ToolConversationRound, ToolUseRequest,
-    ToolUseResponse, builtin_tool_registry,
+    ToolUseResponse,
 };
 use wonder_of_u_core::{
     AppState, Command, CommandContext, CommandInvocation, CommandKind, CommandOutput, CommandSpec,
@@ -20,7 +20,7 @@ use wonder_of_u_storage::{
     CostStore, SessionCostLedger, SessionMemoryIndexStore, SessionMetadata, SessionSnapshot,
     TranscriptStore,
 };
-use wonder_of_u_tools::provider_tool_specs;
+use wonder_of_u_tools::{builtin_registry_with_mcp_catalog, provider_tool_specs};
 
 use super::{
     detect_git_branch,
@@ -586,7 +586,11 @@ fn execute_prompt_tool_loop(
         request_prompt,
         ..
     } = input;
-    let registry = builtin_tool_registry()?;
+    let registry = match storage_dir {
+        Some(root) => builtin_registry_with_mcp_catalog(root),
+        // No persistent storage: fall back to built-ins only.
+        None => wonder_of_u_tools::builtin_registry(),
+    }?;
     let tool_context = tool_context(state);
     let provider_tools = provider_tool_specs(&registry, &tool_context, allowed_tools.as_ref())
         .into_iter()
@@ -757,6 +761,7 @@ fn execute_tool_call(
                 PRE_TOOL_USE,
                 &call.provider_call.tool_name,
                 &call.provider_call.arguments,
+                None,
                 &context.cwd,
                 storage_dir,
             );
@@ -830,10 +835,17 @@ fn execute_tool_call(
                     } else {
                         POST_TOOL_USE_FAILURE
                     };
+                    // Include a minimal tool_response snapshot so hooks can
+                    // inspect the outcome without needing to re-run the tool.
+                    let tool_response_json = serde_json::json!({
+                        "success": tool_result.success,
+                        "content": tool_result.content,
+                    });
                     let post_hook_report = run_hooks(
                         post_event,
                         &call.provider_call.tool_name,
                         &call.provider_call.arguments,
+                        Some(&tool_response_json),
                         &context.cwd,
                         storage_dir,
                     );

@@ -108,11 +108,14 @@ pub const POST_TOOL_USE_FAILURE: &str = "PostToolUseFailure";
 /// Returns [`HookOutcome::Block`] when a hook exits with code 2 and a
 /// `{"continue": false, "stopReason": "..."}` JSON payload.
 ///
-/// The `tool_input` is serialised and injected via `CLAUDE_HOOK_INPUT`.
+/// `tool_input` is always serialised into `CLAUDE_HOOK_INPUT`.
+/// `tool_response` is included for `PostToolUse`/`PostToolUseFailure` events
+/// so hooks can inspect the result; pass `None` for `PreToolUse`.
 pub fn run_hooks(
     event: &str,
     tool_name: &str,
     tool_input: &Value,
+    tool_response: Option<&Value>,
     cwd: &Path,
     storage_dir: Option<&Path>,
 ) -> HookRunReport {
@@ -130,11 +133,15 @@ pub fn run_hooks(
         None => return HookRunReport::allow(),
     };
 
-    let hook_input = json!({
+    let mut hook_input = json!({
         "hook_event_name": event,
         "tool_name": tool_name,
         "tool_input": tool_input,
     });
+    // Inject tool result for post-execution events so hooks can act on the outcome.
+    if let Some(response) = tool_response {
+        hook_input["tool_response"] = response.clone();
+    }
     let hook_input_str = hook_input.to_string();
     let mut report = HookRunReport::allow();
 
@@ -189,16 +196,59 @@ fn resolve_hooks_path(storage_dir: Option<&Path>) -> PathBuf {
 
 /// Returns `true` if `tool_name` matches the optional `pattern`.
 ///
-/// Pattern semantics (minimal subset matching the TypeScript implementation):
-/// - `None` → matches everything
-/// - `"*"` → matches everything
-/// - Otherwise, case-insensitive substring check (sufficient for current
-///   TypeScript parity; full glob support can be added later).
+/// Pattern semantics:
+/// - `None` / `""` / `"*"` → matches everything.
+/// - Pattern containing `*` → minimal glob match (anchored start/end,
+///   greedy middle segments); case-insensitive.
+/// - Pattern with no `*` → case-insensitive substring match for
+///   backwards compatibility with the TypeScript implementation.
 fn tool_name_matches(tool_name: &str, pattern: Option<&str>) -> bool {
     match pattern {
         None | Some("") | Some("*") => true,
-        Some(p) => tool_name.to_lowercase().contains(&p.to_lowercase()),
+        Some(p) => {
+            let name = tool_name.to_lowercase();
+            let pat = p.to_lowercase();
+            if pat.contains('*') {
+                glob_match(&name, &pat)
+            } else {
+                // No wildcards: substring match preserves prior behaviour.
+                name.contains(pat.as_str())
+            }
+        }
     }
+}
+
+/// Minimal `*`-glob matcher (case-insensitive input expected from caller).
+///
+/// Segments between `*` characters are matched left-to-right:
+/// - The first non-empty segment is start-anchored.
+/// - The last non-empty segment is end-anchored.
+/// - Middle segments are found greedily from the current position.
+fn glob_match(name: &str, pattern: &str) -> bool {
+    let parts: Vec<&str> = pattern.split('*').collect();
+    let mut pos = 0usize;
+    for (i, part) in parts.iter().enumerate() {
+        if part.is_empty() {
+            continue;
+        }
+        if i == 0 {
+            // First part must match at the very start.
+            if !name[pos..].starts_with(part) {
+                return false;
+            }
+            pos += part.len();
+        } else if i == parts.len() - 1 {
+            // Last part must match at the very end.
+            return name[pos..].ends_with(part);
+        } else {
+            // Middle part: find the earliest occurrence after `pos`.
+            let Some(idx) = name[pos..].find(part) else {
+                return false;
+            };
+            pos += idx + part.len();
+        }
+    }
+    true
 }
 
 /// Execute a single command-type hook.
@@ -293,6 +343,7 @@ mod tests {
             PRE_TOOL_USE,
             "bash",
             &json!({"command": "echo hi"}),
+            None,
             dir.path(),
             Some(dir.path()),
         );
@@ -309,6 +360,7 @@ mod tests {
             PRE_TOOL_USE,
             "bash",
             &json!({}),
+            None,
             dir.path(),
             Some(dir.path()),
         );
@@ -328,6 +380,7 @@ mod tests {
             PRE_TOOL_USE,
             "bash",
             &json!({}),
+            None,
             dir.path(),
             Some(dir.path()),
         );
@@ -347,6 +400,7 @@ mod tests {
             PRE_TOOL_USE,
             "bash",
             &json!({}),
+            None,
             dir.path(),
             Some(dir.path()),
         );
@@ -366,6 +420,7 @@ mod tests {
             PRE_TOOL_USE,
             "bash",
             &json!({}),
+            None,
             dir.path(),
             Some(dir.path()),
         );
@@ -391,6 +446,7 @@ mod tests {
             PRE_TOOL_USE,
             "bash",
             &json!({}),
+            None,
             dir.path(),
             Some(dir.path()),
         );
@@ -414,6 +470,103 @@ mod tests {
     fn matcher_substring_is_case_insensitive() {
         assert!(tool_name_matches("BashTool", Some("bash")));
         assert!(!tool_name_matches("file_read", Some("bash")));
+    }
+
+    #[test]
+    fn matcher_glob_prefix_anchor() {
+        assert!(tool_name_matches("bash_exec", Some("bash*")));
+        assert!(tool_name_matches("bash", Some("bash*")));
+        assert!(!tool_name_matches("run_bash", Some("bash*")));
+    }
+
+    #[test]
+    fn matcher_glob_suffix_anchor() {
+        assert!(tool_name_matches("run_bash", Some("*bash")));
+        assert!(tool_name_matches("bash", Some("*bash")));
+        assert!(!tool_name_matches("bash_exec", Some("*bash")));
+    }
+
+    #[test]
+    fn matcher_glob_contains() {
+        assert!(tool_name_matches("run_bash_exec", Some("*bash*")));
+        assert!(tool_name_matches("bash", Some("*bash*")));
+        assert!(!tool_name_matches("run_shell", Some("*bash*")));
+    }
+
+    #[test]
+    fn matcher_glob_prefix_and_suffix() {
+        assert!(tool_name_matches("bash_exec_tool", Some("bash*tool")));
+        assert!(!tool_name_matches("bash_exec", Some("bash*tool")));
+    }
+
+    #[test]
+    fn post_tool_use_hook_receives_tool_response_in_context() {
+        let dir = TempDir::new().unwrap();
+        // Hook writes CLAUDE_HOOK_INPUT to a temp file so we can inspect it.
+        let out_file = dir.path().join("hook_input.json");
+        // Use serde_json to build the config so command escaping is handled correctly.
+        let cmd = format!(
+            "printf '%s' \"$CLAUDE_HOOK_INPUT\" > '{}'",
+            out_file.display()
+        );
+        let hooks_config = json!({
+            "hooks": {
+                "PostToolUse": [{"hooks": [{"type": "command", "command": cmd}]}]
+            }
+        });
+        write_hooks(dir.path(), &hooks_config.to_string());
+        let tool_response = json!({"success": true, "content": "ok"});
+        let outcome = run_hooks(
+            POST_TOOL_USE,
+            "bash",
+            &json!({"command": "echo hi"}),
+            Some(&tool_response),
+            dir.path(),
+            Some(dir.path()),
+        );
+        assert_eq!(outcome.outcome, HookOutcome::Allow);
+        assert_eq!(outcome.hook_count, 1);
+        assert!(outcome.success);
+        // Verify the written context contains tool_response.
+        if out_file.exists() {
+            let written = std::fs::read_to_string(&out_file).unwrap_or_default();
+            if let Ok(v) = serde_json::from_str::<Value>(written.trim()) {
+                assert_eq!(v["hook_event_name"], "PostToolUse");
+                assert_eq!(v["tool_response"]["success"], true);
+            }
+        }
+    }
+
+    #[test]
+    fn pre_tool_use_hook_context_omits_tool_response() {
+        let dir = TempDir::new().unwrap();
+        let out_file = dir.path().join("hook_input_pre.json");
+        let cmd = format!(
+            "printf '%s' \"$CLAUDE_HOOK_INPUT\" > '{}'",
+            out_file.display()
+        );
+        let hooks_config = json!({
+            "hooks": {
+                "PreToolUse": [{"hooks": [{"type": "command", "command": cmd}]}]
+            }
+        });
+        write_hooks(dir.path(), &hooks_config.to_string());
+        run_hooks(
+            PRE_TOOL_USE,
+            "bash",
+            &json!({}),
+            None,
+            dir.path(),
+            Some(dir.path()),
+        );
+        if out_file.exists() {
+            let written = std::fs::read_to_string(&out_file).unwrap_or_default();
+            if let Ok(v) = serde_json::from_str::<Value>(written.trim()) {
+                assert_eq!(v["hook_event_name"], "PreToolUse");
+                // No tool_response key for PreToolUse.
+                assert!(v.get("tool_response").is_none());
+            }
+        }
     }
 
     #[test]

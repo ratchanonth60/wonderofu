@@ -22,6 +22,7 @@ mod extras;
 mod features;
 mod help;
 pub(crate) mod hooks;
+pub(crate) mod import;
 pub(crate) mod keybindings;
 mod mcp;
 pub mod memory;

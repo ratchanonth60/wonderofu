@@ -668,7 +668,7 @@ pub(super) fn permission_dialog_for_tool_call(
 }
 
 pub(super) fn tool_permission_flags(tool_name: &str) -> (bool, bool) {
-    builtin_tool_registry()
+    wonder_of_u_tools::builtin_registry()
         .ok()
         .and_then(|registry| registry.resolve(tool_name))
         .map(|tool| {
