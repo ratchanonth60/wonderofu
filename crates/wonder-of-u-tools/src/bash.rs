@@ -11,8 +11,8 @@ use serde_json::{Value, json};
 use wait_timeout::ChildExt;
 use wonder_of_u_core::{
     FeatureFlag, PermissionDecision, PermissionDecisionReason, PermissionRequest, Result,
-    ShellSafetyIssue, ShellSafetyVerdict, TaskState, Tool, ToolContext, ToolKind, ToolResult,
-    ToolSchema, ToolSpec, ToolUseId, WonderError, evaluate_permission, resolve_path,
+    ShellSafetyIssue, ShellSafetyVerdict, TaskState, TaskStatus, Tool, ToolContext, ToolKind,
+    ToolResult, ToolSchema, ToolSpec, ToolUseId, WonderError, evaluate_permission, resolve_path,
 };
 use wonder_of_u_storage::TaskStore;
 
@@ -371,8 +371,34 @@ fn run_in_background(
     running.mark_running(Some(pid), None, None, Some(description));
     store.write_task(&running)?;
 
-    // Drop `child` without waiting — it runs independently.
-    drop(child);
+    // Spawn a watchdog thread that waits on the child and reaps the OS process
+    // entry once it exits.  Without this, the exited child becomes a zombie
+    // until the parent process itself exits (because nobody called waitpid).
+    // The thread also persists the final exit code and task status to TaskStore
+    // so `task_output` / `task_stop` can observe the finished state.
+    let watchdog_app_root = app_root.clone();
+    std::thread::spawn(move || {
+        // `child` is declared mut here so we can call the &mut self method wait().
+        let mut child = child;
+        let exit_status = child.wait();
+        let store = TaskStore::new(&watchdog_app_root);
+        if let Ok(mut task) = store.read_task(task_id) {
+            let (task_status, code) = match exit_status {
+                Ok(ref status) => {
+                    let code = status.code();
+                    let ts = if status.success() {
+                        TaskStatus::Completed
+                    } else {
+                        TaskStatus::Failed
+                    };
+                    (ts, code)
+                }
+                Err(_) => (TaskStatus::Failed, None),
+            };
+            task.mark_finished(task_status, code, None);
+            let _ = store.write_task(&task);
+        }
+    });
 
     let task_id_str = task_id.to_string();
     let content = format!(
@@ -694,5 +720,98 @@ mod tests {
             "env not preserved: {:?}",
             result.content
         );
+    }
+
+    /// Verifies that the watchdog thread reaps a fast-exiting background
+    /// process and transitions the task status to `Completed` with exit code 0.
+    #[test]
+    fn bash_run_in_background_watchdog_marks_task_completed() {
+        let storage_dir = unique_test_dir("tools-bash-watchdog-storage");
+        // SAFETY: Env-var mutation is acceptable for test isolation; see the
+        // comment in `bash_run_in_background_spawns_task_and_returns_id`.
+        unsafe {
+            std::env::set_var(
+                "WONDER_OF_U_STORAGE_DIR",
+                storage_dir.display().to_string(),
+            );
+        }
+
+        let dir = unique_test_dir("tools-bash-watchdog");
+        let tool = BashTool;
+        let result = block_on(tool.execute(
+            tool_context(dir),
+            ToolUseId::new(),
+            json!({ "command": "exit 0", "run_in_background": true }),
+        ))
+        .expect("run background bash tool");
+
+        assert!(result.success, "expected success: {:?}", result.content);
+        let task_id_str = result.metadata["background_task_id"]
+            .as_str()
+            .expect("background_task_id must be present");
+
+        // Parse the TaskId and poll the store until the watchdog updates the
+        // state or we time out.  The spawned process exits nearly immediately
+        // so a 2-second cap is more than enough on any CI machine.
+        let task_id: wonder_of_u_core::TaskId = task_id_str.parse().expect("valid task id");
+        let store = wonder_of_u_storage::TaskStore::new(&storage_dir);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        loop {
+            let task = store.read_task(task_id).expect("task must exist in store");
+            if matches!(task.status, wonder_of_u_core::TaskStatus::Completed) {
+                assert_eq!(task.exit_code, Some(0), "exit_code must be 0");
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "watchdog did not mark task Completed within 2 s; status={:?}",
+                task.status
+            );
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+    }
+
+    /// Verifies that a background command that exits with a non-zero code is
+    /// marked `Failed` by the watchdog, not left in `Running`.
+    #[test]
+    fn bash_run_in_background_watchdog_marks_task_failed_on_nonzero_exit() {
+        let storage_dir = unique_test_dir("tools-bash-watchdog-fail-storage");
+        unsafe {
+            std::env::set_var(
+                "WONDER_OF_U_STORAGE_DIR",
+                storage_dir.display().to_string(),
+            );
+        }
+
+        let dir = unique_test_dir("tools-bash-watchdog-fail");
+        let tool = BashTool;
+        let result = block_on(tool.execute(
+            tool_context(dir),
+            ToolUseId::new(),
+            json!({ "command": "exit 42", "run_in_background": true }),
+        ))
+        .expect("run background bash tool");
+
+        assert!(result.success, "spawn itself must succeed: {:?}", result.content);
+        let task_id_str = result.metadata["background_task_id"]
+            .as_str()
+            .expect("background_task_id must be present");
+
+        let task_id: wonder_of_u_core::TaskId = task_id_str.parse().expect("valid task id");
+        let store = wonder_of_u_storage::TaskStore::new(&storage_dir);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        loop {
+            let task = store.read_task(task_id).expect("task must exist in store");
+            if matches!(task.status, wonder_of_u_core::TaskStatus::Failed) {
+                assert_eq!(task.exit_code, Some(42), "exit_code must be 42");
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "watchdog did not mark task Failed within 2 s; status={:?}",
+                task.status
+            );
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
     }
 }
