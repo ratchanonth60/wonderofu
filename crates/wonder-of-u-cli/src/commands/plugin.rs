@@ -15,8 +15,9 @@ use wonder_of_u_core::{
     CommandSpec, FeatureFlag, ProviderReadiness, Result, WonderError,
 };
 use wonder_of_u_plugins::{
-    PluginCatalog, PluginCatalogEntry, PluginCommandRegistration, PluginConfig, PluginConfigStore,
-    PluginManifest, PluginReadiness, PluginTrustDecision, normalize_plugin_id,
+    PLUGIN_MANIFEST_FILE_NAMES, PluginCatalog, PluginCatalogEntry, PluginCommandRegistration,
+    PluginConfig, PluginConfigStore, PluginManifest, PluginReadiness, PluginTrustDecision,
+    normalize_plugin_id, plugin_manifest_path,
 };
 use wonder_of_u_skills::SkillCatalog;
 
@@ -162,7 +163,7 @@ struct PluginDisableArgs {
 
 #[derive(Debug, Args)]
 struct PluginInstallArgs {
-    /// Local filesystem path to a plugin directory containing a wonder-of-u-plugin.json manifest
+    /// Local filesystem path to a plugin directory containing a supported plugin manifest
     #[arg()]
     path: PathBuf,
 }
@@ -367,26 +368,10 @@ impl PluginCommand {
         let abs_path = fs::canonicalize(&abs_path).map_err(|e| {
             WonderError::not_found("plugin path", format!("{}: {e}", abs_path.display()))
         })?;
-        // Validate manifest exists
-        let manifest_path = if abs_path.is_dir() {
-            abs_path.join("wonder-of-u-plugin.json")
-        } else {
-            abs_path.clone()
-        };
-        if !manifest_path.exists() {
-            return Err(WonderError::not_found(
-                "plugin manifest",
-                format!(
-                    "{} — ensure wonder-of-u-plugin.json exists in the directory",
-                    manifest_path.display()
-                ),
-            ));
-        }
-        // Validate manifest can be parsed
-        let contents = fs::read_to_string(&manifest_path)?;
-        let _manifest: PluginManifest = serde_json::from_str(&contents).map_err(|e| {
+        let manifest_path = resolve_plugin_manifest_path(&abs_path)?;
+        let _manifest = PluginManifest::read_from_path(&manifest_path).map_err(|error| {
             WonderError::validation(format!(
-                "invalid plugin manifest at {}: {e}",
+                "invalid plugin manifest at {}: {error}",
                 manifest_path.display()
             ))
         })?;
@@ -430,21 +415,14 @@ fn validate_plugin_path(path: &Path) -> Result<String> {
             .unwrap_or_else(|_| PathBuf::from("."))
             .join(path)
     };
-    let manifest_path = if abs_path.is_dir() {
-        abs_path.join("wonder-of-u-plugin.json")
-    } else {
-        abs_path.clone()
-    };
-    if !manifest_path.exists() {
+    let Ok(manifest_path) = resolve_plugin_manifest_path(&abs_path) else {
         return Ok(format!(
-            "valid=false\npath={}\nerror=wonder-of-u-plugin.json not found",
-            manifest_path.display()
+            "valid=false\npath={}\nerror=no supported plugin manifest found; expected one of {}",
+            abs_path.display(),
+            supported_plugin_manifest_names()
         ));
-    }
-    let contents = fs::read_to_string(&manifest_path).map_err(|e| {
-        WonderError::validation(format!("cannot read {}: {e}", manifest_path.display()))
-    })?;
-    match serde_json::from_str::<PluginManifest>(&contents) {
+    };
+    match PluginManifest::read_from_path(&manifest_path) {
         Ok(manifest) => {
             let commands = manifest.commands.len();
             let skills = manifest.skills.len();
@@ -461,6 +439,34 @@ fn validate_plugin_path(path: &Path) -> Result<String> {
             e
         )),
     }
+}
+
+fn resolve_plugin_manifest_path(path: &Path) -> Result<PathBuf> {
+    if path.is_dir() {
+        return plugin_manifest_path(path).ok_or_else(|| {
+            WonderError::not_found(
+                "plugin manifest",
+                format!(
+                    "{} — ensure one of {} exists in the directory",
+                    path.display(),
+                    supported_plugin_manifest_names()
+                ),
+            )
+        });
+    }
+
+    if path.is_file() {
+        return Ok(path.to_path_buf());
+    }
+
+    Err(WonderError::not_found(
+        "plugin path",
+        path.display().to_string(),
+    ))
+}
+
+fn supported_plugin_manifest_names() -> String {
+    PLUGIN_MANIFEST_FILE_NAMES.join(", ")
 }
 
 fn handle_marketplace(args: &PluginMarketplaceArgs) -> Result<String> {
