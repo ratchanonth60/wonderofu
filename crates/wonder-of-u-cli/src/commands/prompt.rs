@@ -732,6 +732,8 @@ fn tool_context(state: &AppState) -> ToolContext {
         session_worktree: state.session.worktree.clone(),
         permission_mode: state.permission_mode,
         additional_working_directories: state.additional_working_directories.clone(),
+        provider: state.provider.clone(),
+        model: state.model.clone(),
         permission_rules: Vec::new(),
         features: state.features.clone(),
         bash_session_store: None,
