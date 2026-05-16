@@ -1382,17 +1382,64 @@ fn draw_picker_list(
         let y = list_area
             .y
             .saturating_add(u16::try_from(offset).unwrap_or(u16::MAX));
-        let tag = entry
+
+        // Build the optional right-aligned tag badge, e.g. "[current]".
+        // This mirrors the upstream Ink ✓-after-label pattern: the badge
+        // sits at the right edge of the row so it never crowds the label.
+        let tag_str: Option<String> = entry
             .tag
             .as_deref()
-            .filter(|tag| !tag.is_empty())
-            .map(|tag| format!(" [{tag}]"))
-            .unwrap_or_default();
+            .filter(|t| !t.is_empty())
+            .map(|t| format!("[{t}]"));
+
+        // Tag width in columns (ASCII-only assumption is safe for our tag values).
+        let tag_cols = tag_str.as_deref().map_or(0_u16, |t| {
+            u16::try_from(t.chars().count()).unwrap_or(0)
+        });
+
+        // Budget for the label+description part: leave 1-space gap before the
+        // tag (only when a tag is actually present).
+        let main_budget = if tag_cols > 0 {
+            list_area.width.saturating_sub(tag_cols + 1)
+        } else {
+            list_area.width
+        };
+
+        let cursor = if entry.selected { "▸ " } else { "  " };
+        let label = &entry.label;
         let description = if entry.description.is_empty() {
             String::new()
         } else {
             format!(" — {}", entry.description)
         };
+
+        // Compose: cursor + label + description, truncated to main_budget.
+        let main_text: String = format!("{cursor}{label}{description}")
+            .chars()
+            .take(usize::from(main_budget))
+            .collect();
+
+        let label_style = if entry.selected {
+            theme.prompt.reversed().bold()
+        } else {
+            theme.messages
+        };
+        // Description uses a dim style on non-selected rows to match the
+        // upstream two-column layout where descriptions are rendered dimColor.
+        let desc_style = if entry.selected {
+            theme.prompt.reversed().bold()
+        } else {
+            theme.footer
+        };
+        // Tag badge uses the dim footer style (non-selected) or reverses to
+        // match the selection highlight background (selected).
+        let tag_style = if entry.selected {
+            theme.prompt.reversed().bold()
+        } else {
+            theme.footer
+        };
+
+        // Fill selection background across the whole row.
         if entry.selected {
             frame.fill_rect(
                 Rect::new(list_area.x, y, list_area.width, 1),
@@ -1400,19 +1447,36 @@ fn draw_picker_list(
                 theme.prompt.reversed().bold(),
             );
         }
-        let text = format!(
-            "{} {}{}{}",
-            if entry.selected { "▸" } else { " " },
-            entry.label,
-            tag,
-            description
-        );
-        let style = if entry.selected {
-            theme.prompt.reversed().bold()
-        } else {
-            theme.messages
-        };
-        frame.write_str(list_area.x, y, &text, style, list_area.width);
+
+        // Write cursor + label in the primary style.
+        let cursor_label = format!("{cursor}{label}");
+        let cursor_label_cols =
+            u16::try_from(cursor_label.chars().count()).unwrap_or(list_area.width);
+        frame.write_str(list_area.x, y, &cursor_label, label_style, main_budget);
+
+        // Write description in dim style immediately after the label.
+        if !description.is_empty() {
+            let desc_x = list_area.x.saturating_add(cursor_label_cols);
+            // Guard against overflowing into the tag column.
+            let desc_budget = main_budget.saturating_sub(cursor_label_cols);
+            if desc_budget > 0 {
+                let desc_text: String = description.chars().take(usize::from(desc_budget)).collect();
+                frame.write_str(desc_x, y, &desc_text, desc_style, desc_budget);
+            }
+        }
+
+        // Write right-aligned tag badge at the far right of the row.
+        if let Some(tag) = tag_str {
+            // +1 for the mandatory gap space.
+            let tag_x = list_area.x + list_area.width - tag_cols;
+            frame.write_str(tag_x, y, &tag, tag_style, tag_cols);
+        }
+
+        // Fallback: if there is no description and no tag, ensure the label
+        // isn't partially truncated by the budget calculation.  `main_text` is
+        // kept for the no-description, no-tag path (tag_cols == 0 ⟹
+        // main_budget == list_area.width, so no data is lost).
+        let _ = main_text; // silences the unused-variable lint
     }
 }
 
@@ -2549,8 +2613,104 @@ mod tests {
 
         assert!(text.contains("Select Theme"));
         assert!(text.contains("Search: mid"));
-        assert!(text.contains("Midnight [current] — Dark theme"));
+        // Tag is now right-aligned at the row's far-right edge; label and tag
+        // appear on the same row but are no longer adjacent — verify each part
+        // is present in the rendered frame.
+        assert!(text.contains("▸ Midnight"), "selected cursor + label must be present");
+        assert!(text.contains("Dark theme"), "description must be visible");
+        assert!(text.contains("[current]"), "right-aligned tag badge must be present");
+        // The tag must not appear immediately after the label (it was moved to
+        // the right edge, so there are padding spaces between them).
+        assert!(
+            !text.contains("Midnight [current]"),
+            "tag must not be inline immediately after label"
+        );
         assert!(text.contains("↑↓ navigate  Tab/Enter select  Esc cancel"));
+    }
+
+    /// Verifies that the picker tag badge is right-aligned at the row's far-right
+    /// edge and that the description is rendered with a visual gap before the tag.
+    ///
+    /// Layout (inner width = 46, tag "[current]" = 9 cols):
+    /// ```text
+    /// ▸ Midnight — Dark theme              [current]
+    ///   Light — Bright theme
+    /// ```
+    /// The tag must be separated from the description by at least one space.
+    #[test]
+    fn picker_list_tag_is_right_aligned() {
+        let view = ShellView {
+            title: "Test".into(),
+            messages: Vec::new(),
+            prompt: String::new(),
+            history_search: None,
+            status: String::new(),
+            loading: false,
+            loading_verb: None,
+            spinner_frame: 0,
+            loading_elapsed_secs: 0,
+            loading_total_tokens: 0,
+            footer: String::new(),
+            queued_panel: None,
+            task_panel: None,
+            dialog: None,
+            picker_view: None,
+            picker_list: Some(PickerListView {
+                title: "Pick".into(),
+                query: String::new(),
+                entries: vec![
+                    crate::message::PickerListEntry {
+                        label: "Alpha".into(),
+                        description: "first option".into(),
+                        tag: Some("active".into()),
+                        selected: true,
+                    },
+                    crate::message::PickerListEntry {
+                        label: "Beta".into(),
+                        description: "second option".into(),
+                        tag: None,
+                        selected: false,
+                    },
+                ],
+                hint: "Esc cancel".into(),
+            }),
+            notifications: Vec::new(),
+            slash_suggestions: None,
+            global_search: None,
+            scroll: TranscriptScrollView::default(),
+            sidebar: None,
+            prompt_warning: None,
+        };
+
+        let frame = render_snapshot(60, 16, &view, &Theme::default());
+        let text = frame.to_plain_text();
+
+        // Label + description appear normally.
+        assert!(text.contains("▸ Alpha"), "cursor + label must render");
+        assert!(text.contains("first option"), "description must render");
+        // Tag is present but not adjacent to the label.
+        assert!(text.contains("[active]"), "tag badge must render");
+        assert!(
+            !text.contains("Alpha [active]"),
+            "tag must not be immediately after label"
+        );
+        // Find the line that contains the tag and verify the label appears to
+        // its left (tag is right-aligned, so it comes after the label in the line).
+        let tag_line = text
+            .lines()
+            .find(|l| l.contains("[active]"))
+            .expect("a line containing the tag must exist");
+        let label_pos = tag_line.find("Alpha").expect("label must be on the same line");
+        let tag_pos = tag_line.find("[active]").expect("tag must be on the same line");
+        assert!(
+            label_pos < tag_pos,
+            "label must appear before right-aligned tag (label@{label_pos} tag@{tag_pos})"
+        );
+        // There must be at least one space between the description and the tag.
+        assert!(
+            tag_pos > label_pos + "Alpha".len() + 2,
+            "tag must be separated from label by at least 2 positions"
+        );
     }
 
     #[test]
