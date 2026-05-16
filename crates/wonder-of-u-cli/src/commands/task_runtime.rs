@@ -843,7 +843,16 @@ fn background_shell_command(
         .arg(shell_wrapper(command, exit_path, heartbeat_path));
     unsafe {
         child.pre_exec(|| {
-            if libc::setsid() == -1 {
+            // On macOS, setsid() places the child in a new session.  The
+            // parent process cannot send signals to a process group that
+            // belongs to a different session (EPERM), so we use setpgid
+            // instead, which creates a new process group within the same
+            // session and still lets kill(-pgid, signal) work.
+            #[cfg(target_os = "macos")]
+            let rc = libc::setpgid(0, 0);
+            #[cfg(not(target_os = "macos"))]
+            let rc = libc::setsid();
+            if rc == -1 {
                 Err(std::io::Error::last_os_error())
             } else {
                 Ok(())
@@ -918,7 +927,7 @@ fn process_is_alive(pid: u32) -> Result<bool> {
     }
 }
 
-#[cfg(unix)]
+#[cfg(all(unix, not(target_os = "macos")))]
 fn process_is_zombie(pid: u32) -> bool {
     let Ok(stat) = std::fs::read_to_string(format!("/proc/{pid}/stat")) else {
         return false;
@@ -926,6 +935,17 @@ fn process_is_zombie(pid: u32) -> bool {
     stat.rsplit_once(") ")
         .and_then(|(_, rest)| rest.split_whitespace().next())
         == Some("Z")
+}
+
+// On macOS /proc does not exist.  Use waitpid(WNOHANG) to detect (and reap)
+// zombie children.  When we are not the parent the call returns ECHILD;
+// in that case init/launchd reaps the zombie quickly so returning false is
+// safe — the next kill(pid, 0) poll will see ESRCH once it is gone.
+#[cfg(target_os = "macos")]
+fn process_is_zombie(pid: u32) -> bool {
+    unsafe {
+        libc::waitpid(pid as libc::pid_t, std::ptr::null_mut(), libc::WNOHANG) == pid as libc::pid_t
+    }
 }
 
 #[cfg(not(unix))]
