@@ -1324,6 +1324,32 @@ impl TaskStore {
             Err(error) => Err(error.into()),
         }
     }
+
+    /// Deletes the known per-task artifact files (state JSON, log, heartbeat,
+    /// and exit marker).
+    ///
+    /// Only the four paths that [`StoragePaths`] explicitly knows about are
+    /// removed; no directory-wide or glob deletes are performed.  Missing
+    /// files are silently ignored so the call is safe to repeat.
+    ///
+    /// Returns the count of files that were actually deleted.
+    pub fn delete_task_artifacts(&self, task_id: TaskId) -> Result<usize> {
+        let paths = [
+            self.paths.task_state_path(task_id),
+            self.paths.task_log_path(task_id),
+            self.paths.task_heartbeat_path(task_id),
+            self.paths.task_exit_path(task_id),
+        ];
+        let mut deleted = 0usize;
+        for path in &paths {
+            match fs::remove_file(path) {
+                Ok(()) => deleted += 1,
+                Err(error) if error.kind() == ErrorKind::NotFound => {}
+                Err(error) => return Err(error.into()),
+            }
+        }
+        Ok(deleted)
+    }
 }
 
 // ── AgentTaskResultStore ──────────────────────────────────────────────────────
