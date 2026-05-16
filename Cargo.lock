@@ -1978,6 +1978,7 @@ dependencies = [
  "tempfile",
  "time",
  "tokio",
+ "unicode-segmentation",
  "walkdir",
  "wonder-of-u-agent",
  "wonder-of-u-core",

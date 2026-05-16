@@ -35,6 +35,7 @@ use std::{collections::BTreeSet, path::PathBuf, thread, time::Duration};
 use async_trait::async_trait;
 use clap::{Args, Parser, Subcommand};
 use time::OffsetDateTime;
+use unicode_segmentation::UnicodeSegmentation;
 use wonder_of_u_agent::{ProviderResolver, ProviderStatusReport};
 use wonder_of_u_core::{
     Command, CommandContext, CommandInvocation, CommandKind, CommandOutput, CommandSpec,
@@ -242,7 +243,7 @@ impl Command for FleetCommand {
             FleetSubcommand::StopAll(args) => self.stop_all(args),
             FleetSubcommand::Roles => Self::roles(),
             FleetSubcommand::Reconcile(args) => self.reconcile(context, args),
-            FleetSubcommand::Wait(args) => self.wait(args),
+            FleetSubcommand::Wait(args) => self.wait(context, args),
             FleetSubcommand::Results(args) => self.results(args),
         }
     }
@@ -964,7 +965,7 @@ impl FleetCommand {
     ///
     /// Output is a stable `key=value` block suitable for both humans and
     /// machine parsing.
-    fn wait(&self, args: FleetWaitArgs) -> Result<CommandOutput> {
+    fn wait(&self, context: CommandContext, args: FleetWaitArgs) -> Result<CommandOutput> {
         // Validate inputs before touching storage so bad args fail fast.
         if args.timeout_secs == 0 {
             return Err(WonderError::validation("--timeout-secs must be ≥ 1"));
@@ -988,6 +989,12 @@ impl FleetCommand {
 
         let mut timed_out = false;
         let observation = loop {
+            let _ = self.reconcile(
+                context.clone(),
+                FleetReconcileArgs {
+                    fleet_id: args.fleet_id.clone(),
+                },
+            )?;
             let obs = inspector.observe(fleet_id)?;
 
             // All members terminal → done immediately.
@@ -1123,7 +1130,7 @@ impl FleetCommand {
                         };
                         if budget > 0 {
                             let truncated = truncate_chars(text, budget);
-                            chars_used += truncated.len();
+                            chars_used += truncated.graphemes(true).count();
                             for (j, log_line) in truncated.lines().enumerate() {
                                 lines.push(format!(
                                     "member[{i}].output[{j}]={}",
@@ -1345,11 +1352,11 @@ fn sanitize_line(value: &str) -> String {
     value.lines().collect::<Vec<_>>().join("\\n")
 }
 
-/// Truncates `s` to at most `max_chars` Unicode scalar values.
+/// Truncates `s` to at most `max_chars` user-visible grapheme clusters.
 ///
-/// Truncation is character-safe: it never splits a multi-byte code-point.
+/// Truncation is display-safe for combining marks and multi-codepoint emoji.
 fn truncate_chars(s: &str, max_chars: usize) -> &str {
-    match s.char_indices().nth(max_chars) {
+    match s.grapheme_indices(true).nth(max_chars) {
         Some((byte_idx, _)) => &s[..byte_idx],
         None => s,
     }
@@ -2772,6 +2779,22 @@ mod tests {
     fn truncate_chars_multibyte_safe() {
         // "café" = 4 chars / 5 bytes; truncating at 3 chars must not split 'é'.
         assert_eq!(truncate_chars("café", 3), "caf");
+    }
+
+    #[test]
+    fn truncate_chars_combining_mark_safe() {
+        let text = "e\u{301}clair";
+        assert_eq!(truncate_chars(text, 1), "e\u{301}");
+    }
+
+    #[test]
+    fn truncate_chars_flag_emoji_safe() {
+        assert_eq!(truncate_chars("🇺🇸 ok", 1), "🇺🇸");
+    }
+
+    #[test]
+    fn truncate_chars_zwj_emoji_safe() {
+        assert_eq!(truncate_chars("👨‍👩‍👧‍👦 family", 1), "👨‍👩‍👧‍👦");
     }
 
     #[test]
