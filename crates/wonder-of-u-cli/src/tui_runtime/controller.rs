@@ -2584,7 +2584,12 @@ impl<'a> TuiController<'a> {
             sb.workspace_lines = workspace_lines;
         }
 
-        view.status = chrome_status_text(&self.state);
+        let chrome_status = chrome_status_text(&self.state);
+        view.status = if let Some(note) = &self.status_note {
+            format!("{note} | {chrome_status}")
+        } else {
+            chrome_status
+        };
         view.loading = is_loading_turn_state(self.turn_state);
         view.loading_verb = loading_verb_label(self.turn_state).map(str::to_string);
 
