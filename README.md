@@ -121,7 +121,8 @@ Scroll controls are suppressed while any overlay (picker, dialog, history search
 | `wonder-of-u mcp` | Inspect MCP config and server discovery |
 | `wonder-of-u plugin` | Inspect plugin manifests and trust state |
 | `wonder-of-u skills` | List and run local/plugin skills |
-| `wonder-of-u agents` / `wonder-of-u tasks` | Manage persisted background work |
+| `wonder-of-u agents` / `wonder-of-u tasks` | Monitor, remove, and prune background work |
+| `wonder-of-u slash /fleet "<prompt>"` | Orchestrate parallel sub-agents via direct prompt |
 
 See [docs/USAGE.md](docs/USAGE.md) for a fuller walkthrough.
 

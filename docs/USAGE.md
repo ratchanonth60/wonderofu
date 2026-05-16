@@ -173,11 +173,104 @@ wonder-of-u reload-plugins
 wonder-of-u skills
 ```
 
-## Background work
+## Background work and fleet orchestration
+
+### Monitoring background tasks
+
+`/tasks` (bare) or `/tasks status` prints a live summary of every persisted
+background task — shell tasks, local agent sub-processes, and fleet members:
 
 ```bash
-wonder-of-u agents
-wonder-of-u tasks
+wonder-of-u tasks              # summary view
+wonder-of-u tasks list         # full list (most-recent first, capped at 20)
+wonder-of-u tasks show <id>    # detail + log tail for one task
+```
+
+The sidebar **Tasks** panel (visible in the TUI when `Ctrl+B` is on) mirrors
+this data inline without leaving the chat view.
+
+### Cleaning up tasks
+
+Remove a single finished task (its state file and output log are deleted):
+
+```bash
+wonder-of-u tasks remove <task-id>
+# --force removes an active (pending/running) task without stopping it first
+wonder-of-u tasks remove --force <task-id>
+```
+
+Bulk-prune all terminal tasks at once:
+
+```bash
+wonder-of-u tasks prune                  # removes completed + failed + cancelled
+wonder-of-u tasks prune --completed      # removes only exit-code-0 tasks
+wonder-of-u tasks prune --terminal       # explicit alias for the default behaviour
+```
+
+### Fleet: parallel sub-agent orchestration
+
+`/fleet` orchestrates groups of local agent tasks under a single fleet run.
+
+#### Direct prompt (quickest path)
+
+Pass a freeform prompt and the fleet command queues parallel sub-agents
+automatically — no subcommand needed:
+
+```bash
+wonder-of-u slash /fleet "refactor the auth module and add rate limiting"
+
+# Multi-part prompts (separated by semicolons, numbered list, or bullets)
+# queue one sub-agent per part:
+wonder-of-u slash /fleet "extract utils; write docs; update changelog"
+```
+
+After queuing, drive execution with:
+
+```bash
+wonder-of-u slash /fleet reconcile <fleet_id>   # launch ready members
+wonder-of-u slash /fleet wait <fleet_id>         # block until terminal
+```
+
+#### Steering an active fleet
+
+Send a mid-run instruction to an in-progress fleet (rejected for terminal runs):
+
+```bash
+wonder-of-u slash /fleet steer <fleet_id> "focus only on the payment module"
+```
+
+The steering message is visible in `fleet show <fleet_id>` under `steering_count`
+and `steering_latest`.
+
+#### Monitoring and results
+
+```bash
+wonder-of-u slash /fleet status              # aggregate across all runs
+wonder-of-u slash /fleet show <fleet_id>     # per-member task statuses + log tail
+wonder-of-u slash /fleet results <fleet_id>  # aggregated output excerpts
+```
+
+#### Full fleet lifecycle example
+
+```bash
+# 1. Queue work via direct prompt
+wonder-of-u slash /fleet "add OpenAPI docs to the auth service"
+#    → fleet_id=<uuid>  queued_members=1  mode=direct_prompt
+
+# 2. Run members
+wonder-of-u slash /fleet reconcile <fleet_id>
+
+# 3. Steer mid-run
+wonder-of-u slash /fleet steer <fleet_id> "also cover the refresh-token endpoint"
+
+# 4. Wait for completion
+wonder-of-u slash /fleet wait <fleet_id> --timeout-secs 600
+
+# 5. View results
+wonder-of-u slash /fleet results <fleet_id> --include-logs
+
+# 6. Clean up finished tasks
+wonder-of-u tasks prune --completed
 ```
 
 ## Slash command transport
