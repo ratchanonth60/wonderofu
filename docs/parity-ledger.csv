@@ -57,7 +57,7 @@ cli/transports/SSETransport.ts,cli,covered-by-rust-equivalent,cli/SSETransport
 cli/transports/SerialBatchEventUploader.ts,cli,covered-by-rust-equivalent,cli/SerialBatchEventUploader
 cli/transports/WebSocketTransport.ts,cli,external-service-blocked,CCR-specific WebSocket transport (not general SSE); blocked by missing tokio-tungstenite dep + CCR backend — see docs/adr-remote-cloud-transport.md
 cli/transports/WorkerStateUploader.ts,cli,covered-by-rust-equivalent,cli/WorkerStateUploader
-cli/transports/ccrClient.ts,cli,covered-by-rust-equivalent,cli/ccrClient
+cli/transports/ccrClient.ts,cli,external-service-blocked,CCR worker/session protocol is not covered by the Rust build; remote transport remains unavailable
 cli/transports/transportUtils.ts,cli,covered-by-rust-equivalent,cli/transportUtils
 cli/update.ts,cli,covered-by-rust-equivalent,cli/update
 commands/add-dir/add-dir.tsx,command,covered-by-rust-equivalent,Rust command: add-dir
@@ -1069,18 +1069,18 @@ services/policyLimits/types.ts,services,covered-by-rust-equivalent,services/type
 services/preventSleep.ts,services,covered-by-rust-equivalent,services/preventSleep
 services/rateLimitMessages.ts,services,covered-by-rust-equivalent,services/rateLimitMessages
 services/rateLimitMocking.ts,services,covered-by-rust-equivalent,services/rateLimitMocking
-services/remoteManagedSettings/index.ts,services,covered-by-rust-equivalent,services/index
-services/remoteManagedSettings/securityCheck.tsx,services,covered-by-rust-equivalent,services/securityCheck
-services/remoteManagedSettings/syncCache.ts,services,covered-by-rust-equivalent,services/syncCache
-services/remoteManagedSettings/syncCacheState.ts,services,covered-by-rust-equivalent,services/syncCacheState
-services/remoteManagedSettings/types.ts,services,covered-by-rust-equivalent,services/types
-services/settingsSync/index.ts,services,covered-by-rust-equivalent,services/index
-services/settingsSync/types.ts,services,covered-by-rust-equivalent,services/types
-services/teamMemorySync/index.ts,services,covered-by-rust-equivalent,services/index
-services/teamMemorySync/secretScanner.ts,services,covered-by-rust-equivalent,services/secretScanner
-services/teamMemorySync/teamMemSecretGuard.ts,services,covered-by-rust-equivalent,services/teamMemSecretGuard
-services/teamMemorySync/types.ts,services,covered-by-rust-equivalent,services/types
-services/teamMemorySync/watcher.ts,services,covered-by-rust-equivalent,wonder-of-u-storage memdir scan
+services/remoteManagedSettings/index.ts,services,defer-product-decision,remote managed settings remain deferred until a real policy backend exists in the Rust build
+services/remoteManagedSettings/securityCheck.tsx,services,defer-product-decision,remote managed settings remain deferred until a real policy backend exists in the Rust build
+services/remoteManagedSettings/syncCache.ts,services,defer-product-decision,remote managed settings remain deferred until a real policy backend exists in the Rust build
+services/remoteManagedSettings/syncCacheState.ts,services,defer-product-decision,remote managed settings remain deferred until a real policy backend exists in the Rust build
+services/remoteManagedSettings/types.ts,services,defer-product-decision,remote managed settings remain deferred until a real policy backend exists in the Rust build
+services/settingsSync/index.ts,services,defer-product-decision,only local settings persistence exists; cloud upload/download parity is unavailable in the Rust build
+services/settingsSync/types.ts,services,defer-product-decision,only local settings persistence exists; cloud upload/download parity is unavailable in the Rust build
+services/teamMemorySync/index.ts,services,defer-product-decision,team memory cloud sync is unsupported; session memory remains local-only in the Rust build
+services/teamMemorySync/secretScanner.ts,services,defer-product-decision,team memory cloud sync is unsupported; session memory remains local-only in the Rust build
+services/teamMemorySync/teamMemSecretGuard.ts,services,defer-product-decision,team memory cloud sync is unsupported; session memory remains local-only in the Rust build
+services/teamMemorySync/types.ts,services,defer-product-decision,team memory cloud sync is unsupported; session memory remains local-only in the Rust build
+services/teamMemorySync/watcher.ts,services,defer-product-decision,team memory cloud sync is unsupported; session memory remains local-only in the Rust build
 services/tips/tipHistory.ts,services,covered-by-rust-equivalent,services/tipHistory
 services/tips/tipRegistry.ts,services,covered-by-rust-equivalent,services/tipRegistry
 services/tips/tipScheduler.ts,services,covered-by-rust-equivalent,wonder-of-u-storage tips selection helpers

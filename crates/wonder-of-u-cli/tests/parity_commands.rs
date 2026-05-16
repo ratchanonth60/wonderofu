@@ -565,10 +565,10 @@ fn remote_env_some_output_marks_transport_inactive() {
     );
 }
 
-/// /remote-setup: saving a config must return output that includes both
-/// `remote session transport is not implemented` and `config saved for future use only`.
+/// `/remote-setup` must say it only stores local config and that remote/web
+/// session transport is unavailable in this Rust build.
 #[test]
-fn remote_setup_output_includes_not_implemented_and_future_use() {
+fn remote_setup_output_marks_config_only_and_transport_unavailable() {
     use futures::executor::block_on;
     use wonder_of_u_core::{CommandInvocation, CommandOutput};
 
@@ -591,12 +591,39 @@ fn remote_setup_output_includes_not_implemented_and_future_use() {
         panic!("expected Text output");
     };
     assert!(
-        text.to_lowercase().contains("not implemented"),
-        "/remote-setup must state transport is not implemented; got:\n{text}"
+        text.to_lowercase().contains("unavailable"),
+        "/remote-setup must state transport is unavailable; got:\n{text}"
     );
     assert!(
-        text.to_lowercase().contains("future use"),
-        "/remote-setup must mention config saved for future use; got:\n{text}"
+        text.to_lowercase().contains("config stored locally only")
+            || text.to_lowercase().contains("stores config only"),
+        "/remote-setup must mention config-only behavior; got:\n{text}"
+    );
+}
+
+/// `/remote-setup` help/spec text must be explicit that this Rust build stores
+/// config only and does not provide a remote/web session transport.
+#[test]
+fn remote_setup_spec_is_honest_about_config_only_transport() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let registry = build_command_registry(Some(dir.path().to_path_buf())).expect("build registry");
+    let spec = registry
+        .resolve("remote-setup")
+        .expect("remote-setup must be registered")
+        .spec();
+
+    let description = spec.description.to_lowercase();
+    assert!(
+        description.contains("config"),
+        "remote-setup description must mention config storage; got: {}",
+        spec.description
+    );
+    assert!(
+        description.contains("transport unavailable")
+            || description.contains("transport unavailable in this rust build")
+            || description.contains("transport unavailable in this build"),
+        "remote-setup description must mention unavailable transport; got: {}",
+        spec.description
     );
 }
 
@@ -688,6 +715,66 @@ fn status_output_includes_analytics_and_experiments_unsupported() {
     assert!(
         !text.contains("experiments=ok"),
         "/status must not claim experiments=ok; got:\n{text}"
+    );
+}
+
+/// `/status` must clearly mark cloud-sync-adjacent surfaces as non-parity:
+/// local-only settings, deferred remote managed settings, and unsupported team
+/// memory sync.
+#[test]
+fn status_output_marks_cloud_sync_surfaces_as_non_parity() {
+    use futures::executor::block_on;
+    use wonder_of_u_core::{CommandInvocation, CommandOutput};
+
+    let dir = tempfile::tempdir().expect("temp dir");
+    let registry = build_command_registry(Some(dir.path().to_path_buf())).expect("build registry");
+    let cmd = registry
+        .resolve("status")
+        .expect("status must be registered");
+
+    let result = block_on(cmd.execute(
+        parity_ctx(dir.path()),
+        CommandInvocation {
+            name: "status".into(),
+            args: String::new(),
+            raw: "/status".into(),
+        },
+    ));
+    let output = result.expect("/status must succeed");
+    let CommandOutput::Text(text) = output else {
+        panic!("expected Text output from /status");
+    };
+
+    assert!(
+        text.contains("settings_sync=local_only"),
+        "/status must keep settings sync local-only; got:\n{text}"
+    );
+    assert!(
+        text.contains("settings_sync_cloud=unsupported"),
+        "/status must state settings sync cloud parity is unsupported; got:\n{text}"
+    );
+    assert!(
+        text.contains("settings_sync_reason=")
+            && text.contains("cloud upload/download backends are unavailable"),
+        "/status must explain settings sync stays local; got:\n{text}"
+    );
+    assert!(
+        text.contains("remote_managed_settings=deferred"),
+        "/status must mark remote managed settings deferred; got:\n{text}"
+    );
+    assert!(
+        text.contains("remote_managed_settings_reason=")
+            && text.contains("deferred until a real policy backend exists"),
+        "/status must explain remote managed settings are deferred; got:\n{text}"
+    );
+    assert!(
+        text.contains("team_memory_sync=unsupported"),
+        "/status must mark team memory sync unsupported; got:\n{text}"
+    );
+    assert!(
+        text.contains("team_memory_sync_reason=")
+            && text.contains("session memory remains local-only"),
+        "/status must explain team memory sync is unsupported; got:\n{text}"
     );
 }
 
