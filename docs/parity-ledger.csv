@@ -55,7 +55,7 @@ cli/structuredIO.ts,cli,covered-by-rust-equivalent,cli/structuredIO
 cli/transports/HybridTransport.ts,cli,covered-by-rust-equivalent,cli/HybridTransport
 cli/transports/SSETransport.ts,cli,covered-by-rust-equivalent,cli/SSETransport
 cli/transports/SerialBatchEventUploader.ts,cli,covered-by-rust-equivalent,cli/SerialBatchEventUploader
-cli/transports/WebSocketTransport.ts,cli,covered-by-rust-equivalent,cli/WebSocketTransport
+cli/transports/WebSocketTransport.ts,cli,external-service-blocked,CCR-specific WebSocket transport (not general SSE); blocked by missing tokio-tungstenite dep + CCR backend — see docs/adr-remote-cloud-transport.md
 cli/transports/WorkerStateUploader.ts,cli,covered-by-rust-equivalent,cli/WorkerStateUploader
 cli/transports/ccrClient.ts,cli,covered-by-rust-equivalent,cli/ccrClient
 cli/transports/transportUtils.ts,cli,covered-by-rust-equivalent,cli/transportUtils
@@ -952,10 +952,10 @@ query/deps.ts,query,covered-by-rust-equivalent,wonder-of-u-core/src/query.rs
 query/stopHooks.ts,query,covered-by-rust-equivalent,query/stopHooks
 query/tokenBudget.ts,query,covered-by-rust-equivalent,query/tokenBudget
 query.ts,misc,covered-by-rust-equivalent,top-level query.ts
-remote/RemoteSessionManager.ts,external-remote,external-service-blocked,remote requires external runtime
-remote/SessionsWebSocket.ts,external-remote,external-service-blocked,remote requires external runtime
-remote/remotePermissionBridge.ts,external-remote,external-service-blocked,remote requires external runtime
-remote/sdkMessageAdapter.ts,external-remote,external-service-blocked,remote requires external runtime
+remote/RemoteSessionManager.ts,external-remote,external-service-blocked,blocked: CCR backend + OAuth infra absent — see docs/adr-remote-cloud-transport.md
+remote/SessionsWebSocket.ts,external-remote,external-service-blocked,blocked: CCR WebSocket + tokio-tungstenite dep absent — see docs/adr-remote-cloud-transport.md
+remote/remotePermissionBridge.ts,external-remote,external-service-blocked,blocked: CCR permission bridge requires live CCR session — see docs/adr-remote-cloud-transport.md
+remote/sdkMessageAdapter.ts,external-remote,external-service-blocked,blocked: CCR wire-protocol undocumented — see docs/adr-remote-cloud-transport.md
 replLauncher.tsx,misc,covered-by-rust-equivalent,top-level replLauncher.tsx
 schemas/hooks.ts,misc,covered-by-rust-equivalent,top-level schemas/hooks.ts
 screens/Doctor.tsx,screens,covered-by-rust-equivalent,screens/Doctor
