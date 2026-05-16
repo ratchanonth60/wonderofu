@@ -12,7 +12,7 @@ use std::{
 
 use time::OffsetDateTime;
 use wonder_of_u_core::{
-    AgentRuntime, AgentTaskState, CommandContext, PermissionDecision, PermissionMode,
+    AgentRuntime, AgentTaskState, CommandContext, FleetId, PermissionDecision, PermissionMode,
     PermissionRequest, RemoteTaskMetadata, RemoteTaskState, RemoteTaskType, Result, TaskId,
     TaskKind, TaskState, TaskStatus, ToolPermissionContext, WonderError, resolve_path,
 };
@@ -45,6 +45,7 @@ pub(crate) struct AgentTaskLaunch {
     pub provider: Option<String>,
     pub model: Option<String>,
     pub cwd: PathBuf,
+    pub fleet_id: Option<FleetId>,
 }
 
 #[cfg_attr(not(test), allow(dead_code))]
@@ -263,6 +264,7 @@ impl TaskManager {
                 launch.model,
             ),
         );
+        task.fleet_id = launch.fleet_id;
         task.cwd = Some(launch.cwd.clone());
         task.command = Some(command);
         task.output_log = Some(self.store.paths().task_log_path(task.id));
@@ -1103,6 +1105,7 @@ mod tests {
     #[test]
     fn manager_starts_prompt_subprocess_agent_tasks() {
         let dir = unique_test_dir("task-manager-agent");
+        let fleet_id = FleetId::new();
         let script = write_agent_script(
             &dir,
             "agent-run.sh",
@@ -1118,10 +1121,12 @@ mod tests {
                 provider: Some("openai".into()),
                 model: Some("gpt-4.1".into()),
                 cwd: dir.clone(),
+                fleet_id: Some(fleet_id),
             })
             .expect("start agent task");
 
         assert_eq!(task.kind, TaskKind::LocalAgent);
+        assert_eq!(task.fleet_id, Some(fleet_id));
         assert_eq!(task.status, TaskStatus::Running);
         assert_eq!(
             task.agent.as_ref().map(|agent| agent.runtime),
@@ -1181,6 +1186,7 @@ mod tests {
                 provider: Some("openai".into()),
                 model: Some("gpt-4.1".into()),
                 cwd: dir.clone(),
+                fleet_id: None,
             })
             .expect("start agent task");
 

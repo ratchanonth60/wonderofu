@@ -34,7 +34,7 @@ use wonder_of_u_core::{
     FeatureFlag, FleetId, FleetMemberRequest, FleetRunState, FleetRunStatus, Result, TaskId,
     TaskStatus,
 };
-use wonder_of_u_storage::{FleetStore, TaskStore};
+use wonder_of_u_storage::FleetStore;
 
 use super::{
     parse_command_args,
@@ -242,17 +242,10 @@ impl FleetCommand {
                 provider: args.provider.or(report.provider),
                 model: args.model.or(report.model),
                 cwd,
+                fleet_id: Some(run.id),
             })?;
             run.member_task_ids.push(task.id);
             run.status = FleetRunStatus::Running;
-
-            // Persist the task with fleet_id set back-link using a TaskStore
-            // directly (TaskManager does not expose its store publicly).
-            let mut linked_task = task.clone();
-            linked_task.fleet_id = Some(run.id);
-            if let Some(ref dir) = self.storage_dir {
-                TaskStore::new(dir).write_task(&linked_task)?;
-            }
         }
 
         store.write_run(&run)?;
@@ -510,12 +503,16 @@ fn dispatch_one(
     let cwd = req.cwd.clone().unwrap_or_else(|| context.cwd.clone());
 
     let task = manager.start_agent_task(AgentTaskLaunch {
-        name: req.name.clone().unwrap_or_else(|| req.id[..8].to_string()),
+        name: req
+            .name
+            .clone()
+            .unwrap_or_else(|| request_name_fallback(&req.id)),
         description: req.description.clone(),
         prompt: req.prompt.clone(),
         provider: req.provider.clone().or_else(|| report.provider.clone()),
         model: req.model.clone().or_else(|| report.model.clone()),
         cwd,
+        fleet_id: req.fleet_id,
     })?;
 
     store.delete_pending_request(&req.id)?;
@@ -549,6 +546,15 @@ fn task_status_label(status: TaskStatus) -> &'static str {
         TaskStatus::Failed => "failed",
         TaskStatus::Killed => "killed",
         TaskStatus::Cancelled => "cancelled",
+    }
+}
+
+fn request_name_fallback(request_id: &str) -> String {
+    let prefix: String = request_id.chars().take(8).collect();
+    if prefix.is_empty() {
+        "agent".into()
+    } else {
+        prefix
     }
 }
 
@@ -696,5 +702,12 @@ mod tests {
         let spec = FleetCommand::command_spec();
         assert!(spec.required_features.contains(&FeatureFlag::Fleet));
         assert!(spec.required_features.contains(&FeatureFlag::Agents));
+    }
+
+    #[test]
+    fn request_name_fallback_handles_short_or_empty_ids() {
+        assert_eq!(request_name_fallback("abcdef123456"), "abcdef12");
+        assert_eq!(request_name_fallback("abc"), "abc");
+        assert_eq!(request_name_fallback(""), "agent");
     }
 }

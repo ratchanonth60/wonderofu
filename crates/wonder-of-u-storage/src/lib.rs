@@ -42,8 +42,9 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 use wonder_of_u_core::{
-    AppState, CostState, FleetId, FleetMemberRequest, FleetRunState, MESSAGE_SCHEMA_VERSION,
-    MessageEnvelope, MessageId, MessagePayload, Result, SessionId, TaskId, TaskState, WonderError,
+    AppState, CostState, FLEET_SCHEMA_VERSION, FleetId, FleetMemberRequest, FleetRunState,
+    MESSAGE_SCHEMA_VERSION, MessageEnvelope, MessageId, MessagePayload, Result, SessionId, TaskId,
+    TaskState, WonderError,
 };
 
 /// Schema version for storage
@@ -58,6 +59,7 @@ fn default_storage_schema_version() -> u16 {
 fn ensure_supported_schema(kind: &str, version: u16) -> Result<()> {
     let supported = match kind {
         "message" => MESSAGE_SCHEMA_VERSION,
+        "fleet run" => FLEET_SCHEMA_VERSION,
         _ => STORAGE_SCHEMA_VERSION,
     };
 
