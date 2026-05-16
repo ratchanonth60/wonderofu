@@ -24,7 +24,8 @@ pub use migrations::{Migration, MigrationRunner, StorageVersionFile, default_mig
 /// [`ts_import::inspect_ts_file`] entry points.
 pub mod ts_import;
 pub use ts_import::{
-    PasteRefWarning, SkipReason, TsImportReport, TsSkipReport, import_ts_file, inspect_ts_file,
+    PasteRefWarning, SkipCategory, SkipReason, TsCapturedMetadata, TsImportReport, TsImportWarning,
+    TsLeafSummary, TsSkipReport, TsWarningCategory, import_ts_file, inspect_ts_file,
 };
 
 use std::{

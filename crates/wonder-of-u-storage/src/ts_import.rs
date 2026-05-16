@@ -14,6 +14,8 @@
 //! | `"user"`  | `[{type:"text",...}]`| `UserText` (joined)  |
 //! | `"assistant"` | `[{type:"text",...}]` | `AssistantText` |
 //! | `"assistant"` | `[{type:"thinking",...}]` | `AssistantThinking` |
+//! | `"assistant"` | `[{type:"tool_use",...}]` | `AssistantToolUse` |
+//! | `"user"` | `[{type:"tool_result",...}]` | `ToolResult` |
 //!
 //! Everything else is skipped and reported in [`TsImportReport::skipped`].
 //!
@@ -21,22 +23,27 @@
 //!
 //! The TS client embeds unresolvable references such as `[Pasted text #1 +5 lines]`
 //! inside user messages.  This importer preserves the placeholder text as-is and
-//! records a [`SkipWarning::UnresolvedPasteRef`] in [`TsImportReport::paste_warnings`]
+//! records a [`PasteRefWarning`] in [`TsImportReport::paste_warnings`]
 //! so callers can surface the information without silent data loss.
 
 use std::{
+    collections::BTreeMap,
     path::{Path, PathBuf},
     str::FromStr,
 };
 
 use serde::Deserialize;
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 use time::OffsetDateTime;
+use uuid::Uuid;
 
 use wonder_of_u_core::Result;
-use wonder_of_u_core::{MessageEnvelope, MessageId, MessagePayload, SessionId, WonderError};
+use wonder_of_u_core::{
+    MessageEnvelope, MessageId, MessagePayload, SessionId, ToolUseId, WonderError,
+};
 
-use crate::TranscriptStore;
+use crate::{SessionMetadata, TranscriptStore};
 
 // ─── paste-reference detection ────────────────────────────────────────────────
 
@@ -44,9 +51,12 @@ use crate::TranscriptStore;
 /// `[Pasted text #3]`, `[Image #2]`, `[...Truncated text #4]`.
 const PASTE_REF_PATTERN: &str = "[Pasted text #";
 const IMAGE_REF_PATTERN: &str = "[Image #";
+const TRUNCATED_TEXT_PATTERN: &str = "[...Truncated text #";
 
 fn contains_paste_ref(text: &str) -> bool {
-    text.contains(PASTE_REF_PATTERN) || text.contains(IMAGE_REF_PATTERN)
+    text.contains(PASTE_REF_PATTERN)
+        || text.contains(IMAGE_REF_PATTERN)
+        || text.contains(TRUNCATED_TEXT_PATTERN)
 }
 
 // ─── raw TS deserialisation types ─────────────────────────────────────────────
@@ -87,17 +97,17 @@ struct TsRawRecord {
 
     /// `version` field written by the TS client (used as `app_version`).
     version: Option<String>,
-}
 
-/// A single content block inside a TS assistant `message.content` array.
-#[derive(Debug, Deserialize)]
-struct TsContentBlock {
-    /// Block discriminator: `"text"`, `"thinking"`, `"tool_use"`, `"tool_result"`, …
-    #[serde(rename = "type")]
-    block_type: String,
+    /// TS summary metadata leaf UUID.
+    #[serde(rename = "leafUuid")]
+    leaf_uuid: Option<String>,
 
-    /// Present on `"thinking"` blocks.
-    thinking: Option<String>,
+    /// TS summary metadata text.
+    summary: Option<String>,
+
+    /// TS custom-title metadata value.
+    #[serde(rename = "customTitle")]
+    custom_title: Option<String>,
 }
 
 // ─── public report types ──────────────────────────────────────────────────────
@@ -116,8 +126,14 @@ pub struct TsImportReport {
     /// mode.
     pub imported_count: usize,
 
+    /// Number of messages that can be converted from the source file.
+    pub convertible_count: usize,
+
     /// Records that could not be converted, with per-record explanations.
     pub skipped: Vec<TsSkipReport>,
+
+    /// Per-record warnings for partially imported content.
+    pub warnings: Vec<TsImportWarning>,
 
     /// User messages that contain TS paste-reference placeholders
     /// (`[Pasted text #N]`, `[Image #N]`) which cannot be resolved without the
@@ -127,6 +143,9 @@ pub struct TsImportReport {
 
     /// `true` when [`inspect_ts_file`] was called (nothing was written).
     pub dry_run: bool,
+
+    /// Metadata captured from TS-only records.
+    pub captured_metadata: TsCapturedMetadata,
 }
 
 impl TsImportReport {
@@ -134,13 +153,49 @@ impl TsImportReport {
     #[must_use]
     pub fn summary(&self) -> String {
         let mode = if self.dry_run { "dry-run" } else { "imported" };
+        let converted = if self.dry_run {
+            self.convertible_count
+        } else {
+            self.imported_count
+        };
+        let skip_counts = format_count_summary(
+            self.skip_counts()
+                .into_iter()
+                .map(|(category, count)| (category.label(), count)),
+        );
+        let warning_counts = format_count_summary(
+            self.warning_counts()
+                .into_iter()
+                .map(|(category, count)| (category.label(), count)),
+        );
         format!(
-            "{mode}: {} converted, {} skipped, {} paste-ref warnings  (session {})",
-            self.imported_count,
+            "{mode}: {converted} converted, {} skipped{skip_counts}, {} warnings{warning_counts}, {} paste-ref warnings, {} metadata captures  (session {})",
             self.skipped.len(),
+            self.warnings.len(),
             self.paste_warnings.len(),
+            self.captured_metadata.captured_count(),
             self.session_id,
         )
+    }
+
+    /// Counts skipped records by broad category.
+    #[must_use]
+    pub fn skip_counts(&self) -> BTreeMap<SkipCategory, usize> {
+        let mut counts = BTreeMap::new();
+        for skip in &self.skipped {
+            *counts.entry(skip.reason.category()).or_default() += 1;
+        }
+        counts
+    }
+
+    /// Counts partial-import warnings by category.
+    #[must_use]
+    pub fn warning_counts(&self) -> BTreeMap<TsWarningCategory, usize> {
+        let mut counts = BTreeMap::new();
+        for warning in &self.warnings {
+            *counts.entry(warning.category).or_default() += 1;
+        }
+        counts
     }
 }
 
@@ -184,6 +239,18 @@ pub enum SkipReason {
 
     /// The TS record was not valid JSON.
     ParseError(String),
+
+    /// The record had content blocks, but none could be mapped safely.
+    UnsupportedContent {
+        /// The source role (`"user"` or `"assistant"`).
+        role: String,
+        /// Content block types that could not be mapped.
+        block_types: Vec<String>,
+    },
+
+    /// A tool result referenced a tool-use ID whose tool name could not be
+    /// resolved from earlier assistant blocks.
+    UnresolvedToolResult(Vec<String>),
 }
 
 impl SkipReason {
@@ -198,6 +265,90 @@ impl SkipReason {
             Self::MissingTimestamp => "timestamp field absent".into(),
             Self::InvalidTimestamp(v) => format!("timestamp is not RFC-3339: {v:?}"),
             Self::ParseError(e) => format!("JSON parse error: {e}"),
+            Self::UnsupportedContent { role, block_types } => format!(
+                "{role} record contains only unsupported content blocks: {}",
+                block_types.join(", ")
+            ),
+            Self::UnresolvedToolResult(ids) => format!(
+                "tool_result block(s) reference unresolved tool_use_id value(s): {}",
+                ids.join(", ")
+            ),
+        }
+    }
+
+    /// Groups skip reasons into stable reporting categories.
+    #[must_use]
+    pub fn category(&self) -> SkipCategory {
+        match self {
+            Self::UnsupportedType(ts_type) if is_metadata_type(ts_type) => SkipCategory::Metadata,
+            Self::UnsupportedType(_) => SkipCategory::UnsupportedRecord,
+            Self::EmptyContent | Self::UnsupportedContent { .. } => {
+                SkipCategory::UnsupportedContent
+            }
+            Self::MissingSessionId | Self::MissingTimestamp => SkipCategory::MissingField,
+            Self::InvalidSessionId(_) | Self::InvalidTimestamp(_) | Self::ParseError(_) => {
+                SkipCategory::InvalidRecord
+            }
+            Self::UnresolvedToolResult(_) => SkipCategory::UnresolvedReference,
+        }
+    }
+}
+
+/// Broad categories for skipped TS records.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub enum SkipCategory {
+    /// TS metadata-only records that are not imported as transcript messages.
+    Metadata,
+    /// Unsupported top-level transcript record types.
+    UnsupportedRecord,
+    /// Content existed but could not be represented safely.
+    UnsupportedContent,
+    /// Required fields were absent.
+    MissingField,
+    /// JSON or scalar fields were malformed.
+    InvalidRecord,
+    /// A cross-record linkage could not be resolved safely.
+    UnresolvedReference,
+}
+
+impl SkipCategory {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Metadata => "metadata",
+            Self::UnsupportedRecord => "unsupported_record",
+            Self::UnsupportedContent => "unsupported_content",
+            Self::MissingField => "missing_field",
+            Self::InvalidRecord => "invalid_record",
+            Self::UnresolvedReference => "unresolved_reference",
+        }
+    }
+}
+
+/// Warning emitted when a TS record is only partially imported.
+#[derive(Clone, Debug, PartialEq)]
+pub struct TsImportWarning {
+    /// 1-based source line number.
+    pub line: usize,
+    /// Broad warning category.
+    pub category: TsWarningCategory,
+    /// Human-readable warning text.
+    pub message: String,
+}
+
+/// Broad categories for partial-import warnings.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub enum TsWarningCategory {
+    /// Some blocks from an otherwise imported record were dropped or degraded.
+    PartialImport,
+    /// Metadata was captured but could not be written back into Rust storage.
+    Metadata,
+}
+
+impl TsWarningCategory {
+    fn label(self) -> &'static str {
+        match self {
+            Self::PartialImport => "partial_import",
+            Self::Metadata => "metadata",
         }
     }
 }
@@ -209,6 +360,34 @@ pub struct PasteRefWarning {
     pub line: usize,
     /// The first placeholder substring found (for display purposes).
     pub snippet: String,
+}
+
+/// TS metadata captured during import or inspection.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct TsCapturedMetadata {
+    /// Last seen custom title for the session, if present.
+    pub custom_title: Option<String>,
+    /// Captured per-leaf summaries.
+    pub summaries: Vec<TsLeafSummary>,
+}
+
+impl TsCapturedMetadata {
+    /// Returns the number of captured metadata records represented in this report.
+    #[must_use]
+    pub fn captured_count(&self) -> usize {
+        usize::from(self.custom_title.is_some()) + self.summaries.len()
+    }
+}
+
+/// TS summary metadata retained in the import report.
+#[derive(Clone, Debug, PartialEq)]
+pub struct TsLeafSummary {
+    /// 1-based source line number.
+    pub line: usize,
+    /// TS `leafUuid`.
+    pub leaf_uuid: String,
+    /// Summary text.
+    pub summary: String,
 }
 
 // ─── public entry points ──────────────────────────────────────────────────────
@@ -262,8 +441,12 @@ fn process_ts_file(
 
     let mut skipped = Vec::new();
     let mut paste_warnings = Vec::new();
+    let mut warnings = Vec::new();
     let mut converted: Vec<MessageEnvelope> = Vec::new();
     let mut detected_session_id: Option<SessionId> = None;
+    let mut captured_metadata = TsCapturedMetadata::default();
+    let mut tool_names = BTreeMap::new();
+    let mut observed = ObservedSessionContext::default();
 
     for (zero_idx, line) in contents.lines().enumerate() {
         let line_no = zero_idx + 1;
@@ -296,8 +479,21 @@ fn process_ts_file(
             }
         }
 
-        match convert_record(raw, line_no, &ts_type, &mut paste_warnings) {
-            Ok(envelope) => converted.push(envelope),
+        match convert_record(
+            raw,
+            line_no,
+            &ts_type,
+            &mut paste_warnings,
+            &mut warnings,
+            &mut captured_metadata,
+            &mut tool_names,
+        ) {
+            Ok(mut envelopes) => {
+                for envelope in &envelopes {
+                    observed.observe(envelope);
+                }
+                converted.append(&mut envelopes);
+            }
             Err(skip) => skipped.push(skip),
         }
     }
@@ -306,6 +502,8 @@ fn process_ts_file(
     let session_id = override_session_id
         .or(detected_session_id)
         .unwrap_or_default();
+
+    let convertible_count = converted.len();
 
     // Stamp every envelope with the resolved session_id, then write if not
     // dry-run.
@@ -316,6 +514,15 @@ fn process_ts_file(
             store.append_message(&envelope)?;
             imported_count += 1;
         }
+
+        maybe_write_import_metadata(
+            store,
+            session_id,
+            imported_count,
+            &observed,
+            &captured_metadata,
+            &mut warnings,
+        )?;
     } else {
         // dry-run: count what would be imported
         imported_count = 0; // stays 0 per contract (nothing written)
@@ -325,31 +532,56 @@ fn process_ts_file(
         source_path: path.to_path_buf(),
         session_id,
         imported_count,
+        convertible_count,
         skipped,
+        warnings,
         paste_warnings,
         dry_run,
+        captured_metadata,
     })
 }
 
-/// Attempts to convert one raw TS record into a [`MessageEnvelope`].
+/// Attempts to convert one raw TS record into zero or more [`MessageEnvelope`]s.
 ///
-/// Returns `Ok(envelope)` on success or `Err(TsSkipReport)` when the record is
+/// Returns `Ok(envelopes)` on success or `Err(TsSkipReport)` when the record is
 /// unsupported or malformed.
 fn convert_record(
     raw: TsRawRecord,
     line_no: usize,
     ts_type: &str,
     paste_warnings: &mut Vec<PasteRefWarning>,
-) -> std::result::Result<MessageEnvelope, TsSkipReport> {
+    warnings: &mut Vec<TsImportWarning>,
+    captured_metadata: &mut TsCapturedMetadata,
+    tool_names: &mut BTreeMap<String, String>,
+) -> std::result::Result<Vec<MessageEnvelope>, TsSkipReport> {
     let skip = |reason: SkipReason| TsSkipReport {
         line: line_no,
         ts_type: ts_type.to_owned(),
         reason,
     };
 
-    // Reject unsupported types early — before we touch required fields that
-    // may be absent on metadata-only records (summary, tag, mode, etc.).
     match ts_type {
+        "summary" => {
+            if let (Some(leaf_uuid), Some(summary)) = (raw.leaf_uuid, raw.summary) {
+                if !summary.trim().is_empty() {
+                    captured_metadata.summaries.push(TsLeafSummary {
+                        line: line_no,
+                        leaf_uuid,
+                        summary,
+                    });
+                }
+            }
+            return Ok(Vec::new());
+        }
+        "custom-title" => {
+            if let Some(custom_title) = raw.custom_title {
+                let trimmed = custom_title.trim();
+                if !trimmed.is_empty() {
+                    captured_metadata.custom_title = Some(trimmed.to_owned());
+                }
+            }
+            return Ok(Vec::new());
+        }
         "user" | "assistant" => {}
         other => return Err(skip(SkipReason::UnsupportedType(other.to_owned()))),
     }
@@ -376,131 +608,548 @@ fn convert_record(
         None => MessageId::new(),
     };
 
-    let payload = match ts_type {
-        "user" => extract_user_payload(&raw.message, line_no, paste_warnings).map_err(&skip)?,
-        "assistant" => extract_assistant_payload(&raw.message).map_err(skip)?,
+    let payloads = match ts_type {
+        "user" => {
+            extract_user_payloads(&raw.message, line_no, paste_warnings, warnings, tool_names)
+                .map_err(&skip)?
+        }
+        "assistant" => {
+            extract_assistant_payloads(&raw.message, line_no, warnings, tool_names).map_err(skip)?
+        }
         _ => unreachable!("already gated above"),
     };
 
-    let mut envelope = MessageEnvelope::new(session_id, payload);
-    envelope.id = id;
-    envelope.timestamp = timestamp;
-    envelope.cwd = raw.cwd.map(PathBuf::from);
-    envelope.git_branch = raw.git_branch;
-    envelope.entrypoint = raw.entrypoint;
-    envelope.app_version = raw.version;
+    let mut envelopes = Vec::with_capacity(payloads.len());
+    for (index, payload) in payloads.into_iter().enumerate() {
+        let mut envelope = MessageEnvelope::new(session_id, payload);
+        envelope.id = if index == 0 {
+            id
+        } else {
+            derived_message_id(raw.uuid.as_deref(), index)
+        };
+        envelope.timestamp = timestamp;
+        envelope.cwd = raw.cwd.clone().map(PathBuf::from);
+        envelope.git_branch = raw.git_branch.clone();
+        envelope.entrypoint = raw.entrypoint.clone();
+        envelope.app_version = raw.version.clone();
+        envelopes.push(envelope);
+    }
 
-    Ok(envelope)
+    Ok(envelopes)
 }
 
-/// Extracts a [`MessagePayload::UserText`] from a TS user record's `message`
-/// field, which can be either a plain string or an object with a `content`
-/// field.
-fn extract_user_payload(
+/// Extracts one or more user-facing payloads from a TS user record.
+fn extract_user_payloads(
     message: &Option<Value>,
     line_no: usize,
     paste_warnings: &mut Vec<PasteRefWarning>,
-) -> std::result::Result<MessagePayload, SkipReason> {
-    let content = match message {
-        Some(Value::Object(obj)) => {
-            match obj.get("content") {
-                // content is a plain string
-                Some(Value::String(s)) => s.clone(),
-                // content is an array of blocks — extract text parts
-                Some(Value::Array(blocks)) => extract_text_from_blocks(blocks)?,
-                _ => return Err(SkipReason::EmptyContent),
+    warnings: &mut Vec<TsImportWarning>,
+    tool_names: &BTreeMap<String, String>,
+) -> std::result::Result<Vec<MessagePayload>, SkipReason> {
+    match message {
+        Some(Value::Object(obj)) => match obj.get("content") {
+            Some(Value::String(content)) => {
+                let payload = user_text_payload(content.clone(), line_no, paste_warnings)?;
+                Ok(vec![payload])
             }
+            Some(Value::Array(blocks)) => {
+                extract_user_block_payloads(blocks, line_no, paste_warnings, warnings, tool_names)
+            }
+            _ => Err(SkipReason::EmptyContent),
+        },
+        Some(Value::String(content)) => {
+            let payload = user_text_payload(content.clone(), line_no, paste_warnings)?;
+            Ok(vec![payload])
         }
-        Some(Value::String(s)) => s.clone(),
-        _ => return Err(SkipReason::EmptyContent),
-    };
-
-    if content.trim().is_empty() {
-        return Err(SkipReason::EmptyContent);
+        _ => Err(SkipReason::EmptyContent),
     }
-
-    // Record a warning for unresolvable paste references; we still import the
-    // message with the placeholder text intact.
-    if contains_paste_ref(&content) {
-        let snippet = if let Some(pos) = content.find(PASTE_REF_PATTERN) {
-            content[pos..].chars().take(40).collect()
-        } else {
-            content.chars().take(40).collect()
-        };
-        paste_warnings.push(PasteRefWarning {
-            line: line_no,
-            snippet,
-        });
-    }
-
-    Ok(MessagePayload::UserText { content })
 }
 
-/// Extracts a [`MessagePayload::AssistantText`] or
-/// [`MessagePayload::AssistantThinking`] from a TS assistant `message.content`
-/// array.
-fn extract_assistant_payload(
+/// Extracts one or more assistant-side payloads from a TS assistant record.
+fn extract_assistant_payloads(
     message: &Option<Value>,
-) -> std::result::Result<MessagePayload, SkipReason> {
+    line_no: usize,
+    warnings: &mut Vec<TsImportWarning>,
+    tool_names: &mut BTreeMap<String, String>,
+) -> std::result::Result<Vec<MessagePayload>, SkipReason> {
     let blocks = match message {
         Some(Value::Object(obj)) => match obj.get("content") {
-            Some(Value::Array(arr)) => arr,
+            Some(Value::Array(arr)) => arr.as_slice(),
             Some(Value::String(s)) => {
                 // Rare: content is a plain string (early TS versions)
                 let text = s.trim().to_owned();
                 if text.is_empty() {
                     return Err(SkipReason::EmptyContent);
                 }
-                return Ok(MessagePayload::AssistantText { content: text });
+                return Ok(vec![MessagePayload::AssistantText { content: text }]);
             }
             _ => return Err(SkipReason::EmptyContent),
         },
         _ => return Err(SkipReason::EmptyContent),
     };
 
-    // Deserialise blocks; ignore unknown types rather than failing.
-    let parsed: Vec<TsContentBlock> = blocks
-        .iter()
-        .filter_map(|v| serde_json::from_value(v.clone()).ok())
-        .collect();
+    let mut payloads = Vec::new();
+    let mut pending_text = Vec::new();
+    let mut unsupported = Vec::new();
 
-    // Prefer the first `thinking` block as `AssistantThinking`.
-    if let Some(block) = parsed.iter().find(|b| b.block_type == "thinking") {
-        let content = block.thinking.as_deref().unwrap_or("").trim().to_owned();
-        if !content.is_empty() {
-            return Ok(MessagePayload::AssistantThinking {
-                content,
-                collapsed: false,
-            });
+    for block in blocks {
+        let Some(obj) = block.as_object() else {
+            unsupported.push("<non-object>".to_owned());
+            continue;
+        };
+
+        match obj.get("type").and_then(Value::as_str) {
+            Some("text") => {
+                if let Some(text) = obj.get("text").and_then(Value::as_str) {
+                    let trimmed = text.trim();
+                    if !trimmed.is_empty() {
+                        pending_text.push(trimmed.to_owned());
+                    }
+                }
+            }
+            Some("thinking") => {
+                flush_assistant_text(&mut pending_text, &mut payloads);
+                if let Some(thinking) = obj.get("thinking").and_then(Value::as_str) {
+                    let trimmed = thinking.trim();
+                    if !trimmed.is_empty() {
+                        payloads.push(MessagePayload::AssistantThinking {
+                            content: trimmed.to_owned(),
+                            collapsed: false,
+                        });
+                    }
+                }
+            }
+            Some("tool_use") => {
+                flush_assistant_text(&mut pending_text, &mut payloads);
+                let Some(raw_use_id) = obj.get("id").and_then(Value::as_str) else {
+                    unsupported.push("tool_use(missing id)".to_owned());
+                    continue;
+                };
+                let Some(tool_name) = obj.get("name").and_then(Value::as_str) else {
+                    unsupported.push("tool_use(missing name)".to_owned());
+                    continue;
+                };
+                tool_names.insert(raw_use_id.to_owned(), tool_name.to_owned());
+                payloads.push(MessagePayload::AssistantToolUse {
+                    tool: tool_name.to_owned(),
+                    use_id: derived_tool_use_id(raw_use_id),
+                    input: obj.get("input").cloned().unwrap_or(Value::Null),
+                });
+            }
+            Some(other) => unsupported.push(other.to_owned()),
+            None => unsupported.push("<missing type>".to_owned()),
         }
     }
 
-    // Collect all text blocks.
-    let text = extract_text_from_blocks(blocks)?;
-    if text.trim().is_empty() {
-        return Err(SkipReason::EmptyContent);
+    flush_assistant_text(&mut pending_text, &mut payloads);
+    record_partial_import_warning(
+        warnings,
+        line_no,
+        "assistant",
+        unsupported.as_slice(),
+        payloads.is_empty(),
+    );
+
+    if payloads.is_empty() {
+        return if unsupported.is_empty() {
+            Err(SkipReason::EmptyContent)
+        } else {
+            Err(SkipReason::UnsupportedContent {
+                role: "assistant".to_owned(),
+                block_types: unsupported,
+            })
+        };
     }
-    Ok(MessagePayload::AssistantText { content: text })
+
+    Ok(payloads)
 }
 
-/// Joins all `"text"` block values from a content-block array.
-fn extract_text_from_blocks(blocks: &[Value]) -> std::result::Result<String, SkipReason> {
-    let parts: Vec<&str> = blocks
-        .iter()
-        .filter_map(|v| {
-            let obj = v.as_object()?;
-            if obj.get("type")?.as_str()? == "text" {
-                obj.get("text")?.as_str()
-            } else {
-                None
-            }
-        })
-        .collect();
+fn extract_user_block_payloads(
+    blocks: &[Value],
+    line_no: usize,
+    paste_warnings: &mut Vec<PasteRefWarning>,
+    warnings: &mut Vec<TsImportWarning>,
+    tool_names: &BTreeMap<String, String>,
+) -> std::result::Result<Vec<MessagePayload>, SkipReason> {
+    let mut payloads = Vec::new();
+    let mut pending_text = Vec::new();
+    let mut unsupported = Vec::new();
+    let mut unresolved_tool_results = Vec::new();
 
-    if parts.is_empty() {
+    for block in blocks {
+        let Some(obj) = block.as_object() else {
+            unsupported.push("<non-object>".to_owned());
+            continue;
+        };
+
+        match obj.get("type").and_then(Value::as_str) {
+            Some("text") => {
+                if let Some(text) = obj.get("text").and_then(Value::as_str) {
+                    let trimmed = text.trim();
+                    if !trimmed.is_empty() {
+                        pending_text.push(trimmed.to_owned());
+                    }
+                }
+            }
+            Some("image") => pending_text.push(render_image_placeholder(obj)),
+            Some("tool_result") => {
+                flush_user_text(&mut pending_text, &mut payloads, line_no, paste_warnings)?;
+                let Some(raw_use_id) = obj.get("tool_use_id").and_then(Value::as_str) else {
+                    unsupported.push("tool_result(missing tool_use_id)".to_owned());
+                    continue;
+                };
+                let Some(tool_name) = tool_names.get(raw_use_id) else {
+                    unresolved_tool_results.push(raw_use_id.to_owned());
+                    continue;
+                };
+                payloads.push(MessagePayload::ToolResult {
+                    tool: tool_name.clone(),
+                    use_id: derived_tool_use_id(raw_use_id),
+                    success: !obj
+                        .get("is_error")
+                        .and_then(Value::as_bool)
+                        .unwrap_or(false),
+                    content: render_tool_result_content(
+                        obj.get("content"),
+                        line_no,
+                        warnings,
+                        raw_use_id,
+                    ),
+                });
+            }
+            Some(other) => unsupported.push(other.to_owned()),
+            None => unsupported.push("<missing type>".to_owned()),
+        }
+    }
+
+    flush_user_text(&mut pending_text, &mut payloads, line_no, paste_warnings)?;
+    record_partial_import_warning(
+        warnings,
+        line_no,
+        "user",
+        unsupported.as_slice(),
+        payloads.is_empty(),
+    );
+
+    if !unresolved_tool_results.is_empty() && !payloads.is_empty() {
+        warnings.push(TsImportWarning {
+            line: line_no,
+            category: TsWarningCategory::PartialImport,
+            message: format!(
+                "user record dropped tool_result block(s) with unresolved tool_use_id value(s): {}",
+                unresolved_tool_results.join(", ")
+            ),
+        });
+    }
+
+    if payloads.is_empty() {
+        if !unresolved_tool_results.is_empty() {
+            return Err(SkipReason::UnresolvedToolResult(unresolved_tool_results));
+        }
+        return if unsupported.is_empty() {
+            Err(SkipReason::EmptyContent)
+        } else {
+            Err(SkipReason::UnsupportedContent {
+                role: "user".to_owned(),
+                block_types: unsupported,
+            })
+        };
+    }
+
+    Ok(payloads)
+}
+
+fn user_text_payload(
+    content: String,
+    line_no: usize,
+    paste_warnings: &mut Vec<PasteRefWarning>,
+) -> std::result::Result<MessagePayload, SkipReason> {
+    let content = content.trim().to_owned();
+    if content.is_empty() {
         return Err(SkipReason::EmptyContent);
     }
-    Ok(parts.join("\n").trim().to_owned())
+    record_paste_warning(&content, line_no, paste_warnings);
+    Ok(MessagePayload::UserText { content })
+}
+
+fn flush_user_text(
+    pending_text: &mut Vec<String>,
+    payloads: &mut Vec<MessagePayload>,
+    line_no: usize,
+    paste_warnings: &mut Vec<PasteRefWarning>,
+) -> std::result::Result<(), SkipReason> {
+    let joined = pending_text.join("\n").trim().to_owned();
+    pending_text.clear();
+    if joined.is_empty() {
+        return Ok(());
+    }
+    payloads.push(user_text_payload(joined, line_no, paste_warnings)?);
+    Ok(())
+}
+
+fn flush_assistant_text(pending_text: &mut Vec<String>, payloads: &mut Vec<MessagePayload>) {
+    let joined = pending_text.join("\n").trim().to_owned();
+    pending_text.clear();
+    if joined.is_empty() {
+        return;
+    }
+    payloads.push(MessagePayload::AssistantText { content: joined });
+}
+
+fn render_tool_result_content(
+    content: Option<&Value>,
+    line_no: usize,
+    warnings: &mut Vec<TsImportWarning>,
+    raw_use_id: &str,
+) -> String {
+    match content {
+        Some(Value::String(text)) => text.trim().to_owned(),
+        Some(Value::Array(blocks)) => {
+            let mut parts = Vec::new();
+            let mut degraded = Vec::new();
+
+            for block in blocks {
+                let Some(obj) = block.as_object() else {
+                    degraded.push("<non-object>".to_owned());
+                    continue;
+                };
+
+                match obj.get("type").and_then(Value::as_str) {
+                    Some("text") => {
+                        if let Some(text) = obj.get("text").and_then(Value::as_str) {
+                            let trimmed = text.trim();
+                            if !trimmed.is_empty() {
+                                parts.push(trimmed.to_owned());
+                            }
+                        }
+                    }
+                    Some("image") => parts.push(render_image_placeholder(obj)),
+                    Some(other) => {
+                        degraded.push(other.to_owned());
+                        parts.push(format!("[tool_result {other} block]"));
+                    }
+                    None => {
+                        degraded.push("<missing type>".to_owned());
+                        parts.push("[tool_result block]".to_owned());
+                    }
+                }
+            }
+
+            if !degraded.is_empty() {
+                warnings.push(TsImportWarning {
+                    line: line_no,
+                    category: TsWarningCategory::PartialImport,
+                    message: format!(
+                        "tool_result for tool_use_id {raw_use_id} used placeholder text for block type(s): {}",
+                        degraded.join(", ")
+                    ),
+                });
+            }
+
+            parts.join("\n").trim().to_owned()
+        }
+        Some(other) => other.to_string(),
+        None => String::new(),
+    }
+}
+
+fn render_image_placeholder(obj: &serde_json::Map<String, Value>) -> String {
+    let media_type = obj
+        .get("source")
+        .and_then(Value::as_object)
+        .and_then(|source| source.get("media_type"))
+        .and_then(Value::as_str);
+    let filename = obj.get("filename").and_then(Value::as_str);
+    match (filename, media_type) {
+        (Some(filename), Some(media_type)) => format!("[Image: {filename} ({media_type})]"),
+        (Some(filename), None) => format!("[Image: {filename}]"),
+        (None, Some(media_type)) => format!("[Image: {media_type}]"),
+        (None, None) => "[Image]".to_owned(),
+    }
+}
+
+fn record_paste_warning(content: &str, line_no: usize, paste_warnings: &mut Vec<PasteRefWarning>) {
+    let Some(start) = [PASTE_REF_PATTERN, IMAGE_REF_PATTERN, TRUNCATED_TEXT_PATTERN]
+        .iter()
+        .filter_map(|pattern| content.find(pattern))
+        .min()
+    else {
+        return;
+    };
+
+    if !contains_paste_ref(content) {
+        return;
+    }
+
+    paste_warnings.push(PasteRefWarning {
+        line: line_no,
+        snippet: content[start..].chars().take(40).collect(),
+    });
+}
+
+fn record_partial_import_warning(
+    warnings: &mut Vec<TsImportWarning>,
+    line_no: usize,
+    role: &str,
+    unsupported: &[String],
+    fully_dropped: bool,
+) {
+    if unsupported.is_empty() || fully_dropped {
+        return;
+    }
+
+    warnings.push(TsImportWarning {
+        line: line_no,
+        category: TsWarningCategory::PartialImport,
+        message: format!(
+            "{role} record dropped unsupported block type(s): {}",
+            unsupported.join(", ")
+        ),
+    });
+}
+
+#[derive(Default)]
+struct ObservedSessionContext {
+    cwd: Option<PathBuf>,
+    git_branch: Option<String>,
+    entrypoint: Option<String>,
+    app_version: Option<String>,
+    created_at: Option<OffsetDateTime>,
+    updated_at: Option<OffsetDateTime>,
+}
+
+impl ObservedSessionContext {
+    fn observe(&mut self, envelope: &MessageEnvelope) {
+        if self.cwd.is_none() {
+            self.cwd = envelope.cwd.clone();
+        }
+        if envelope.git_branch.is_some() {
+            self.git_branch = envelope.git_branch.clone();
+        }
+        if envelope.entrypoint.is_some() {
+            self.entrypoint = envelope.entrypoint.clone();
+        }
+        if envelope.app_version.is_some() {
+            self.app_version = envelope.app_version.clone();
+        }
+        self.created_at = Some(self.created_at.map_or(envelope.timestamp, |current| {
+            current.min(envelope.timestamp)
+        }));
+        self.updated_at = Some(self.updated_at.map_or(envelope.timestamp, |current| {
+            current.max(envelope.timestamp)
+        }));
+    }
+}
+
+fn maybe_write_import_metadata(
+    store: &TranscriptStore,
+    session_id: SessionId,
+    imported_count: usize,
+    observed: &ObservedSessionContext,
+    captured_metadata: &TsCapturedMetadata,
+    warnings: &mut Vec<TsImportWarning>,
+) -> Result<()> {
+    let Some(custom_title) = &captured_metadata.custom_title else {
+        return Ok(());
+    };
+    if imported_count == 0 {
+        warnings.push(TsImportWarning {
+            line: 0,
+            category: TsWarningCategory::Metadata,
+            message: "captured custom-title metadata but skipped metadata write because no transcript messages were imported".to_owned(),
+        });
+        return Ok(());
+    }
+    let Some(created_at) = observed.created_at else {
+        warnings.push(TsImportWarning {
+            line: 0,
+            category: TsWarningCategory::Metadata,
+            message: "captured custom-title metadata but skipped metadata write because no message timestamps were observed".to_owned(),
+        });
+        return Ok(());
+    };
+
+    store.write_metadata(&SessionMetadata {
+        schema_version: crate::STORAGE_SCHEMA_VERSION,
+        session_id,
+        title: custom_title.clone(),
+        cwd: observed.cwd.clone().unwrap_or_default(),
+        git_branch: observed.git_branch.clone(),
+        entrypoint: observed.entrypoint.clone(),
+        app_version: observed.app_version.clone(),
+        created_at,
+        updated_at: observed.updated_at.unwrap_or(created_at),
+        message_count: imported_count,
+        tags: Vec::new(),
+        provider: None,
+        model: None,
+        auth: Default::default(),
+        costs: Default::default(),
+    })
+}
+
+fn derived_message_id(raw_uuid: Option<&str>, block_index: usize) -> MessageId {
+    match raw_uuid {
+        Some(raw_uuid) => MessageId::from(stable_uuid(
+            "ts-import-message",
+            &format!("{raw_uuid}:{block_index}"),
+        )),
+        None => MessageId::new(),
+    }
+}
+
+fn derived_tool_use_id(raw_use_id: &str) -> ToolUseId {
+    ToolUseId::from(stable_uuid("ts-import-tool-use", raw_use_id))
+}
+
+fn stable_uuid(namespace: &str, value: &str) -> Uuid {
+    let mut hasher = Sha256::new();
+    hasher.update(namespace.as_bytes());
+    hasher.update([0]);
+    hasher.update(value.as_bytes());
+    let digest = hasher.finalize();
+    let mut bytes = [0_u8; 16];
+    bytes.copy_from_slice(&digest[..16]);
+    bytes[6] = (bytes[6] & 0x0f) | 0x50;
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
+    Uuid::from_bytes(bytes)
+}
+
+fn is_metadata_type(ts_type: &str) -> bool {
+    matches!(
+        ts_type,
+        "summary"
+            | "custom-title"
+            | "tag"
+            | "agent-name"
+            | "agent-color"
+            | "agent-setting"
+            | "mode"
+            | "worktree-state"
+            | "pr-link"
+            | "ai-title"
+            | "task-summary"
+            | "last-prompt"
+            | "content-replacement"
+            | "file-history-snapshot"
+            | "attribution-snapshot"
+    )
+}
+
+fn format_count_summary<I>(counts: I) -> String
+where
+    I: IntoIterator<Item = (&'static str, usize)>,
+{
+    let counts: Vec<String> = counts
+        .into_iter()
+        .filter(|(_, count)| *count > 0)
+        .map(|(label, count)| format!("{label}={count}"))
+        .collect();
+    if counts.is_empty() {
+        String::new()
+    } else {
+        format!(" [{}]", counts.join(", "))
+    }
 }
 
 // ─── tests ────────────────────────────────────────────────────────────────────
@@ -529,8 +1178,11 @@ mod tests {
     /// TS system record — unsupported, should be skipped.
     const SYSTEM_RECORD: &str = r#"{"type":"system","message":{"role":"system","content":"You are helpful."},"uuid":"aaaaaaaa-0000-0000-0000-000000000005","sessionId":"bbbbbbbb-0000-0000-0000-000000000001","timestamp":"2024-06-01T10:00:04Z","version":"2.1.0"}"#;
 
-    /// TS summary metadata record — unsupported, should be skipped.
+    /// TS summary metadata record — captured into the report.
     const SUMMARY_RECORD: &str = r#"{"type":"summary","leafUuid":"aaaaaaaa-0000-0000-0000-000000000001","summary":"Talked about greetings."}"#;
+
+    /// TS custom-title metadata record — captured and written to Rust metadata on import.
+    const CUSTOM_TITLE_RECORD: &str = r#"{"type":"custom-title","sessionId":"bbbbbbbb-0000-0000-0000-000000000001","customTitle":"Imported transcript title"}"#;
 
     /// User message with a paste-reference placeholder.
     const USER_PASTE_REF: &str = r#"{"type":"user","message":{"role":"user","content":"Here is my code:\n[Pasted text #1 +10 lines]"},"uuid":"aaaaaaaa-0000-0000-0000-000000000006","sessionId":"bbbbbbbb-0000-0000-0000-000000000001","timestamp":"2024-06-01T10:00:05Z","version":"2.1.0"}"#;
@@ -547,9 +1199,17 @@ mod tests {
     /// Completely malformed JSON.
     const MALFORMED_JSON: &str = r#"{not valid json"#;
 
-    /// Assistant record with only a `tool_use` block and no text — should be
-    /// skipped with `EmptyContent`.
+    /// Assistant record with only a `tool_use` block.
     const ASSISTANT_TOOL_USE_ONLY: &str = r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"tu_01","name":"bash","input":{"command":"ls"}}],"role":"assistant"},"uuid":"aaaaaaaa-0000-0000-0000-000000000010","sessionId":"bbbbbbbb-0000-0000-0000-000000000001","timestamp":"2024-06-01T10:00:08Z","version":"2.1.0"}"#;
+
+    /// User record with a tool result linked to `ASSISTANT_TOOL_USE_ONLY`.
+    const USER_TOOL_RESULT: &str = r#"{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"tu_01","content":[{"type":"text","text":"file_a\nfile_b"}]}]},"uuid":"aaaaaaaa-0000-0000-0000-000000000011","sessionId":"bbbbbbbb-0000-0000-0000-000000000001","timestamp":"2024-06-01T10:00:09Z","version":"2.1.0"}"#;
+
+    /// User record containing an inline image block.
+    const USER_IMAGE_BLOCK: &str = r#"{"type":"user","message":{"role":"user","content":[{"type":"text","text":"See screenshot"},{"type":"image","source":{"type":"base64","media_type":"image/png","data":"Zm9v"}}]},"uuid":"aaaaaaaa-0000-0000-0000-000000000012","sessionId":"bbbbbbbb-0000-0000-0000-000000000001","timestamp":"2024-06-01T10:00:10Z","version":"2.1.0"}"#;
+
+    /// Assistant record with a dropped unsupported block and preserved text.
+    const ASSISTANT_MIXED_BLOCKS: &str = r#"{"type":"assistant","message":{"content":[{"type":"text","text":"Hi"},{"type":"redacted_thinking"},{"type":"tool_use","id":"tu_02","name":"bash","input":{"command":"pwd"}}],"role":"assistant"},"uuid":"aaaaaaaa-0000-0000-0000-000000000013","sessionId":"bbbbbbbb-0000-0000-0000-000000000001","timestamp":"2024-06-01T10:00:11Z","version":"2.1.0"}"#;
 
     // ── helpers ────────────────────────────────────────────────────────────────
 
@@ -579,6 +1239,7 @@ mod tests {
         // dry_run is true: nothing written
         assert!(report.dry_run);
         assert_eq!(report.imported_count, 0);
+        assert_eq!(report.convertible_count, 4);
         assert_eq!(
             report.skipped.len(),
             0,
@@ -681,15 +1342,20 @@ mod tests {
     }
 
     #[test]
-    fn skips_summary_metadata_record() {
+    fn captures_summary_metadata_record() {
         let (_dir, path) = write_fixture(&[SUMMARY_RECORD]);
         let report = inspect_ts_file(&path).expect("inspect");
 
-        assert_eq!(report.skipped.len(), 1);
-        assert!(matches!(
-            &report.skipped[0].reason,
-            SkipReason::UnsupportedType(t) if t == "summary"
-        ));
+        assert!(
+            report.skipped.is_empty(),
+            "unexpected skips: {:?}",
+            report.skipped
+        );
+        assert_eq!(report.captured_metadata.summaries.len(), 1);
+        assert_eq!(
+            report.captured_metadata.summaries[0].summary,
+            "Talked about greetings."
+        );
     }
 
     #[test]
@@ -735,12 +1401,63 @@ mod tests {
     }
 
     #[test]
-    fn skips_assistant_with_only_tool_use_block() {
-        let (_dir, path) = write_fixture(&[ASSISTANT_TOOL_USE_ONLY]);
-        let report = inspect_ts_file(&path).expect("inspect");
+    fn imports_assistant_tool_use_and_user_tool_result_blocks() {
+        let storage_dir = unique_test_dir("ts-import-tool-blocks");
+        let store = TranscriptStore::new(&storage_dir);
+        let (_dir, path) = write_fixture(&[ASSISTANT_TOOL_USE_ONLY, USER_TOOL_RESULT]);
 
-        assert_eq!(report.skipped.len(), 1);
-        assert_eq!(report.skipped[0].reason, SkipReason::EmptyContent);
+        let report = import_ts_file(&path, &store, None).expect("import");
+
+        assert_eq!(report.imported_count, 2);
+        let loaded = store.load_session(report.session_id).expect("load session");
+        assert_eq!(loaded.messages.len(), 2);
+
+        let use_id = match &loaded.messages[0].payload {
+            MessagePayload::AssistantToolUse {
+                tool,
+                use_id,
+                input,
+            } => {
+                assert_eq!(tool, "bash");
+                assert_eq!(input["command"], "ls");
+                *use_id
+            }
+            other => panic!("expected AssistantToolUse, got {other:?}"),
+        };
+
+        match &loaded.messages[1].payload {
+            MessagePayload::ToolResult {
+                tool,
+                use_id: result_use_id,
+                success,
+                content,
+            } => {
+                assert_eq!(tool, "bash");
+                assert_eq!(*result_use_id, use_id);
+                assert!(*success);
+                assert!(content.contains("file_a"));
+            }
+            other => panic!("expected ToolResult, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn imports_custom_title_into_session_metadata() {
+        let storage_dir = unique_test_dir("ts-import-custom-title");
+        let store = TranscriptStore::new(&storage_dir);
+        let (_dir, path) = write_fixture(&[CUSTOM_TITLE_RECORD, USER_STRING_CONTENT]);
+
+        let report = import_ts_file(&path, &store, None).expect("import");
+
+        assert_eq!(
+            report.captured_metadata.custom_title.as_deref(),
+            Some("Imported transcript title")
+        );
+        let metadata = store
+            .read_metadata(report.session_id)
+            .expect("read metadata");
+        assert_eq!(metadata.title, "Imported transcript title");
+        assert_eq!(metadata.message_count, 1);
     }
 
     // ── paste-reference warning tests ─────────────────────────────────────────
@@ -784,31 +1501,77 @@ mod tests {
         }
     }
 
+    #[test]
+    fn converts_user_image_block_into_explicit_text_placeholder() {
+        let storage_dir = unique_test_dir("ts-import-image-placeholder");
+        let store = TranscriptStore::new(&storage_dir);
+        let (_dir, path) = write_fixture(&[USER_IMAGE_BLOCK]);
+
+        let report = import_ts_file(&path, &store, None).expect("import");
+
+        assert_eq!(report.imported_count, 1);
+        let loaded = store.load_session(report.session_id).expect("load session");
+        match &loaded.messages[0].payload {
+            MessagePayload::UserText { content } => {
+                assert!(content.contains("See screenshot"));
+                assert!(content.contains("[Image: image/png]"));
+            }
+            other => panic!("expected UserText, got {other:?}"),
+        }
+    }
+
     // ── mixed-content batch tests ─────────────────────────────────────────────
 
     #[test]
     fn mixed_batch_counts_correctly() {
         let (_dir, path) = write_fixture(&[
-            USER_STRING_CONTENT, // converted
-            SYSTEM_RECORD,       // skipped
-            ASSISTANT_TEXT,      // converted
-            SUMMARY_RECORD,      // skipped
-            MALFORMED_JSON,      // skipped
+            CUSTOM_TITLE_RECORD,    // metadata capture
+            USER_STRING_CONTENT,    // converted
+            SYSTEM_RECORD,          // skipped
+            ASSISTANT_MIXED_BLOCKS, // converted + warning
+            SUMMARY_RECORD,         // metadata capture
+            MALFORMED_JSON,         // skipped
         ]);
 
         let report = inspect_ts_file(&path).expect("inspect");
 
-        assert_eq!(report.skipped.len(), 3);
+        assert_eq!(report.convertible_count, 3);
+        assert_eq!(report.skipped.len(), 2);
+        assert_eq!(report.warnings.len(), 1);
+        assert_eq!(report.captured_metadata.captured_count(), 2);
+        assert_eq!(
+            report.skip_counts().get(&SkipCategory::UnsupportedRecord),
+            Some(&1)
+        );
+        assert_eq!(
+            report.skip_counts().get(&SkipCategory::InvalidRecord),
+            Some(&1)
+        );
+        assert_eq!(
+            report
+                .warning_counts()
+                .get(&TsWarningCategory::PartialImport),
+            Some(&1)
+        );
         // dry-run: imported_count is always 0
         assert_eq!(report.imported_count, 0);
     }
 
     #[test]
     fn summary_text_contains_counts() {
-        let (_dir, path) = write_fixture(&[USER_STRING_CONTENT, SYSTEM_RECORD]);
+        let (_dir, path) =
+            write_fixture(&[USER_STRING_CONTENT, SYSTEM_RECORD, ASSISTANT_MIXED_BLOCKS]);
         let report = inspect_ts_file(&path).expect("inspect");
         let summary = report.summary();
         assert!(summary.contains("1 skipped"), "summary was: {summary}");
+        assert!(
+            summary.contains("unsupported_record=1"),
+            "summary was: {summary}"
+        );
+        assert!(
+            summary.contains("partial_import=1"),
+            "summary was: {summary}"
+        );
     }
 
     // ── normal Rust transcripts are not affected ───────────────────────────────
