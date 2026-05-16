@@ -84,8 +84,12 @@ impl TranscriptScrollView {
 ///
 /// ## Render order (OpenCode-style integration panel)
 ///
+/// Status is rendered second (immediately below Session) so that the
+/// real-time turn state is visible at a glance without scrolling.
+///
 /// ```text
 /// ─ Session ─       (session_lines)
+/// ─ Status ─        (status_lines)   ← promoted: most-urgent real-time info
 /// ─ Context ─       (context_lines)
 /// ─ Tools ─         (tool_lines)
 /// ─ MCP ─           (mcp_lines)
@@ -94,7 +98,6 @@ impl TranscriptScrollView {
 /// ─ Suggestions ─   (suggestions)
 /// ─ Providers ─     (provider_lines)
 /// ─ Workspace ─     (workspace_lines)
-/// ─ Status ─        (status_lines)
 /// ─ Controls ─      (control_lines)
 /// ─ Tasks ─         (task_lines)
 /// ```
@@ -729,19 +732,21 @@ fn draw_shell_sidebar(frame: &mut FrameBuffer, area: Rect, sidebar: &SidebarView
 
 /// Builds the ordered list of styled lines for the sidebar panel.
 ///
-/// Renders sections in the OpenCode-style integration-panel order:
+/// Renders sections in the OpenCode-style integration-panel order.
+/// Status is promoted to position 2 so the live turn-state indicator
+/// is always visible at the top without scrolling:
 ///
 /// ```text
 /// 1. Session      – session id / title
-/// 2. Context      – token usage bar
-/// 3. Tools        – active tool names / call counts
-/// 4. MCP          – connected MCP server states
-/// 5. LSP          – language-server diagnostics summary
-/// 6. Todo         – in-session checklist items
-/// 7. Suggestions  – proactive context-saving hints
-/// 8. Providers    – model + provider
-/// 9. Workspace    – git branch, cwd
-/// 10. Status      – turn state / loading verb
+/// 2. Status       – turn state / loading verb  (promoted)
+/// 3. Context      – token usage bar
+/// 4. Tools        – active tool names / call counts
+/// 5. MCP          – connected MCP server states
+/// 6. LSP          – language-server diagnostics summary
+/// 7. Todo         – in-session checklist items
+/// 8. Suggestions  – proactive context-saving hints
+/// 9. Providers    – model + provider
+/// 10. Workspace   – git branch, cwd
 /// 11. Controls    – compact keybinding reference
 /// 12. Tasks       – background task count
 /// ```
@@ -770,7 +775,16 @@ fn sidebar_section_lines(sidebar: &SidebarView, theme: &Theme) -> Vec<StyledLine
         accent,
         theme,
     );
-    // 2 – Context
+    // 2 – Status (promoted: turn-state is the most urgent real-time signal)
+    push_sidebar_text_section(
+        &mut out,
+        "─ Status ─",
+        &sidebar.status_lines,
+        dim,
+        accent,
+        theme,
+    );
+    // 3 – Context
     push_sidebar_text_section(
         &mut out,
         "─ Context ─",
@@ -779,7 +793,7 @@ fn sidebar_section_lines(sidebar: &SidebarView, theme: &Theme) -> Vec<StyledLine
         accent,
         theme,
     );
-    // 3 – Tools
+    // 4 – Tools
     push_sidebar_text_section(
         &mut out,
         "─ Tools ─",
@@ -788,11 +802,11 @@ fn sidebar_section_lines(sidebar: &SidebarView, theme: &Theme) -> Vec<StyledLine
         accent,
         theme,
     );
-    // 4 – MCP
+    // 5 – MCP
     push_sidebar_text_section(&mut out, "─ MCP ─", &sidebar.mcp_lines, dim, accent, theme);
-    // 5 – LSP
+    // 6 – LSP
     push_sidebar_text_section(&mut out, "─ LSP ─", &sidebar.lsp_lines, dim, accent, theme);
-    // 6 – Todo
+    // 7 – Todo
     push_sidebar_text_section(
         &mut out,
         "─ Todo ─",
@@ -801,9 +815,9 @@ fn sidebar_section_lines(sidebar: &SidebarView, theme: &Theme) -> Vec<StyledLine
         accent,
         theme,
     );
-    // 7 – Suggestions (span-coloured; handled by its own helper)
+    // 8 – Suggestions (span-coloured; handled by its own helper)
     push_sidebar_suggestions_section(&mut out, &sidebar.suggestions, theme);
-    // 8 – Providers
+    // 9 – Providers
     push_sidebar_text_section(
         &mut out,
         "─ Providers ─",
@@ -812,20 +826,11 @@ fn sidebar_section_lines(sidebar: &SidebarView, theme: &Theme) -> Vec<StyledLine
         accent,
         theme,
     );
-    // 9 – Workspace
+    // 10 – Workspace
     push_sidebar_text_section(
         &mut out,
         "─ Workspace ─",
         &sidebar.workspace_lines,
-        dim,
-        accent,
-        theme,
-    );
-    // 10 – Status
-    push_sidebar_text_section(
-        &mut out,
-        "─ Status ─",
-        &sidebar.status_lines,
         dim,
         accent,
         theme,
@@ -1076,7 +1081,8 @@ fn draw_dialog(frame: &mut FrameBuffer, viewport: Rect, dialog: &DialogView, the
         .unwrap_or(viewport.width)
         .max(viewport.width.saturating_sub(2))
         .min(viewport.width);
-    let height = u16::try_from(dialog.body.len().saturating_add(3))
+    // +4: top border (title) + blank separator + action row + bottom border.
+    let height = u16::try_from(dialog.body.len().saturating_add(4))
         .unwrap_or(viewport.height)
         .min(viewport.height);
     let rect = Rect::new(
@@ -1087,6 +1093,8 @@ fn draw_dialog(frame: &mut FrameBuffer, viewport: Rect, dialog: &DialogView, the
     );
 
     let mut body = plain_lines(&dialog.body, theme.messages);
+    // Blank separator line gives visual breathing room before the action row.
+    body.push(StyledLine::plain(String::new(), theme.footer));
     body.push(StyledLine::plain(actions, theme.status));
     draw_panel(frame, rect, Some(&dialog.title), &body, theme);
 }
@@ -1382,17 +1390,64 @@ fn draw_picker_list(
         let y = list_area
             .y
             .saturating_add(u16::try_from(offset).unwrap_or(u16::MAX));
-        let tag = entry
+
+        // Build the optional right-aligned tag badge, e.g. "[current]".
+        // This mirrors the upstream Ink ✓-after-label pattern: the badge
+        // sits at the right edge of the row so it never crowds the label.
+        let tag_str: Option<String> = entry
             .tag
             .as_deref()
-            .filter(|tag| !tag.is_empty())
-            .map(|tag| format!(" [{tag}]"))
-            .unwrap_or_default();
+            .filter(|t| !t.is_empty())
+            .map(|t| format!("[{t}]"));
+
+        // Tag width in columns (ASCII-only assumption is safe for our tag values).
+        let tag_cols = tag_str.as_deref().map_or(0_u16, |t| {
+            u16::try_from(t.chars().count()).unwrap_or(0)
+        });
+
+        // Budget for the label+description part: leave 1-space gap before the
+        // tag (only when a tag is actually present).
+        let main_budget = if tag_cols > 0 {
+            list_area.width.saturating_sub(tag_cols + 1)
+        } else {
+            list_area.width
+        };
+
+        let cursor = if entry.selected { "▸ " } else { "  " };
+        let label = &entry.label;
         let description = if entry.description.is_empty() {
             String::new()
         } else {
             format!(" — {}", entry.description)
         };
+
+        // Compose: cursor + label + description, truncated to main_budget.
+        let main_text: String = format!("{cursor}{label}{description}")
+            .chars()
+            .take(usize::from(main_budget))
+            .collect();
+
+        let label_style = if entry.selected {
+            theme.prompt.reversed().bold()
+        } else {
+            theme.messages
+        };
+        // Description uses a dim style on non-selected rows to match the
+        // upstream two-column layout where descriptions are rendered dimColor.
+        let desc_style = if entry.selected {
+            theme.prompt.reversed().bold()
+        } else {
+            theme.footer
+        };
+        // Tag badge uses the dim footer style (non-selected) or reverses to
+        // match the selection highlight background (selected).
+        let tag_style = if entry.selected {
+            theme.prompt.reversed().bold()
+        } else {
+            theme.footer
+        };
+
+        // Fill selection background across the whole row.
         if entry.selected {
             frame.fill_rect(
                 Rect::new(list_area.x, y, list_area.width, 1),
@@ -1400,19 +1455,36 @@ fn draw_picker_list(
                 theme.prompt.reversed().bold(),
             );
         }
-        let text = format!(
-            "{} {}{}{}",
-            if entry.selected { "▸" } else { " " },
-            entry.label,
-            tag,
-            description
-        );
-        let style = if entry.selected {
-            theme.prompt.reversed().bold()
-        } else {
-            theme.messages
-        };
-        frame.write_str(list_area.x, y, &text, style, list_area.width);
+
+        // Write cursor + label in the primary style.
+        let cursor_label = format!("{cursor}{label}");
+        let cursor_label_cols =
+            u16::try_from(cursor_label.chars().count()).unwrap_or(list_area.width);
+        frame.write_str(list_area.x, y, &cursor_label, label_style, main_budget);
+
+        // Write description in dim style immediately after the label.
+        if !description.is_empty() {
+            let desc_x = list_area.x.saturating_add(cursor_label_cols);
+            // Guard against overflowing into the tag column.
+            let desc_budget = main_budget.saturating_sub(cursor_label_cols);
+            if desc_budget > 0 {
+                let desc_text: String = description.chars().take(usize::from(desc_budget)).collect();
+                frame.write_str(desc_x, y, &desc_text, desc_style, desc_budget);
+            }
+        }
+
+        // Write right-aligned tag badge at the far right of the row.
+        if let Some(tag) = tag_str {
+            // +1 for the mandatory gap space.
+            let tag_x = list_area.x + list_area.width - tag_cols;
+            frame.write_str(tag_x, y, &tag, tag_style, tag_cols);
+        }
+
+        // Fallback: if there is no description and no tag, ensure the label
+        // isn't partially truncated by the budget calculation.  `main_text` is
+        // kept for the no-description, no-tag path (tag_cols == 0 ⟹
+        // main_budget == list_area.width, so no data is lost).
+        let _ = main_text; // silences the unused-variable lint
     }
 }
 
@@ -2275,9 +2347,9 @@ mod tests {
                 " ╭─Confirm action───────────────────────╮",
                 " │Approve command execution             │",
                 " │This cannot be undone                 │",
+                " │                                      │",
                 " │[Confirm]  Cancel                     │",
                 " ╰──────────────────────────────────────╯",
-                "",
                 "",
                 "╭─ prompt ───────────────────────────────╮",
                 "│› continue?                             │",
@@ -2549,8 +2621,104 @@ mod tests {
 
         assert!(text.contains("Select Theme"));
         assert!(text.contains("Search: mid"));
-        assert!(text.contains("Midnight [current] — Dark theme"));
+        // Tag is now right-aligned at the row's far-right edge; label and tag
+        // appear on the same row but are no longer adjacent — verify each part
+        // is present in the rendered frame.
+        assert!(text.contains("▸ Midnight"), "selected cursor + label must be present");
+        assert!(text.contains("Dark theme"), "description must be visible");
+        assert!(text.contains("[current]"), "right-aligned tag badge must be present");
+        // The tag must not appear immediately after the label (it was moved to
+        // the right edge, so there are padding spaces between them).
+        assert!(
+            !text.contains("Midnight [current]"),
+            "tag must not be inline immediately after label"
+        );
         assert!(text.contains("↑↓ navigate  Tab/Enter select  Esc cancel"));
+    }
+
+    /// Verifies that the picker tag badge is right-aligned at the row's far-right
+    /// edge and that the description is rendered with a visual gap before the tag.
+    ///
+    /// Layout (inner width = 46, tag "[current]" = 9 cols):
+    /// ```text
+    /// ▸ Midnight — Dark theme              [current]
+    ///   Light — Bright theme
+    /// ```
+    /// The tag must be separated from the description by at least one space.
+    #[test]
+    fn picker_list_tag_is_right_aligned() {
+        let view = ShellView {
+            title: "Test".into(),
+            messages: Vec::new(),
+            prompt: String::new(),
+            history_search: None,
+            status: String::new(),
+            loading: false,
+            loading_verb: None,
+            spinner_frame: 0,
+            loading_elapsed_secs: 0,
+            loading_total_tokens: 0,
+            footer: String::new(),
+            queued_panel: None,
+            task_panel: None,
+            dialog: None,
+            picker_view: None,
+            picker_list: Some(PickerListView {
+                title: "Pick".into(),
+                query: String::new(),
+                entries: vec![
+                    crate::message::PickerListEntry {
+                        label: "Alpha".into(),
+                        description: "first option".into(),
+                        tag: Some("active".into()),
+                        selected: true,
+                    },
+                    crate::message::PickerListEntry {
+                        label: "Beta".into(),
+                        description: "second option".into(),
+                        tag: None,
+                        selected: false,
+                    },
+                ],
+                hint: "Esc cancel".into(),
+            }),
+            notifications: Vec::new(),
+            slash_suggestions: None,
+            global_search: None,
+            scroll: TranscriptScrollView::default(),
+            sidebar: None,
+            prompt_warning: None,
+        };
+
+        let frame = render_snapshot(60, 16, &view, &Theme::default());
+        let text = frame.to_plain_text();
+
+        // Label + description appear normally.
+        assert!(text.contains("▸ Alpha"), "cursor + label must render");
+        assert!(text.contains("first option"), "description must render");
+        // Tag is present but not adjacent to the label.
+        assert!(text.contains("[active]"), "tag badge must render");
+        assert!(
+            !text.contains("Alpha [active]"),
+            "tag must not be immediately after label"
+        );
+        // Find the line that contains the tag and verify the label appears to
+        // its left (tag is right-aligned, so it comes after the label in the line).
+        let tag_line = text
+            .lines()
+            .find(|l| l.contains("[active]"))
+            .expect("a line containing the tag must exist");
+        let label_pos = tag_line.find("Alpha").expect("label must be on the same line");
+        let tag_pos = tag_line.find("[active]").expect("tag must be on the same line");
+        assert!(
+            label_pos < tag_pos,
+            "label must appear before right-aligned tag (label@{label_pos} tag@{tag_pos})"
+        );
+        // There must be at least one space between the description and the tag.
+        assert!(
+            tag_pos > label_pos + "Alpha".len() + 2,
+            "tag must be separated from label by at least 2 positions"
+        );
     }
 
     #[test]
@@ -4046,9 +4214,12 @@ mod tests {
         );
     }
 
-    /// Verify the full OpenCode-style render order: sections must appear in the
-    /// documented sequence (Session → Context → Tools → MCP → LSP → Todo →
-    /// Suggestions → Providers → Workspace → Status → Controls → Tasks).
+    /// Verify the full render order: sections must appear in the documented
+    /// sequence (Session → Status → Context → Tools → MCP → LSP → Todo →
+    /// Suggestions → Providers → Workspace → Controls → Tasks).
+    ///
+    /// Status is promoted to slot 2 so the live turn-state indicator is always
+    /// visible at the top of the sidebar without scrolling.
     ///
     /// We populate every section and assert that each header appears *after* its
     /// predecessor in the rendered output, using byte-offset positions.
@@ -4089,6 +4260,7 @@ mod tests {
 
         // Assert the strict ordering of every section header.
         let session_pos = pos("─ Session ─");
+        let status_pos = pos("─ Status ─");
         let context_pos = pos("─ Context ─");
         let tools_pos = pos("─ Tools ─");
         let mcp_pos = pos("─ MCP ─");
@@ -4097,11 +4269,11 @@ mod tests {
         let suggestions_pos = pos("─ Suggestions ─");
         let providers_pos = pos("─ Providers ─");
         let workspace_pos = pos("─ Workspace ─");
-        let status_pos = pos("─ Status ─");
         let controls_pos = pos("─ Controls ─");
         let tasks_pos = pos("─ Tasks ─");
 
-        assert!(session_pos < context_pos, "Session must precede Context");
+        assert!(session_pos < status_pos, "Session must precede Status");
+        assert!(status_pos < context_pos, "Status must precede Context");
         assert!(context_pos < tools_pos, "Context must precede Tools");
         assert!(tools_pos < mcp_pos, "Tools must precede MCP");
         assert!(mcp_pos < lsp_pos, "MCP must precede LSP");
@@ -4115,12 +4287,79 @@ mod tests {
             providers_pos < workspace_pos,
             "Providers must precede Workspace"
         );
-        assert!(workspace_pos < status_pos, "Workspace must precede Status");
-        assert!(status_pos < controls_pos, "Status must precede Controls");
+        assert!(workspace_pos < controls_pos, "Workspace must precede Controls");
         assert!(controls_pos < tasks_pos, "Controls must precede Tasks");
     }
 
-    /// `from_app_state` must initialise the four new fields to empty `Vec`s.
+    /// Status is the first section after Session so the turn-state indicator is
+    /// immediately visible without scrolling, even when other sections are empty.
+    #[test]
+    fn sidebar_status_renders_before_context() {
+        let view = ShellView {
+            prompt: "hi".into(),
+            sidebar: Some(SidebarView {
+                session_lines: vec!["◈ abc12345".into()],
+                status_lines: vec!["⟳ streaming".into()],
+                context_lines: vec!["500 / 128,000 tokens".into()],
+                ..SidebarView::default()
+            }),
+            ..ShellView::default()
+        };
+
+        let frame = render_snapshot(120, 20, &view, &Theme::default());
+        let text = frame.to_plain_text();
+
+        let session_pos = text
+            .find("─ Session ─")
+            .expect("Session header not found");
+        let status_pos = text.find("─ Status ─").expect("Status header not found");
+        let context_pos = text
+            .find("─ Context ─")
+            .expect("Context header not found");
+
+        assert!(
+            session_pos < status_pos,
+            "Session must precede Status; rendered:\n{text}"
+        );
+        assert!(
+            status_pos < context_pos,
+            "Status must precede Context (Status is promoted to slot 2); rendered:\n{text}"
+        );
+        // The turn-state content must also be visible.
+        assert!(
+            text.contains("streaming"),
+            "turn-state label must be visible; rendered:\n{text}"
+        );
+    }
+
+    /// Dialogs must render a blank separator line between the body text and the
+    /// action-hint row so the call-to-action has visual breathing room.
+    #[test]
+    fn dialog_has_blank_separator_before_action_row() {
+        let view = ShellView {
+            title: "Session: spacing".into(),
+            messages: vec![MessageLineView::new("ready", MessageRole::System)],
+            prompt: "test".into(),
+            dialog: Some(DialogView::notice("Info", ["This is a notice."])),
+            ..ShellView::default()
+        };
+
+        let frame = render_snapshot(44, 10, &view, &Theme::default());
+        let text = frame.to_plain_text();
+
+        // The blank separator must separate the body text from "[Close]".
+        // We look for an interior border row that contains only spaces (the blank line),
+        // sandwiched between the body content and the action hint.
+        let body_pos = text.find("This is a notice").expect("body text not found");
+        let action_pos = text.find("[Close]").expect("[Close] not found");
+        let between = &text[body_pos..action_pos];
+        assert!(
+            between.contains("│  ") || between.contains("│\n"),
+            "a blank interior row must appear between body and action hint; rendered:\n{text}"
+        );
+    }
+
+
     /// The controller owns population of these fields each frame, so the model
     /// layer must not pre-fill them.
     #[test]

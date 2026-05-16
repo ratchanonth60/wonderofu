@@ -248,7 +248,7 @@ pub(super) fn action_for_item_id(id: &str, _command: &str) -> SetupItemAction {
         // Upstream shows a workspace-trust dialog; in the TUI the user is
         // already running the binary locally, so trust is granted implicitly.
         "trust" => SetupItemAction::Placeholder(
-            "Workspace trust is accepted implicitly in the local-first TUI. \
+            "Workspace trust is granted implicitly — you're running the TUI locally.\n\
              No action required."
                 .into(),
         ),
@@ -257,31 +257,33 @@ pub(super) fn action_for_item_id(id: &str, _command: &str) -> SetupItemAction {
         // These items exist in the upstream Ink UI but are out-of-scope for the
         // local-first TUI.  They get the `"deferred"` badge in the picker.
         "grove" => SetupItemAction::Deferred(
-            "Grove (cloud sync) is a remote feature not applicable to the \
-             local-first TUI."
+            "Cloud sync (Grove) is only available in the remote Claude Code service.\n\
+             This TUI operates fully local — no cloud account is required."
                 .into(),
         ),
         "telemetry" => SetupItemAction::Deferred(
-            "Telemetry opt-in is a cloud/remote feature not applicable to the \
-             local-first TUI."
+            "Telemetry settings are only available in the remote Claude Code service.\n\
+             This TUI does not collect or transmit usage data."
                 .into(),
         ),
         "bypass-permissions" => SetupItemAction::Deferred(
-            "Bypass-permissions is a cloud-managed feature not applicable to the \
-             local-first TUI."
+            "Bypass-permissions is managed by the remote Claude Code service.\n\
+             Use /permissions to adjust tool access in this TUI."
                 .into(),
         ),
         "auto-mode" => SetupItemAction::Deferred(
-            "Auto-mode is a cloud feature not applicable to the local-first TUI.".into(),
+            "Auto-mode is a remote Claude Code feature.\n\
+             This TUI always prompts before running commands."
+                .into(),
         ),
         "channels" => SetupItemAction::Deferred(
-            "Release channels are a cloud/remote feature not applicable to the \
-             local-first TUI."
+            "Release channels are managed by the remote Claude Code service.\n\
+             Update this TUI by upgrading the Rust binary."
                 .into(),
         ),
         "chrome-onboarding" => SetupItemAction::Deferred(
-            "Chrome onboarding is a cloud feature not applicable to the \
-             local-first TUI."
+            "Chrome onboarding is only available in the remote Claude Code service.\n\
+             This TUI runs entirely in your terminal."
                 .into(),
         ),
 
