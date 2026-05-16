@@ -757,6 +757,7 @@ fn execute_tool_call(
                 PRE_TOOL_USE,
                 &call.provider_call.tool_name,
                 &call.provider_call.arguments,
+                None,
                 &context.cwd,
                 storage_dir,
             );
@@ -830,10 +831,17 @@ fn execute_tool_call(
                     } else {
                         POST_TOOL_USE_FAILURE
                     };
+                    // Include a minimal tool_response snapshot so hooks can
+                    // inspect the outcome without needing to re-run the tool.
+                    let tool_response_json = serde_json::json!({
+                        "success": tool_result.success,
+                        "content": tool_result.content,
+                    });
                     let post_hook_report = run_hooks(
                         post_event,
                         &call.provider_call.tool_name,
                         &call.provider_call.arguments,
+                        Some(&tool_response_json),
                         &context.cwd,
                         storage_dir,
                     );
