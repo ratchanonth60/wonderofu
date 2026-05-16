@@ -7337,6 +7337,7 @@ fn tool_sidebar_lines_produces_summary() {
     let context = ToolContext {
         session_id: SessionId::new(),
         cwd: dir,
+        session_worktree: None,
         permission_mode: PermissionMode::Default,
         additional_working_directories: Vec::new(),
         permission_rules: Vec::new(),
