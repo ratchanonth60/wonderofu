@@ -43,8 +43,9 @@ use sha2::{Digest, Sha256};
 use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 use wonder_of_u_core::{
     AGENT_TASK_RESULT_SCHEMA_VERSION, AgentTaskResult, AppState, CostState, FLEET_SCHEMA_VERSION,
-    FleetId, FleetMemberRequest, FleetRunState, MESSAGE_SCHEMA_VERSION, MessageEnvelope, MessageId,
-    MessagePayload, Result, SessionId, TaskId, TaskState, TaskStatus, WonderError,
+    FLEET_STEERING_SCHEMA_VERSION, FleetId, FleetMemberRequest, FleetRunState,
+    FleetSteeringMessage, MESSAGE_SCHEMA_VERSION, MessageEnvelope, MessageId, MessagePayload,
+    Result, SessionId, TaskId, TaskState, TaskStatus, WonderError,
 };
 
 /// Schema version for storage
@@ -60,6 +61,7 @@ fn ensure_supported_schema(kind: &str, version: u16) -> Result<()> {
     let supported = match kind {
         "message" => MESSAGE_SCHEMA_VERSION,
         "fleet run" => FLEET_SCHEMA_VERSION,
+        "fleet steering" => FLEET_STEERING_SCHEMA_VERSION,
         "agent task result" => AGENT_TASK_RESULT_SCHEMA_VERSION,
         _ => STORAGE_SCHEMA_VERSION,
     };
@@ -371,6 +373,27 @@ impl StoragePaths {
             None => format!("{request_id}.json"),
         };
         self.fleet_pending_dir().join(file_name)
+    }
+
+    /// Returns the steering directory for a specific fleet run.
+    ///
+    /// Steering messages are stored at `fleet/steering/{fleet_id}/`.
+    #[must_use]
+    pub fn fleet_steering_dir(&self, fleet_id: wonder_of_u_core::FleetId) -> PathBuf {
+        self.fleet_dir().join("steering").join(fleet_id.to_string())
+    }
+
+    /// Returns the path for an individual steering message file.
+    ///
+    /// Stored at `fleet/steering/{fleet_id}/{steering_id}.json`.
+    #[must_use]
+    pub fn fleet_steering_path(
+        &self,
+        fleet_id: wonder_of_u_core::FleetId,
+        steering_id: &str,
+    ) -> PathBuf {
+        self.fleet_steering_dir(fleet_id)
+            .join(format!("{steering_id}.json"))
     }
 }
 /// Stores transcript store
@@ -1770,6 +1793,48 @@ impl FleetStore {
             Err(error) => Err(error.into()),
         }
     }
+
+    // ── Steering messages ─────────────────────────────────────────────────────
+
+    /// Atomically writes a [`FleetSteeringMessage`] to disk.
+    ///
+    /// Creates `fleet/steering/{fleet_id}/` if it does not exist.
+    pub fn write_steering_message(&self, msg: &FleetSteeringMessage) -> Result<()> {
+        let dir = self.paths.fleet_steering_dir(msg.fleet_id);
+        fs::create_dir_all(&dir)?;
+        write_json_atomically(&self.paths.fleet_steering_path(msg.fleet_id, &msg.id), msg)
+    }
+
+    /// Lists all steering messages for `fleet_id`, sorted by `queued_at`
+    /// ascending (oldest first).
+    ///
+    /// Returns an empty list when the directory does not exist.
+    pub fn list_steering_messages(&self, fleet_id: FleetId) -> Result<Vec<FleetSteeringMessage>> {
+        let dir = self.paths.fleet_steering_dir(fleet_id);
+        match fs::read_dir(&dir) {
+            Ok(entries) => {
+                let mut messages = Vec::new();
+                for entry in entries {
+                    let entry = entry?;
+                    if !entry.file_type()?.is_file() {
+                        continue;
+                    }
+                    if entry.path().extension().and_then(OsStr::to_str) != Some("json") {
+                        continue;
+                    }
+                    let msg: FleetSteeringMessage =
+                        serde_json::from_str(&fs::read_to_string(entry.path())?)?;
+                    ensure_supported_schema("fleet steering", msg.schema_version)?;
+                    messages.push(msg);
+                }
+                messages
+                    .sort_by(|a, b| a.queued_at.cmp(&b.queued_at).then_with(|| a.id.cmp(&b.id)));
+                Ok(messages)
+            }
+            Err(error) if error.kind() == ErrorKind::NotFound => Ok(Vec::new()),
+            Err(error) => Err(error.into()),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -1904,6 +1969,82 @@ mod fleet_store_tests {
         let fleet_id = FleetId::new();
         let err = store.read_run(fleet_id).expect_err("missing");
         assert!(err.to_string().contains("not found"));
+    }
+
+    // ── Steering message tests ────────────────────────────────────────────────
+
+    #[test]
+    fn write_and_list_steering_message() {
+        use wonder_of_u_core::FleetSteeringMessage;
+        let store = make_store("fleet-steering-write-list");
+        let fleet_id = FleetId::new();
+        let msg = FleetSteeringMessage::new(fleet_id, "focus on performance");
+        store.write_steering_message(&msg).expect("write");
+        let messages = store.list_steering_messages(fleet_id).expect("list");
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].id, msg.id);
+        assert_eq!(messages[0].prompt, "focus on performance");
+        assert_eq!(messages[0].fleet_id, fleet_id);
+    }
+
+    #[test]
+    fn list_steering_messages_empty_when_dir_absent() {
+        let store = make_store("fleet-steering-absent");
+        let fleet_id = FleetId::new();
+        // Directory never created; must return empty list, not an error.
+        let messages = store.list_steering_messages(fleet_id).expect("list");
+        assert!(messages.is_empty());
+    }
+
+    #[test]
+    fn list_steering_messages_sorted_by_queued_at_asc() {
+        use std::thread;
+        use std::time::Duration;
+        use wonder_of_u_core::FleetSteeringMessage;
+        let store = make_store("fleet-steering-sorted");
+        let fleet_id = FleetId::new();
+
+        // Write three messages with a small delay so queued_at differs.
+        for label in ["first", "second", "third"] {
+            let msg = FleetSteeringMessage::new(fleet_id, label);
+            store.write_steering_message(&msg).expect("write");
+            thread::sleep(Duration::from_millis(2));
+        }
+
+        let messages = store.list_steering_messages(fleet_id).expect("list");
+        assert_eq!(messages.len(), 3);
+        // Oldest first.
+        for window in messages.windows(2) {
+            assert!(
+                window[0].queued_at <= window[1].queued_at,
+                "expected ascending order"
+            );
+        }
+        assert_eq!(messages[0].prompt, "first");
+        assert_eq!(messages[2].prompt, "third");
+    }
+
+    #[test]
+    fn steering_messages_isolated_per_fleet() {
+        use wonder_of_u_core::FleetSteeringMessage;
+        let store = make_store("fleet-steering-isolated");
+        let fleet_a = FleetId::new();
+        let fleet_b = FleetId::new();
+
+        store
+            .write_steering_message(&FleetSteeringMessage::new(fleet_a, "steer A"))
+            .expect("write A");
+        store
+            .write_steering_message(&FleetSteeringMessage::new(fleet_b, "steer B"))
+            .expect("write B");
+
+        let for_a = store.list_steering_messages(fleet_a).expect("list A");
+        let for_b = store.list_steering_messages(fleet_b).expect("list B");
+
+        assert_eq!(for_a.len(), 1);
+        assert_eq!(for_a[0].prompt, "steer A");
+        assert_eq!(for_b.len(), 1);
+        assert_eq!(for_b[0].prompt, "steer B");
     }
 }
 

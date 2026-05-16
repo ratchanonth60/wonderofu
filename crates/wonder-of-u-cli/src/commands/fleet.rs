@@ -60,8 +60,8 @@ use wonder_of_u_agent::{ProviderResolver, ProviderStatusReport};
 use wonder_of_u_core::{
     Command, CommandContext, CommandInvocation, CommandKind, CommandOutput, CommandSpec,
     FeatureFlag, FleetAgentRole, FleetId, FleetMemberRequest, FleetRoleCatalog, FleetRunState,
-    FleetRunStatus, Result, TaskId, TaskStatus, WonderError, WorktreeIsolation,
-    WorktreeIsolationMode, get_git_root,
+    FleetRunStatus, FleetSteeringMessage, Result, TaskId, TaskStatus, WonderError,
+    WorktreeIsolation, WorktreeIsolationMode, get_git_root,
 };
 use wonder_of_u_storage::{FleetInspector, FleetStore, MemberObservationClass};
 use wonder_of_u_tools::{
@@ -93,6 +93,7 @@ const KNOWN_SUBCOMMANDS: &[&str] = &[
     "reconcile",
     "wait",
     "results",
+    "steer",
 ];
 
 /// Maximum characters taken from a prompt as the run description summary.
@@ -154,6 +155,8 @@ enum FleetSubcommand {
     Wait(FleetWaitArgs),
     /// Print aggregated task status and output excerpts for a fleet run.
     Results(FleetResultsArgs),
+    /// Queue a steering instruction for an active fleet run.
+    Steer(FleetSteerArgs),
 }
 
 #[derive(Debug, Args)]
@@ -263,6 +266,17 @@ struct FleetResultsArgs {
     max_output_chars: usize,
 }
 
+#[derive(Debug, Args)]
+pub(crate) struct FleetSteerArgs {
+    /// The fleet run id to steer.
+    fleet_id: String,
+    /// The steering instruction.  May be multiple words (shell-joined).
+    ///
+    /// Must not be empty.
+    #[arg(required = true, num_args = 1..)]
+    prompt: Vec<String>,
+}
+
 // ── Command trait impl ────────────────────────────────────────────────────────
 
 #[async_trait]
@@ -302,6 +316,7 @@ impl Command for FleetCommand {
                     FleetSubcommand::Reconcile(args) => self.reconcile(context, args),
                     FleetSubcommand::Wait(args) => self.wait(context, args),
                     FleetSubcommand::Results(args) => self.results(args),
+                    FleetSubcommand::Steer(args) => self.steer(args),
                 }
             }
             // Unknown first token → freeform direct prompt.
@@ -731,6 +746,19 @@ impl FleetCommand {
                 }
             }
         }
+
+        // ── Steering summary ──────────────────────────────────────────────────
+        // Load steering messages for visibility; never fails the show command if
+        // the steering dir is absent (e.g. no messages queued yet).
+        let steering = store.list_steering_messages(fleet_id).unwrap_or_default();
+        lines.push(format!("steering_count={}", steering.len()));
+        if let Some(latest) = steering.last() {
+            lines.push(format!(
+                "steering_latest={}",
+                sanitize_line(truncate_chars(&latest.prompt, DESCRIPTION_MAX_CHARS))
+            ));
+        }
+
         Ok(CommandOutput::Text(lines.join("\n")))
     }
 
@@ -1302,9 +1330,74 @@ impl FleetCommand {
 
         Ok(CommandOutput::Text(lines.join("\n")))
     }
-}
 
-// ── Free helpers ──────────────────────────────────────────────────────────────
+    /// Queues a steering instruction for an active fleet run.
+    ///
+    /// # Behaviour
+    ///
+    /// * Validates that the fleet run exists.
+    /// * Rejects the instruction if the fleet is already in a terminal state
+    ///   (`completed`, `failed`, or `cancelled`) — steering a finished run
+    ///   would be misleading.
+    /// * Rejects an empty prompt.
+    /// * Writes a [`FleetSteeringMessage`] atomically under
+    ///   `fleet/steering/{fleet_id}/`.
+    ///
+    /// # Output
+    ///
+    /// Stable `key=value` lines:
+    ///
+    /// ```text
+    /// fleet_id=<uuid>
+    /// steering_id=<uuid>
+    /// queued=true
+    /// note=steering message queued; run `fleet show <fleet_id>` to check status
+    /// ```
+    pub(crate) fn steer(&self, args: FleetSteerArgs) -> Result<CommandOutput> {
+        let store = match self.fleet_store() {
+            Some(s) => s,
+            None => {
+                return Ok(CommandOutput::Text(runtime_disabled_message("fleet steer")));
+            }
+        };
+
+        let fleet_id = parse_fleet_id(&args.fleet_id)?;
+
+        // Validate the fleet exists before writing anything.
+        let run = store.read_run(fleet_id)?;
+
+        // Reject steering for terminal fleets — it would not be actionable.
+        if run.status.is_terminal() {
+            return Err(WonderError::validation(format!(
+                "fleet {} is already {} (terminal); cannot queue steering message",
+                fleet_id,
+                run.status.label(),
+            )));
+        }
+
+        let prompt = args.prompt.join(" ");
+        let prompt = prompt.trim();
+        if prompt.is_empty() {
+            return Err(WonderError::validation("steering prompt must not be empty"));
+        }
+
+        let msg = FleetSteeringMessage::new(fleet_id, prompt);
+        let steering_id = msg.id.clone();
+        store.write_steering_message(&msg)?;
+
+        let text = [
+            format!("fleet_id={fleet_id}"),
+            format!("steering_id={steering_id}"),
+            "queued=true".to_owned(),
+            format!(
+                "note=steering message queued; run `fleet show {}` to check status",
+                fleet_id
+            ),
+        ]
+        .join("\n");
+        Ok(CommandOutput::Text(text))
+    }
+}
 
 /// Dispatches a single pending [`FleetMemberRequest`] to a live agent task.
 ///
@@ -3341,5 +3434,236 @@ mod tests {
             other => panic!("unexpected: {other:?}"),
         };
         assert!(text.contains("requires --storage-dir"), "got: {text}");
+    }
+
+    // ── fleet steer tests ─────────────────────────────────────────────────────
+
+    /// Helper: create a pending fleet run and return its id.
+    fn create_pending_fleet(dir: &std::path::Path) -> FleetId {
+        let store = FleetStore::new(dir);
+        let run = FleetRunState::new("test fleet", PermissionMode::Default, None);
+        let id = run.id;
+        store.write_run(&run).expect("write run");
+        id
+    }
+
+    #[test]
+    fn fleet_steer_stores_message_for_pending_fleet() {
+        let dir = unique_test_dir("fleet-steer-pending");
+        let cmd = make_fleet_command(&dir);
+        let fleet_id = create_pending_fleet(&dir);
+
+        let output = futures::executor::block_on(cmd.execute(
+            stub_context(dir.clone()),
+            invocation(&format!("steer {fleet_id} focus on auth module")),
+        ))
+        .expect("execute");
+
+        let text = match output {
+            CommandOutput::Text(t) => t,
+            other => panic!("unexpected: {other:?}"),
+        };
+
+        assert!(
+            text.contains(&format!("fleet_id={fleet_id}")),
+            "got: {text}"
+        );
+        assert!(text.contains("queued=true"), "got: {text}");
+        assert!(text.contains("steering_id="), "got: {text}");
+        assert!(text.contains("note="), "got: {text}");
+
+        // Verify the message was persisted to storage.
+        let store = FleetStore::new(&dir);
+        let messages = store
+            .list_steering_messages(fleet_id)
+            .expect("list steering");
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].prompt, "focus on auth module");
+        assert_eq!(messages[0].fleet_id, fleet_id);
+    }
+
+    #[test]
+    fn fleet_steer_stores_message_for_running_fleet() {
+        let dir = unique_test_dir("fleet-steer-running");
+        let cmd = make_fleet_command(&dir);
+        let store = FleetStore::new(&dir);
+        let mut run = FleetRunState::new("running fleet", PermissionMode::Default, None);
+        run.status = FleetRunStatus::Running;
+        let fleet_id = run.id;
+        store.write_run(&run).expect("write");
+
+        let output = futures::executor::block_on(cmd.execute(
+            stub_context(dir.clone()),
+            invocation(&format!("steer {fleet_id} slow down and test first")),
+        ))
+        .expect("execute");
+
+        let text = match output {
+            CommandOutput::Text(t) => t,
+            other => panic!("unexpected: {other:?}"),
+        };
+        assert!(text.contains("queued=true"), "got: {text}");
+
+        let messages = store
+            .list_steering_messages(fleet_id)
+            .expect("list steering");
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].prompt, "slow down and test first");
+    }
+
+    #[test]
+    fn fleet_steer_rejects_terminal_fleet_completed() {
+        let dir = unique_test_dir("fleet-steer-terminal-completed");
+        let cmd = make_fleet_command(&dir);
+        let store = FleetStore::new(&dir);
+        let mut run = FleetRunState::new("done fleet", PermissionMode::Default, None);
+        run.status = FleetRunStatus::Completed;
+        let fleet_id = run.id;
+        store.write_run(&run).expect("write");
+
+        let err = futures::executor::block_on(cmd.execute(
+            stub_context(dir.clone()),
+            invocation(&format!("steer {fleet_id} do more work")),
+        ))
+        .expect_err("should reject terminal fleet");
+
+        assert!(
+            err.to_string().contains("terminal"),
+            "error should mention terminal; got: {err}"
+        );
+        assert!(
+            err.to_string().contains("completed"),
+            "error should mention status; got: {err}"
+        );
+    }
+
+    #[test]
+    fn fleet_steer_rejects_terminal_fleet_failed() {
+        let dir = unique_test_dir("fleet-steer-terminal-failed");
+        let cmd = make_fleet_command(&dir);
+        let store = FleetStore::new(&dir);
+        let mut run = FleetRunState::new("failed fleet", PermissionMode::Default, None);
+        run.status = FleetRunStatus::Failed;
+        let fleet_id = run.id;
+        store.write_run(&run).expect("write");
+
+        let err = futures::executor::block_on(cmd.execute(
+            stub_context(dir.clone()),
+            invocation(&format!("steer {fleet_id} retry please")),
+        ))
+        .expect_err("should reject terminal fleet");
+
+        assert!(err.to_string().contains("terminal"), "got: {err}");
+        assert!(err.to_string().contains("failed"), "got: {err}");
+    }
+
+    #[test]
+    fn fleet_steer_rejects_missing_fleet() {
+        let dir = unique_test_dir("fleet-steer-missing");
+        let cmd = make_fleet_command(&dir);
+        // Ensure the storage layout exists but no fleet run.
+        FleetStore::new(&dir).ensure_layout().expect("layout");
+
+        let fake_id = FleetId::new();
+        let err = futures::executor::block_on(cmd.execute(
+            stub_context(dir.clone()),
+            invocation(&format!("steer {fake_id} some instruction")),
+        ))
+        .expect_err("should error on missing fleet");
+
+        assert!(
+            err.to_string().contains("not found"),
+            "error should mention not_found; got: {err}"
+        );
+    }
+
+    #[test]
+    fn fleet_steer_rejects_empty_prompt() {
+        // clap requires at least one token for `prompt` (num_args = 1..)
+        // so we test the trim-empty guard via the steer() method directly.
+        let dir = unique_test_dir("fleet-steer-empty-prompt");
+        let cmd = make_fleet_command(&dir);
+        let fleet_id = create_pending_fleet(&dir);
+
+        // Provide whitespace-only words — they join to " " which trims to "".
+        let args = super::FleetSteerArgs {
+            fleet_id: fleet_id.to_string(),
+            prompt: vec!["  ".into()],
+        };
+        let err = cmd.steer(args).expect_err("empty prompt must fail");
+        assert!(
+            err.to_string().contains("empty"),
+            "error should mention empty prompt; got: {err}"
+        );
+    }
+
+    #[test]
+    fn fleet_steer_no_storage_returns_disabled() {
+        let cmd = FleetCommand::new(None);
+        let fake_id = FleetId::new();
+        let output = futures::executor::block_on(cmd.execute(
+            stub_context(std::env::current_dir().unwrap()),
+            invocation(&format!("steer {fake_id} do something")),
+        ))
+        .expect("disabled path should not error");
+        let text = match output {
+            CommandOutput::Text(t) => t,
+            other => panic!("unexpected: {other:?}"),
+        };
+        assert!(text.contains("requires --storage-dir"), "got: {text}");
+    }
+
+    #[test]
+    fn fleet_steer_is_a_known_subcommand_not_treated_as_prompt() {
+        let dir = unique_test_dir("fleet-steer-known-sub");
+        let fleet_id = create_pending_fleet(&dir);
+        let cmd = make_fleet_command(&dir);
+
+        let output = futures::executor::block_on(cmd.execute(
+            stub_context(dir.clone()),
+            invocation(&format!("steer {fleet_id} improve error messages")),
+        ))
+        .expect("execute");
+
+        let text = match output {
+            CommandOutput::Text(t) => t,
+            other => panic!("unexpected: {other:?}"),
+        };
+        // Must NOT be treated as a direct freeform prompt.
+        assert!(!text.contains("mode=direct_prompt"), "got: {text}");
+        assert!(text.contains("queued=true"), "got: {text}");
+    }
+
+    #[test]
+    fn fleet_show_includes_steering_count() {
+        use wonder_of_u_core::FleetSteeringMessage;
+        let dir = unique_test_dir("fleet-show-steering");
+        let store = FleetStore::new(&dir);
+        let run = FleetRunState::new("show test", PermissionMode::Default, None);
+        let fleet_id = run.id;
+        store.write_run(&run).expect("write run");
+
+        // Write two steering messages.
+        store
+            .write_steering_message(&FleetSteeringMessage::new(fleet_id, "first instruction"))
+            .expect("write msg 1");
+        store
+            .write_steering_message(&FleetSteeringMessage::new(fleet_id, "second instruction"))
+            .expect("write msg 2");
+
+        let cmd = make_fleet_command(&dir);
+        let output = futures::executor::block_on(cmd.execute(
+            stub_context(dir.clone()),
+            invocation(&format!("show {fleet_id}")),
+        ))
+        .expect("execute");
+
+        let text = match output {
+            CommandOutput::Text(t) => t,
+            other => panic!("unexpected: {other:?}"),
+        };
+
+        assert!(text.contains("steering_count=2"), "got: {text}");
+        assert!(text.contains("steering_latest="), "got: {text}");
     }
 }
