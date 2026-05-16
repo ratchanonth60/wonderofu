@@ -1,4 +1,13 @@
 //! Append-only session storage primitives.
+//!
+//! # Local-first design
+//!
+//! All storage in this crate is **local-only**.  There is no telemetry
+//! pipeline (no Datadog, no first-party event sink), no GrowthBook remote
+//! feature-flag evaluation, and no cloud upload/download backend.  Feature
+//! gates are resolved exclusively from the static [`wonder_of_u_core::FeatureSet`]
+//! compiled into the binary.  The [`SyncStatusReport`] reflects this honestly:
+//! its `analytics` and `experiments` surfaces are permanently `unsupported`.
 #![warn(missing_docs)]
 
 /// Provides memdir support
@@ -589,6 +598,16 @@ pub struct SyncStatusReport {
     pub remote_managed_settings: RemoteSurfaceStatus,
     /// Stores the team memory sync
     pub team_memory_sync: RemoteSurfaceStatus,
+    /// Analytics event sink status.
+    ///
+    /// Always `unsupported`: no Datadog or first-party event pipeline exists in
+    /// this Rust port; usage data stays local.
+    pub analytics: RemoteSurfaceStatus,
+    /// Remote experiment / feature-flag evaluation status.
+    ///
+    /// Always `unsupported`: GrowthBook remote evaluation is intentionally
+    /// absent.  Feature gates are resolved from the static `FeatureSet` only.
+    pub experiments: RemoteSurfaceStatus,
 }
 
 impl SyncStatusReport {
@@ -604,6 +623,14 @@ impl SyncStatusReport {
             team_memory_sync: RemoteSurfaceStatus::unsupported(
                 "team_memory_sync",
                 "repo-scoped cloud memory sync is unsupported; session memory remains local-only",
+            ),
+            analytics: RemoteSurfaceStatus::unsupported(
+                "analytics",
+                "no Datadog/first-party event sink; usage analytics are intentionally omitted in this Rust port",
+            ),
+            experiments: RemoteSurfaceStatus::unsupported(
+                "experiments",
+                "no GrowthBook remote feature evaluation; feature gates resolved from static FeatureSet only",
             ),
         }
     }
@@ -1853,6 +1880,106 @@ mod tests {
             .collect::<std::result::Result<Vec<_>, _>>()
             .expect("collect entries");
         assert!(entries.is_empty());
+    }
+
+    /// Analytics and experiments surfaces must always be `Unsupported` with
+    /// explicit reasons documenting the intentional absences (no Datadog event
+    /// sink, no GrowthBook remote evaluation).
+    #[test]
+    fn sync_status_report_analytics_and_experiments_are_unsupported() {
+        let dir = temp_dir();
+        let paths = StoragePaths::new(dir.path());
+
+        let report = SyncStatusReport::inspect(&paths);
+
+        assert_eq!(report.analytics.status, SyncSupport::Unsupported);
+        assert_eq!(report.analytics.service, "analytics");
+        assert!(!report.analytics.cloud_attempted);
+        assert!(
+            report.analytics.reason.contains("Datadog"),
+            "analytics reason should mention Datadog: {}",
+            report.analytics.reason
+        );
+
+        assert_eq!(report.experiments.status, SyncSupport::Unsupported);
+        assert_eq!(report.experiments.service, "experiments");
+        assert!(!report.experiments.cloud_attempted);
+        assert!(
+            report.experiments.reason.contains("GrowthBook"),
+            "experiments reason should mention GrowthBook: {}",
+            report.experiments.reason
+        );
+        assert!(
+            report.experiments.reason.contains("FeatureSet"),
+            "experiments reason should mention FeatureSet: {}",
+            report.experiments.reason
+        );
+    }
+
+    /// Documents the schema compatibility boundary: a transcript line that
+    /// omits `schema_version` (as upstream TS-shaped transcripts might) fails
+    /// at serde deserialization before our version-guard can run, because
+    /// `MessageEnvelope.schema_version` has no `#[serde(default)]`.
+    ///
+    /// Note: the corrupt-trailing-line recovery catches parse errors *only* for
+    /// the final line in a file.  A bad line anywhere else causes a hard error,
+    /// which is what we assert here by appending a valid line after the bad one.
+    ///
+    /// This is intentional — the Rust schema is strict.  Import shims or
+    /// format converters live outside this crate.
+    #[test]
+    fn transcript_line_missing_schema_version_fails_at_serde_before_version_check() {
+        let dir = temp_dir();
+        let store = TranscriptStore::new(dir.path());
+        let session_id = SessionId::new();
+
+        // A valid-looking transcript line that simply omits `schema_version`.
+        // This simulates a TS/upstream transcript line that lacks the field.
+        let ts_shaped_line = serde_json::json!({
+            "id": "00000000-0000-0000-0000-000000000001",
+            "session_id": session_id,
+            "timestamp": "2024-01-02T03:04:05Z",
+            "payload": { "type": "user_text", "content": "hello" }
+        });
+
+        // A syntactically valid but semantically incomplete line that follows
+        // the bad one — its presence makes the bad line non-terminal, so the
+        // corrupt-trailing-line recovery does NOT apply, and serde fails hard.
+        let sentinel_line = serde_json::json!({
+            "schema_version": 1,
+            "id": "00000000-0000-0000-0000-000000000002",
+            "session_id": session_id,
+            "timestamp": "2024-01-02T03:04:06Z",
+            "payload": { "type": "user_text", "content": "sentinel" }
+        });
+
+        // Write directly to the transcript file, bypassing append_message so
+        // we can produce a line the encoder would never emit.
+        store.ensure_layout().expect("ensure layout");
+        let path = store.paths().transcript_path(session_id);
+        let mut file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+            .expect("open transcript");
+        serde_json::to_writer(&mut file, &ts_shaped_line).expect("write ts-shaped line");
+        file.write_all(b"\n").expect("newline after bad line");
+        serde_json::to_writer(&mut file, &sentinel_line).expect("write sentinel line");
+        file.write_all(b"\n").expect("newline after sentinel");
+
+        // The bad (non-terminal) line fails serde on a required field.
+        let error = store
+            .load_session(session_id)
+            .expect_err("missing schema_version must fail deserialization");
+
+        // The error is a serde/JSON parse error, not our WonderError::validation.
+        assert!(
+            error.to_string().contains("missing field")
+                || error.to_string().contains("schema_version")
+                || error.to_string().contains("EOF")
+                || error.to_string().contains("expected"),
+            "unexpected error kind: {error}"
+        );
     }
 
     #[test]

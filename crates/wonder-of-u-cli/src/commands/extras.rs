@@ -412,7 +412,11 @@ impl OnboardingCommand {
     }
 }
 
-/// Represents teleport command
+/// Lists local sessions; remote teleport is not available in this Rust port.
+///
+/// When `FeatureFlag::RemoteTriggers` is enabled in a future release this
+/// command will gain actual remote-session switching.  Until then it is a
+/// local-first session browser only.
 pub struct TeleportCommand;
 
 impl TeleportCommand {
@@ -425,13 +429,17 @@ impl TeleportCommand {
     pub fn command_spec() -> CommandSpec {
         CommandSpec::new(
             "teleport",
-            "Teleport to a remote Claude Code session",
+            "List local sessions (remote teleport: not available in this build)",
             CommandKind::Local,
         )
     }
 }
 
-/// Represents remote env command
+/// Shows stored remote-env config; transport is inert in this local-first build.
+///
+/// Config values are preserved for forward compatibility with a future release
+/// gated on `FeatureFlag::RemoteTriggers`; they do not drive any live
+/// connection today.
 pub struct RemoteEnvCommand;
 
 impl RemoteEnvCommand {
@@ -444,13 +452,17 @@ impl RemoteEnvCommand {
     pub fn command_spec() -> CommandSpec {
         CommandSpec::new(
             "remote-env",
-            "Configure the default remote environment for teleport sessions",
+            "Show stored remote-env config (transport inactive; remote sessions unavailable)",
             CommandKind::Local,
         )
     }
 }
 
-/// Represents remote setup command
+/// Stores remote-setup config for forward compatibility; no live transport.
+///
+/// Config is persisted so it survives a future upgrade that enables
+/// `FeatureFlag::RemoteTriggers`, but it does not activate any remote
+/// session today.
 pub struct RemoteSetupCommand;
 
 impl RemoteSetupCommand {
@@ -471,7 +483,10 @@ impl RemoteSetupCommand {
     }
 }
 
-/// Represents bridge kick command
+/// No-op stub; the remote bridge transport is not implemented in this build.
+///
+/// When `FeatureFlag::RemoteTriggers` is available this command will attempt
+/// an actual bridge reconnect.  For now it reports unavailability only.
 pub struct BridgeKickCommand;
 
 impl BridgeKickCommand {
@@ -513,7 +528,14 @@ impl SandboxToggleCommand {
     }
 }
 
-/// Represents ultraplan command
+/// Enables ultraplan flag for local planning guidance only.
+///
+/// Cloud-based multi-agent exploration requires a Claude.ai/cloud backend
+/// that is not available in this Rust local-first build.  The flag is stored
+/// so local planning prompts can include extra decomposition guidance; it does
+/// not activate any remote agent today.
+///
+/// Full cloud multi-agent support is gated on `FeatureFlag::RemoteTriggers`.
 pub struct UltraplanCommand;
 
 impl UltraplanCommand {
@@ -526,7 +548,7 @@ impl UltraplanCommand {
     pub fn command_spec() -> CommandSpec {
         CommandSpec::new(
             "ultraplan",
-            "Launch a multi-agent remote exploration (requires Claude.ai)",
+            "Enable extended local planning guidance (cloud multi-agent: not available)",
             CommandKind::Local,
         )
     }
@@ -1844,14 +1866,19 @@ fn render_stickers() -> &'static str {
 
 fn render_teleport(storage_dir: Option<&Path>, session_id: SessionId) -> Result<String> {
     let Some(storage_dir) = storage_dir else {
-        return Ok("Teleport: storage directory unavailable.".into());
+        return Ok(
+            "Local sessions: storage directory unavailable. remote teleport: not available.".into(),
+        );
     };
     let store = TranscriptStore::new(storage_dir);
     let metadata = store.list_metadata()?;
     if metadata.is_empty() {
-        return Ok("Teleport: no stored sessions found.".into());
+        return Ok(
+            "Local sessions: none found. remote teleport: not available in this build.".into(),
+        );
     }
-    let mut lines = vec!["Teleport sessions".into()];
+    // Remote teleport is not implemented; this lists local sessions only.
+    let mut lines = vec!["Local sessions (remote teleport: not available in this build)".into()];
     for entry in metadata.into_iter().take(10) {
         let snapshot = store.read_snapshot_if_exists(entry.session_id)?.is_some();
         let status = if entry.session_id == session_id {
@@ -1872,24 +1899,35 @@ fn render_teleport(storage_dir: Option<&Path>, session_id: SessionId) -> Result<
 fn render_remote_env(storage_dir: Option<&Path>) -> Result<String> {
     let config = read_extras_config(storage_dir)?;
     Ok(match config.remote {
+        // Config was saved for forward compatibility but the transport is inert.
         Some(remote) => format!(
-            "Remote environment\nhost={}\nport={}\nauth={}",
+            "Remote environment (transport inactive — remote sessions not available in this build)\nhost={}\nport={}\nauth={}\nstatus=config stored for future use only\nSee /status for build capabilities.",
             remote.host, remote.port, remote.auth
         ),
-        None => "Remote environment not configured.\nUse /remote-setup <host[:port]> [auth]".into(),
+        None => concat!(
+            "Remote sessions are not available in this Rust local-first build.\n",
+            "No remote-env config is stored.\n",
+            "See /status for build capabilities."
+        )
+        .into(),
     })
 }
 
 fn remote_setup(storage_dir: Option<&Path>, args: &str) -> Result<String> {
+    // Config is persisted for forward compatibility even though remote session
+    // transport is not implemented in this Rust local-first build.
     if args.is_empty() {
-        return render_remote_env(storage_dir)
-            .map(|current| format!("{current}\nusage=/remote-setup example.com:22 ssh"));
+        return render_remote_env(storage_dir).map(|current| {
+            format!(
+                "{current}\nusage=/remote-setup example.com:22 ssh\nNote: remote session transport is not implemented; config saved for future use only."
+            )
+        });
     }
     let mut config = read_extras_config(storage_dir)?;
     if args.eq_ignore_ascii_case("clear") {
         config.remote = None;
         write_extras_config(storage_dir, &config)?;
-        return Ok("Remote environment cleared.".into());
+        return Ok("Remote environment config cleared.\nNote: remote session transport is not implemented.".into());
     }
     let mut parts = args.split_whitespace();
     let host_port = parts.next().unwrap_or_default();
@@ -1900,18 +1938,22 @@ fn remote_setup(storage_dir: Option<&Path>, args: &str) -> Result<String> {
     };
     config.remote = Some(RemoteEnvConfig { host, port, auth });
     write_extras_config(storage_dir, &config)?;
-    render_remote_env(storage_dir)
+    // Append the honesty note after the current-config display.
+    let env_view = render_remote_env(storage_dir)?;
+    Ok(format!(
+        "{env_view}\nremote session transport is not implemented\nconfig saved for future use only"
+    ))
 }
 
-fn render_bridge_kick(storage_dir: Option<&Path>) -> Result<String> {
-    let config = read_extras_config(storage_dir)?;
-    Ok(match config.remote {
-        Some(remote) => format!(
-            "Bridge status\nremote_target={}:{}\nstatus=restart required\ninstructions=restart the bridge process, then retry /teleport",
-            remote.host, remote.port
-        ),
-        None => "Bridge status\nstatus=not configured\ninstructions=run /remote-setup first".into(),
-    })
+fn render_bridge_kick(_storage_dir: Option<&Path>) -> Result<String> {
+    // The remote bridge transport is not implemented in this Rust local-first
+    // build; this command is a no-op regardless of stored config.
+    // When FeatureFlag::RemoteTriggers is enabled this will attempt a real
+    // bridge reconnect.
+    Ok(
+        "Bridge status\nstatus=not available\nreason=remote bridge transport is not implemented in this build\nSee /status for build capabilities."
+            .into(),
+    )
 }
 
 fn toggle_sandbox(storage_dir: Option<&Path>, args: &str) -> Result<String> {
@@ -1935,10 +1977,18 @@ fn toggle_sandbox(storage_dir: Option<&Path>, args: &str) -> Result<String> {
 }
 
 fn enable_ultraplan(storage_dir: Option<&Path>) -> Result<String> {
+    // Flag is stored so local planning prompts apply extra decomposition
+    // guidance.  Cloud-based multi-agent exploration requires a
+    // Claude.ai/cloud backend that is not available in this build;
+    // FeatureFlag::RemoteTriggers will gate that when implemented.
     let mut config = read_extras_config(storage_dir)?;
     config.ultraplan_enabled = true;
     write_extras_config(storage_dir, &config)?;
-    Ok("Ultraplan enabled.\nGuidance=spend extra time decomposing the task, enumerate risks, and checkpoint before implementation.".into())
+    Ok(concat!(
+        "Ultraplan flag enabled (local planning guidance only).\n",
+        "cloud-based multi-agent exploration requires Claude.ai/cloud backend: not available in this build.\n",
+        "flag stored for local planning guidance only — extra decomposition, risk enumeration, and checkpointing hints are active."
+    ).into())
 }
 
 fn render_thinkback(storage_dir: Option<&Path>, session_id: SessionId) -> Result<String> {

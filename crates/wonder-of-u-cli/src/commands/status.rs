@@ -443,6 +443,14 @@ impl Command for StatusCommand {
                     "team_memory_sync_cloud_attempted={}",
                     sync_status.team_memory_sync.cloud_attempted
                 ));
+                lines.push(format!(
+                    "analytics={}",
+                    sync_status.analytics.status.label()
+                ));
+                lines.push(format!(
+                    "experiments={}",
+                    sync_status.experiments.status.label()
+                ));
                 let mcp_store = McpConfigStore::new(storage_dir.clone());
                 let mcp_config = mcp_store.read()?;
                 let mcp_report =
