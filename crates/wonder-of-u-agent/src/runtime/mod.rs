@@ -507,6 +507,8 @@ impl ProviderRuntime {
                         | WireProtocol::Copilot
                         | WireProtocol::BedrockAnthropic
                         | WireProtocol::AzureOpenAi
+                        | WireProtocol::GeminiNative
+                        | WireProtocol::VertexGemini
                 )
             })
             .unwrap_or(false)
@@ -596,8 +598,16 @@ impl ProviderRuntime {
                 let http_response = self.transport.execute_stream(&http_request)?;
                 azure::parse_azure_stream_response(resolved, http_response, &mut on_text_delta)
             }
-            WireProtocol::GeminiNative => Err(gemini::gemini_streaming_unsupported()),
-            WireProtocol::VertexGemini => Err(vertex::vertex_streaming_unsupported()),
+            WireProtocol::GeminiNative => {
+                let http_request = gemini::build_gemini_stream_request(resolved, request)?;
+                let http_response = self.transport.execute_stream(&http_request)?;
+                gemini::parse_gemini_stream_response(resolved, http_response, &mut on_text_delta)
+            }
+            WireProtocol::VertexGemini => {
+                let http_request = vertex::build_vertex_stream_request(resolved, request)?;
+                let http_response = self.transport.execute_stream(&http_request)?;
+                vertex::parse_vertex_stream_response(resolved, http_response, &mut on_text_delta)
+            }
             proto => Err(WonderError::validation(format!(
                 "wire protocol `{proto:?}` streaming is not supported"
             ))),
@@ -2608,16 +2618,71 @@ mod tests {
     }
 
     #[test]
-    fn gemini_streaming_returns_validation_error() {
-        let runtime = ProviderRuntime::with_transport(Arc::new(RecordingTransport::default()));
+    fn gemini_streaming_runtime_builds_stream_request_and_collects_deltas() {
+        // Each SSE event carries the same generateContent JSON shape.
+        let transport = RecordingTransport::with_stream_body(concat!(
+            "data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"Hello \"}],\"role\":\"model\"}}]}\n\n",
+            "data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"Gemini\"}],\"role\":\"model\"},\"finishReason\":\"STOP\"}],",
+            "\"usageMetadata\":{\"promptTokenCount\":5,\"candidatesTokenCount\":2}}\n\n",
+        ));
+        let runtime = ProviderRuntime::with_transport(transport.clone() as Arc<dyn HttpTransport>);
+        let resolved = resolved_gemini_provider(Some("gemini-2.0-flash"));
+        let mut streamed = String::new();
+
+        let response = runtime
+            .complete_streaming(&resolved, &CompletionRequest::new("Say hi"), |delta| {
+                streamed.push_str(delta);
+                Ok(())
+            })
+            .expect("gemini stream");
+
+        let recorded = transport.take_request();
+        assert_eq!(recorded.method, "POST");
+        // Must use streamGenerateContent action.
+        assert!(
+            recorded.url.contains(":streamGenerateContent"),
+            "URL should use streamGenerateContent: {}",
+            recorded.url
+        );
+        // Must request SSE format.
+        assert!(
+            recorded.url.contains("alt=sse"),
+            "URL should include alt=sse: {}",
+            recorded.url
+        );
+        // API key in query param, no Authorization header.
+        assert!(
+            recorded.url.contains("key=gemini-secret"),
+            "URL should include API key: {}",
+            recorded.url
+        );
+        assert!(
+            !recorded.headers.contains_key("authorization"),
+            "Gemini native must not use Authorization header"
+        );
+
+        assert_eq!(streamed, "Hello Gemini");
+        assert_eq!(response.output_text, "Hello Gemini");
+        assert_eq!(response.stop_reason.as_deref(), Some("STOP"));
+        assert_eq!(response.usage.input_tokens, 5);
+        assert_eq!(response.usage.output_tokens, 2);
+    }
+
+    #[test]
+    fn gemini_streaming_returns_empty_text_error() {
+        // An SSE stream with no text parts should yield a validation error.
+        let transport = RecordingTransport::with_stream_body(
+            "data: {\"candidates\":[{\"content\":{\"parts\":[]}}]}\n\n",
+        );
+        let runtime = ProviderRuntime::with_transport(transport.clone() as Arc<dyn HttpTransport>);
         let resolved = resolved_gemini_provider(None);
 
         let err = runtime
             .complete_streaming(&resolved, &CompletionRequest::new("ping"), |_| Ok(()))
-            .expect_err("gemini streaming should fail");
+            .expect_err("empty stream should fail");
         assert!(
-            err.to_string().contains("gemini_native"),
-            "error should mention protocol: {err}"
+            err.to_string().contains("text content"),
+            "error should mention missing text: {err}"
         );
     }
 
@@ -2731,17 +2796,51 @@ mod tests {
     }
 
     #[test]
-    fn vertex_streaming_returns_validation_error() {
-        let runtime = ProviderRuntime::with_transport(Arc::new(RecordingTransport::default()));
-        let resolved = resolved_vertex_provider(None);
+    fn vertex_streaming_runtime_builds_stream_request_and_collects_deltas() {
+        let transport = RecordingTransport::with_stream_body(concat!(
+            "data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"Hello \"}],\"role\":\"model\"}}]}\n\n",
+            "data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"Vertex\"}],\"role\":\"model\"},\"finishReason\":\"STOP\"}],",
+            "\"usageMetadata\":{\"promptTokenCount\":7,\"candidatesTokenCount\":3}}\n\n",
+        ));
+        let runtime = ProviderRuntime::with_transport(transport.clone() as Arc<dyn HttpTransport>);
+        let resolved = resolved_vertex_provider(Some("gemini-2.0-flash"));
+        let mut streamed = String::new();
 
-        let err = runtime
-            .complete_streaming(&resolved, &CompletionRequest::new("ping"), |_| Ok(()))
-            .expect_err("vertex streaming should fail");
+        let response = runtime
+            .complete_streaming(&resolved, &CompletionRequest::new("Say hi"), |delta| {
+                streamed.push_str(delta);
+                Ok(())
+            })
+            .expect("vertex stream");
+
+        let recorded = transport.take_request();
+        assert_eq!(recorded.method, "POST");
+        // Must use streamGenerateContent action.
         assert!(
-            err.to_string().contains("vertex_gemini"),
-            "error should mention protocol: {err}"
+            recorded.url.contains(":streamGenerateContent"),
+            "URL should use streamGenerateContent: {}",
+            recorded.url
         );
+        // Must be Vertex AI endpoint, not Gemini REST.
+        assert!(
+            recorded
+                .url
+                .contains("us-central1-aiplatform.googleapis.com"),
+            "URL should be Vertex endpoint: {}",
+            recorded.url
+        );
+        // Bearer auth header.
+        assert_eq!(
+            recorded.headers.get("authorization").map(String::as_str),
+            Some("Bearer gcp-oauth-token"),
+            "Vertex stream must use Bearer auth"
+        );
+
+        assert_eq!(streamed, "Hello Vertex");
+        assert_eq!(response.output_text, "Hello Vertex");
+        assert_eq!(response.stop_reason.as_deref(), Some("STOP"));
+        assert_eq!(response.usage.input_tokens, 7);
+        assert_eq!(response.usage.output_tokens, 3);
     }
 
     // ─── Azure OpenAI ─────────────────────────────────────────────────────────
@@ -2890,11 +2989,14 @@ mod tests {
     }
 
     #[test]
-    fn gemini_and_vertex_do_not_support_streaming_or_tool_use() {
+    fn gemini_and_vertex_support_streaming_but_not_tool_use() {
         let runtime = ProviderRuntime::new();
-        assert!(!runtime.supports_streaming("gemini"));
+        // Streaming is now supported for both native Gemini protocols.
+        assert!(runtime.supports_streaming("gemini"));
+        assert!(runtime.supports_streaming("vertex"));
+        // Tool-use remains unsupported (function-calling schema translation not
+        // yet implemented for these protocols).
         assert!(!runtime.supports_tool_use("gemini"));
-        assert!(!runtime.supports_streaming("vertex"));
         assert!(!runtime.supports_tool_use("vertex"));
     }
 
