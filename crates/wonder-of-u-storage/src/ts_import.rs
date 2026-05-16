@@ -3,8 +3,8 @@
 //! Parses TS-shaped JSONL records produced by the upstream Claude Code TypeScript
 //! client (`~/.claude/projects/*/`) and converts them to Rust [`MessageEnvelope`]
 //! schema. This is a **one-shot migration path only**: the normal
-//! [`TranscriptStore::load_session`] path is never touched and continues to reject
-//! any record that lacks a valid `schema_version: 1` Rust envelope.
+//! [`TranscriptStore::load_session`] path does not convert TS records into Rust
+//! envelopes and still rejects explicit Rust schema-version mismatches.
 //!
 //! # Supported conversions
 //!

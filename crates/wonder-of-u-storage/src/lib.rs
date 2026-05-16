@@ -37,6 +37,7 @@ use std::{
 };
 
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use sha2::{Digest, Sha256};
 use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 use wonder_of_u_core::{
@@ -66,6 +67,31 @@ fn ensure_supported_schema(kind: &str, version: u16) -> Result<()> {
     Err(WonderError::validation(format!(
         "unsupported {kind} schema version: {version}"
     )))
+}
+
+fn transcript_parse_warning(
+    line: usize,
+    error: impl std::fmt::Display,
+    trailing: bool,
+) -> TranscriptWarning {
+    let message = if trailing {
+        format!("ignored corrupt trailing transcript line: {error}")
+    } else {
+        format!("ignored corrupt transcript line: {error}")
+    };
+
+    TranscriptWarning { line, message }
+}
+
+fn ensure_supported_transcript_schema(value: &Value) -> Result<()> {
+    let Some(schema_version) = value.get("schema_version") else {
+        return Ok(());
+    };
+    let Ok(schema_version) = serde_json::from_value::<u16>(schema_version.clone()) else {
+        return Ok(());
+    };
+
+    ensure_supported_schema("message", schema_version)
 }
 
 fn write_json_atomically<T: Serialize>(path: &Path, value: &T) -> Result<()> {
@@ -338,24 +364,38 @@ impl TranscriptStore {
         let mut warnings = Vec::new();
 
         for (index, line) in lines.iter().enumerate() {
+            let line_no = index + 1;
             if line.trim().is_empty() {
                 continue;
             }
 
-            match serde_json::from_str::<MessageEnvelope>(line) {
-                Ok(message) => {
-                    ensure_supported_schema("message", message.schema_version)?;
-                    messages.push(self.expand_paste_reference(message)?);
+            let value = match serde_json::from_str::<Value>(line) {
+                Ok(value) => value,
+                Err(error) => {
+                    warnings.push(transcript_parse_warning(
+                        line_no,
+                        error,
+                        line_no == lines.len(),
+                    ));
+                    continue;
                 }
-                Err(error) if index + 1 == lines.len() => {
-                    warnings.push(TranscriptWarning {
-                        line: index + 1,
-                        message: format!("ignored corrupt trailing transcript line: {error}"),
-                    });
-                    break;
+            };
+
+            ensure_supported_transcript_schema(&value)?;
+
+            let message = match serde_json::from_value::<MessageEnvelope>(value) {
+                Ok(message) => message,
+                Err(error) => {
+                    warnings.push(transcript_parse_warning(
+                        line_no,
+                        error,
+                        line_no == lines.len(),
+                    ));
+                    continue;
                 }
-                Err(error) => return Err(WonderError::Json(error)),
-            }
+            };
+
+            messages.push(self.expand_paste_reference(message)?);
         }
 
         Ok(LoadedTranscript { messages, warnings })
@@ -1724,6 +1764,58 @@ mod tests {
     }
 
     #[test]
+    fn transcript_recovers_corrupt_middle_line_and_preserves_valid_tail() {
+        let dir = temp_dir();
+        let store = TranscriptStore::new(dir.path());
+        let session_id = SessionId::new();
+        let head = transcript_message(
+            session_id,
+            MessagePayload::UserText {
+                content: "before".into(),
+            },
+        );
+        let tail = transcript_message(
+            session_id,
+            MessagePayload::AssistantText {
+                content: "after".into(),
+            },
+        );
+
+        store.append_message(&head).expect("append head");
+        store.ensure_layout().expect("ensure layout");
+
+        let path = store.paths().transcript_path(session_id);
+        let mut file = OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .expect("open transcript");
+        serde_json::to_writer(
+            &mut file,
+            &serde_json::json!({
+                "id": "00000000-0000-0000-0000-000000000001",
+                "session_id": session_id,
+                "timestamp": "2024-01-02T03:04:05Z",
+                "payload": { "type": "user_text", "content": "ignored" }
+            }),
+        )
+        .expect("write malformed middle line");
+        file.write_all(b"\n").expect("newline after malformed line");
+        serde_json::to_writer(&mut file, &tail).expect("write tail");
+        file.write_all(b"\n").expect("newline after tail");
+
+        let loaded = store.load_session(session_id).expect("load session");
+
+        assert_eq!(loaded.messages, vec![head, tail]);
+        assert_eq!(loaded.warnings.len(), 1);
+        assert_eq!(loaded.warnings[0].line, 2);
+        assert!(
+            loaded.warnings[0]
+                .message
+                .contains("ignored corrupt transcript line")
+        );
+    }
+
+    #[test]
     fn load_rejects_unsupported_message_schema_version() {
         let dir = unique_test_dir("storage-message-schema");
         let store = TranscriptStore::new(&dir);
@@ -1926,19 +2018,11 @@ mod tests {
         );
     }
 
-    /// Documents the schema compatibility boundary: a transcript line that
-    /// omits `schema_version` (as upstream TS-shaped transcripts might) fails
-    /// at serde deserialization before our version-guard can run, because
-    /// `MessageEnvelope.schema_version` has no `#[serde(default)]`.
-    ///
-    /// Note: the corrupt-trailing-line recovery catches parse errors *only* for
-    /// the final line in a file.  A bad line anywhere else causes a hard error,
-    /// which is what we assert here by appending a valid line after the bad one.
-    ///
-    /// This is intentional — the Rust schema is strict.  Import shims or
-    /// format converters live outside this crate.
+    /// Documents the recovery boundary: malformed transcript lines are skipped,
+    /// but only lines with a parseable Rust schema version reach the explicit
+    /// schema-version guard.
     #[test]
-    fn transcript_line_missing_schema_version_fails_at_serde_before_version_check() {
+    fn transcript_line_missing_schema_version_is_skipped_before_version_check() {
         let dir = temp_dir();
         let store = TranscriptStore::new(dir.path());
         let session_id = SessionId::new();
@@ -1952,16 +2036,14 @@ mod tests {
             "payload": { "type": "user_text", "content": "hello" }
         });
 
-        // A syntactically valid but semantically incomplete line that follows
-        // the bad one — its presence makes the bad line non-terminal, so the
-        // corrupt-trailing-line recovery does NOT apply, and serde fails hard.
-        let sentinel_line = serde_json::json!({
-            "schema_version": 1,
-            "id": "00000000-0000-0000-0000-000000000002",
-            "session_id": session_id,
-            "timestamp": "2024-01-02T03:04:06Z",
-            "payload": { "type": "user_text", "content": "sentinel" }
-        });
+        // A valid Rust transcript line that proves recovery continues past the
+        // malformed middle entry.
+        let sentinel = transcript_message(
+            session_id,
+            MessagePayload::UserText {
+                content: "sentinel".into(),
+            },
+        );
 
         // Write directly to the transcript file, bypassing append_message so
         // we can produce a line the encoder would never emit.
@@ -1974,21 +2056,18 @@ mod tests {
             .expect("open transcript");
         serde_json::to_writer(&mut file, &ts_shaped_line).expect("write ts-shaped line");
         file.write_all(b"\n").expect("newline after bad line");
-        serde_json::to_writer(&mut file, &sentinel_line).expect("write sentinel line");
+        serde_json::to_writer(&mut file, &sentinel).expect("write sentinel line");
         file.write_all(b"\n").expect("newline after sentinel");
 
-        // The bad (non-terminal) line fails serde on a required field.
-        let error = store
-            .load_session(session_id)
-            .expect_err("missing schema_version must fail deserialization");
+        let loaded = store.load_session(session_id).expect("load session");
 
-        // The error is a serde/JSON parse error, not our WonderError::validation.
+        assert_eq!(loaded.messages, vec![sentinel]);
+        assert_eq!(loaded.warnings.len(), 1);
+        assert_eq!(loaded.warnings[0].line, 1);
         assert!(
-            error.to_string().contains("missing field")
-                || error.to_string().contains("schema_version")
-                || error.to_string().contains("EOF")
-                || error.to_string().contains("expected"),
-            "unexpected error kind: {error}"
+            loaded.warnings[0]
+                .message
+                .contains("ignored corrupt transcript line")
         );
     }
 
