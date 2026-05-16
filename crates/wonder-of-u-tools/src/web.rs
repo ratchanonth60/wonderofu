@@ -68,11 +68,8 @@ impl WebFetchInput {
                 "web_fetch max_length must be greater than zero",
             ));
         }
-        if self.prompt.is_some() {
-            return Err(WonderError::validation(
-                "web_fetch prompt processing is not supported in wonder-of-u-tools",
-            ));
-        }
+        // `prompt` is accepted at validation time but returns a structured
+        // unsupported result from execute() — see WebFetchTool::execute.
         Ok(())
     }
 }
@@ -105,21 +102,20 @@ impl WebSearchInput {
             for domain in domains {
                 require_non_empty_text("web_search", "allowed_domains", domain)?;
             }
-            if !domains.is_empty() {
-                return Err(WonderError::validation(
-                    "web_search allowed_domains is not supported in wonder-of-u-tools",
-                ));
-            }
         }
         if let Some(domains) = &self.blocked_domains {
             for domain in domains {
                 require_non_empty_text("web_search", "blocked_domains", domain)?;
             }
-            if !domains.is_empty() {
-                return Err(WonderError::validation(
-                    "web_search blocked_domains is not supported in wonder-of-u-tools",
-                ));
-            }
+        }
+        // Matches upstream: cannot specify both simultaneously.
+        if self.allowed_domains.as_ref().is_some_and(|d| !d.is_empty())
+            && self.blocked_domains.as_ref().is_some_and(|d| !d.is_empty())
+        {
+            return Err(WonderError::validation(
+                "web_search cannot specify both allowed_domains and blocked_domains \
+                 in the same request",
+            ));
         }
         Ok(())
     }
@@ -140,20 +136,22 @@ impl Tool for WebFetchTool {
     fn spec(&self) -> ToolSpec {
         let mut spec = base_spec("web_fetch", "Fetch a web page as plain text", ToolKind::Web)
             .with_input_schema(
-            ToolSchema::object()
-                .property("url", ToolSchema::string("url to fetch"))
-                .property(
-                    "max_length",
-                    ToolSchema::integer("optional maximum number of characters to return"),
-                )
-                .property(
-                    "prompt",
-                    ToolSchema::string(
-                        "source-compatible prompt field; currently unsupported in the Rust runtime",
-                    ),
-                )
-                .required("url"),
-        );
+                ToolSchema::object()
+                    .property("url", ToolSchema::string("url to fetch"))
+                    .property(
+                        "max_length",
+                        ToolSchema::integer("optional maximum number of characters to return"),
+                    )
+                    .property(
+                        "prompt",
+                        ToolSchema::string(
+                            "source-compatible field: a prompt to apply to the fetched content; \
+                         model-layer processing is not available at the local tool layer — \
+                         a structured unsupported result is returned when this field is set",
+                        ),
+                    )
+                    .required("url"),
+            );
         spec.aliases.push("WebFetch".into());
         spec.read_only = true;
         spec.concurrency_safe = true;
@@ -198,6 +196,24 @@ impl Tool for WebFetchTool {
         let input = parse_input::<WebFetchInput>("web_fetch", &input)?;
         input.validate()?;
 
+        // prompt requires model-layer processing unavailable at the local tool layer.
+        // Return a structured failure instead of a validation error so callers can
+        // distinguish unsupported-feature responses from genuine input mistakes.
+        if input.prompt.is_some() {
+            let mut result = ToolResult::failure(
+                use_id,
+                "web_fetch prompt processing is not supported in wonder-of-u-tools: \
+                 applying a prompt to fetched content requires the model API runtime, \
+                 which is not available at the local tool layer",
+            );
+            result.metadata = json!({
+                "supported": false,
+                "unsupported_field": "prompt",
+                "reason": "model-layer content processing requires the API runtime",
+            });
+            return Ok(result);
+        }
+
         match fetch_text(&input) {
             Ok(content) => Ok(ToolResult::success(use_id, content)),
             Err(error) => Ok(ToolResult::failure(
@@ -222,7 +238,9 @@ impl Tool for WebSearchTool {
                     "allowed_domains",
                     json!({
                         "type": "array",
-                        "description": "source-compatible domain allowlist; currently unsupported in the Rust runtime",
+                        "description": "restrict results to URLs whose host matches one of these \
+                                        domains (subdomains included); mutually exclusive with \
+                                        blocked_domains",
                         "items": { "type": "string" }
                     }),
                 )
@@ -230,7 +248,9 @@ impl Tool for WebSearchTool {
                     "blocked_domains",
                     json!({
                         "type": "array",
-                        "description": "source-compatible domain denylist; currently unsupported in the Rust runtime",
+                        "description": "exclude results whose host matches any of these domains \
+                                        (subdomains included); mutually exclusive with \
+                                        allowed_domains",
                         "items": { "type": "string" }
                     }),
                 )
@@ -315,7 +335,7 @@ fn serper_search(api_key: &str, input: &WebSearchInput) -> Result<String> {
     let body = response.into_string().map_err(|error| {
         WonderError::validation(format!("invalid serper response body: {error}"))
     })?;
-    format_serper_results(&body, input.num_results())
+    format_serper_results(&body, input)
 }
 
 fn brave_search(api_key: &str, input: &WebSearchInput) -> Result<String> {
@@ -328,55 +348,118 @@ fn brave_search(api_key: &str, input: &WebSearchInput) -> Result<String> {
     let body = response.into_string().map_err(|error| {
         WonderError::validation(format!("invalid brave response body: {error}"))
     })?;
-    format_brave_results(&body, input.num_results())
+    format_brave_results(&body, input)
 }
 
-fn format_serper_results(body: &str, limit: u8) -> Result<String> {
+fn format_serper_results(body: &str, input: &WebSearchInput) -> Result<String> {
     let value: Value = serde_json::from_str(body)?;
     let mut lines = Vec::new();
-    for (index, result) in value
+    for result in value
         .get("organic")
         .and_then(Value::as_array)
         .into_iter()
         .flatten()
-        .take(limit as usize)
-        .enumerate()
     {
+        if lines.len() >= input.num_results() as usize {
+            break;
+        }
+        let link = result.get("link").and_then(Value::as_str).unwrap_or("-");
+        if !result_url_passes_domain_filter(link, input) {
+            continue;
+        }
         let title = result
             .get("title")
             .and_then(Value::as_str)
             .unwrap_or("untitled");
-        let link = result.get("link").and_then(Value::as_str).unwrap_or("-");
         let snippet = result.get("snippet").and_then(Value::as_str).unwrap_or("");
-        lines.push(format!("{}. {}\n{}\n{}", index + 1, title, link, snippet));
+        lines.push(format!(
+            "{}. {}\n{}\n{}",
+            lines.len() + 1,
+            title,
+            link,
+            snippet
+        ));
     }
     Ok(render_search_results(lines))
 }
 
-fn format_brave_results(body: &str, limit: u8) -> Result<String> {
+fn format_brave_results(body: &str, input: &WebSearchInput) -> Result<String> {
     let value: Value = serde_json::from_str(body)?;
     let mut lines = Vec::new();
-    for (index, result) in value
+    for result in value
         .get("web")
         .and_then(|value| value.get("results"))
         .and_then(Value::as_array)
         .into_iter()
         .flatten()
-        .take(limit as usize)
-        .enumerate()
     {
+        if lines.len() >= input.num_results() as usize {
+            break;
+        }
+        let link = result.get("url").and_then(Value::as_str).unwrap_or("-");
+        if !result_url_passes_domain_filter(link, input) {
+            continue;
+        }
         let title = result
             .get("title")
             .and_then(Value::as_str)
             .unwrap_or("untitled");
-        let link = result.get("url").and_then(Value::as_str).unwrap_or("-");
         let snippet = result
             .get("description")
             .and_then(Value::as_str)
             .unwrap_or("");
-        lines.push(format!("{}. {}\n{}\n{}", index + 1, title, link, snippet));
+        lines.push(format!(
+            "{}. {}\n{}\n{}",
+            lines.len() + 1,
+            title,
+            link,
+            snippet
+        ));
     }
     Ok(render_search_results(lines))
+}
+
+/// Returns `true` when `url_host` matches the `filter_domain`.
+///
+/// Matching is case-insensitive and strips a leading `www.` from both sides so
+/// that `rust-lang.org` matches `www.rust-lang.org`, `docs.rust-lang.org`, etc.
+fn domain_matches_filter(url_host: &str, filter_domain: &str) -> bool {
+    let h = url_host.to_ascii_lowercase();
+    let d = filter_domain.trim().to_ascii_lowercase();
+    let h = h.trim_start_matches("www.");
+    let d = d.trim_start_matches("www.");
+    if d.is_empty() {
+        return false;
+    }
+    h == d || h.ends_with(&format!(".{d}"))
+}
+
+/// Applies the `allowed_domains` / `blocked_domains` filter from `input` to
+/// `url`.  Returns `true` if the result should be included in the output.
+///
+/// Semantics match the upstream WebSearchTool:
+/// - If `allowed_domains` is non-empty, only URLs whose host matches are kept.
+/// - If `blocked_domains` is non-empty, URLs whose host matches are removed.
+/// - Empty / absent lists are a no-op (all URLs pass).
+fn result_url_passes_domain_filter(url: &str, input: &WebSearchInput) -> bool {
+    let Some((host, _)) = parse_url_host_path(url) else {
+        // Unparseable URL: keep it to avoid silently dropping results.
+        return true;
+    };
+
+    if let Some(allowed) = input.allowed_domains.as_deref().filter(|d| !d.is_empty()) {
+        return allowed
+            .iter()
+            .any(|domain| domain_matches_filter(&host, domain));
+    }
+
+    if let Some(blocked) = input.blocked_domains.as_deref().filter(|d| !d.is_empty()) {
+        return !blocked
+            .iter()
+            .any(|domain| domain_matches_filter(&host, domain));
+    }
+
+    true
 }
 
 fn render_search_results(lines: Vec<String>) -> String {
@@ -523,16 +606,46 @@ mod tests {
     }
 
     #[test]
-    fn web_fetch_rejects_source_prompt_parameter() {
+    fn web_fetch_prompt_returns_structured_unsupported_result() {
+        // When `prompt` is supplied, execute() must return a structured failure
+        // (not a validation error) so callers can distinguish unsupported-feature
+        // responses from genuine input mistakes.
+        use futures::executor::block_on;
+        use wonder_of_u_core::ToolUseId;
+
         let tool = WebFetchTool;
-        let error = tool
-            .validate_input(&json!({
+        let result = block_on(tool.execute(
+            tool_context(PathBuf::from("/workspace")),
+            ToolUseId::new(),
+            serde_json::json!({
                 "url": "https://example.com",
                 "prompt": "Summarize this page",
-            }))
-            .expect_err("unsupported prompt");
+            }),
+        ))
+        .expect("execute should not return Err");
 
-        assert!(error.to_string().contains("prompt"));
+        assert!(!result.success, "expected failure result");
+        assert!(
+            result.content.contains("prompt"),
+            "content should mention `prompt`"
+        );
+        assert_eq!(result.metadata["supported"], serde_json::json!(false));
+        assert_eq!(
+            result.metadata["unsupported_field"],
+            serde_json::json!("prompt")
+        );
+    }
+
+    #[test]
+    fn web_fetch_validation_accepts_prompt_field() {
+        // prompt no longer fails at validation time; the structured error is
+        // deferred to execute() so the caller sees a proper ToolResult.
+        let tool = WebFetchTool;
+        tool.validate_input(&serde_json::json!({
+            "url": "https://example.com",
+            "prompt": "Summarize this page",
+        }))
+        .expect("prompt should pass validation");
     }
 
     #[test]
@@ -591,16 +704,92 @@ mod tests {
     }
 
     #[test]
-    fn web_search_rejects_source_domain_filters() {
+    fn web_search_rejects_both_domain_filters_simultaneously() {
+        // Matches upstream: cannot specify both allowed_domains and blocked_domains.
         let tool = WebSearchTool;
         let error = tool
             .validate_input(&json!({
                 "query": "rust",
                 "allowed_domains": ["rust-lang.org"],
+                "blocked_domains": ["example.com"],
             }))
-            .expect_err("unsupported domain filters");
+            .expect_err("both domain filters should be rejected");
 
-        assert!(error.to_string().contains("allowed_domains"));
+        assert!(
+            error.to_string().contains("allowed_domains")
+                && error.to_string().contains("blocked_domains"),
+            "error should mention both fields: {error}"
+        );
+    }
+
+    #[test]
+    fn web_search_allowed_domains_filters_serper_results() {
+        let input = WebSearchInput {
+            query: "rust".into(),
+            num_results: Some(5),
+            allowed_domains: Some(vec!["rust-lang.org".into()]),
+            blocked_domains: None,
+        };
+        let body = r#"{"organic":[
+            {"title":"Rust","link":"https://www.rust-lang.org","snippet":"fast"},
+            {"title":"Other","link":"https://www.example.com","snippet":"unrelated"}
+        ]}"#;
+        let formatted = format_serper_results(body, &input).expect("format serper");
+        assert!(
+            formatted.contains("rust-lang.org"),
+            "allowed domain should appear"
+        );
+        assert!(
+            !formatted.contains("example.com"),
+            "non-allowed domain should be filtered out"
+        );
+    }
+
+    #[test]
+    fn web_search_blocked_domains_filters_serper_results() {
+        let input = WebSearchInput {
+            query: "rust".into(),
+            num_results: Some(5),
+            allowed_domains: None,
+            blocked_domains: Some(vec!["example.com".into()]),
+        };
+        let body = r#"{"organic":[
+            {"title":"Rust","link":"https://www.rust-lang.org","snippet":"fast"},
+            {"title":"Other","link":"https://www.example.com","snippet":"unrelated"}
+        ]}"#;
+        let formatted = format_serper_results(body, &input).expect("format serper");
+        assert!(
+            formatted.contains("rust-lang.org"),
+            "non-blocked domain should appear"
+        );
+        assert!(
+            !formatted.contains("example.com"),
+            "blocked domain should be filtered out"
+        );
+    }
+
+    #[test]
+    fn web_search_subdomain_matches_allowed_domain() {
+        assert!(domain_matches_filter("docs.rust-lang.org", "rust-lang.org"));
+        assert!(domain_matches_filter("www.rust-lang.org", "rust-lang.org"));
+        assert!(!domain_matches_filter("norust-lang.org", "rust-lang.org"));
+    }
+
+    #[test]
+    fn web_search_no_domain_filter_passes_all_results() {
+        let input = WebSearchInput {
+            query: "rust".into(),
+            num_results: Some(5),
+            allowed_domains: None,
+            blocked_domains: None,
+        };
+        let body = r#"{"organic":[
+            {"title":"Rust","link":"https://www.rust-lang.org","snippet":"fast"},
+            {"title":"Other","link":"https://www.example.com","snippet":"other"}
+        ]}"#;
+        let formatted = format_serper_results(body, &input).expect("format serper");
+        assert!(formatted.contains("rust-lang.org"));
+        assert!(formatted.contains("example.com"));
     }
 
     #[test]
@@ -610,9 +799,15 @@ mod tests {
 
     #[test]
     fn web_search_formats_serper_results() {
+        let input = WebSearchInput {
+            query: "rust".into(),
+            num_results: Some(5),
+            allowed_domains: None,
+            blocked_domains: None,
+        };
         let formatted = format_serper_results(
             r#"{"organic":[{"title":"Rust","link":"https://www.rust-lang.org","snippet":"Fast and reliable."}]}"#,
-            5,
+            &input,
         )
         .expect("format serper");
 
