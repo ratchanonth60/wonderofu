@@ -31,8 +31,8 @@ use clap::{Args, Parser, Subcommand};
 use wonder_of_u_agent::{ProviderResolver, ProviderStatusReport};
 use wonder_of_u_core::{
     Command, CommandContext, CommandInvocation, CommandKind, CommandOutput, CommandSpec,
-    FeatureFlag, FleetId, FleetMemberRequest, FleetRunState, FleetRunStatus, Result, TaskId,
-    TaskStatus,
+    FeatureFlag, FleetId, FleetMemberRequest, FleetRoleCatalog, FleetRunState, FleetRunStatus,
+    Result, TaskId, TaskStatus, WonderError,
 };
 use wonder_of_u_storage::FleetStore;
 
@@ -86,6 +86,8 @@ enum FleetSubcommand {
     Show(FleetShowArgs),
     /// Stop (cancel) all non-terminal member tasks in a fleet run.
     StopAll(FleetStopAllArgs),
+    /// List available fleet agent roles.
+    Roles,
 }
 
 #[derive(Debug, Args)]
@@ -100,6 +102,12 @@ struct FleetStartArgs {
     /// Optional member name for the immediate agent task.
     #[arg(long)]
     member_name: Option<String>,
+    /// Optional fleet agent role id (e.g. `rust-engineer`).
+    ///
+    /// When set, the role's prompt preamble is prepended to `--prompt` before
+    /// launching the agent task.
+    #[arg(long)]
+    role: Option<String>,
     /// Optional model override for the immediate agent task.
     #[arg(long)]
     model: Option<String>,
@@ -151,6 +159,7 @@ impl Command for FleetCommand {
             FleetSubcommand::Status => self.status(),
             FleetSubcommand::Show(args) => self.show(args),
             FleetSubcommand::StopAll(args) => self.stop_all(args),
+            FleetSubcommand::Roles => Self::roles(),
         }
     }
 }
@@ -221,6 +230,25 @@ impl FleetCommand {
             }
         };
 
+        // Resolve role early so we can include it in the output.
+        let resolved_role = if let Some(ref role_id) = args.role {
+            let catalog = FleetRoleCatalog::builtin();
+            let role = catalog
+                .get(role_id)
+                .or_else(|| catalog.resolve_alias(role_id));
+            match role {
+                Some(r) => Some(r.clone()),
+                None => {
+                    return Err(WonderError::validation(format!(
+                        "unknown fleet role `{role_id}`; known roles: {}",
+                        catalog.known_ids_display()
+                    )));
+                }
+            }
+        } else {
+            None
+        };
+
         let mut run = FleetRunState::new(
             &args.description,
             context.permission_mode,
@@ -232,13 +260,21 @@ impl FleetCommand {
         if let Some(prompt) = &args.prompt {
             let report = ProviderResolver::builtin().load_report(self.storage_dir.as_deref())?;
             let cwd = args.cwd.clone().unwrap_or_else(|| context.cwd.clone());
+
+            // Compose full prompt: prepend role preamble when a role is set.
+            let full_prompt = if let Some(ref role) = resolved_role {
+                role.compose_prompt(prompt)
+            } else {
+                prompt.clone()
+            };
+
             let task = manager.start_agent_task(AgentTaskLaunch {
                 name: args
                     .member_name
                     .clone()
                     .unwrap_or_else(|| run.id.to_string()),
                 description: Some(args.description.clone()),
-                prompt: prompt.clone(),
+                prompt: full_prompt,
                 provider: args.provider.or(report.provider),
                 model: args.model.or(report.model),
                 cwd,
@@ -256,6 +292,10 @@ impl FleetCommand {
             format!("status={}", run.status.label()),
             format!("members={}", run.member_task_ids.len()),
         ];
+        if let Some(ref role) = resolved_role {
+            lines.push(format!("role={}", role.id));
+            lines.push(format!("role_name={}", sanitize_line(&role.name)));
+        }
         for (i, task_id) in run.member_task_ids.iter().enumerate() {
             lines.push(format!("member[{i}].task_id={task_id}"));
         }
@@ -486,6 +526,26 @@ impl FleetCommand {
     fn stores(&self) -> Option<(TaskManager, FleetStore)> {
         Some((self.task_manager()?, self.fleet_store()?))
     }
+
+    /// Lists all built-in fleet agent roles.
+    fn roles() -> Result<CommandOutput> {
+        let catalog = FleetRoleCatalog::builtin();
+        let roles = catalog.list();
+        let mut lines = vec![format!("fleet_roles={}", roles.len())];
+        for (i, role) in roles.iter().enumerate() {
+            lines.push(format!("role[{i}].id={}", role.id));
+            lines.push(format!("role[{i}].name={}", sanitize_line(&role.name)));
+            lines.push(format!(
+                "role[{i}].description={}",
+                sanitize_line(&role.description)
+            ));
+            if !role.tags.is_empty() {
+                lines.push(format!("role[{i}].tags={}", role.tags.join(",")));
+            }
+        }
+        lines.push("note=pass --role <id> to `fleet start` to apply a role preamble".into());
+        Ok(CommandOutput::Text(lines.join("\n")))
+    }
 }
 
 // ── Free helpers ──────────────────────────────────────────────────────────────
@@ -493,6 +553,9 @@ impl FleetCommand {
 /// Dispatches a single pending [`FleetMemberRequest`] to a live agent task.
 ///
 /// On success the pending file is deleted and the new [`TaskId`] is returned.
+///
+/// If the request carries a `role` id, the role's preamble is prepended to the
+/// request prompt before the agent is launched.
 fn dispatch_one(
     manager: &TaskManager,
     store: &FleetStore,
@@ -502,13 +565,26 @@ fn dispatch_one(
 ) -> Result<TaskId> {
     let cwd = req.cwd.clone().unwrap_or_else(|| context.cwd.clone());
 
+    // Apply role preamble when a role id is stored on the request.
+    let prompt = if let Some(ref role_id) = req.role {
+        let catalog = FleetRoleCatalog::builtin();
+        if let Some(role) = catalog.get(role_id) {
+            role.compose_prompt(&req.prompt)
+        } else {
+            // Unknown role id — fall back gracefully to the bare prompt.
+            req.prompt.clone()
+        }
+    } else {
+        req.prompt.clone()
+    };
+
     let task = manager.start_agent_task(AgentTaskLaunch {
         name: req
             .name
             .clone()
             .unwrap_or_else(|| request_name_fallback(&req.id)),
         description: req.description.clone(),
-        prompt: req.prompt.clone(),
+        prompt,
         provider: req.provider.clone().or_else(|| report.provider.clone()),
         model: req.model.clone().or_else(|| report.model.clone()),
         cwd,
@@ -709,5 +785,95 @@ mod tests {
         assert_eq!(request_name_fallback("abcdef123456"), "abcdef12");
         assert_eq!(request_name_fallback("abc"), "abc");
         assert_eq!(request_name_fallback(""), "agent");
+    }
+
+    // ── Role catalog CLI tests ────────────────────────────────────────────────
+
+    #[test]
+    fn fleet_roles_lists_builtin_role_ids() {
+        let cmd = FleetCommand::new(None);
+        let output = futures::executor::block_on(cmd.execute(
+            stub_context(std::env::current_dir().unwrap()),
+            invocation("roles"),
+        ))
+        .expect("execute");
+
+        let text = match output {
+            CommandOutput::Text(t) => t,
+            other => panic!("unexpected: {other:?}"),
+        };
+
+        // All nine built-in ids must appear.
+        for id in &[
+            "rust-engineer",
+            "rust-tester",
+            "rust-architect",
+            "rust-refactor",
+            "rust-optimizer",
+            "rust-documenter",
+            "tui-designer",
+            "rubber-duck",
+            "code-reviewer",
+        ] {
+            assert!(text.contains(id), "missing role id `{id}`; got: {text}");
+        }
+        assert!(
+            text.contains("fleet_roles=9"),
+            "expected 9 roles; got: {text}"
+        );
+    }
+
+    #[test]
+    fn fleet_roles_output_is_stable_order() {
+        let cmd = FleetCommand::new(None);
+        let output = futures::executor::block_on(cmd.execute(
+            stub_context(std::env::current_dir().unwrap()),
+            invocation("roles"),
+        ))
+        .expect("execute");
+
+        let text = match output {
+            CommandOutput::Text(t) => t,
+            _ => panic!("expected text"),
+        };
+
+        // code-reviewer (c) must appear before rust-engineer (r) in alphabetical order.
+        let pos_code = text.find("code-reviewer").expect("code-reviewer");
+        let pos_rust = text.find("rust-engineer").expect("rust-engineer");
+        assert!(
+            pos_code < pos_rust,
+            "expected alphabetical order; code-reviewer should precede rust-engineer"
+        );
+    }
+
+    #[test]
+    fn fleet_start_unknown_role_returns_error() {
+        let dir = unique_test_dir("fleet-cmd-start-bad-role");
+        let cmd = make_fleet_command(&dir);
+        let result = futures::executor::block_on(cmd.execute(
+            stub_context(dir.clone()),
+            invocation("start --description test --role totally-unknown-role"),
+        ));
+        let err = result.expect_err("expected error for unknown role");
+        assert!(err.to_string().contains("unknown fleet role"), "got: {err}");
+    }
+
+    #[test]
+    fn fleet_start_with_role_includes_role_in_output() {
+        let dir = unique_test_dir("fleet-cmd-start-with-role");
+        let cmd = make_fleet_command(&dir);
+        // No --prompt means no actual task launch (no process spawned).
+        let output = futures::executor::block_on(cmd.execute(
+            stub_context(dir.clone()),
+            invocation("start --description \"fix auth\" --role rust-engineer"),
+        ))
+        .expect("execute");
+
+        let text = match output {
+            CommandOutput::Text(t) => t,
+            other => panic!("unexpected: {other:?}"),
+        };
+        assert!(text.contains("role=rust-engineer"), "got: {text}");
+        assert!(text.contains("role_name=Rust Engineer"), "got: {text}");
     }
 }
