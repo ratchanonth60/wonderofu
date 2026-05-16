@@ -1212,6 +1212,7 @@ impl AgentsCommand {
                     model: args.model.or(report.model),
                     cwd: context.cwd,
                     fleet_id: None,
+                    allowed_tools: None,
                 })?
             }
         };

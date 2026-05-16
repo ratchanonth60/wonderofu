@@ -4,8 +4,8 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use wonder_of_u_core::{
-    FeatureFlag, FleetMemberRequest, RemoteTaskState, RemoteTaskType, Result, Tool, ToolContext,
-    ToolKind, ToolResult, ToolSchema, ToolSpec, ToolUseId, WonderError,
+    FeatureFlag, FleetMemberRequest, FleetRoleCatalog, RemoteTaskState, RemoteTaskType, Result,
+    Tool, ToolContext, ToolKind, ToolResult, ToolSchema, ToolSpec, ToolUseId, WonderError,
 };
 use wonder_of_u_storage::FleetStore;
 
@@ -55,11 +55,21 @@ impl AgentInput {
         if let Some(description) = &self.description {
             require_non_empty_text("agent", "description", description)?;
         }
-        if self.subagent_type.is_some() {
-            return Err(WonderError::validation(
-                "agent source-compatible `subagent_type` is not supported in the Rust runtime",
-            ));
+
+        // Accept known subagent_type values (mapped to role ids).  Unknown
+        // values are rejected with a helpful list of known roles.
+        if let Some(ref subagent_type) = self.subagent_type {
+            let catalog = FleetRoleCatalog::builtin();
+            if catalog.resolve_alias(subagent_type).is_none() {
+                return Err(WonderError::validation(format!(
+                    "agent `subagent_type` value `{subagent_type}` is not recognised; \
+                     known roles: {}",
+                    catalog.known_ids_display()
+                )));
+            }
+            // Known alias — allowed to pass through; will be resolved at queue time.
         }
+
         if matches!(self.run_in_background, Some(false)) {
             return Err(WonderError::validation(
                 "agent source-compatible `run_in_background=false` is not supported because the Rust runtime only queues background agent tasks",
@@ -203,12 +213,26 @@ impl Tool for AgentTool {
 /// Queues an agent request as a [`FleetMemberRequest`] pending file.
 ///
 /// Returns the request UUID string so callers can include it in tool metadata.
+///
+/// If `input.subagent_type` is set and resolves to a known role alias, the
+/// resolved role id is stored on the request so the dispatcher can apply the
+/// role preamble at launch time.
 fn queue_fleet_member_request(app_root: &std::path::Path, input: &AgentInput) -> Result<String> {
     let mut request = FleetMemberRequest::new(input.prompt.clone());
     request.description = input.description.clone();
     request.name = input.name.clone();
     request.model = input.model.clone();
     request.cwd = input.cwd.as_deref().map(std::path::PathBuf::from);
+
+    // Resolve subagent_type alias → role id if provided.
+    if let Some(ref subagent_type) = input.subagent_type {
+        let catalog = FleetRoleCatalog::builtin();
+        if let Some(role) = catalog.resolve_alias(subagent_type) {
+            request.role = Some(role.id.clone());
+        }
+        // Unknown aliases were already rejected in validate(); this branch is
+        // only reached when the alias is known.
+    }
 
     let store = FleetStore::new(app_root);
     store.queue_member_request(&request)?;
@@ -312,6 +336,80 @@ mod tests {
             .expect_err("unsupported team_name");
 
         assert!(error.to_string().contains("team_name"));
+    }
+
+    #[test]
+    fn agent_validation_accepts_known_subagent_type() {
+        let tool = AgentTool;
+        // Exact id.
+        tool.validate_input(&json!({
+            "prompt": "implement the feature",
+            "subagent_type": "rust-engineer",
+        }))
+        .expect("known subagent_type should be accepted");
+
+        // Display-name alias.
+        tool.validate_input(&json!({
+            "prompt": "review this diff",
+            "subagent_type": "Code Reviewer",
+        }))
+        .expect("display-name alias should be accepted");
+
+        // Short alias.
+        tool.validate_input(&json!({
+            "prompt": "review this diff",
+            "subagent_type": "code-review",
+        }))
+        .expect("short alias should be accepted");
+    }
+
+    #[test]
+    fn agent_validation_rejects_unknown_subagent_type() {
+        let tool = AgentTool;
+        let error = tool
+            .validate_input(&json!({
+                "prompt": "review",
+                "subagent_type": "completely-unknown-agent",
+            }))
+            .expect_err("unknown subagent_type");
+
+        let msg = error.to_string();
+        assert!(
+            msg.contains("completely-unknown-agent"),
+            "error should mention the unknown value; got: {msg}"
+        );
+        // The error should list known roles.
+        assert!(
+            msg.contains("rust-engineer"),
+            "error should list known roles; got: {msg}"
+        );
+    }
+
+    #[test]
+    fn subagent_type_alias_stored_as_role_id() {
+        let dir = unique_test_dir("tools-agent-subagent-type");
+        let request_id = queue_fleet_member_request(
+            &dir,
+            &AgentInput {
+                prompt: "review the patch".into(),
+                description: None,
+                subagent_type: Some("Rust Engineer".into()),
+                model: None,
+                run_in_background: None,
+                name: None,
+                team_name: None,
+                mode: None,
+                isolation: None,
+                cwd: None,
+                tools: None,
+            },
+        )
+        .expect("queue task");
+
+        let store = FleetStore::new(&dir);
+        let req = store.read_pending_request(&request_id).expect("read");
+        // Alias "Rust Engineer" should resolve to role id "rust-engineer".
+        assert_eq!(req.role.as_deref(), Some("rust-engineer"));
     }
 
     #[test]

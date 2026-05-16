@@ -179,6 +179,12 @@ pub struct FleetMemberRequest {
     /// Optional agent name used as the task name.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
+    /// Optional fleet agent role id (e.g. `"rust-engineer"`).
+    ///
+    /// When set, the dispatcher prepends the role's preamble to [`Self::prompt`]
+    /// before launching the agent task.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub role: Option<String>,
     /// Optional model override.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
@@ -203,6 +209,7 @@ impl FleetMemberRequest {
             prompt: prompt.into(),
             description: None,
             name: None,
+            role: None,
             model: None,
             provider: None,
             cwd: None,
@@ -303,6 +310,16 @@ mod tests {
         let json = serde_json::to_string(&req).expect("serialize");
         let decoded: FleetMemberRequest = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(req, decoded);
+    }
+
+    #[test]
+    fn fleet_member_request_role_field_round_trips() {
+        let mut req = FleetMemberRequest::new("implement the feature");
+        req.role = Some("rust-engineer".into());
+
+        let json = serde_json::to_string(&req).expect("serialize");
+        let decoded: FleetMemberRequest = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(decoded.role.as_deref(), Some("rust-engineer"));
     }
 
     #[test]

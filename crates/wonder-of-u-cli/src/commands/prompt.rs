@@ -126,6 +126,8 @@ struct PromptArgs {
     temperature: Option<f32>,
     #[arg(long, default_value_t = false)]
     tools: bool,
+    #[arg(long, value_delimiter = ',')]
+    allowed_tools: Vec<String>,
     #[arg(trailing_var_arg = true, allow_hyphen_values = true, num_args = 1..)]
     prompt: Vec<String>,
 }
@@ -142,6 +144,12 @@ impl Command for PromptCommand {
         invocation: CommandInvocation,
     ) -> Result<CommandOutput> {
         let args = parse_command_args::<PromptArgs>("prompt", &invocation)?;
+        let allowed_tools = parse_allowed_tools(&args.allowed_tools)?;
+        if allowed_tools.is_some() && !args.tools {
+            return Err(WonderError::validation(
+                "--allowed-tools requires --tools so the provider tool loop is enabled",
+            ));
+        }
         let prompt = args.prompt.join(" ");
         let result = execute_prompt_run(
             &context,
@@ -156,7 +164,7 @@ impl Command for PromptCommand {
                 max_output_tokens: args.max_output_tokens,
                 temperature: args.temperature,
                 tool_use: args.tools,
-                allowed_tools: None,
+                allowed_tools,
                 session_title: prompt_title(&prompt),
                 prompt,
                 entrypoint: "prompt",
@@ -366,6 +374,24 @@ fn validate_prompt_text(prompt: &str) -> Result<()> {
         return Err(WonderError::validation("prompt cannot be empty"));
     }
     Ok(())
+}
+
+fn parse_allowed_tools(tools: &[String]) -> Result<Option<BTreeSet<String>>> {
+    if tools.is_empty() {
+        return Ok(None);
+    }
+
+    let mut allowed = BTreeSet::new();
+    for tool in tools {
+        let trimmed = tool.trim();
+        if trimmed.is_empty() {
+            return Err(WonderError::validation(
+                "allowed tool names must not be empty",
+            ));
+        }
+        allowed.insert(trimmed.to_ascii_lowercase());
+    }
+    Ok(Some(allowed))
 }
 
 pub(crate) fn load_or_create_state(

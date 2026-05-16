@@ -25,6 +25,8 @@ pub mod feature;
 pub mod fingerprint;
 /// Fleet (multi-agent) run types.
 pub mod fleet;
+/// Fleet agent role catalog.
+pub mod fleet_roles;
 /// Provides generators support
 pub mod generators;
 /// Provides git support
@@ -103,6 +105,8 @@ pub use feature::{FeatureFlag, FeatureSet};
 pub use fingerprint::{fingerprint_json, fingerprint_str};
 /// Re-exports items from `fleet`
 pub use fleet::{FLEET_SCHEMA_VERSION, FleetMemberRequest, FleetRunState, FleetRunStatus};
+/// Re-exports items from `fleet_roles`
+pub use fleet_roles::{FleetAgentRole, FleetRoleCatalog};
 /// Re-exports items from `generators`
 pub use generators::{enumerate, take, zip};
 /// Re-exports items from `git`
