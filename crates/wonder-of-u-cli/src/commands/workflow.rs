@@ -1213,6 +1213,7 @@ impl AgentsCommand {
                     cwd: context.cwd,
                     fleet_id: None,
                     allowed_tools: None,
+                    worktree_branch: None,
                 })?
             }
         };

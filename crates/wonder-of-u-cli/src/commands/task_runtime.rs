@@ -47,6 +47,8 @@ pub(crate) struct AgentTaskLaunch {
     pub cwd: PathBuf,
     pub fleet_id: Option<FleetId>,
     pub allowed_tools: Option<Vec<String>>,
+    /// Git worktree branch the agent will run inside, if any.
+    pub worktree_branch: Option<String>,
 }
 
 #[cfg_attr(not(test), allow(dead_code))]
@@ -269,6 +271,7 @@ impl TaskManager {
         task.cwd = Some(launch.cwd.clone());
         task.command = Some(command);
         task.output_log = Some(self.store.paths().task_log_path(task.id));
+        task.worktree_branch = launch.worktree_branch.clone();
         self.store.write_task(&task)?;
         self.store
             .append_log(task.id, render_agent_task_header(&task))?;
@@ -1130,6 +1133,7 @@ mod tests {
                 cwd: dir.clone(),
                 fleet_id: Some(fleet_id),
                 allowed_tools: Some(vec!["bash".into(), "file_read".into()]),
+                worktree_branch: None,
             })
             .expect("start agent task");
 
@@ -1201,6 +1205,7 @@ mod tests {
                 cwd: dir.clone(),
                 fleet_id: None,
                 allowed_tools: None,
+                worktree_branch: None,
             })
             .expect("start agent task");
 

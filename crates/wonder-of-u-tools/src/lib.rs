@@ -106,7 +106,8 @@ pub use wonder_of_u_mcp::{
 pub use worktree_tools::{
     EnterWorktreeInput, EnterWorktreeTool, ExitWorktreeAction, ExitWorktreeInput, ExitWorktreeTool,
     WorktreeRuntimeAction, WorktreeRuntimeActionKind, WorktreeSessionState,
-    parse_worktree_runtime_action, validate_worktree_session_state,
+    create_fleet_agent_worktree, fleet_agent_worktree_slug, parse_worktree_runtime_action,
+    validate_worktree_branch_name, validate_worktree_session_state,
 };
 /// Handles builtin tools
 #[must_use]
