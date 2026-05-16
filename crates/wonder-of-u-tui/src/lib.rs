@@ -21,6 +21,8 @@ pub mod dialog;
 pub mod diff;
 /// Provides event support
 pub mod event;
+/// Provides fleet view support
+pub mod fleet_view;
 /// Provides frame support
 pub mod frame;
 /// Provides input support
@@ -99,6 +101,10 @@ pub use event::{
     ClickEvent, ClickTracker, CrosstermEventSource, EventLoop, EventLoopState, EventSource,
     KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind, TurnState, UiEvent,
     normalize_key_event, normalize_mouse_event,
+};
+/// Re-exports items from `fleet_view`
+pub use fleet_view::{
+    FleetMemberEntryView, FleetMemberStatusView, FleetRunCounts, FleetRunView, FleetStatusView,
 };
 /// Re-exports items from `frame`
 pub use frame::{Cell, FrameBuffer, Rect};

@@ -14,6 +14,8 @@
 //! | `status` | Show aggregate fleet statistics. |
 //! | `show <fleet_id>` | Show a fleet run's header and member task statuses. |
 //! | `stop-all <fleet_id>` | Stop or cancel all non-terminal tasks in a fleet. |
+//! | `wait <fleet_id>` | Poll until the fleet is terminal or the timeout expires. |
+//! | `results <fleet_id>` | Print aggregated task status and output excerpts. |
 //!
 //! # Design notes
 //!
@@ -23,12 +25,17 @@
 //!   [`TaskManager::stop_task`] helper which sends SIGTERM and waits briefly.
 //!   Tasks that cannot be stopped within that window are reported as failures
 //!   without affecting the remaining members.
+//! * `fleet wait` uses a blocking poll loop with configurable interval/timeout;
+//!   it will never hang forever because it always honours the timeout.
+//! * `fleet results` uses [`FleetInspector`] to correlate task states with
+//!   result sidecars; output is character-safe truncated when requested.
 
-use std::{collections::BTreeSet, path::PathBuf};
+use std::{collections::BTreeSet, path::PathBuf, thread, time::Duration};
 
 use async_trait::async_trait;
 use clap::{Args, Parser, Subcommand};
 use time::OffsetDateTime;
+use unicode_segmentation::UnicodeSegmentation;
 use wonder_of_u_agent::{ProviderResolver, ProviderStatusReport};
 use wonder_of_u_core::{
     Command, CommandContext, CommandInvocation, CommandKind, CommandOutput, CommandSpec,
@@ -36,7 +43,7 @@ use wonder_of_u_core::{
     FleetRunStatus, Result, TaskId, TaskStatus, WonderError, WorktreeIsolation,
     WorktreeIsolationMode, get_git_root,
 };
-use wonder_of_u_storage::FleetStore;
+use wonder_of_u_storage::{FleetInspector, FleetStore, MemberObservationClass};
 use wonder_of_u_tools::{
     create_fleet_agent_worktree_with_branch, fleet_agent_worktree_slug,
     validate_worktree_branch_name,
@@ -100,6 +107,10 @@ enum FleetSubcommand {
     Roles,
     /// Launch ready members of a plan-based fleet run, respecting dependencies.
     Reconcile(FleetReconcileArgs),
+    /// Poll until the fleet run is terminal or the timeout expires.
+    Wait(FleetWaitArgs),
+    /// Print aggregated task status and output excerpts for a fleet run.
+    Results(FleetResultsArgs),
 }
 
 #[derive(Debug, Args)]
@@ -180,6 +191,35 @@ struct FleetReconcileArgs {
     fleet_id: String,
 }
 
+#[derive(Debug, Args)]
+struct FleetWaitArgs {
+    /// The fleet run id to wait for.
+    fleet_id: String,
+    /// Maximum seconds to wait before giving up (default: 300).
+    ///
+    /// Must be ≥ 1.
+    #[arg(long = "timeout-secs", default_value_t = 300)]
+    timeout_secs: u64,
+    /// Seconds between reconcile/observe polls (default: 5).
+    ///
+    /// Must be ≥ 1.
+    #[arg(long = "poll-interval-secs", default_value_t = 5)]
+    poll_interval_secs: u64,
+}
+
+#[derive(Debug, Args)]
+struct FleetResultsArgs {
+    /// The fleet run id whose results to display.
+    fleet_id: String,
+    /// Also print the full `output_text` from each result sidecar.
+    #[arg(long)]
+    include_logs: bool,
+    /// Maximum total characters of output text to show across all members
+    /// (0 = unlimited).
+    #[arg(long = "max-output-chars", default_value_t = 2000)]
+    max_output_chars: usize,
+}
+
 // ── Command trait impl ────────────────────────────────────────────────────────
 
 #[async_trait]
@@ -203,6 +243,8 @@ impl Command for FleetCommand {
             FleetSubcommand::StopAll(args) => self.stop_all(args),
             FleetSubcommand::Roles => Self::roles(),
             FleetSubcommand::Reconcile(args) => self.reconcile(context, args),
+            FleetSubcommand::Wait(args) => self.wait(context, args),
+            FleetSubcommand::Results(args) => self.results(args),
         }
     }
 }
@@ -914,6 +956,216 @@ impl FleetCommand {
         lines.push("note=pass --role <id> to `fleet start` to apply a role preamble".into());
         Ok(CommandOutput::Text(lines.join("\n")))
     }
+
+    /// Polls a fleet run until it reaches a terminal state or the timeout fires.
+    ///
+    /// Each iteration calls [`FleetInspector::observe`] to check member states.
+    /// When all members are terminal the loop exits immediately; otherwise it
+    /// sleeps for `poll_interval_secs` before the next pass.
+    ///
+    /// Output is a stable `key=value` block suitable for both humans and
+    /// machine parsing.
+    fn wait(&self, context: CommandContext, args: FleetWaitArgs) -> Result<CommandOutput> {
+        // Validate inputs before touching storage so bad args fail fast.
+        if args.timeout_secs == 0 {
+            return Err(WonderError::validation("--timeout-secs must be ≥ 1"));
+        }
+        if args.poll_interval_secs == 0 {
+            return Err(WonderError::validation("--poll-interval-secs must be ≥ 1"));
+        }
+
+        let storage_dir = match &self.storage_dir {
+            Some(d) => d.clone(),
+            None => {
+                return Ok(CommandOutput::Text(runtime_disabled_message("fleet wait")));
+            }
+        };
+
+        let fleet_id = parse_fleet_id(&args.fleet_id)?;
+        let inspector = FleetInspector::new(&storage_dir);
+
+        let deadline = std::time::Instant::now() + Duration::from_secs(args.timeout_secs);
+        let poll = Duration::from_secs(args.poll_interval_secs);
+
+        let mut timed_out = false;
+        let observation = loop {
+            let _ = self.reconcile(
+                context.clone(),
+                FleetReconcileArgs {
+                    fleet_id: args.fleet_id.clone(),
+                },
+            )?;
+            let obs = inspector.observe(fleet_id)?;
+
+            // All members terminal → done immediately.
+            // We rely on the stored fleet status as primary signal; the
+            // `all_terminal()` check is a secondary guard for when the status
+            // hasn't been persisted yet.  We skip it on empty-member fleets to
+            // avoid vacuous-truth short-circuiting before any work has started.
+            let is_done =
+                obs.fleet.status.is_terminal() || (!obs.members.is_empty() && obs.all_terminal());
+
+            if is_done {
+                break obs;
+            }
+
+            let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+            if remaining.is_zero() {
+                timed_out = true;
+                break obs;
+            }
+
+            // Sleep for the minimum of the poll interval and time remaining.
+            thread::sleep(poll.min(remaining));
+        };
+
+        let completed = observation.count_by_class(MemberObservationClass::Completed);
+        let failed = observation.count_by_class(MemberObservationClass::Failed);
+        let running = observation.count_by_class(MemberObservationClass::Running);
+        let pending = observation.count_by_class(MemberObservationClass::Pending);
+
+        let text = [
+            format!("fleet_id={fleet_id}"),
+            format!("timed_out={timed_out}"),
+            format!("status={}", observation.fleet.status.label()),
+            format!("members={}", observation.members.len()),
+            format!("completed={completed}"),
+            format!("failed={failed}"),
+            format!("pending={pending}"),
+            format!("running={running}"),
+        ]
+        .join("\n");
+        Ok(CommandOutput::Text(text))
+    }
+
+    /// Prints aggregated task status and result sidecar excerpts for a fleet run.
+    ///
+    /// Uses [`FleetInspector`] to correlate live [`TaskState`] records with
+    /// [`AgentTaskResult`] sidecars.  Pending requests that have not yet been
+    /// dispatched to tasks are also listed so the caller can see the full queue.
+    ///
+    /// `--max-output-chars 0` disables truncation.
+    fn results(&self, args: FleetResultsArgs) -> Result<CommandOutput> {
+        let storage_dir = match &self.storage_dir {
+            Some(d) => d.clone(),
+            None => {
+                return Ok(CommandOutput::Text(runtime_disabled_message(
+                    "fleet results",
+                )));
+            }
+        };
+
+        let fleet_id = parse_fleet_id(&args.fleet_id)?;
+        let inspector = FleetInspector::new(&storage_dir);
+        let obs = inspector.observe(fleet_id)?;
+
+        // Also load pending requests so we can show queued-but-not-yet-dispatched items.
+        let store = FleetStore::new(&storage_dir);
+        let all_pending = store.list_pending_requests()?;
+        let queued: Vec<_> = all_pending
+            .iter()
+            .filter(|r| r.fleet_id == Some(fleet_id))
+            .collect();
+
+        let completed = obs.count_by_class(MemberObservationClass::Completed);
+        let failed = obs.count_by_class(MemberObservationClass::Failed);
+        let running = obs.count_by_class(MemberObservationClass::Running);
+        let pending = obs.count_by_class(MemberObservationClass::Pending);
+
+        let mut lines = vec![
+            format!("fleet_id={fleet_id}"),
+            format!("description={}", sanitize_line(&obs.fleet.description)),
+            format!("status={}", obs.fleet.status.label()),
+            format!("members={}", obs.members.len()),
+            format!("completed={completed}"),
+            format!("failed={failed}"),
+            format!("pending={pending}"),
+            format!("running={running}"),
+            format!("queued_requests={}", queued.len()),
+        ];
+
+        // ── Per-member task rows ──────────────────────────────────────────────
+        let mut chars_used = 0usize;
+
+        for (i, member) in obs.members.iter().enumerate() {
+            lines.push(format!("member[{i}].task_id={}", member.task_id));
+            lines.push(format!("member[{i}].status={}", member.class.label()));
+
+            if let Some(ref task) = member.task {
+                // Name from the nested agent state, if available.
+                if let Some(ref agent) = task.agent {
+                    lines.push(format!("member[{i}].name={}", sanitize_line(&agent.name)));
+                }
+                if let Some(ref req_id) = task.fleet_request_id {
+                    lines.push(format!("member[{i}].request_id={}", sanitize_line(req_id)));
+                }
+            }
+
+            if let Some(ref result) = member.result {
+                if let Some(ref req_id) = result.fleet_request_id {
+                    // Only emit if not already shown from the task.
+                    if member
+                        .task
+                        .as_ref()
+                        .and_then(|t| t.fleet_request_id.as_deref())
+                        .is_none()
+                    {
+                        lines.push(format!("member[{i}].request_id={}", sanitize_line(req_id)));
+                    }
+                }
+
+                // Always show the short excerpt.
+                let excerpt = sanitize_line(&result.output_excerpt);
+                if !excerpt.is_empty() {
+                    lines.push(format!("member[{i}].excerpt={excerpt}"));
+                }
+
+                // Full output when requested, subject to the char budget.
+                if args.include_logs {
+                    if let Some(ref text) = result.output_text {
+                        let budget = if args.max_output_chars == 0 {
+                            text.len()
+                        } else {
+                            args.max_output_chars.saturating_sub(chars_used)
+                        };
+                        if budget > 0 {
+                            let truncated = truncate_chars(text, budget);
+                            chars_used += truncated.graphemes(true).count();
+                            for (j, log_line) in truncated.lines().enumerate() {
+                                lines.push(format!(
+                                    "member[{i}].output[{j}]={}",
+                                    sanitize_line(log_line)
+                                ));
+                            }
+                        } else {
+                            lines.push(format!(
+                                "member[{i}].output=<truncated; increase --max-output-chars>"
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+
+        // ── Queued (not-yet-dispatched) requests ──────────────────────────────
+        for (i, req) in queued.iter().enumerate() {
+            lines.push(format!("queued[{i}].request_id={}", req.id));
+            if let Some(ref name) = req.name {
+                lines.push(format!("queued[{i}].name={}", sanitize_line(name)));
+            }
+            if let Some(ref role) = req.role {
+                lines.push(format!("queued[{i}].role={}", sanitize_line(role)));
+            }
+            if !req.depends_on.is_empty() {
+                lines.push(format!(
+                    "queued[{i}].depends_on={}",
+                    req.depends_on.join(",")
+                ));
+            }
+        }
+
+        Ok(CommandOutput::Text(lines.join("\n")))
+    }
 }
 
 // ── Free helpers ──────────────────────────────────────────────────────────────
@@ -1098,6 +1350,16 @@ fn role_allowed_tools_for_launch(role: &FleetAgentRole) -> Option<Vec<String>> {
 
 fn sanitize_line(value: &str) -> String {
     value.lines().collect::<Vec<_>>().join("\\n")
+}
+
+/// Truncates `s` to at most `max_chars` user-visible grapheme clusters.
+///
+/// Truncation is display-safe for combining marks and multi-codepoint emoji.
+fn truncate_chars(s: &str, max_chars: usize) -> &str {
+    match s.grapheme_indices(true).nth(max_chars) {
+        Some((byte_idx, _)) => &s[..byte_idx],
+        None => s,
+    }
 }
 
 fn runtime_disabled_message(subcommand: &str) -> String {
@@ -2283,5 +2545,265 @@ mod tests {
             text.contains("worktree-fleet-aabbccdd-11223344"),
             "expected branch name in show output; got: {text}"
         );
+    }
+
+    // ── fleet wait ────────────────────────────────────────────────────────────
+
+    #[test]
+    fn fleet_wait_no_storage_returns_disabled() {
+        let cmd = FleetCommand::new(None);
+        let fleet_id = FleetId::new();
+        let output = futures::executor::block_on(cmd.execute(
+            stub_context(std::env::current_dir().unwrap()),
+            invocation(&format!("wait {fleet_id}")),
+        ))
+        .expect("execute");
+        let text = match output {
+            CommandOutput::Text(t) => t,
+            other => panic!("unexpected: {other:?}"),
+        };
+        assert!(text.contains("requires --storage-dir"), "got: {text}");
+    }
+
+    #[test]
+    fn fleet_wait_missing_fleet_id_returns_error() {
+        let dir = unique_test_dir("fleet-wait-missing");
+        let store = FleetStore::new(&dir);
+        store.ensure_layout().expect("layout");
+        let cmd = make_fleet_command(&dir);
+        let missing_id = FleetId::new();
+        let result = futures::executor::block_on(cmd.execute(
+            stub_context(dir.clone()),
+            invocation(&format!("wait {missing_id}")),
+        ));
+        assert!(result.is_err(), "expected error for missing fleet");
+    }
+
+    #[test]
+    fn fleet_wait_already_terminal_returns_immediately() {
+        let dir = unique_test_dir("fleet-wait-terminal");
+        let store = FleetStore::new(&dir);
+
+        let mut run = FleetRunState::new("terminal fleet", PermissionMode::Default, None);
+        run.status = FleetRunStatus::Completed;
+        store.write_run(&run).expect("write");
+
+        let cmd = make_fleet_command(&dir);
+        let output = futures::executor::block_on(cmd.execute(
+            stub_context(dir.clone()),
+            invocation(&format!("wait {} --timeout-secs 10", run.id)),
+        ))
+        .expect("execute");
+
+        let text = match output {
+            CommandOutput::Text(t) => t,
+            other => panic!("unexpected: {other:?}"),
+        };
+        assert!(
+            text.contains(&format!("fleet_id={}", run.id)),
+            "got: {text}"
+        );
+        assert!(text.contains("timed_out=false"), "got: {text}");
+        assert!(text.contains("status=completed"), "got: {text}");
+    }
+
+    #[test]
+    fn fleet_wait_timeout_fires_for_running_fleet() {
+        let dir = unique_test_dir("fleet-wait-timeout");
+        let store = FleetStore::new(&dir);
+
+        let mut run = FleetRunState::new("running fleet", PermissionMode::Default, None);
+        run.status = FleetRunStatus::Running;
+        store.write_run(&run).expect("write");
+
+        let cmd = make_fleet_command(&dir);
+        // 1-second timeout, 1-second poll — will fire after one iteration.
+        let output = futures::executor::block_on(cmd.execute(
+            stub_context(dir.clone()),
+            invocation(&format!(
+                "wait {} --timeout-secs 1 --poll-interval-secs 1",
+                run.id
+            )),
+        ))
+        .expect("execute");
+
+        let text = match output {
+            CommandOutput::Text(t) => t,
+            other => panic!("unexpected: {other:?}"),
+        };
+        assert!(text.contains("timed_out=true"), "got: {text}");
+        assert!(text.contains("status=running"), "got: {text}");
+    }
+
+    #[test]
+    fn fleet_wait_validates_zero_timeout() {
+        let dir = unique_test_dir("fleet-wait-zero-timeout");
+        let store = FleetStore::new(&dir);
+        store.ensure_layout().expect("layout");
+        let run = FleetRunState::new("z", PermissionMode::Default, None);
+        store.write_run(&run).expect("write");
+        let cmd = make_fleet_command(&dir);
+        let result = futures::executor::block_on(cmd.execute(
+            stub_context(dir.clone()),
+            invocation(&format!("wait {} --timeout-secs 0", run.id)),
+        ));
+        assert!(result.is_err(), "zero timeout should be rejected");
+    }
+
+    #[test]
+    fn fleet_wait_validates_zero_poll() {
+        let dir = unique_test_dir("fleet-wait-zero-poll");
+        let store = FleetStore::new(&dir);
+        store.ensure_layout().expect("layout");
+        let run = FleetRunState::new("z", PermissionMode::Default, None);
+        store.write_run(&run).expect("write");
+        let cmd = make_fleet_command(&dir);
+        let result = futures::executor::block_on(cmd.execute(
+            stub_context(dir.clone()),
+            invocation(&format!(
+                "wait {} --timeout-secs 5 --poll-interval-secs 0",
+                run.id
+            )),
+        ));
+        assert!(result.is_err(), "zero poll interval should be rejected");
+    }
+
+    // ── fleet results ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn fleet_results_no_storage_returns_disabled() {
+        let cmd = FleetCommand::new(None);
+        let fleet_id = FleetId::new();
+        let output = futures::executor::block_on(cmd.execute(
+            stub_context(std::env::current_dir().unwrap()),
+            invocation(&format!("results {fleet_id}")),
+        ))
+        .expect("execute");
+        let text = match output {
+            CommandOutput::Text(t) => t,
+            other => panic!("unexpected: {other:?}"),
+        };
+        assert!(text.contains("requires --storage-dir"), "got: {text}");
+    }
+
+    #[test]
+    fn fleet_results_missing_fleet_id_returns_error() {
+        let dir = unique_test_dir("fleet-results-missing");
+        let store = FleetStore::new(&dir);
+        store.ensure_layout().expect("layout");
+        let cmd = make_fleet_command(&dir);
+        let missing_id = FleetId::new();
+        let result = futures::executor::block_on(cmd.execute(
+            stub_context(dir.clone()),
+            invocation(&format!("results {missing_id}")),
+        ));
+        assert!(result.is_err(), "expected error for missing fleet");
+    }
+
+    #[test]
+    fn fleet_results_empty_run_shows_summary_only() {
+        use wonder_of_u_core::AGENT_TASK_RESULT_SCHEMA_VERSION;
+        use wonder_of_u_storage::AgentTaskResultStore;
+
+        let dir = unique_test_dir("fleet-results-empty");
+        let fleet_store = FleetStore::new(&dir);
+        let run = FleetRunState::new("results test", PermissionMode::Default, None);
+        fleet_store.write_run(&run).expect("write");
+
+        let cmd = make_fleet_command(&dir);
+        let output = futures::executor::block_on(cmd.execute(
+            stub_context(dir.clone()),
+            invocation(&format!("results {}", run.id)),
+        ))
+        .expect("execute");
+
+        let text = match output {
+            CommandOutput::Text(t) => t,
+            other => panic!("unexpected: {other:?}"),
+        };
+        assert!(
+            text.contains(&format!("fleet_id={}", run.id)),
+            "got: {text}"
+        );
+        assert!(text.contains("members=0"), "got: {text}");
+        assert!(text.contains("queued_requests=0"), "got: {text}");
+        // No member rows when there are no members.
+        assert!(!text.contains("member[0]"), "got: {text}");
+        let _ = AGENT_TASK_RESULT_SCHEMA_VERSION; // use the import
+        let _ = AgentTaskResultStore::new(&dir); // use the import
+    }
+
+    #[test]
+    fn fleet_results_shows_queued_requests() {
+        let dir = unique_test_dir("fleet-results-queued");
+        let fleet_store = FleetStore::new(&dir);
+
+        let run = FleetRunState::new("queued-test", PermissionMode::Default, None);
+        fleet_store.write_run(&run).expect("write run");
+
+        let mut req = FleetMemberRequest::new("do the thing");
+        req.fleet_id = Some(run.id);
+        req.name = Some("worker-1".into());
+        fleet_store.queue_member_request(&req).expect("queue");
+
+        let cmd = make_fleet_command(&dir);
+        let output = futures::executor::block_on(cmd.execute(
+            stub_context(dir.clone()),
+            invocation(&format!("results {}", run.id)),
+        ))
+        .expect("execute");
+
+        let text = match output {
+            CommandOutput::Text(t) => t,
+            other => panic!("unexpected: {other:?}"),
+        };
+        assert!(text.contains("queued_requests=1"), "got: {text}");
+        assert!(text.contains(&req.id), "got: {text}");
+        assert!(text.contains("worker-1"), "got: {text}");
+        let _ = run.id; // suppress unused warning
+    }
+
+    // ── truncate_chars helper ─────────────────────────────────────────────────
+
+    #[test]
+    fn truncate_chars_ascii_exact() {
+        assert_eq!(truncate_chars("hello", 5), "hello");
+    }
+
+    #[test]
+    fn truncate_chars_ascii_truncates() {
+        assert_eq!(truncate_chars("hello world", 5), "hello");
+    }
+
+    #[test]
+    fn truncate_chars_multibyte_safe() {
+        // "café" = 4 chars / 5 bytes; truncating at 3 chars must not split 'é'.
+        assert_eq!(truncate_chars("café", 3), "caf");
+    }
+
+    #[test]
+    fn truncate_chars_combining_mark_safe() {
+        let text = "e\u{301}clair";
+        assert_eq!(truncate_chars(text, 1), "e\u{301}");
+    }
+
+    #[test]
+    fn truncate_chars_flag_emoji_safe() {
+        assert_eq!(truncate_chars("🇺🇸 ok", 1), "🇺🇸");
+    }
+
+    #[test]
+    fn truncate_chars_zwj_emoji_safe() {
+        assert_eq!(truncate_chars("👨‍👩‍👧‍👦 family", 1), "👨‍👩‍👧‍👦");
+    }
+
+    #[test]
+    fn truncate_chars_zero_returns_empty() {
+        assert_eq!(truncate_chars("hello", 0), "");
+    }
+
+    #[test]
+    fn truncate_chars_larger_than_input() {
+        assert_eq!(truncate_chars("hi", 100), "hi");
     }
 }
