@@ -23,6 +23,7 @@ pub(crate) mod env;
 mod extras;
 mod features;
 mod fleet;
+mod fleet_plan;
 mod help;
 pub(crate) mod hooks;
 pub(crate) mod import;

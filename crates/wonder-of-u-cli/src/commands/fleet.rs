@@ -28,6 +28,7 @@ use std::{collections::BTreeSet, path::PathBuf};
 
 use async_trait::async_trait;
 use clap::{Args, Parser, Subcommand};
+use time::OffsetDateTime;
 use wonder_of_u_agent::{ProviderResolver, ProviderStatusReport};
 use wonder_of_u_core::{
     Command, CommandContext, CommandInvocation, CommandKind, CommandOutput, CommandSpec,
@@ -37,6 +38,7 @@ use wonder_of_u_core::{
 use wonder_of_u_storage::FleetStore;
 
 use super::{
+    fleet_plan::parse_plan,
     parse_command_args,
     task_runtime::{AgentTaskLaunch, TaskManager},
 };
@@ -88,6 +90,8 @@ enum FleetSubcommand {
     StopAll(FleetStopAllArgs),
     /// List available fleet agent roles.
     Roles,
+    /// Launch ready members of a plan-based fleet run, respecting dependencies.
+    Reconcile(FleetReconcileArgs),
 }
 
 #[derive(Debug, Args)]
@@ -97,7 +101,9 @@ struct FleetStartArgs {
     description: String,
     /// Agent prompt (used when `--member-name` is provided to create an
     /// immediate single-member fleet).
-    #[arg(long)]
+    ///
+    /// Conflicts with `--plan`.
+    #[arg(long, conflicts_with = "plan")]
     prompt: Option<String>,
     /// Optional member name for the immediate agent task.
     #[arg(long)]
@@ -117,6 +123,17 @@ struct FleetStartArgs {
     /// Optional working directory for the immediate agent task.
     #[arg(long)]
     cwd: Option<PathBuf>,
+    /// Path to a JSON plan file (array of member specs) to queue as a batch.
+    ///
+    /// Conflicts with `--prompt`. Use `fleet reconcile <fleet_id>` to launch
+    /// members after creating the run.
+    #[arg(long, conflicts_with = "prompt")]
+    plan: Option<PathBuf>,
+    /// Maximum number of member tasks allowed to run concurrently.
+    ///
+    /// Only meaningful with `--plan`. Must be > 0.
+    #[arg(long)]
+    max_concurrency: Option<usize>,
 }
 
 #[derive(Debug, Args)]
@@ -135,6 +152,12 @@ struct FleetShowArgs {
 
 #[derive(Debug, Args)]
 struct FleetStopAllArgs {
+    fleet_id: String,
+}
+
+#[derive(Debug, Args)]
+struct FleetReconcileArgs {
+    /// The fleet run id to reconcile.
     fleet_id: String,
 }
 
@@ -160,6 +183,7 @@ impl Command for FleetCommand {
             FleetSubcommand::Show(args) => self.show(args),
             FleetSubcommand::StopAll(args) => self.stop_all(args),
             FleetSubcommand::Roles => Self::roles(),
+            FleetSubcommand::Reconcile(args) => self.reconcile(context, args),
         }
     }
 }
@@ -171,6 +195,9 @@ impl FleetCommand {
     ///
     /// Processes requests in queue order (oldest first).  A per-request
     /// failure is recorded but does **not** abort remaining requests.
+    ///
+    /// Requests with a non-empty `depends_on` are skipped with a warning;
+    /// those must be launched through `fleet reconcile <fleet_id>`.
     fn dispatch(&self, context: CommandContext) -> Result<CommandOutput> {
         let (manager, store) = match self.stores() {
             Some(pair) => pair,
@@ -190,16 +217,31 @@ impl FleetCommand {
 
         let report = ProviderResolver::builtin().load_report(self.storage_dir.as_deref())?;
         let mut dispatched = 0usize;
+        let mut skipped_deps = 0usize;
         let mut errors: Vec<String> = Vec::new();
 
         for req in &pending {
+            // Skip requests that belong to a plan and carry dependency
+            // constraints; those must go through `fleet reconcile`.
+            if !req.depends_on.is_empty() {
+                skipped_deps += 1;
+                errors.push(format!(
+                    "skipped[{}]: has depends_on — use `fleet reconcile {}` instead",
+                    req.id,
+                    req.fleet_id
+                        .map(|id| id.to_string())
+                        .unwrap_or_else(|| "<fleet_id>".into())
+                ));
+                continue;
+            }
+
             match dispatch_one(&manager, &store, &context, req, &report) {
                 Ok(task_id) => {
                     dispatched += 1;
                     // Best-effort: if the request belongs to a fleet run, link
                     // the new task to that run.
                     if let Some(fleet_id) = req.fleet_id {
-                        let _ = link_task_to_fleet(&store, fleet_id, task_id);
+                        let _ = link_task_to_fleet(&store, fleet_id, &req.id, task_id);
                     }
                 }
                 Err(error) => {
@@ -215,6 +257,7 @@ impl FleetCommand {
         let mut lines = vec![
             format!("fleet_pending_total={}", pending.len()),
             format!("fleet_dispatched={dispatched}"),
+            format!("fleet_skipped_deps={skipped_deps}"),
             format!("fleet_dispatch_errors={}", errors.len()),
         ];
         lines.extend(errors);
@@ -229,6 +272,28 @@ impl FleetCommand {
                 return Ok(CommandOutput::Text(runtime_disabled_message("fleet start")));
             }
         };
+
+        // ── Plan-based start ──────────────────────────────────────────────────
+        if let Some(plan_path) = args.plan {
+            return self.start_plan(
+                context,
+                &store,
+                &args.description,
+                &plan_path,
+                args.max_concurrency,
+            );
+        }
+
+        // Validate max_concurrency when present (even without --plan it's a user error).
+        if let Some(mc) = args.max_concurrency {
+            if mc == 0 {
+                return Err(WonderError::validation(
+                    "--max-concurrency must be greater than 0",
+                ));
+            }
+        }
+
+        // ── Single-member / no-member start (original behaviour) ─────────────
 
         // Resolve role early so we can include it in the output.
         let resolved_role = if let Some(ref role_id) = args.role {
@@ -303,6 +368,83 @@ impl FleetCommand {
             lines.push(format!("member[{i}].task_id={task_id}"));
         }
         lines.push("note=use `fleet dispatch` to launch queued pending requests".into());
+        Ok(CommandOutput::Text(lines.join("\n")))
+    }
+
+    /// Handles `fleet start --plan <path>`: parse the plan, queue all members
+    /// as [`FleetMemberRequest`]s, and write the [`FleetRunState`].
+    ///
+    /// Does **not** launch any tasks; use `fleet reconcile <fleet_id>`.
+    fn start_plan(
+        &self,
+        context: CommandContext,
+        store: &FleetStore,
+        description: &str,
+        plan_path: &std::path::Path,
+        max_concurrency: Option<usize>,
+    ) -> Result<CommandOutput> {
+        if let Some(mc) = max_concurrency {
+            if mc == 0 {
+                return Err(WonderError::validation(
+                    "--max-concurrency must be greater than 0",
+                ));
+            }
+        }
+
+        let json = std::fs::read_to_string(plan_path).map_err(|e| {
+            WonderError::validation(format!(
+                "cannot read plan file `{}`: {e}",
+                plan_path.display()
+            ))
+        })?;
+        let specs = parse_plan(&json)?;
+
+        let mut run = FleetRunState::new(
+            description,
+            context.permission_mode,
+            Some(context.cwd.clone()),
+        );
+        run.max_concurrency = max_concurrency;
+
+        // Queue all members as pending requests in topological order.
+        for spec in &specs {
+            let mut req = FleetMemberRequest::new(spec.prompt.clone());
+            req.id = spec.id.clone(); // use the plan id as the request id
+            req.fleet_id = Some(run.id);
+            req.name = spec.name.clone();
+            req.description = spec.description.clone();
+            req.role = spec.role.clone();
+            req.model = spec.model.clone();
+            req.provider = spec.provider.clone();
+            req.cwd = spec.cwd.clone();
+            req.depends_on = spec.depends_on.clone();
+            store.queue_member_request(&req)?;
+        }
+
+        store.write_run(&run)?;
+
+        let mut lines = vec![
+            format!("fleet_id={}", run.id),
+            format!("description={}", sanitize_line(description)),
+            format!("status={}", run.status.label()),
+            format!("members={}", specs.len()),
+        ];
+        if let Some(mc) = max_concurrency {
+            lines.push(format!("max_concurrency={mc}"));
+        }
+        for (i, spec) in specs.iter().enumerate() {
+            lines.push(format!("member[{i}].id={}", spec.id));
+            if !spec.depends_on.is_empty() {
+                lines.push(format!(
+                    "member[{i}].depends_on={}",
+                    spec.depends_on.join(",")
+                ));
+            }
+        }
+        lines.push(format!(
+            "note=run `fleet reconcile {}` to launch ready members",
+            run.id
+        ));
         Ok(CommandOutput::Text(lines.join("\n")))
     }
 
@@ -516,6 +658,183 @@ impl FleetCommand {
         Ok(CommandOutput::Text(lines.join("\n")))
     }
 
+    /// Launches ready members of a plan-based fleet run, respecting deps.
+    ///
+    /// This is a **stateless re-entrant** operation: calling it multiple times
+    /// is safe and idempotent — already-dispatched members (tracked in
+    /// [`FleetRunState::dispatched_requests`]) are never re-launched.
+    ///
+    /// # Classification
+    ///
+    /// For each pending request belonging to `fleet_id`, the reconciler
+    /// classifies it as:
+    ///
+    /// - **ready** — all `depends_on` ids have been dispatched and their tasks
+    ///   are in [`TaskStatus::Completed`].
+    /// - **waiting** — all deps have been dispatched but at least one is still
+    ///   non-terminal (pending/running).
+    /// - **blocked** — at least one dep's task is terminal but not
+    ///   [`TaskStatus::Completed`] (failed/killed/cancelled).
+    ///
+    /// Ready requests are launched up to the `max_concurrency` cap.
+    fn reconcile(
+        &self,
+        context: CommandContext,
+        args: FleetReconcileArgs,
+    ) -> Result<CommandOutput> {
+        let (manager, store) = match self.stores() {
+            Some(pair) => pair,
+            None => {
+                return Ok(CommandOutput::Text(runtime_disabled_message(
+                    "fleet reconcile",
+                )));
+            }
+        };
+
+        let fleet_id = parse_fleet_id(&args.fleet_id)?;
+        let mut run = store.read_run(fleet_id)?;
+
+        // Load all pending requests that belong to this fleet.
+        let all_pending = store.list_pending_requests()?;
+        let pending: Vec<_> = all_pending
+            .iter()
+            .filter(|r| r.fleet_id == Some(fleet_id))
+            .collect();
+
+        // Count active (non-terminal) member tasks for concurrency cap.
+        let active_count = run
+            .member_task_ids
+            .iter()
+            .filter(|&&tid| {
+                manager
+                    .get_task(tid)
+                    .map(|t| !t.status.is_terminal())
+                    .unwrap_or(false)
+            })
+            .count();
+
+        let report = ProviderResolver::builtin().load_report(self.storage_dir.as_deref())?;
+
+        let mut newly_launched = 0usize;
+        let mut ready_count = 0usize;
+        let mut waiting_count = 0usize;
+        let mut blocked_count = 0usize;
+        let mut launch_errors: Vec<String> = Vec::new();
+
+        // Compute remaining concurrency slots (None = unbounded).
+        let mut slots_remaining: Option<usize> = run
+            .max_concurrency
+            .map(|cap| cap.saturating_sub(active_count));
+
+        for req in &pending {
+            // Skip already-dispatched (idempotency guard).
+            if run.dispatched_requests.contains_key(&req.id) {
+                continue;
+            }
+
+            // Classify the request based on its dependency statuses.
+            let classification = classify_request(req, &run, &manager);
+
+            match classification {
+                DepClassification::Ready => {
+                    ready_count += 1;
+                    // Honour max_concurrency cap.
+                    if slots_remaining == Some(0) {
+                        // No slots left this pass; leave as ready for next call.
+                        continue;
+                    }
+
+                    match dispatch_one(&manager, &store, &context, req, &report) {
+                        Ok(task_id) => {
+                            newly_launched += 1;
+                            run.record_dispatch(req.id.clone(), task_id);
+                            if run.status == FleetRunStatus::Pending {
+                                run.status = FleetRunStatus::Running;
+                            }
+                            if let Some(ref mut slots) = slots_remaining {
+                                *slots = slots.saturating_sub(1);
+                            }
+                        }
+                        Err(err) => {
+                            launch_errors.push(format!(
+                                "launch_error[{}]: {}",
+                                req.id,
+                                sanitize_line(&err.to_string())
+                            ));
+                        }
+                    }
+                }
+                DepClassification::Waiting => waiting_count += 1,
+                DepClassification::Blocked => blocked_count += 1,
+            }
+        }
+
+        // Recompute completed/failed counts from member tasks.
+        let mut completed_count = 0usize;
+        let mut failed_count = 0usize;
+        let mut active_after = 0usize;
+        let mut member_statuses: Vec<TaskStatus> = Vec::new();
+        for &tid in &run.member_task_ids {
+            match manager.get_task(tid) {
+                Ok(t) => {
+                    member_statuses.push(t.status);
+                    if t.status.is_terminal() {
+                        if t.status == TaskStatus::Completed {
+                            completed_count += 1;
+                        } else {
+                            failed_count += 1;
+                        }
+                    } else {
+                        active_after += 1;
+                    }
+                }
+                Err(_) => member_statuses.push(TaskStatus::Pending),
+            }
+        }
+
+        // Determine new fleet status.
+        //
+        // Pending-queue items that are still waiting/ready/unblocked count as
+        // "work remaining" and keep the fleet Running rather than prematurely
+        // marking it terminal.
+        let remaining_work = waiting_count
+            + ready_count
+            + pending
+                .iter()
+                .filter(|r| !run.dispatched_requests.contains_key(&r.id))
+                .count();
+
+        if blocked_count > 0 && active_after == 0 && remaining_work == blocked_count {
+            // All remaining work is blocked and nothing is active → Failed.
+            run.status = FleetRunStatus::Failed;
+            if run.finished_at.is_none() {
+                run.finished_at = Some(OffsetDateTime::now_utc());
+            }
+        } else if active_after > 0 || remaining_work > 0 || newly_launched > 0 {
+            run.status = FleetRunStatus::Running;
+        } else if !member_statuses.is_empty() {
+            // All dispatched, all terminal.
+            run.reconcile_status(&member_statuses);
+        }
+
+        store.write_run(&run)?;
+
+        let mut lines = vec![
+            format!("fleet_id={}", run.id),
+            format!("fleet_status={}", run.status.label()),
+            format!("active={active_after}"),
+            format!("completed={completed_count}"),
+            format!("failed={failed_count}"),
+            format!("ready={ready_count}"),
+            format!("waiting={waiting_count}"),
+            format!("blocked={blocked_count}"),
+            format!("newly_launched={newly_launched}"),
+            format!("launch_errors={}", launch_errors.len()),
+        ];
+        lines.extend(launch_errors);
+        Ok(CommandOutput::Text(lines.join("\n")))
+    }
+
     // ── Helpers ───────────────────────────────────────────────────────────────
 
     fn task_manager(&self) -> Option<TaskManager> {
@@ -607,13 +926,19 @@ fn dispatch_one(
     Ok(task.id)
 }
 
-/// Links a newly-dispatched task to an existing fleet run by appending to
-/// `member_task_ids` and recomputing the run's status.
-fn link_task_to_fleet(store: &FleetStore, fleet_id: FleetId, task_id: TaskId) -> Result<()> {
+/// Links a newly-dispatched task to an existing fleet run.
+///
+/// Records the `request_id → task_id` mapping via [`FleetRunState::record_dispatch`],
+/// which also appends to `member_task_ids` (deduped).  Marks the run as at
+/// least `Running` if it was still `Pending`.
+fn link_task_to_fleet(
+    store: &FleetStore,
+    fleet_id: FleetId,
+    request_id: &str,
+    task_id: TaskId,
+) -> Result<()> {
     let mut run = store.read_run(fleet_id)?;
-    if !run.member_task_ids.contains(&task_id) {
-        run.member_task_ids.push(task_id);
-    }
+    run.record_dispatch(request_id.to_owned(), task_id);
     // At least one member is now running.
     if run.status == FleetRunStatus::Pending {
         run.status = FleetRunStatus::Running;
@@ -624,6 +949,61 @@ fn link_task_to_fleet(store: &FleetStore, fleet_id: FleetId, task_id: TaskId) ->
 
 fn parse_fleet_id(value: &str) -> Result<FleetId> {
     FleetId::parse(value)
+}
+
+/// How a pending request's dependencies are classified during reconcile.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum DepClassification {
+    /// All deps dispatched and completed → may launch now.
+    Ready,
+    /// All deps dispatched but at least one is still non-terminal.
+    Waiting,
+    /// At least one dep's task is terminal but not Completed.
+    Blocked,
+}
+
+/// Classifies a pending request's dependency state.
+fn classify_request(
+    req: &FleetMemberRequest,
+    run: &FleetRunState,
+    manager: &TaskManager,
+) -> DepClassification {
+    if req.depends_on.is_empty() {
+        return DepClassification::Ready;
+    }
+
+    let mut all_completed = true;
+    for dep_id in &req.depends_on {
+        match run.dispatched_requests.get(dep_id) {
+            None => {
+                // Dependency not yet dispatched → waiting (can't be blocked).
+                return DepClassification::Waiting;
+            }
+            Some(&dep_task_id) => match manager.get_task(dep_task_id) {
+                Ok(task) => {
+                    if task.status == TaskStatus::Completed {
+                        // This dep is done; continue checking the rest.
+                    } else if task.status.is_terminal() {
+                        // Terminal but not Completed → blocked.
+                        return DepClassification::Blocked;
+                    } else {
+                        // Still running/pending → waiting.
+                        all_completed = false;
+                    }
+                }
+                Err(_) => {
+                    // Can't read the task; treat conservatively as waiting.
+                    all_completed = false;
+                }
+            },
+        }
+    }
+
+    if all_completed {
+        DepClassification::Ready
+    } else {
+        DepClassification::Waiting
+    }
 }
 
 fn task_status_label(status: TaskStatus) -> &'static str {
@@ -668,7 +1048,9 @@ fn runtime_disabled_message(subcommand: &str) -> String {
 mod tests {
     use std::path::Path;
 
-    use wonder_of_u_core::{FeatureSet, FleetRunState, PermissionMode, SessionId};
+    use wonder_of_u_core::{
+        FeatureSet, FleetId, FleetRunState, FleetRunStatus, PermissionMode, SessionId,
+    };
     use wonder_of_u_test_support::unique_test_dir;
 
     use super::*;
@@ -934,5 +1316,497 @@ mod tests {
         };
         assert!(text.contains("role=rust-engineer"), "got: {text}");
         assert!(text.contains("role_name=Rust Engineer"), "got: {text}");
+    }
+
+    // ── fleet start --plan tests ─────────────────────────────────────────────
+
+    fn write_plan(dir: &std::path::Path, name: &str, json: &str) -> PathBuf {
+        let path = dir.join(name);
+        std::fs::write(&path, json).expect("write plan");
+        path
+    }
+
+    #[test]
+    fn fleet_start_plan_queues_members_and_writes_run() {
+        let dir = unique_test_dir("fleet-start-plan");
+        let plan_json = serde_json::json!([
+            {"id": "step-a", "prompt": "do a"},
+            {"id": "step-b", "prompt": "do b", "depends_on": ["step-a"]}
+        ])
+        .to_string();
+        let plan_path = write_plan(&dir, "plan.json", &plan_json);
+
+        let cmd = make_fleet_command(&dir);
+        let output = futures::executor::block_on(cmd.execute(
+            stub_context(dir.clone()),
+            invocation(&format!(
+                "start --description \"two-step plan\" --plan {} --max-concurrency 1",
+                plan_path.display()
+            )),
+        ))
+        .expect("execute");
+
+        let text = match output {
+            CommandOutput::Text(t) => t,
+            other => panic!("unexpected: {other:?}"),
+        };
+        assert!(text.contains("members=2"), "got: {text}");
+        assert!(text.contains("max_concurrency=1"), "got: {text}");
+        assert!(text.contains("step-a"), "got: {text}");
+        assert!(text.contains("step-b"), "got: {text}");
+        assert!(text.contains("fleet reconcile"), "got: {text}");
+
+        // Both pending requests must be stored.
+        let store = FleetStore::new(&dir);
+        let pending = store.list_pending_requests().expect("list");
+        assert_eq!(pending.len(), 2);
+        let ids: Vec<&str> = pending.iter().map(|r| r.id.as_str()).collect();
+        assert!(ids.contains(&"step-a"), "step-a missing from pending");
+        assert!(ids.contains(&"step-b"), "step-b missing from pending");
+
+        // step-b must carry depends_on.
+        let step_b = pending.iter().find(|r| r.id == "step-b").unwrap();
+        assert_eq!(step_b.depends_on, vec!["step-a"]);
+    }
+
+    #[test]
+    fn fleet_start_plan_cycle_is_rejected_without_writing() {
+        let dir = unique_test_dir("fleet-start-plan-cycle");
+        let plan_json = serde_json::json!([
+            {"id": "a", "prompt": "x", "depends_on": ["b"]},
+            {"id": "b", "prompt": "y", "depends_on": ["a"]}
+        ])
+        .to_string();
+        let plan_path = write_plan(&dir, "cycle.json", &plan_json);
+
+        let cmd = make_fleet_command(&dir);
+        let result = futures::executor::block_on(cmd.execute(
+            stub_context(dir.clone()),
+            invocation(&format!(
+                "start --description cycle --plan {}",
+                plan_path.display()
+            )),
+        ));
+
+        let err = result.expect_err("should reject cycle");
+        assert!(err.to_string().contains("cycle"), "got: {err}");
+
+        // No run must have been persisted.
+        let store = FleetStore::new(&dir);
+        let runs = store.list_runs().expect("list");
+        assert!(
+            runs.is_empty(),
+            "no run should be stored for a rejected plan"
+        );
+    }
+
+    #[test]
+    fn fleet_start_plan_zero_max_concurrency_is_rejected() {
+        let dir = unique_test_dir("fleet-start-mc-zero");
+        let plan_json = r#"[{"id":"step-a","prompt":"do a"}]"#;
+        let plan_path = write_plan(&dir, "plan.json", plan_json);
+
+        let cmd = make_fleet_command(&dir);
+        let result = futures::executor::block_on(cmd.execute(
+            stub_context(dir.clone()),
+            invocation(&format!(
+                "start --description x --plan {} --max-concurrency 0",
+                plan_path.display()
+            )),
+        ));
+        let err = result.expect_err("should reject max-concurrency=0");
+        assert!(err.to_string().contains("greater than 0"), "got: {err}");
+    }
+
+    // ── fleet dispatch skips dep-constrained requests ─────────────────────────
+
+    #[test]
+    fn fleet_dispatch_skips_dep_constrained_requests() {
+        let dir = unique_test_dir("fleet-dispatch-skip-deps");
+        let store = FleetStore::new(&dir);
+
+        // Create a fleet run so the request has a valid fleet_id to link to.
+        let run = FleetRunState::new("test fleet", PermissionMode::Default, None);
+        let fleet_id = run.id;
+        store.write_run(&run).expect("write run");
+
+        // Queue a request that has depends_on set.
+        let mut req = FleetMemberRequest::new("do the thing");
+        req.fleet_id = Some(fleet_id);
+        req.depends_on = vec!["some-other-step".into()];
+        store.queue_member_request(&req).expect("queue");
+
+        let cmd = make_fleet_command(&dir);
+        let output = futures::executor::block_on(
+            cmd.execute(stub_context(dir.clone()), invocation("dispatch")),
+        )
+        .expect("execute");
+
+        let text = match output {
+            CommandOutput::Text(t) => t,
+            other => panic!("unexpected: {other:?}"),
+        };
+        assert!(text.contains("fleet_skipped_deps=1"), "got: {text}");
+        assert!(text.contains("fleet reconcile"), "got: {text}");
+        // The request must still be pending (not deleted).
+        assert!(
+            store.read_pending_request(&req.id).is_ok(),
+            "dep-constrained request should remain pending"
+        );
+    }
+
+    // ── fleet reconcile tests ─────────────────────────────────────────────────
+
+    fn make_run_with_pending(
+        dir: &std::path::Path,
+        specs: &[(&str, &str, Vec<&str>)], // (id, prompt, depends_on)
+        max_concurrency: Option<usize>,
+    ) -> (FleetRunState, FleetStore) {
+        let store = FleetStore::new(dir);
+        let mut run = FleetRunState::new("test-fleet", PermissionMode::Default, None);
+        run.max_concurrency = max_concurrency;
+        for (id, prompt, deps) in specs {
+            let mut req = FleetMemberRequest::new(*prompt);
+            req.id = id.to_string();
+            req.fleet_id = Some(run.id);
+            req.depends_on = deps.iter().map(|s| s.to_string()).collect();
+            store.queue_member_request(&req).expect("queue");
+        }
+        store.write_run(&run).expect("write run");
+        (run, store)
+    }
+
+    #[test]
+    fn fleet_reconcile_no_storage_returns_disabled() {
+        let cmd = FleetCommand::new(None);
+        let output = futures::executor::block_on(cmd.execute(
+            stub_context(std::env::current_dir().unwrap()),
+            invocation("reconcile 00000000-0000-0000-0000-000000000000"),
+        ))
+        .expect("execute");
+        let text = match output {
+            CommandOutput::Text(t) => t,
+            other => panic!("unexpected: {other:?}"),
+        };
+        assert!(text.contains("requires --storage-dir"), "got: {text}");
+    }
+
+    #[test]
+    fn fleet_reconcile_missing_fleet_id_returns_error() {
+        let dir = unique_test_dir("fleet-reconcile-missing");
+        FleetStore::new(&dir).ensure_layout().expect("layout");
+        let cmd = make_fleet_command(&dir);
+        let result = futures::executor::block_on(cmd.execute(
+            stub_context(dir.clone()),
+            invocation(&format!("reconcile {}", FleetId::new())),
+        ));
+        assert!(result.is_err(), "expected error for missing fleet run");
+    }
+
+    #[test]
+    fn fleet_reconcile_roots_are_launched_without_deps() {
+        // Use the WONDER_OF_U_CLI_BIN override to point at a known-good script
+        // that exits 0 immediately so start_agent_task can proceed.
+        let dir = unique_test_dir("fleet-reconcile-roots");
+
+        // Write a tiny shell script that acts as the "CLI binary".
+        let fake_bin = dir.join("fake-wonder");
+        std::fs::write(&fake_bin, "#!/bin/sh\nsleep 0\nexit 0\n").expect("write fake bin");
+        // Make it executable.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&fake_bin, std::fs::Permissions::from_mode(0o755))
+                .expect("chmod");
+        }
+
+        let (run, _store) = make_run_with_pending(
+            &dir,
+            &[("root-a", "do a", vec![]), ("root-b", "do b", vec![])],
+            None,
+        );
+        let fleet_id = run.id.to_string();
+
+        // Set the CLI bin override so agent tasks spawn our no-op script.
+        // SAFETY: test-only env mutation; single-threaded via --test-threads=1.
+        unsafe { std::env::set_var("WONDER_OF_U_CLI_BIN", &fake_bin) };
+
+        let cmd = make_fleet_command(&dir);
+        let output = futures::executor::block_on(cmd.execute(
+            stub_context(dir.clone()),
+            invocation(&format!("reconcile {fleet_id}")),
+        ))
+        .expect("execute");
+
+        // SAFETY: test-only env mutation; single-threaded via --test-threads=1.
+        unsafe { std::env::remove_var("WONDER_OF_U_CLI_BIN") };
+
+        let text = match output {
+            CommandOutput::Text(t) => t,
+            other => panic!("unexpected: {other:?}"),
+        };
+        assert!(text.contains("newly_launched=2"), "got: {text}");
+    }
+
+    #[test]
+    fn fleet_reconcile_waits_for_running_dep() {
+        use wonder_of_u_core::{TaskId, TaskStatus};
+        use wonder_of_u_storage::TaskStore;
+
+        let dir = unique_test_dir("fleet-reconcile-wait-running");
+        let (run, store) = make_run_with_pending(
+            &dir,
+            &[
+                ("root", "do root", vec![]),
+                ("follower", "do after", vec!["root"]),
+            ],
+            None,
+        );
+
+        // Simulate root already dispatched as a running task.
+        let fake_task_id = TaskId::new();
+        let mut run2 = store.read_run(run.id).expect("read");
+        run2.record_dispatch("root".into(), fake_task_id);
+        run2.status = FleetRunStatus::Running;
+        store.write_run(&run2).expect("write");
+
+        // Write a fake task record with Running status + current PID so that
+        // TaskManager::get_task (which reconciles) sees a live process and
+        // keeps the task in Running rather than marking it Killed.
+        {
+            let task_store = TaskStore::new(&dir);
+            let mut task = wonder_of_u_core::TaskState::pending_agent(
+                "root".to_string(),
+                wonder_of_u_core::AgentTaskState::prompt_subprocess(
+                    "root".to_string(),
+                    "do root".to_string(),
+                    None,
+                    None,
+                ),
+            );
+            task.id = fake_task_id;
+            // Use the test process's own PID — process_is_alive(pid) returns true,
+            // so the reconciler keeps the task Running.
+            task.pid = Some(std::process::id());
+            task.status = TaskStatus::Running;
+            task_store.write_task(&task).expect("write task");
+        }
+
+        // Also delete the root pending request (it was "dispatched").
+        store.delete_pending_request("root").expect("delete root");
+
+        let cmd = make_fleet_command(&dir);
+        let output = futures::executor::block_on(cmd.execute(
+            stub_context(dir.clone()),
+            invocation(&format!("reconcile {}", run.id)),
+        ))
+        .expect("execute");
+
+        let text = match output {
+            CommandOutput::Text(t) => t,
+            other => panic!("unexpected: {other:?}"),
+        };
+        // follower can't launch yet: dep is running.
+        assert!(text.contains("newly_launched=0"), "got: {text}");
+        assert!(text.contains("waiting=1"), "got: {text}");
+    }
+
+    #[test]
+    fn fleet_reconcile_launches_after_completed_dep() {
+        use wonder_of_u_core::{TaskId, TaskStatus};
+        use wonder_of_u_storage::TaskStore;
+
+        let dir = unique_test_dir("fleet-reconcile-after-completed");
+
+        // Write a fake CLI script so agent tasks don't fail.
+        let fake_bin = dir.join("fake-wonder");
+        std::fs::write(&fake_bin, "#!/bin/sh\nsleep 0\nexit 0\n").expect("write");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&fake_bin, std::fs::Permissions::from_mode(0o755))
+                .expect("chmod");
+        }
+
+        let (run, store) =
+            make_run_with_pending(&dir, &[("follower", "do after", vec!["root"])], None);
+
+        // Simulate root dispatched and completed.
+        let fake_task_id = TaskId::new();
+        let mut run2 = store.read_run(run.id).expect("read");
+        run2.record_dispatch("root".into(), fake_task_id);
+        store.write_run(&run2).expect("write");
+
+        {
+            let task_store = TaskStore::new(&dir);
+            let mut task = wonder_of_u_core::TaskState::pending_agent(
+                "root".to_string(),
+                wonder_of_u_core::AgentTaskState::prompt_subprocess(
+                    "root".to_string(),
+                    "do root".to_string(),
+                    None,
+                    None,
+                ),
+            );
+            task.id = fake_task_id;
+            task.status = TaskStatus::Completed;
+            task_store.write_task(&task).expect("write task");
+        }
+
+        // SAFETY: test-only env mutation; single-threaded via --test-threads=1.
+        unsafe { std::env::set_var("WONDER_OF_U_CLI_BIN", &fake_bin) };
+
+        let cmd = make_fleet_command(&dir);
+        let output = futures::executor::block_on(cmd.execute(
+            stub_context(dir.clone()),
+            invocation(&format!("reconcile {}", run.id)),
+        ))
+        .expect("execute");
+
+        // SAFETY: test-only env mutation; single-threaded via --test-threads=1.
+        unsafe { std::env::remove_var("WONDER_OF_U_CLI_BIN") };
+
+        let text = match output {
+            CommandOutput::Text(t) => t,
+            other => panic!("unexpected: {other:?}"),
+        };
+        assert!(text.contains("newly_launched=1"), "got: {text}");
+    }
+
+    #[test]
+    fn fleet_reconcile_blocks_on_failed_dep() {
+        use wonder_of_u_core::{TaskId, TaskStatus};
+        use wonder_of_u_storage::TaskStore;
+
+        let dir = unique_test_dir("fleet-reconcile-blocked-failed");
+        let (run, store) =
+            make_run_with_pending(&dir, &[("follower", "do after", vec!["root"])], None);
+
+        // Simulate root dispatched but failed.
+        let fake_task_id = TaskId::new();
+        let mut run2 = store.read_run(run.id).expect("read");
+        run2.record_dispatch("root".into(), fake_task_id);
+        store.write_run(&run2).expect("write");
+
+        {
+            let task_store = TaskStore::new(&dir);
+            let mut task = wonder_of_u_core::TaskState::pending_agent(
+                "root".to_string(),
+                wonder_of_u_core::AgentTaskState::prompt_subprocess(
+                    "root".to_string(),
+                    "do root".to_string(),
+                    None,
+                    None,
+                ),
+            );
+            task.id = fake_task_id;
+            task.status = TaskStatus::Failed;
+            task_store.write_task(&task).expect("write task");
+        }
+
+        let cmd = make_fleet_command(&dir);
+        let output = futures::executor::block_on(cmd.execute(
+            stub_context(dir.clone()),
+            invocation(&format!("reconcile {}", run.id)),
+        ))
+        .expect("execute");
+
+        let text = match output {
+            CommandOutput::Text(t) => t,
+            other => panic!("unexpected: {other:?}"),
+        };
+        assert!(text.contains("blocked=1"), "got: {text}");
+        assert!(text.contains("newly_launched=0"), "got: {text}");
+        assert!(text.contains("fleet_status=failed"), "got: {text}");
+    }
+
+    #[test]
+    fn fleet_reconcile_respects_max_concurrency() {
+        let dir = unique_test_dir("fleet-reconcile-max-concurrency");
+
+        let fake_bin = dir.join("fake-wonder");
+        std::fs::write(&fake_bin, "#!/bin/sh\nsleep 0\nexit 0\n").expect("write");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&fake_bin, std::fs::Permissions::from_mode(0o755))
+                .expect("chmod");
+        }
+
+        // 3 root members (no deps), max_concurrency=1.
+        let (run, _store) = make_run_with_pending(
+            &dir,
+            &[
+                ("a", "do a", vec![]),
+                ("b", "do b", vec![]),
+                ("c", "do c", vec![]),
+            ],
+            Some(1),
+        );
+
+        // SAFETY: test-only env mutation; single-threaded via --test-threads=1.
+        unsafe { std::env::set_var("WONDER_OF_U_CLI_BIN", &fake_bin) };
+
+        let cmd = make_fleet_command(&dir);
+        let output = futures::executor::block_on(cmd.execute(
+            stub_context(dir.clone()),
+            invocation(&format!("reconcile {}", run.id)),
+        ))
+        .expect("execute");
+
+        // SAFETY: test-only env mutation; single-threaded via --test-threads=1.
+        unsafe { std::env::remove_var("WONDER_OF_U_CLI_BIN") };
+
+        let text = match output {
+            CommandOutput::Text(t) => t,
+            other => panic!("unexpected: {other:?}"),
+        };
+        // Only 1 slot, so newly_launched should be 1, with 2 ready left over.
+        assert!(text.contains("newly_launched=1"), "got: {text}");
+    }
+
+    #[test]
+    fn fleet_reconcile_is_idempotent() {
+        use wonder_of_u_core::TaskId;
+
+        let dir = unique_test_dir("fleet-reconcile-idempotent");
+        let (run, store) = make_run_with_pending(&dir, &[("step-a", "do a", vec![])], None);
+
+        // Pre-mark step-a as already dispatched in the run state.
+        let fake_tid = TaskId::new();
+        let mut run2 = store.read_run(run.id).expect("read");
+        run2.record_dispatch("step-a".into(), fake_tid);
+        store.write_run(&run2).expect("write");
+        // Also remove the pending file (as dispatch_one would have done).
+        store
+            .delete_pending_request("step-a")
+            .expect("delete pending");
+
+        let cmd = make_fleet_command(&dir);
+        let output = futures::executor::block_on(cmd.execute(
+            stub_context(dir.clone()),
+            invocation(&format!("reconcile {}", run.id)),
+        ))
+        .expect("execute");
+
+        let text = match output {
+            CommandOutput::Text(t) => t,
+            other => panic!("unexpected: {other:?}"),
+        };
+        // Nothing to re-launch.
+        assert!(text.contains("newly_launched=0"), "got: {text}");
+    }
+
+    // ── dep classification unit tests ─────────────────────────────────────────
+
+    #[test]
+    fn classify_request_no_deps_is_ready() {
+        let run = FleetRunState::new("x", PermissionMode::Default, None);
+        let req = FleetMemberRequest::new("do x");
+        let manager = TaskManager::new(unique_test_dir("classify-ready"));
+        assert_eq!(
+            classify_request(&req, &run, &manager),
+            DepClassification::Ready
+        );
     }
 }
