@@ -117,6 +117,8 @@ pub(crate) struct TaskPruneReport {
     pub removed: Vec<TaskState>,
     /// Active (non-terminal) tasks that were skipped.
     pub skipped_active: Vec<TaskState>,
+    /// Terminal tasks skipped by a narrower prune filter.
+    pub skipped_terminal: Vec<TaskState>,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -401,7 +403,7 @@ impl TaskManager {
                     result.removed.push(task);
                 } else {
                     // Terminal but excluded by the completed-only filter.
-                    result.skipped_active.push(task);
+                    result.skipped_terminal.push(task);
                 }
             } else {
                 // Active task – never touched.
@@ -1605,11 +1607,12 @@ mod tests {
 
         assert_eq!(report.removed.len(), 1);
         assert_eq!(report.removed[0].id, completed.id);
-        // The failed task ends up in skipped because completed_only=true.
+        // The failed task ends up in terminal-skipped because completed_only=true.
         assert!(
-            report.skipped_active.iter().any(|t| t.id == failed.id),
-            "failed task should be in skipped list under --completed"
+            report.skipped_terminal.iter().any(|t| t.id == failed.id),
+            "failed task should be in terminal skipped list under --completed"
         );
+        assert!(report.skipped_active.is_empty());
 
         let failed_state = manager.store.paths().task_state_path(failed.id);
         assert!(

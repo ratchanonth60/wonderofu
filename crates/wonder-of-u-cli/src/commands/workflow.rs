@@ -4992,15 +4992,24 @@ fn render_task_prune_report(report: &super::task_runtime::TaskPruneReport) -> St
         .iter()
         .map(|t| t.id.to_string())
         .collect::<Vec<_>>();
+    let skipped_terminal_ids = report
+        .skipped_terminal
+        .iter()
+        .map(|t| t.id.to_string())
+        .collect::<Vec<_>>();
     let mut lines = vec![
         format!("removed={}", report.removed.len()),
         format!("skipped_active={}", report.skipped_active.len()),
+        format!("skipped_terminal={}", report.skipped_terminal.len()),
     ];
     for (index, id) in removed_ids.iter().enumerate() {
         lines.push(format!("removed_ids[{index}]={id}"));
     }
     for (index, id) in skipped_ids.iter().enumerate() {
-        lines.push(format!("skipped_ids[{index}]={id}"));
+        lines.push(format!("skipped_active_ids[{index}]={id}"));
+    }
+    for (index, id) in skipped_terminal_ids.iter().enumerate() {
+        lines.push(format!("skipped_terminal_ids[{index}]={id}"));
     }
     lines.join("\n")
 }
