@@ -2,7 +2,10 @@ use std::{collections::BTreeMap, time::Duration};
 
 use serde_json::json;
 use tokio::time::timeout;
-use wonder_of_u_mcp::{McpClient, McpClientIdentity, McpContent, McpServerConfig};
+use wonder_of_u_core::tool::Tool;
+use wonder_of_u_mcp::{
+    McpClient, McpClientIdentity, McpConfig, McpContent, McpServerConfig, discover_catalog_tools,
+};
 
 fn fake_server_path() -> String {
     env!("CARGO_BIN_EXE_fake_mcp_server").to_string()
@@ -117,4 +120,71 @@ async fn integration_mcp_client_reconnects_after_server_restart() {
             .collect::<Vec<_>>(),
         vec!["Echo Text"]
     );
+}
+
+// ── discover_catalog_tools + DynamicMcpTool ─────────────────────────────────
+
+/// Build a [`McpConfig`] that points to the fake server binary.
+fn fake_mcp_config() -> McpConfig {
+    McpConfig {
+        servers: vec![fake_server_config(None)],
+        ..McpConfig::default()
+    }
+}
+
+#[test]
+fn discover_catalog_tools_returns_one_tool_from_fake_server() {
+    let config = fake_mcp_config();
+    let tools = discover_catalog_tools(&config);
+
+    assert_eq!(tools.len(), 1, "expected exactly one catalog tool");
+    let tool = &tools[0];
+    // Qualified name must be namespaced.
+    assert_eq!(
+        tool.spec().name,
+        "mcp__demo__echo_text",
+        "qualified name should be namespaced with server prefix"
+    );
+    assert_eq!(tool.server_name(), "demo");
+}
+
+#[test]
+fn discover_catalog_tools_skips_unreachable_servers() {
+    let mut config = fake_mcp_config();
+    // Add a server that cannot be started.
+    config.servers.push(McpServerConfig {
+        name: "bad-server".into(),
+        command: "/no/such/binary".into(),
+        args: Vec::new(),
+        env: BTreeMap::new(),
+        enabled: true,
+        cwd: None,
+        protocol_version: None,
+    });
+
+    // Should still return the tool from the reachable server.
+    let tools = discover_catalog_tools(&config);
+    assert_eq!(
+        tools.len(),
+        1,
+        "unreachable server should be silently skipped"
+    );
+}
+
+#[test]
+fn discover_catalog_tools_skips_disabled_servers() {
+    let mut config = fake_mcp_config();
+    config.servers[0].enabled = false;
+
+    let tools = discover_catalog_tools(&config);
+    assert!(
+        tools.is_empty(),
+        "disabled servers must not contribute tools"
+    );
+}
+
+#[test]
+fn discover_catalog_tools_empty_config_returns_nothing() {
+    let tools = discover_catalog_tools(&McpConfig::default());
+    assert!(tools.is_empty(), "empty config should return no tools");
 }

@@ -8,7 +8,7 @@ use clap::Parser;
 use wonder_of_u_agent::{
     CompletionRequest, CompletionResponse, ProviderRuntime, ProviderSelection, ProviderToolCall,
     ProviderToolResultMessage, ProviderToolSpec, ToolConversationRound, ToolUseRequest,
-    ToolUseResponse, builtin_tool_registry,
+    ToolUseResponse,
 };
 use wonder_of_u_core::{
     AppState, Command, CommandContext, CommandInvocation, CommandKind, CommandOutput, CommandSpec,
@@ -20,7 +20,7 @@ use wonder_of_u_storage::{
     CostStore, SessionCostLedger, SessionMemoryIndexStore, SessionMetadata, SessionSnapshot,
     TranscriptStore,
 };
-use wonder_of_u_tools::provider_tool_specs;
+use wonder_of_u_tools::{builtin_registry_with_mcp_catalog, provider_tool_specs};
 
 use super::{
     detect_git_branch,
@@ -586,7 +586,11 @@ fn execute_prompt_tool_loop(
         request_prompt,
         ..
     } = input;
-    let registry = builtin_tool_registry()?;
+    let registry = match storage_dir {
+        Some(root) => builtin_registry_with_mcp_catalog(root),
+        // No persistent storage: fall back to built-ins only.
+        None => wonder_of_u_tools::builtin_registry(),
+    }?;
     let tool_context = tool_context(state);
     let provider_tools = provider_tool_specs(&registry, &tool_context, allowed_tools.as_ref())
         .into_iter()
