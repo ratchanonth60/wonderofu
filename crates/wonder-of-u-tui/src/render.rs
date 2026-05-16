@@ -1401,9 +1401,9 @@ fn draw_picker_list(
             .map(|t| format!("[{t}]"));
 
         // Tag width in columns (ASCII-only assumption is safe for our tag values).
-        let tag_cols = tag_str.as_deref().map_or(0_u16, |t| {
-            u16::try_from(t.chars().count()).unwrap_or(0)
-        });
+        let tag_cols = tag_str
+            .as_deref()
+            .map_or(0_u16, |t| u16::try_from(t.chars().count()).unwrap_or(0));
 
         // Budget for the label+description part: leave 1-space gap before the
         // tag (only when a tag is actually present).
@@ -1468,7 +1468,8 @@ fn draw_picker_list(
             // Guard against overflowing into the tag column.
             let desc_budget = main_budget.saturating_sub(cursor_label_cols);
             if desc_budget > 0 {
-                let desc_text: String = description.chars().take(usize::from(desc_budget)).collect();
+                let desc_text: String =
+                    description.chars().take(usize::from(desc_budget)).collect();
                 frame.write_str(desc_x, y, &desc_text, desc_style, desc_budget);
             }
         }
@@ -2624,9 +2625,15 @@ mod tests {
         // Tag is now right-aligned at the row's far-right edge; label and tag
         // appear on the same row but are no longer adjacent — verify each part
         // is present in the rendered frame.
-        assert!(text.contains("▸ Midnight"), "selected cursor + label must be present");
+        assert!(
+            text.contains("▸ Midnight"),
+            "selected cursor + label must be present"
+        );
         assert!(text.contains("Dark theme"), "description must be visible");
-        assert!(text.contains("[current]"), "right-aligned tag badge must be present");
+        assert!(
+            text.contains("[current]"),
+            "right-aligned tag badge must be present"
+        );
         // The tag must not appear immediately after the label (it was moved to
         // the right edge, so there are padding spaces between them).
         assert!(
@@ -2708,8 +2715,12 @@ mod tests {
             .lines()
             .find(|l| l.contains("[active]"))
             .expect("a line containing the tag must exist");
-        let label_pos = tag_line.find("Alpha").expect("label must be on the same line");
-        let tag_pos = tag_line.find("[active]").expect("tag must be on the same line");
+        let label_pos = tag_line
+            .find("Alpha")
+            .expect("label must be on the same line");
+        let tag_pos = tag_line
+            .find("[active]")
+            .expect("tag must be on the same line");
         assert!(
             label_pos < tag_pos,
             "label must appear before right-aligned tag (label@{label_pos} tag@{tag_pos})"
@@ -4287,7 +4298,10 @@ mod tests {
             providers_pos < workspace_pos,
             "Providers must precede Workspace"
         );
-        assert!(workspace_pos < controls_pos, "Workspace must precede Controls");
+        assert!(
+            workspace_pos < controls_pos,
+            "Workspace must precede Controls"
+        );
         assert!(controls_pos < tasks_pos, "Controls must precede Tasks");
     }
 
@@ -4309,13 +4323,9 @@ mod tests {
         let frame = render_snapshot(120, 20, &view, &Theme::default());
         let text = frame.to_plain_text();
 
-        let session_pos = text
-            .find("─ Session ─")
-            .expect("Session header not found");
+        let session_pos = text.find("─ Session ─").expect("Session header not found");
         let status_pos = text.find("─ Status ─").expect("Status header not found");
-        let context_pos = text
-            .find("─ Context ─")
-            .expect("Context header not found");
+        let context_pos = text.find("─ Context ─").expect("Context header not found");
 
         assert!(
             session_pos < status_pos,
@@ -4358,7 +4368,6 @@ mod tests {
             "a blank interior row must appear between body and action hint; rendered:\n{text}"
         );
     }
-
 
     /// The controller owns population of these fields each frame, so the model
     /// layer must not pre-fill them.

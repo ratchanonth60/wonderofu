@@ -730,10 +730,7 @@ mod tests {
         // SAFETY: Env-var mutation is acceptable for test isolation; see the
         // comment in `bash_run_in_background_spawns_task_and_returns_id`.
         unsafe {
-            std::env::set_var(
-                "WONDER_OF_U_STORAGE_DIR",
-                storage_dir.display().to_string(),
-            );
+            std::env::set_var("WONDER_OF_U_STORAGE_DIR", storage_dir.display().to_string());
         }
 
         let dir = unique_test_dir("tools-bash-watchdog");
@@ -777,10 +774,7 @@ mod tests {
     fn bash_run_in_background_watchdog_marks_task_failed_on_nonzero_exit() {
         let storage_dir = unique_test_dir("tools-bash-watchdog-fail-storage");
         unsafe {
-            std::env::set_var(
-                "WONDER_OF_U_STORAGE_DIR",
-                storage_dir.display().to_string(),
-            );
+            std::env::set_var("WONDER_OF_U_STORAGE_DIR", storage_dir.display().to_string());
         }
 
         let dir = unique_test_dir("tools-bash-watchdog-fail");
@@ -792,7 +786,11 @@ mod tests {
         ))
         .expect("run background bash tool");
 
-        assert!(result.success, "spawn itself must succeed: {:?}", result.content);
+        assert!(
+            result.success,
+            "spawn itself must succeed: {:?}",
+            result.content
+        );
         let task_id_str = result.metadata["background_task_id"]
             .as_str()
             .expect("background_task_id must be present");

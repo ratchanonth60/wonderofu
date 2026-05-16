@@ -547,8 +547,7 @@ mod tests {
     fn powershell_permission_allows_normal_command_without_sandbox_flag() {
         let tool = PowerShellTool;
         let context = tool_context(PathBuf::from("/workspace"));
-        let decision =
-            tool.permission_decision(&context, &json!({ "command": "Get-ChildItem" }));
+        let decision = tool.permission_decision(&context, &json!({ "command": "Get-ChildItem" }));
         assert!(
             !matches!(decision, PermissionDecision::Deny { .. }),
             "plain command should not be denied: {decision:?}"
