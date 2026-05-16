@@ -381,6 +381,13 @@ impl<'a> TuiController<'a> {
             return self.handle_history_search_key(key, resolved);
         }
 
+        // The footer advertises Shift+Tab permission-mode cycling in the prompt.
+        // Handle BackTab before slash-suggestion interception so it never gets
+        // mistaken for completion/selection input.
+        if key.code == KeyCode::BackTab {
+            return self.cycle_prompt_permission_mode_backward();
+        }
+
         // Some terminals collapse modified Enter handling inconsistently even when
         // the keymap contains an explicit Shift+Enter binding, so keep a direct
         // multiline composition path here as a safety net.
@@ -2746,6 +2753,22 @@ impl<'a> TuiController<'a> {
         self.refresh_permission_picker_dialog();
     }
 
+    pub(super) fn cycle_prompt_permission_mode_backward(&mut self) -> Result<()> {
+        let mode = previous_prompt_permission_mode(self.state.permission_mode);
+        let output = format!(
+            "permission_mode={}\nstatus=permission mode updated\nplan_mode_active={}",
+            permission_mode_output_label(mode),
+            matches!(mode, PermissionMode::Plan),
+        );
+        self.apply_command_output_hints(Some(&output));
+        self.status_note = Some(format!(
+            "permission mode {}",
+            permission_mode_status_label(mode)
+        ));
+        self.needs_render = true;
+        self.persist_state_snapshot()
+    }
+
     pub(super) fn refresh_permission_picker_dialog(&mut self) {
         let Some(picker) = &self.pending_permission_picker else {
             return;
@@ -5092,6 +5115,26 @@ pub(super) fn lsp_sidebar_lines(cwd: &std::path::Path) -> Vec<String> {
         }
     }
     lines
+}
+
+fn previous_prompt_permission_mode(mode: PermissionMode) -> PermissionMode {
+    match mode {
+        PermissionMode::Default => PermissionMode::Plan,
+        PermissionMode::AcceptEdits => PermissionMode::Default,
+        PermissionMode::BypassPermissions => PermissionMode::AcceptEdits,
+        PermissionMode::DontAsk => PermissionMode::BypassPermissions,
+        PermissionMode::Plan => PermissionMode::DontAsk,
+    }
+}
+
+fn permission_mode_status_label(mode: PermissionMode) -> &'static str {
+    match mode {
+        PermissionMode::Default => "default",
+        PermissionMode::AcceptEdits => "accept edits",
+        PermissionMode::BypassPermissions => "bypass permissions",
+        PermissionMode::DontAsk => "don't ask",
+        PermissionMode::Plan => "plan mode",
+    }
 }
 
 /// Parse `todos.md` in `cwd` and return compact `[x]`/`[ ]` lines.
