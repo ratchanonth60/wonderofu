@@ -405,6 +405,7 @@ impl FleetCommand {
             Some(context.cwd.clone()),
         );
         run.max_concurrency = max_concurrency;
+        store.write_run(&run)?;
 
         // Queue all members as pending requests in topological order.
         for spec in &specs {
@@ -420,8 +421,6 @@ impl FleetCommand {
             req.depends_on = spec.depends_on.clone();
             store.queue_member_request(&req)?;
         }
-
-        store.write_run(&run)?;
 
         let mut lines = vec![
             format!("fleet_id={}", run.id),
@@ -797,12 +796,10 @@ impl FleetCommand {
         // Pending-queue items that are still waiting/ready/unblocked count as
         // "work remaining" and keep the fleet Running rather than prematurely
         // marking it terminal.
-        let remaining_work = waiting_count
-            + ready_count
-            + pending
-                .iter()
-                .filter(|r| !run.dispatched_requests.contains_key(&r.id))
-                .count();
+        let remaining_work = pending
+            .iter()
+            .filter(|r| !run.dispatched_requests.contains_key(&r.id))
+            .count();
 
         if blocked_count > 0 && active_after == 0 && remaining_work == blocked_count {
             // All remaining work is blocked and nothing is active → Failed.
@@ -810,7 +807,7 @@ impl FleetCommand {
             if run.finished_at.is_none() {
                 run.finished_at = Some(OffsetDateTime::now_utc());
             }
-        } else if active_after > 0 || remaining_work > 0 || newly_launched > 0 {
+        } else if active_after > 0 || remaining_work > 0 {
             run.status = FleetRunStatus::Running;
         } else if !member_statuses.is_empty() {
             // All dispatched, all terminal.
@@ -922,7 +919,7 @@ fn dispatch_one(
         allowed_tools,
     })?;
 
-    store.delete_pending_request(&req.id)?;
+    store.delete_pending_request_for(req)?;
     Ok(task.id)
 }
 
@@ -1450,7 +1447,7 @@ mod tests {
         assert!(text.contains("fleet reconcile"), "got: {text}");
         // The request must still be pending (not deleted).
         assert!(
-            store.read_pending_request(&req.id).is_ok(),
+            store.read_pending_request_for(&req).is_ok(),
             "dep-constrained request should remain pending"
         );
     }
@@ -1474,6 +1471,13 @@ mod tests {
         }
         store.write_run(&run).expect("write run");
         (run, store)
+    }
+
+    fn fleet_pending_request(fleet_id: FleetId, request_id: &str) -> FleetMemberRequest {
+        let mut request = FleetMemberRequest::new("placeholder");
+        request.id = request_id.to_string();
+        request.fleet_id = Some(fleet_id);
+        request
     }
 
     #[test]
@@ -1593,7 +1597,9 @@ mod tests {
         }
 
         // Also delete the root pending request (it was "dispatched").
-        store.delete_pending_request("root").expect("delete root");
+        store
+            .delete_pending_request_for(&fleet_pending_request(run.id, "root"))
+            .expect("delete root");
 
         let cmd = make_fleet_command(&dir);
         let output = futures::executor::block_on(cmd.execute(
@@ -1779,7 +1785,7 @@ mod tests {
         store.write_run(&run2).expect("write");
         // Also remove the pending file (as dispatch_one would have done).
         store
-            .delete_pending_request("step-a")
+            .delete_pending_request_for(&fleet_pending_request(run.id, "step-a"))
             .expect("delete pending");
 
         let cmd = make_fleet_command(&dir);

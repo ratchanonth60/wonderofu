@@ -339,7 +339,25 @@ impl StoragePaths {
     /// Returns the path for a pending fleet member request file.
     #[must_use]
     pub fn fleet_pending_path(&self, request_id: &str) -> PathBuf {
-        self.fleet_pending_dir().join(format!("{request_id}.json"))
+        self.fleet_pending_path_for(None, request_id)
+    }
+
+    /// Returns the path for a pending fleet member request file.
+    ///
+    /// Fleet-scoped requests include the fleet id in the filename so separate
+    /// fleet plans can reuse human-readable member ids like `build` or `test`
+    /// without clobbering each other.
+    #[must_use]
+    pub fn fleet_pending_path_for(
+        &self,
+        fleet_id: Option<wonder_of_u_core::FleetId>,
+        request_id: &str,
+    ) -> PathBuf {
+        let file_name = match fleet_id {
+            Some(fleet_id) => format!("{fleet_id}-{request_id}.json"),
+            None => format!("{request_id}.json"),
+        };
+        self.fleet_pending_dir().join(file_name)
     }
 }
 /// Stores transcript store
@@ -1388,7 +1406,12 @@ impl FleetStore {
     /// Atomically writes a [`FleetMemberRequest`] to `fleet/pending/`.
     pub fn queue_member_request(&self, request: &FleetMemberRequest) -> Result<()> {
         self.ensure_layout()?;
-        write_json_atomically(&self.paths.fleet_pending_path(&request.id), request)
+        write_json_atomically(
+            &self
+                .paths
+                .fleet_pending_path_for(request.fleet_id, &request.id),
+            request,
+        )
     }
 
     /// Reads a single pending request by its id.
@@ -1396,6 +1419,23 @@ impl FleetStore {
         let path = self.paths.fleet_pending_path(request_id);
         if !path.exists() {
             return Err(WonderError::not_found("fleet pending request", request_id));
+        }
+        Ok(serde_json::from_str(&fs::read_to_string(path)?)?)
+    }
+
+    /// Reads a pending request using the request's fleet-scoped path.
+    pub fn read_pending_request_for(
+        &self,
+        request: &FleetMemberRequest,
+    ) -> Result<FleetMemberRequest> {
+        let path = self
+            .paths
+            .fleet_pending_path_for(request.fleet_id, &request.id);
+        if !path.exists() {
+            return Err(WonderError::not_found(
+                "fleet pending request",
+                request.id.clone(),
+            ));
         }
         Ok(serde_json::from_str(&fs::read_to_string(path)?)?)
     }
@@ -1435,6 +1475,20 @@ impl FleetStore {
     /// Idempotent: if the file has already been removed this returns `Ok(())`.
     pub fn delete_pending_request(&self, request_id: &str) -> Result<()> {
         let path = self.paths.fleet_pending_path(request_id);
+        match fs::remove_file(&path) {
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(error.into()),
+        }
+    }
+
+    /// Deletes a pending request file using its fleet-scoped path.
+    ///
+    /// Idempotent: if the file has already been removed this returns `Ok(())`.
+    pub fn delete_pending_request_for(&self, request: &FleetMemberRequest) -> Result<()> {
+        let path = self
+            .paths
+            .fleet_pending_path_for(request.fleet_id, &request.id);
         match fs::remove_file(&path) {
             Ok(()) => Ok(()),
             Err(error) if error.kind() == ErrorKind::NotFound => Ok(()),
@@ -1498,6 +1552,46 @@ mod fleet_store_tests {
         assert_eq!(pending.len(), 1);
         assert_eq!(pending[0].id, id);
         assert_eq!(pending[0].prompt, "do the thing");
+    }
+
+    #[test]
+    fn fleet_pending_requests_are_namespaced_by_fleet_id() {
+        let store = make_store("fleet-pending-namespaced");
+        let fleet_a = FleetId::new();
+        let fleet_b = FleetId::new();
+
+        let mut req_a = FleetMemberRequest::new("build a");
+        req_a.id = "build".into();
+        req_a.fleet_id = Some(fleet_a);
+        let mut req_b = FleetMemberRequest::new("build b");
+        req_b.id = "build".into();
+        req_b.fleet_id = Some(fleet_b);
+
+        store.queue_member_request(&req_a).expect("queue a");
+        store.queue_member_request(&req_b).expect("queue b");
+
+        let pending = store.list_pending_requests().expect("list");
+        assert_eq!(pending.len(), 2);
+        assert_eq!(
+            store
+                .read_pending_request_for(&req_a)
+                .expect("read a")
+                .prompt,
+            "build a"
+        );
+        assert_eq!(
+            store
+                .read_pending_request_for(&req_b)
+                .expect("read b")
+                .prompt,
+            "build b"
+        );
+
+        store
+            .delete_pending_request_for(&req_a)
+            .expect("delete only a");
+        assert!(store.read_pending_request_for(&req_a).is_err());
+        assert!(store.read_pending_request_for(&req_b).is_ok());
     }
 
     #[test]
