@@ -4,20 +4,24 @@ use std::{
     fs,
     path::{Path, PathBuf},
     process::Command as ProcessCommand,
+    thread,
+    time::{Duration, Instant},
 };
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 use wonder_of_u_core::{
-    FeatureFlag, RemoteTaskState, Result, TaskId, TaskStatus, Tool, ToolContext, ToolKind,
-    ToolResult, ToolSchema, ToolSpec, ToolUseId, WonderError,
+    FeatureFlag, RemoteTaskState, Result, TaskId, TaskState, TaskStatus, Tool, ToolContext,
+    ToolKind, ToolResult, ToolSchema, ToolSpec, ToolUseId, WonderError,
 };
 use wonder_of_u_storage::TaskStore;
 
 use crate::{app_root, base_spec, parse_input, require_non_empty_text};
 
 const DEFAULT_TASK_OUTPUT_LINES: u32 = 50;
+const DEFAULT_TASK_OUTPUT_TIMEOUT_MS: u64 = 30_000;
+const TASK_OUTPUT_POLL_INTERVAL: Duration = Duration::from_millis(100);
 const SOURCE_TASK_RUNTIME_UNAVAILABLE: &str =
     "the Rust port does not implement the source task-list runtime in wonder-of-u-tools yet";
 /// Represents task create input
@@ -180,9 +184,14 @@ impl TaskOutputInput {
                 "task_output lines must be greater than zero",
             ));
         }
-        if self.block.is_some() || self.timeout.is_some() {
+        if self.timeout == Some(0) {
             return Err(WonderError::validation(
-                "task_output block/timeout polling is not supported in wonder-of-u-tools",
+                "task_output timeout must be greater than zero",
+            ));
+        }
+        if self.timeout.is_some() && self.block != Some(true) {
+            return Err(WonderError::validation(
+                "task_output timeout requires block=true",
             ));
         }
         Ok(())
@@ -190,6 +199,14 @@ impl TaskOutputInput {
 
     fn lines(&self) -> usize {
         self.lines.unwrap_or(DEFAULT_TASK_OUTPUT_LINES) as usize
+    }
+
+    fn block(&self) -> bool {
+        self.block.unwrap_or(false)
+    }
+
+    fn timeout(&self) -> Duration {
+        Duration::from_millis(self.timeout.unwrap_or(DEFAULT_TASK_OUTPUT_TIMEOUT_MS))
     }
 }
 /// Represents task stop input
@@ -460,13 +477,13 @@ impl Tool for TaskOutputTool {
                 .property(
                     "block",
                     ToolSchema::boolean(
-                        "source-compatible wait flag; currently unsupported in the Rust runtime",
+                        "when true, wait up to timeout for running tasks that have not produced output yet",
                     ),
                 )
                 .property(
                     "timeout",
                     ToolSchema::integer(
-                        "source-compatible timeout in milliseconds; currently unsupported in the Rust runtime",
+                        "optional wait timeout in milliseconds when block=true",
                     ),
                 )
                 .required("task_id"),
@@ -493,8 +510,10 @@ impl Tool for TaskOutputTool {
         let input = parse_input::<TaskOutputInput>("task_output", &input)?;
         input.validate()?;
 
-        let content = read_task_output(&app_root()?, &input.task_id, input.lines())?;
-        Ok(ToolResult::success(use_id, content))
+        let output = read_task_output(&app_root()?, &input)?;
+        let mut result = ToolResult::success(use_id, output.content);
+        result.metadata = output.metadata;
+        Ok(result)
     }
 }
 
@@ -581,30 +600,127 @@ fn unsupported_task_list_result(use_id: ToolUseId, tool_name: &str) -> ToolResul
     result
 }
 
-fn read_task_output(app_root: &Path, task_id: &str, lines: usize) -> Result<String> {
-    if let Some(content) = read_persisted_task_output(app_root, task_id, lines)? {
-        return Ok(content);
+#[derive(Clone, Debug, PartialEq)]
+struct TaskOutputRead {
+    content: String,
+    metadata: Value,
+}
+
+fn read_task_output(app_root: &Path, input: &TaskOutputInput) -> Result<TaskOutputRead> {
+    if let Some(output) = read_persisted_task_output(app_root, input)? {
+        return Ok(output);
     }
-    if let Some(content) = read_legacy_task_output(app_root, task_id, lines)? {
-        return Ok(content);
+    if let Some(content) = read_legacy_task_output(app_root, &input.task_id, input.lines())? {
+        return Ok(TaskOutputRead {
+            content,
+            metadata: json!({
+                "task_id": input.task_id,
+                "lines": input.lines(),
+                "block": input.block(),
+                "timed_out": false,
+                "not_ready": false,
+                "legacy": true,
+            }),
+        });
     }
-    Err(WonderError::not_found("task", task_id))
+    Err(WonderError::not_found("task", &input.task_id))
 }
 
 fn read_persisted_task_output(
     app_root: &Path,
-    task_id: &str,
-    lines: usize,
-) -> Result<Option<String>> {
-    let Ok(task_id) = TaskId::parse(task_id) else {
+    input: &TaskOutputInput,
+) -> Result<Option<TaskOutputRead>> {
+    let Ok(task_id) = TaskId::parse(&input.task_id) else {
         return Ok(None);
     };
     let store = TaskStore::new(app_root);
-    match store.read_log_tail(task_id, lines.max(1)) {
-        Ok(lines) => Ok(Some(lines.join("\n"))),
-        Err(WonderError::NotFound { .. }) => Ok(None),
-        Err(error) => Err(error),
+    let line_limit = input.lines().max(1);
+
+    let mut snapshot = match read_persisted_task_snapshot(&store, task_id, line_limit)? {
+        Some(snapshot) => snapshot,
+        None => return Ok(None),
+    };
+
+    if input.block() && snapshot.content.is_empty() && !snapshot.task.status.is_terminal() {
+        let deadline = Instant::now() + input.timeout();
+        loop {
+            if Instant::now() >= deadline {
+                let metadata =
+                    task_output_metadata(&snapshot.task, task_id, line_limit, true, true, false);
+                return Ok(Some(TaskOutputRead {
+                    content: snapshot.content,
+                    metadata,
+                }));
+            }
+
+            thread::sleep(TASK_OUTPUT_POLL_INTERVAL);
+            snapshot = read_persisted_task_snapshot(&store, task_id, line_limit)?
+                .ok_or_else(|| WonderError::not_found("task", task_id.to_string()))?;
+            if !snapshot.content.is_empty() || snapshot.task.status.is_terminal() {
+                break;
+            }
+        }
     }
+
+    let metadata = task_output_metadata(
+        &snapshot.task,
+        task_id,
+        line_limit,
+        false,
+        snapshot.content.is_empty() && !snapshot.task.status.is_terminal(),
+        false,
+    );
+    Ok(Some(TaskOutputRead {
+        content: snapshot.content,
+        metadata,
+    }))
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct PersistedTaskOutputSnapshot {
+    task: TaskState,
+    content: String,
+}
+
+fn read_persisted_task_snapshot(
+    store: &TaskStore,
+    task_id: TaskId,
+    lines: usize,
+) -> Result<Option<PersistedTaskOutputSnapshot>> {
+    let task = match store.read_task(task_id) {
+        Ok(task) => task,
+        Err(WonderError::NotFound { .. }) => return Ok(None),
+        Err(error) => return Err(error),
+    };
+    let content = match store.read_log_tail(task_id, lines.max(1)) {
+        Ok(lines) => lines.join("\n"),
+        Err(WonderError::NotFound { .. }) => String::new(),
+        Err(error) => return Err(error),
+    };
+    Ok(Some(PersistedTaskOutputSnapshot { task, content }))
+}
+
+fn task_output_metadata(
+    task: &TaskState,
+    task_id: TaskId,
+    lines: usize,
+    timed_out: bool,
+    not_ready: bool,
+    legacy: bool,
+) -> Value {
+    json!({
+        "task_id": task_id,
+        "status": task_status_label(task.status),
+        "pid": task.pid,
+        "exit_code": task.exit_code,
+        "running": !task.status.is_terminal(),
+        "completed": task.status.is_terminal(),
+        "timed_out": timed_out,
+        "not_ready": not_ready,
+        "lines": lines,
+        "legacy": legacy,
+        "cwd": task.cwd.as_ref().map(|cwd| cwd.display().to_string()),
+    })
 }
 
 fn read_legacy_task_output(app_root: &Path, task_id: &str, lines: usize) -> Result<Option<String>> {
@@ -843,16 +959,22 @@ mod tests {
     }
 
     #[test]
-    fn task_output_rejects_source_polling_fields() {
+    fn task_output_accepts_block_and_rejects_timeout_without_block() {
         let tool = TaskOutputTool;
+        tool.validate_input(&json!({
+            "task_id": "task-1",
+            "block": true,
+        }))
+        .expect("block=true should be accepted");
+
         let error = tool
             .validate_input(&json!({
                 "task_id": "task-1",
-                "block": true,
+                "timeout": 10,
             }))
-            .expect_err("unsupported polling");
+            .expect_err("timeout without block should be rejected");
 
-        assert!(error.to_string().contains("block/timeout"));
+        assert!(error.to_string().contains("block=true"));
     }
 
     #[test]
@@ -863,9 +985,20 @@ mod tests {
         store.write_task(&task).expect("task");
         store.append_log(task.id, "one\ntwo\nthree\n").expect("log");
 
-        let output = read_task_output(&dir, &task.id.to_string(), 2).expect("tail");
+        let output = read_task_output(
+            &dir,
+            &TaskOutputInput {
+                task_id: task.id.to_string(),
+                lines: Some(2),
+                block: None,
+                timeout: None,
+            },
+        )
+        .expect("tail");
 
-        assert_eq!(output, "two\nthree");
+        assert_eq!(output.content, "two\nthree");
+        assert_eq!(output.metadata["status"], "pending");
+        assert_eq!(output.metadata["not_ready"], false);
     }
 
     #[test]
@@ -875,9 +1008,77 @@ mod tests {
         fs::create_dir_all(&task_dir).expect("task dir");
         fs::write(task_dir.join("output.log"), "one\ntwo\nthree\n").expect("log");
 
-        let output = read_task_output(&dir, "task-1", 2).expect("tail");
+        let output = read_task_output(
+            &dir,
+            &TaskOutputInput {
+                task_id: "task-1".into(),
+                lines: Some(2),
+                block: None,
+                timeout: None,
+            },
+        )
+        .expect("tail");
 
-        assert_eq!(output, "two\nthree");
+        assert_eq!(output.content, "two\nthree");
+        assert_eq!(output.metadata["legacy"], true);
+    }
+
+    #[test]
+    fn task_output_block_waits_until_log_is_available() {
+        let dir = unique_test_dir("tools-task-output-block");
+        let store = TaskStore::new(&dir);
+        let mut task = TaskState::pending_shell("run tests", "cargo test", dir.clone());
+        task.mark_running(None, None, None, Some("running".into()));
+        store.write_task(&task).expect("task");
+
+        let task_id = task.id;
+        let store_for_thread = store.clone();
+        let writer = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(150));
+            store_for_thread
+                .append_log(task_id, "ready\n")
+                .expect("append delayed log");
+        });
+
+        let output = read_task_output(
+            &dir,
+            &TaskOutputInput {
+                task_id: task.id.to_string(),
+                lines: Some(10),
+                block: Some(true),
+                timeout: Some(1_000),
+            },
+        )
+        .expect("blocked output");
+        writer.join().expect("writer joins");
+
+        assert_eq!(output.content, "ready");
+        assert_eq!(output.metadata["timed_out"], false);
+        assert_eq!(output.metadata["not_ready"], false);
+    }
+
+    #[test]
+    fn task_output_block_times_out_when_running_without_output() {
+        let dir = unique_test_dir("tools-task-output-timeout");
+        let store = TaskStore::new(&dir);
+        let mut task = TaskState::pending_shell("run tests", "cargo test", dir.clone());
+        task.mark_running(None, None, None, Some("running".into()));
+        store.write_task(&task).expect("task");
+
+        let output = read_task_output(
+            &dir,
+            &TaskOutputInput {
+                task_id: task.id.to_string(),
+                lines: Some(10),
+                block: Some(true),
+                timeout: Some(10),
+            },
+        )
+        .expect("timeout output");
+
+        assert!(output.content.is_empty());
+        assert_eq!(output.metadata["timed_out"], true);
+        assert_eq!(output.metadata["not_ready"], true);
     }
 
     #[test]

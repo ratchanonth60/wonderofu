@@ -68,8 +68,8 @@ impl WebFetchInput {
                 "web_fetch max_length must be greater than zero",
             ));
         }
-        // `prompt` is accepted at validation time but returns a structured
-        // unsupported result from execute() — see WebFetchTool::execute.
+        // `prompt` is accepted at validation time and converted into a
+        // provider-layer handoff in execute().
         Ok(())
     }
 }
@@ -145,9 +145,9 @@ impl Tool for WebFetchTool {
                     .property(
                         "prompt",
                         ToolSchema::string(
-                            "source-compatible field: a prompt to apply to the fetched content; \
-                         model-layer processing is not available at the local tool layer — \
-                         a structured unsupported result is returned when this field is set",
+                            "optional prompt to apply to the fetched content; the tool fetches \
+                         the page and returns a structured provider handoff so the model can \
+                         process the prompt using the fetched content in the same tool loop",
                         ),
                     )
                     .required("url"),
@@ -196,26 +196,17 @@ impl Tool for WebFetchTool {
         let input = parse_input::<WebFetchInput>("web_fetch", &input)?;
         input.validate()?;
 
-        // prompt requires model-layer processing unavailable at the local tool layer.
-        // Return a structured failure instead of a validation error so callers can
-        // distinguish unsupported-feature responses from genuine input mistakes.
-        if input.prompt.is_some() {
-            let mut result = ToolResult::failure(
-                use_id,
-                "web_fetch prompt processing is not supported in wonder-of-u-tools: \
-                 applying a prompt to fetched content requires the model API runtime, \
-                 which is not available at the local tool layer",
-            );
-            result.metadata = json!({
-                "supported": false,
-                "unsupported_field": "prompt",
-                "reason": "model-layer content processing requires the API runtime",
-            });
-            return Ok(result);
-        }
-
         match fetch_text(&input) {
-            Ok(content) => Ok(ToolResult::success(use_id, content)),
+            Ok(content) => match input.prompt.as_deref() {
+                Some(prompt) => Ok(build_prompt_handoff_result(
+                    use_id,
+                    &input.url,
+                    prompt,
+                    input.max_length,
+                    content,
+                )),
+                None => Ok(ToolResult::success(use_id, content)),
+            },
             Err(error) => Ok(ToolResult::failure(
                 use_id,
                 format!("fetch failed: {error}"),
@@ -319,6 +310,46 @@ fn fetch_text(input: &WebFetchInput) -> Result<String> {
         .map_err(|error| WonderError::validation(format!("invalid response body: {error}")))?;
     let text = if is_html { strip_html(&body) } else { body };
     Ok(truncate_text(text, input.max_length))
+}
+
+fn build_prompt_handoff_result(
+    use_id: ToolUseId,
+    url: &str,
+    prompt: &str,
+    max_length: Option<u32>,
+    content: String,
+) -> ToolResult {
+    ToolResult::success(
+        use_id,
+        render_prompt_handoff(url, prompt, max_length.is_some(), &content),
+    )
+    .with_metadata(json!({
+        "mode": "provider_prompt_handoff",
+        "prompt_processed_by_tool": false,
+        "url": url,
+        "prompt": prompt,
+    }))
+}
+
+fn render_prompt_handoff(url: &str, prompt: &str, truncated: bool, content: &str) -> String {
+    let truncation_note = if truncated {
+        "\nFetched content was truncated according to `max_length`; use only the content included below."
+    } else {
+        ""
+    };
+    format!(
+        "Apply the requested prompt to the fetched content below. This tool fetched the page but \
+         did not execute the prompt itself.{truncation_note}\n\n\
+         <web_fetch_prompt_handoff>\n\
+         <source_url>{url}</source_url>\n\
+         <requested_prompt>\n\
+         {prompt}\n\
+         </requested_prompt>\n\
+         <fetched_content>\n\
+         {content}\n\
+         </fetched_content>\n\
+         </web_fetch_prompt_handoff>"
+    )
 }
 
 fn serper_search(api_key: &str, input: &WebSearchInput) -> Result<String> {
@@ -565,7 +596,12 @@ fn is_preapproved_host(hostname: &str, pathname: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use std::path::PathBuf;
+    use std::{
+        io::{Read, Write},
+        net::TcpListener,
+        path::PathBuf,
+        thread,
+    };
 
     use serde_json::json;
     use wonder_of_u_core::{
@@ -606,46 +642,107 @@ mod tests {
     }
 
     #[test]
-    fn web_fetch_prompt_returns_structured_unsupported_result() {
-        // When `prompt` is supplied, execute() must return a structured failure
-        // (not a validation error) so callers can distinguish unsupported-feature
-        // responses from genuine input mistakes.
+    fn web_fetch_without_prompt_fetches_plain_text() {
         use futures::executor::block_on;
         use wonder_of_u_core::ToolUseId;
 
+        let (url, server) = spawn_http_server(
+            "text/html; charset=utf-8",
+            "<html><body><h1>Hello</h1><p>Rust &amp; tools</p></body></html>",
+        );
         let tool = WebFetchTool;
         let result = block_on(tool.execute(
             tool_context(PathBuf::from("/workspace")),
             ToolUseId::new(),
             serde_json::json!({
-                "url": "https://example.com",
-                "prompt": "Summarize this page",
+                "url": url,
+                "max_length": 10,
             }),
         ))
         .expect("execute should not return Err");
+        server.join().expect("server thread should finish");
 
-        assert!(!result.success, "expected failure result");
-        assert!(
-            result.content.contains("prompt"),
-            "content should mention `prompt`"
+        assert!(result.success, "expected success result");
+        assert_eq!(result.content, "Hello Rust");
+        assert_eq!(result.metadata, serde_json::Value::Null);
+    }
+
+    #[test]
+    fn web_fetch_prompt_returns_provider_handoff_result() {
+        use futures::executor::block_on;
+        use wonder_of_u_core::ToolUseId;
+
+        let (url, server) = spawn_http_server(
+            "text/html; charset=utf-8",
+            "<html><body><h1>Hello</h1><p>Rust &amp; tools</p></body></html>",
         );
-        assert_eq!(result.metadata["supported"], serde_json::json!(false));
+        let tool = WebFetchTool;
+        let result = block_on(tool.execute(
+            tool_context(PathBuf::from("/workspace")),
+            ToolUseId::new(),
+            serde_json::json!({
+                "url": url,
+                "prompt": "Summarize the page in one sentence",
+            }),
+        ))
+        .expect("execute should not return Err");
+        server.join().expect("server thread should finish");
+
+        assert!(result.success, "expected success handoff result");
         assert_eq!(
-            result.metadata["unsupported_field"],
-            serde_json::json!("prompt")
+            result.metadata["mode"],
+            serde_json::json!("provider_prompt_handoff")
+        );
+        assert_eq!(
+            result.metadata["prompt_processed_by_tool"],
+            serde_json::json!(false)
+        );
+        assert!(
+            result
+                .content
+                .contains("Summarize the page in one sentence"),
+            "content should include the requested prompt"
+        );
+        assert!(
+            result.content.contains("Hello Rust & tools"),
+            "content should include fetched page text"
+        );
+        assert!(
+            result.content.contains("<web_fetch_prompt_handoff>"),
+            "content should expose the provider handoff envelope"
         );
     }
 
     #[test]
     fn web_fetch_validation_accepts_prompt_field() {
-        // prompt no longer fails at validation time; the structured error is
-        // deferred to execute() so the caller sees a proper ToolResult.
+        // prompt remains valid input because execution handles it via a
+        // provider-layer handoff instead of rejecting it locally.
         let tool = WebFetchTool;
         tool.validate_input(&serde_json::json!({
             "url": "https://example.com",
             "prompt": "Summarize this page",
         }))
         .expect("prompt should pass validation");
+    }
+
+    fn spawn_http_server(content_type: &str, body: &str) -> (String, thread::JoinHandle<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind test server");
+        let address = listener.local_addr().expect("local addr");
+        let content_type = content_type.to_string();
+        let body = body.to_string();
+        let handle = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept connection");
+            let mut request = [0_u8; 1024];
+            let _ = stream.read(&mut request);
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream
+                .write_all(response.as_bytes())
+                .expect("write response");
+        });
+        (format!("http://{address}"), handle)
     }
 
     #[test]
