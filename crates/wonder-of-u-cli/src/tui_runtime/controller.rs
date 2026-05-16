@@ -2206,6 +2206,8 @@ impl<'a> TuiController<'a> {
             session_worktree: self.state.session.worktree.clone(),
             permission_mode: self.state.permission_mode,
             additional_working_directories: self.state.additional_working_directories.clone(),
+            provider: self.state.provider.clone(),
+            model: self.state.model.clone(),
             permission_rules: Vec::new(),
             features: self.state.features.clone(),
             bash_session_store: None,

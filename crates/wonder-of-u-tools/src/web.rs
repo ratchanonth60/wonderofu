@@ -15,6 +15,8 @@ use wonder_of_u_core::{
 use crate::{base_spec, parse_input, require_non_empty_text};
 
 const DEFAULT_WEB_SEARCH_RESULTS: u8 = 5;
+const WEB_SEARCH_EXTENSION_LABEL: &str = "rust-external-web-search";
+const WEB_SEARCH_NATIVE_STATUS: &str = "native-unavailable";
 const PREAPPROVED_HOSTS: &[&str] = &[
     "platform.claude.com",
     "code.claude.com",
@@ -131,6 +133,37 @@ pub struct WebFetchTool;
 #[derive(Debug, Default)]
 pub struct WebSearchTool;
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum WebSearchBackend {
+    Serper,
+    Brave,
+    NotConfigured,
+}
+
+impl WebSearchBackend {
+    const fn label(self) -> &'static str {
+        match self {
+            Self::Serper => "external-serper",
+            Self::Brave => "external-brave",
+            Self::NotConfigured => "not-configured",
+        }
+    }
+
+    const fn display_name(self) -> &'static str {
+        match self {
+            Self::Serper => "Serper",
+            Self::Brave => "Brave",
+            Self::NotConfigured => "not configured",
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct ExternalWebSearchConfig {
+    backend: WebSearchBackend,
+    api_key: Option<String>,
+}
+
 #[async_trait]
 impl Tool for WebFetchTool {
     fn spec(&self) -> ToolSpec {
@@ -218,7 +251,12 @@ impl Tool for WebFetchTool {
 #[async_trait]
 impl Tool for WebSearchTool {
     fn spec(&self) -> ToolSpec {
-        let mut spec = base_spec("web_search", "Search the web", ToolKind::Web).with_input_schema(
+        let mut spec = base_spec(
+            "web_search",
+            "Search the web via the Rust external web search extension when configured",
+            ToolKind::Web,
+        )
+        .with_input_schema(
             ToolSchema::object()
                 .property("query", ToolSchema::string("search query"))
                 .property(
@@ -251,6 +289,7 @@ impl Tool for WebSearchTool {
         spec.read_only = true;
         spec.concurrency_safe = true;
         spec.required_features.insert(FeatureFlag::WebTools);
+        annotate_web_search_schema(&mut spec);
         spec
     }
 
@@ -260,43 +299,50 @@ impl Tool for WebSearchTool {
 
     async fn execute(
         &self,
-        _context: ToolContext,
+        context: ToolContext,
         use_id: ToolUseId,
         input: Value,
     ) -> Result<ToolResult> {
         let input = parse_input::<WebSearchInput>("web_search", &input)?;
         input.validate()?;
 
-        let content = match (
-            env::var("SERPER_API_KEY")
-                .ok()
-                .filter(|key| !key.trim().is_empty()),
-            env::var("BRAVE_API_KEY")
-                .ok()
-                .filter(|key| !key.trim().is_empty()),
-        ) {
-            (Some(key), _) => match serper_search(&key, &input) {
+        let config = external_web_search_config();
+        let content = match (&config.backend, config.api_key.as_deref()) {
+            (WebSearchBackend::Serper, Some(key)) => match serper_search(key, &input) {
                 Ok(results) => results,
                 Err(error) => {
-                    return Ok(ToolResult::failure(
+                    return Ok(web_search_result(
                         use_id,
+                        false,
                         format!("web search failed: {error}"),
+                        &context,
+                        config.backend,
                     ));
                 }
             },
-            (None, Some(key)) => match brave_search(&key, &input) {
+            (WebSearchBackend::Brave, Some(key)) => match brave_search(key, &input) {
                 Ok(results) => results,
                 Err(error) => {
-                    return Ok(ToolResult::failure(
+                    return Ok(web_search_result(
                         use_id,
+                        false,
                         format!("web search failed: {error}"),
+                        &context,
+                        config.backend,
                     ));
                 }
             },
-            (None, None) => not_configured_message(),
+            (WebSearchBackend::NotConfigured, _) => not_configured_message(),
+            _ => not_configured_message(),
         };
 
-        Ok(ToolResult::success(use_id, content))
+        Ok(web_search_result(
+            use_id,
+            true,
+            content,
+            &context,
+            config.backend,
+        ))
     }
 }
 
@@ -350,6 +396,98 @@ fn render_prompt_handoff(url: &str, prompt: &str, truncated: bool, content: &str
          </fetched_content>\n\
          </web_fetch_prompt_handoff>"
     )
+}
+
+fn annotate_web_search_schema(spec: &mut ToolSpec) {
+    if let Some(object) = spec.input_schema.as_object_mut() {
+        object.insert(
+            "x-web-search-runtime-dispatch".into(),
+            json!("rust-external-extension"),
+        );
+        object.insert(
+            "x-web-search-extension-label".into(),
+            json!(WEB_SEARCH_EXTENSION_LABEL),
+        );
+        object.insert(
+            "x-web-search-note".into(),
+            json!(
+                "provider-native web search is unavailable in this runtime context; configured Serper or Brave credentials enable the Rust external web search extension"
+            ),
+        );
+        object.insert(
+            "x-web-search-result-statuses".into(),
+            json!([
+                WEB_SEARCH_NATIVE_STATUS,
+                WebSearchBackend::Serper.label(),
+                WebSearchBackend::Brave.label(),
+                WebSearchBackend::NotConfigured.label(),
+            ]),
+        );
+    }
+}
+
+pub(crate) fn should_expose_web_search(context: &ToolContext) -> bool {
+    should_expose_web_search_with_backend(context, external_web_search_config().backend)
+}
+
+pub(crate) fn should_expose_web_search_with_backend(
+    context: &ToolContext,
+    backend: WebSearchBackend,
+) -> bool {
+    if context.provider.is_none() && context.model.is_none() {
+        return true;
+    }
+
+    !matches!(backend, WebSearchBackend::NotConfigured)
+}
+
+fn external_web_search_config() -> ExternalWebSearchConfig {
+    external_web_search_config_with_env(|name| env::var(name).ok())
+}
+
+fn external_web_search_config_with_env(
+    getenv: impl Fn(&str) -> Option<String>,
+) -> ExternalWebSearchConfig {
+    let serper = getenv("SERPER_API_KEY").filter(|key| !key.trim().is_empty());
+    let brave = getenv("BRAVE_API_KEY").filter(|key| !key.trim().is_empty());
+
+    match (serper, brave) {
+        (Some(api_key), _) => ExternalWebSearchConfig {
+            backend: WebSearchBackend::Serper,
+            api_key: Some(api_key),
+        },
+        (None, Some(api_key)) => ExternalWebSearchConfig {
+            backend: WebSearchBackend::Brave,
+            api_key: Some(api_key),
+        },
+        (None, None) => ExternalWebSearchConfig {
+            backend: WebSearchBackend::NotConfigured,
+            api_key: None,
+        },
+    }
+}
+
+fn web_search_result(
+    use_id: ToolUseId,
+    success: bool,
+    content: impl Into<String>,
+    context: &ToolContext,
+    backend: WebSearchBackend,
+) -> ToolResult {
+    let result = if success {
+        ToolResult::success(use_id, content)
+    } else {
+        ToolResult::failure(use_id, content)
+    };
+
+    result.with_metadata(json!({
+        "tool": "web_search",
+        "extension": WEB_SEARCH_EXTENSION_LABEL,
+        "provider_native_status": WEB_SEARCH_NATIVE_STATUS,
+        "search_backend": backend.label(),
+        "selected_provider": context.provider.clone(),
+        "selected_model": context.model.clone(),
+    }))
 }
 
 fn serper_search(api_key: &str, input: &WebSearchInput) -> Result<String> {
@@ -411,7 +549,7 @@ fn format_serper_results(body: &str, input: &WebSearchInput) -> Result<String> {
             snippet
         ));
     }
-    Ok(render_search_results(lines))
+    Ok(render_search_results(WebSearchBackend::Serper, lines))
 }
 
 fn format_brave_results(body: &str, input: &WebSearchInput) -> Result<String> {
@@ -447,7 +585,7 @@ fn format_brave_results(body: &str, input: &WebSearchInput) -> Result<String> {
             snippet
         ));
     }
-    Ok(render_search_results(lines))
+    Ok(render_search_results(WebSearchBackend::Brave, lines))
 }
 
 /// Returns `true` when `url_host` matches the `filter_domain`.
@@ -493,12 +631,17 @@ fn result_url_passes_domain_filter(url: &str, input: &WebSearchInput) -> bool {
     true
 }
 
-fn render_search_results(lines: Vec<String>) -> String {
-    if lines.is_empty() {
-        "No results found.".into()
+fn render_search_results(backend: WebSearchBackend, lines: Vec<String>) -> String {
+    let body = if lines.is_empty() {
+        "No results found.".to_string()
     } else {
         lines.join("\n\n")
-    }
+    };
+
+    format!(
+        "Rust external web search ({})\n\n{body}",
+        backend.display_name()
+    )
 }
 
 fn strip_html(html: &str) -> String {
@@ -544,7 +687,7 @@ fn map_ureq_error(error: ureq::Error) -> WonderError {
 }
 
 fn not_configured_message() -> String {
-    "web search not configured — set SERPER_API_KEY or BRAVE_API_KEY".into()
+    "Rust external web search is not configured — set SERPER_API_KEY or BRAVE_API_KEY. Provider-native web search is unavailable in this runtime context.".into()
 }
 
 fn preapproved_web_host(input: &Value) -> Option<String> {
@@ -618,10 +761,19 @@ mod tests {
             session_worktree: None,
             permission_mode: PermissionMode::Default,
             additional_working_directories: Vec::new(),
+            provider: None,
+            model: None,
             permission_rules: Vec::new(),
             features: FeatureSet::first_release(),
             bash_session_store: None,
         }
+    }
+
+    fn provider_tool_context(cwd: PathBuf) -> ToolContext {
+        let mut context = tool_context(cwd);
+        context.provider = Some("openai".into());
+        context.model = Some("gpt-4.1".into());
+        context
     }
 
     #[test]
@@ -891,8 +1043,125 @@ mod tests {
     }
 
     #[test]
-    fn web_search_returns_stub_when_unconfigured() {
+    fn web_search_config_is_not_configured_without_keys() {
+        let config = external_web_search_config_with_env(|_| None);
+
+        assert_eq!(
+            config,
+            ExternalWebSearchConfig {
+                backend: WebSearchBackend::NotConfigured,
+                api_key: None,
+            }
+        );
+        assert!(not_configured_message().contains("Rust external web search"));
         assert!(not_configured_message().contains("SERPER_API_KEY"));
+    }
+
+    #[test]
+    fn web_search_config_prefers_serper_when_available() {
+        let config = external_web_search_config_with_env(|name| match name {
+            "SERPER_API_KEY" => Some("serper-key".into()),
+            "BRAVE_API_KEY" => Some("brave-key".into()),
+            _ => None,
+        });
+
+        assert_eq!(
+            config,
+            ExternalWebSearchConfig {
+                backend: WebSearchBackend::Serper,
+                api_key: Some("serper-key".into()),
+            }
+        );
+    }
+
+    #[test]
+    fn web_search_config_uses_brave_when_serper_is_absent() {
+        let config = external_web_search_config_with_env(|name| match name {
+            "BRAVE_API_KEY" => Some("brave-key".into()),
+            _ => None,
+        });
+
+        assert_eq!(
+            config,
+            ExternalWebSearchConfig {
+                backend: WebSearchBackend::Brave,
+                api_key: Some("brave-key".into()),
+            }
+        );
+    }
+
+    #[test]
+    fn web_search_schema_marks_external_extension_metadata() {
+        let spec = WebSearchTool.spec();
+
+        assert!(
+            spec.description
+                .contains("Rust external web search extension")
+        );
+        assert_eq!(
+            spec.input_schema["x-web-search-runtime-dispatch"],
+            json!("rust-external-extension")
+        );
+        assert_eq!(
+            spec.input_schema["x-web-search-extension-label"],
+            json!(WEB_SEARCH_EXTENSION_LABEL)
+        );
+        assert_eq!(
+            spec.input_schema["x-web-search-result-statuses"],
+            json!([
+                WEB_SEARCH_NATIVE_STATUS,
+                "external-serper",
+                "external-brave",
+                "not-configured",
+            ])
+        );
+    }
+
+    #[test]
+    fn web_search_exposure_requires_external_backend_when_provider_is_selected() {
+        let plain_context = tool_context(PathBuf::from("/workspace"));
+        let provider_context = provider_tool_context(PathBuf::from("/workspace"));
+
+        assert!(should_expose_web_search_with_backend(
+            &plain_context,
+            WebSearchBackend::NotConfigured
+        ));
+        assert!(!should_expose_web_search_with_backend(
+            &provider_context,
+            WebSearchBackend::NotConfigured
+        ));
+        assert!(should_expose_web_search_with_backend(
+            &provider_context,
+            WebSearchBackend::Serper
+        ));
+    }
+
+    #[test]
+    fn web_search_unconfigured_result_metadata_is_explicit() {
+        use futures::executor::block_on;
+        use wonder_of_u_core::ToolUseId;
+
+        let tool = WebSearchTool;
+        let result = block_on(tool.execute(
+            provider_tool_context(PathBuf::from("/workspace")),
+            ToolUseId::new(),
+            json!({ "query": "rust" }),
+        ))
+        .expect("execute should not return Err");
+
+        assert!(result.success);
+        assert_eq!(
+            result.metadata["extension"],
+            json!(WEB_SEARCH_EXTENSION_LABEL)
+        );
+        assert_eq!(
+            result.metadata["provider_native_status"],
+            json!(WEB_SEARCH_NATIVE_STATUS)
+        );
+        assert_eq!(result.metadata["search_backend"], json!("not-configured"));
+        assert_eq!(result.metadata["selected_provider"], json!("openai"));
+        assert_eq!(result.metadata["selected_model"], json!("gpt-4.1"));
+        assert!(result.content.contains("Rust external web search"));
     }
 
     #[test]
@@ -909,6 +1178,7 @@ mod tests {
         )
         .expect("format serper");
 
+        assert!(formatted.contains("Rust external web search (Serper)"));
         assert!(formatted.contains("Rust"));
         assert!(formatted.contains("https://www.rust-lang.org"));
     }

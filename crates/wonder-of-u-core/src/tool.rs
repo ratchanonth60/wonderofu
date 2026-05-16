@@ -292,6 +292,10 @@ pub struct ToolContext {
     pub permission_mode: PermissionMode,
     /// Stores the additional working directories
     pub additional_working_directories: Vec<AdditionalWorkingDirectory>,
+    /// Stores the selected provider, when the runtime has one.
+    pub provider: Option<String>,
+    /// Stores the selected model, when the runtime has one.
+    pub model: Option<String>,
     /// Stores the permission rules
     pub permission_rules: Vec<PermissionRule>,
     /// Stores the features
@@ -657,6 +661,8 @@ mod tests {
             session_worktree: None,
             permission_mode: PermissionMode::Default,
             additional_working_directories: Vec::new(),
+            provider: None,
+            model: None,
             permission_rules: Vec::new(),
             features: FeatureSet::first_release(),
             bash_session_store: None,

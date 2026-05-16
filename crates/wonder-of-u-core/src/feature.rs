@@ -42,6 +42,10 @@ pub enum FeatureFlag {
     Agents,
     /// Represents background tasks
     BackgroundTasks,
+    /// Represents legacy source-compatible TodoWrite exposure.
+    LegacyTodoWrite,
+    /// Represents source-compatible todo-v2 task list tools.
+    TodoV2,
 }
 
 /// Deterministic set wrapper for serializable feature gates.
@@ -70,6 +74,7 @@ impl FeatureSet {
             FeatureFlag::Skills,
             FeatureFlag::Agents,
             FeatureFlag::BackgroundTasks,
+            FeatureFlag::LegacyTodoWrite,
         ]))
     }
 
@@ -126,6 +131,8 @@ mod tests {
         assert!(features.contains(FeatureFlag::SessionPersistence));
         assert!(features.contains(FeatureFlag::Permissions));
         assert!(features.contains(FeatureFlag::Agents));
+        assert!(features.contains(FeatureFlag::LegacyTodoWrite));
+        assert!(!features.contains(FeatureFlag::TodoV2));
     }
 
     #[test]

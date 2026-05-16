@@ -6,7 +6,8 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use wonder_of_u_core::{
-    Result, Tool, ToolContext, ToolKind, ToolResult, ToolSchema, ToolSpec, ToolUseId, WonderError,
+    FeatureFlag, Result, Tool, ToolContext, ToolKind, ToolResult, ToolSchema, ToolSpec, ToolUseId,
+    WonderError,
 };
 
 use crate::{base_spec, parse_input, require_non_empty_text};
@@ -124,6 +125,9 @@ struct TodoItem {
 /// Represents todo tool
 #[derive(Debug, Default)]
 pub struct TodoTool;
+/// Represents source-compatible TodoWrite tool
+#[derive(Debug, Default)]
+pub struct TodoWriteTool;
 
 #[async_trait]
 impl Tool for TodoTool {
@@ -134,38 +138,7 @@ impl Tool for TodoTool {
             ToolKind::Planning,
         )
         .with_input_schema(ToolSchema::object());
-        spec.input_schema = json!({
-            "type": "object",
-            "properties": {
-                "action": ToolSchema::enumeration(
-                    "todo operation to perform",
-                    ["add", "remove", "list", "check", "uncheck"],
-                ),
-                "text": ToolSchema::string("todo text for add"),
-                "index": ToolSchema::integer("1-indexed todo item position"),
-                "todos": {
-                    "type": "array",
-                    "description": "source-compatible todo list replacement payload; use this instead of action/text/index",
-                    "items": {
-                        "type": "object",
-                        "properties": {
-                            "content": ToolSchema::string("todo text"),
-                            "status": ToolSchema::enumeration(
-                                "source-compatible todo status",
-                                ["pending", "in_progress", "completed"],
-                            ),
-                            "activeForm": ToolSchema::string(
-                                "source-compatible active-form progress label",
-                            ),
-                        },
-                        "required": ["content", "status", "activeForm"],
-                        "additionalProperties": false,
-                    },
-                },
-            },
-            "additionalProperties": false,
-        });
-        spec.aliases.push("TodoWrite".into());
+        spec.input_schema = todo_input_schema();
         spec
     }
 
@@ -187,6 +160,39 @@ impl Tool for TodoTool {
             ParsedTodoInput::Action(input) => execute_todo_action(&path, &input)?,
             ParsedTodoInput::Replace(input) => execute_todo_replace(&path, &input)?,
         };
+        Ok(ToolResult::success(use_id, content))
+    }
+}
+
+#[async_trait]
+impl Tool for TodoWriteTool {
+    fn spec(&self) -> ToolSpec {
+        let mut spec = base_spec(
+            "todo_write",
+            "Replace the source-compatible todo checklist in todos.md",
+            ToolKind::Planning,
+        )
+        .with_input_schema(ToolSchema::object());
+        spec.input_schema = todo_write_input_schema();
+        spec.aliases.push("TodoWrite".into());
+        spec.required_features.insert(FeatureFlag::LegacyTodoWrite);
+        spec
+    }
+
+    fn validate_input(&self, input: &Value) -> Result<()> {
+        parse_input::<TodoWriteCompatInput>("todo_write", input)?.validate()
+    }
+
+    async fn execute(
+        &self,
+        context: ToolContext,
+        use_id: ToolUseId,
+        input: Value,
+    ) -> Result<ToolResult> {
+        let input = parse_input::<TodoWriteCompatInput>("todo_write", &input)?;
+        input.validate()?;
+
+        let content = execute_todo_replace(&context.cwd.join("todos.md"), &input)?;
         Ok(ToolResult::success(use_id, content))
     }
 }
@@ -218,6 +224,55 @@ fn parse_todo_input(input: &Value) -> Result<ParsedTodoInput> {
     }
 
     parse_input::<TodoInput>("todo", input).map(ParsedTodoInput::Action)
+}
+
+fn todo_input_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "action": ToolSchema::enumeration(
+                "todo operation to perform",
+                ["add", "remove", "list", "check", "uncheck"],
+            ),
+            "text": ToolSchema::string("todo text for add"),
+            "index": ToolSchema::integer("1-indexed todo item position"),
+            "todos": todo_write_items_schema(),
+        },
+        "additionalProperties": false,
+    })
+}
+
+fn todo_write_input_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "todos": todo_write_items_schema(),
+        },
+        "required": ["todos"],
+        "additionalProperties": false,
+    })
+}
+
+fn todo_write_items_schema() -> Value {
+    json!({
+        "type": "array",
+        "description": "source-compatible todo list replacement payload",
+        "items": {
+            "type": "object",
+            "properties": {
+                "content": ToolSchema::string("todo text"),
+                "status": ToolSchema::enumeration(
+                    "source-compatible todo status",
+                    ["pending", "in_progress", "completed"],
+                ),
+                "activeForm": ToolSchema::string(
+                    "source-compatible active-form progress label",
+                ),
+            },
+            "required": ["content", "status", "activeForm"],
+            "additionalProperties": false,
+        },
+    })
 }
 
 fn execute_todo_action(path: &Path, input: &TodoInput) -> Result<String> {
@@ -346,11 +401,13 @@ fn todo_index(index: Option<u32>, len: usize) -> Result<usize> {
 
 #[cfg(test)]
 mod tests {
-    use std::{collections::BTreeSet, fs, path::PathBuf};
+    use std::{fs, path::PathBuf};
 
     use futures::executor::block_on;
     use serde_json::json;
-    use wonder_of_u_core::{FeatureSet, PermissionMode, SessionId, ToolContext, ToolUseId};
+    use wonder_of_u_core::{
+        FeatureFlag, FeatureSet, PermissionMode, SessionId, ToolContext, ToolUseId,
+    };
     use wonder_of_u_test_support::unique_test_dir;
 
     use super::*;
@@ -362,6 +419,8 @@ mod tests {
             session_worktree: None,
             permission_mode: PermissionMode::Default,
             additional_working_directories: Vec::new(),
+            provider: None,
+            model: None,
             permission_rules: Vec::new(),
             features: FeatureSet::first_release(),
             bash_session_store: None,
@@ -525,10 +584,50 @@ mod tests {
     }
 
     #[test]
-    fn todo_spec_exposes_source_alias() {
-        let tool = TodoTool;
-        let aliases = tool.spec().aliases.into_iter().collect::<BTreeSet<_>>();
+    fn todo_write_executes_source_compatible_replace() {
+        let dir = unique_test_dir("tools-todo-write-tool");
+        let tool = TodoWriteTool;
 
-        assert_eq!(aliases, BTreeSet::from(["TodoWrite".to_string()]));
+        let result = block_on(tool.execute(
+            tool_context(dir.clone()),
+            ToolUseId::new(),
+            json!({
+                "todos": [
+                    {
+                        "content": "ship release",
+                        "status": "pending",
+                        "activeForm": "shipping release"
+                    }
+                ]
+            }),
+        ))
+        .expect("todo write");
+
+        assert_eq!(result.content, "1. [ ] ship release");
+        assert_eq!(
+            fs::read_to_string(dir.join("todos.md")).expect("todo file"),
+            "- [ ] ship release\n"
+        );
+    }
+
+    #[test]
+    fn todo_write_spec_exposes_source_alias_and_legacy_feature_gate() {
+        let tool = TodoWriteTool;
+        let spec = tool.spec();
+
+        assert_eq!(spec.aliases, vec!["TodoWrite".to_string()]);
+        assert!(
+            spec.required_features
+                .contains(&FeatureFlag::LegacyTodoWrite)
+        );
+    }
+
+    #[test]
+    fn todo_spec_keeps_markdown_runtime_without_source_alias() {
+        let tool = TodoTool;
+        let spec = tool.spec();
+
+        assert!(spec.aliases.is_empty());
+        assert!(spec.input_schema["properties"].get("todos").is_some());
     }
 }

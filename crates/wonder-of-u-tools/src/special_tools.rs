@@ -1800,6 +1800,8 @@ mod tests {
             session_worktree: None,
             permission_mode: PermissionMode::AcceptEdits,
             additional_working_directories: Vec::new(),
+            provider: None,
+            model: None,
             permission_rules: Vec::new(),
             features: FeatureSet::first_release(),
             bash_session_store: None,
