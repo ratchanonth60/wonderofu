@@ -298,6 +298,13 @@ impl ToolPermissionContext {
     #[must_use]
     fn first_path_escape_attempt(&self, paths: &[PathBuf]) -> Option<PathBuf> {
         let scopes = self.working_directories();
+        let raw_scopes = std::iter::once(self.resolve_path(&self.cwd))
+            .chain(
+                self.additional_working_directories
+                    .iter()
+                    .map(|directory| self.resolve_path(&directory.path)),
+            )
+            .collect::<Vec<_>>();
         paths.iter().find_map(|path| {
             let resolved = self.resolve_path(path);
             let canonical = canonicalize_best_effort(&resolved);
@@ -308,7 +315,10 @@ impl ToolPermissionContext {
                 return Some(canonical);
             }
 
-            let raw_inside = scopes.iter().any(|scope| is_path_within(&resolved, scope));
+            let raw_inside = raw_scopes
+                .iter()
+                .chain(scopes.iter())
+                .any(|scope| is_path_within(&resolved, scope));
             (raw_inside && canonical_outside).then_some(canonical)
         })
     }
