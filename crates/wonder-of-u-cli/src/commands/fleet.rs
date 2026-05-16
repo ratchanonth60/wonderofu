@@ -111,10 +111,16 @@ impl FleetCommand {
     }
 
     /// Returns the [`CommandSpec`] used to register this command.
+    ///
+    /// Key usage patterns surfaced through the spec description:
+    /// - Direct prompt: `/fleet <prompt>` queues parallel sub-agents.
+    /// - Steer: `/fleet steer <fleet_id> <prompt>` sends a steering message.
+    /// - Monitor: `/fleet status` / `/fleet show <id>` / `/fleet wait <id>`.
     pub fn command_spec() -> CommandSpec {
         let mut spec = CommandSpec::new(
             "fleet",
-            "Manage fleet runs (multi-agent task groups)",
+            "Orchestrate parallel sub-agents: `/fleet <prompt>` (direct), \
+             `/fleet steer <id> <msg>`, `/fleet show/wait/results <id>`",
             CommandKind::Local,
         );
         spec.required_features = BTreeSet::from([FeatureFlag::Fleet, FeatureFlag::Agents]);

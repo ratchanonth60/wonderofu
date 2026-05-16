@@ -812,3 +812,304 @@ fn ultraplan_output_says_cloud_unavailable_and_local_guidance_only() {
         "/ultraplan must clarify flag is for local planning guidance; got:\n{text}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Fleet and Tasks help/docs discoverability tests
+// ---------------------------------------------------------------------------
+
+/// `/fleet` must be registered in the command registry.
+#[test]
+fn fleet_command_is_registered() {
+    let registered = registry_names();
+    assert!(
+        registered.contains("fleet"),
+        "fleet command must be registered"
+    );
+}
+
+/// The `fleet` spec description must mention direct-prompt usage so that
+/// users can discover `/fleet <prompt>` from the help catalog.
+#[test]
+fn fleet_spec_description_mentions_direct_prompt() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let registry = build_command_registry(Some(dir.path().to_path_buf())).expect("build registry");
+    let spec = registry
+        .resolve("fleet")
+        .expect("fleet must be registered")
+        .spec();
+
+    let description = spec.description.to_lowercase();
+    assert!(
+        description.contains("direct") || description.contains("prompt"),
+        "fleet spec description must mention direct prompt usage; got: {}",
+        spec.description
+    );
+}
+
+/// The `fleet` spec description must mention `steer` so that users can
+/// discover `/fleet steer <fleet_id> <msg>` from the help catalog.
+#[test]
+fn fleet_spec_description_mentions_steer() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let registry = build_command_registry(Some(dir.path().to_path_buf())).expect("build registry");
+    let spec = registry
+        .resolve("fleet")
+        .expect("fleet must be registered")
+        .spec();
+
+    assert!(
+        spec.description.to_lowercase().contains("steer"),
+        "fleet spec description must mention steer; got: {}",
+        spec.description
+    );
+}
+
+/// The `tasks` spec description must mention `remove` and `prune` so that
+/// users can discover cleanup sub-commands from the help catalog.
+#[test]
+fn tasks_spec_description_mentions_remove_and_prune() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let registry = build_command_registry(Some(dir.path().to_path_buf())).expect("build registry");
+    let spec = registry
+        .resolve("tasks")
+        .expect("tasks must be registered")
+        .spec();
+
+    let description = spec.description.to_lowercase();
+    assert!(
+        description.contains("remove"),
+        "tasks spec description must mention remove; got: {}",
+        spec.description
+    );
+    assert!(
+        description.contains("prune"),
+        "tasks spec description must mention prune; got: {}",
+        spec.description
+    );
+}
+
+/// The `tasks` spec description must mention monitoring / status so that
+/// users can discover `/tasks` (bare) as a monitoring surface.
+#[test]
+fn tasks_spec_description_mentions_monitoring() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let registry = build_command_registry(Some(dir.path().to_path_buf())).expect("build registry");
+    let spec = registry
+        .resolve("tasks")
+        .expect("tasks must be registered")
+        .spec();
+
+    let description = spec.description.to_lowercase();
+    assert!(
+        description.contains("monitor") || description.contains("status"),
+        "tasks spec description must mention monitoring or status; got: {}",
+        spec.description
+    );
+}
+
+/// `/fleet` bare invocation (no sub-command, no storage dir) must return Ok
+/// output that references the fleet runtime — either a disabled note or a
+/// status block.  It must not panic or return a hard Err.
+#[test]
+fn fleet_bare_invocation_returns_ok() {
+    use futures::executor::block_on;
+    use wonder_of_u_core::{CommandInvocation, CommandOutput};
+
+    let dir = tempfile::tempdir().expect("temp dir");
+    // Pass no storage dir so the fleet store is unavailable.
+    let registry = build_command_registry(Some(dir.path().to_path_buf())).expect("build registry");
+    let cmd = registry.resolve("fleet").expect("fleet must be registered");
+
+    let result = block_on(cmd.execute(
+        parity_ctx(dir.path()),
+        CommandInvocation {
+            name: "fleet".into(),
+            args: String::new(),
+            raw: "/fleet".into(),
+        },
+    ));
+    // Must not hard-error — returns either a status block or a disabled note.
+    assert!(
+        result.is_ok(),
+        "/fleet (bare) must return Ok; got: {:?}",
+        result
+    );
+    let CommandOutput::Text(text) = result.unwrap() else {
+        panic!("expected Text output from /fleet");
+    };
+    // The response must reference fleet in some way.
+    assert!(
+        text.to_lowercase().contains("fleet"),
+        "/fleet (bare) output must mention fleet; got:\n{text}"
+    );
+}
+
+/// `/tasks remove <id>` output must include `action=removed` so callers can
+/// parse the result programmatically.
+///
+/// The test writes a fake completed task directly into the task store, then
+/// invokes the tasks command via the registry.
+#[test]
+fn tasks_remove_output_has_action_removed_field() {
+    use futures::executor::block_on;
+    use time::OffsetDateTime;
+    use wonder_of_u_core::{
+        AgentRuntime, AgentTaskState, CommandInvocation, CommandOutput, TaskId, TaskKind,
+        TaskState, TaskStatus,
+    };
+    use wonder_of_u_storage::TaskStore;
+
+    let dir = tempfile::tempdir().expect("temp dir");
+    let storage_path = dir.path().to_path_buf();
+
+    // Write a fake completed task into the store.
+    let task_id = TaskId::new();
+    let store = TaskStore::new(&storage_path);
+    let task = TaskState {
+        id: task_id,
+        kind: TaskKind::LocalAgent,
+        description: "docs-help-test completed task".into(),
+        status: TaskStatus::Completed,
+        fleet_id: None,
+        fleet_request_id: None,
+        parent_id: None,
+        cwd: None,
+        command: None,
+        status_message: None,
+        pid: None,
+        process_identity: None,
+        last_heartbeat_at: None,
+        exit_code: Some(0),
+        agent: Some(AgentTaskState {
+            name: "test-agent".into(),
+            prompt: None,
+            provider: None,
+            model: None,
+            runtime: AgentRuntime::PromptSubprocess,
+        }),
+        remote: None,
+        output_log: None,
+        worktree_branch: None,
+        started_at: OffsetDateTime::now_utc(),
+        finished_at: Some(OffsetDateTime::now_utc()),
+    };
+    store.write_task(&task).expect("write fake completed task");
+
+    let registry = build_command_registry(Some(storage_path)).expect("build registry");
+    let cmd = registry.resolve("tasks").expect("tasks must be registered");
+
+    let result = block_on(cmd.execute(
+        parity_ctx(dir.path()),
+        CommandInvocation {
+            name: "tasks".into(),
+            args: format!("remove {task_id}"),
+            raw: format!("/tasks remove {task_id}"),
+        },
+    ));
+    assert!(
+        result.is_ok(),
+        "/tasks remove must succeed for a completed task; got: {:?}",
+        result
+    );
+    let CommandOutput::Text(text) = result.unwrap() else {
+        panic!("expected Text output from /tasks remove");
+    };
+    assert!(
+        text.contains("action=removed"),
+        "/tasks remove output must contain action=removed; got:\n{text}"
+    );
+    assert!(
+        text.contains(&task_id.to_string()),
+        "/tasks remove output must contain the task id; got:\n{text}"
+    );
+}
+
+/// `/tasks prune` output must include `removed=` and `skipped_active=` fields
+/// so callers can parse the bulk-cleanup result programmatically.
+#[test]
+fn tasks_prune_output_has_required_fields() {
+    use futures::executor::block_on;
+    use time::OffsetDateTime;
+    use wonder_of_u_core::{
+        AgentRuntime, AgentTaskState, CommandInvocation, CommandOutput, TaskId, TaskKind,
+        TaskState, TaskStatus,
+    };
+    use wonder_of_u_storage::TaskStore;
+
+    let dir = tempfile::tempdir().expect("temp dir");
+    let storage_path = dir.path().to_path_buf();
+
+    // Seed: one completed task (will be pruned) + one running task (will be skipped).
+    let completed_id = TaskId::new();
+    let running_id = TaskId::new();
+    let store = TaskStore::new(&storage_path);
+
+    for (id, status, finished) in [
+        (completed_id, TaskStatus::Completed, true),
+        (running_id, TaskStatus::Running, false),
+    ] {
+        store
+            .write_task(&TaskState {
+                id,
+                kind: TaskKind::LocalAgent,
+                description: "prune-test task".into(),
+                status,
+                fleet_id: None,
+                fleet_request_id: None,
+                parent_id: None,
+                cwd: None,
+                command: None,
+                status_message: None,
+                pid: None,
+                process_identity: None,
+                last_heartbeat_at: None,
+                exit_code: if finished { Some(0) } else { None },
+                agent: Some(AgentTaskState {
+                    name: "test-agent".into(),
+                    prompt: None,
+                    provider: None,
+                    model: None,
+                    runtime: AgentRuntime::PromptSubprocess,
+                }),
+                remote: None,
+                output_log: None,
+                worktree_branch: None,
+                started_at: OffsetDateTime::now_utc(),
+                finished_at: finished.then(OffsetDateTime::now_utc),
+            })
+            .expect("write task");
+    }
+
+    let registry = build_command_registry(Some(storage_path)).expect("build registry");
+    let cmd = registry.resolve("tasks").expect("tasks must be registered");
+
+    let result = block_on(cmd.execute(
+        parity_ctx(dir.path()),
+        CommandInvocation {
+            name: "tasks".into(),
+            args: "prune --completed".into(),
+            raw: "/tasks prune --completed".into(),
+        },
+    ));
+    assert!(
+        result.is_ok(),
+        "/tasks prune must succeed; got: {:?}",
+        result
+    );
+    let CommandOutput::Text(text) = result.unwrap() else {
+        panic!("expected Text output from /tasks prune");
+    };
+    assert!(
+        text.contains("removed="),
+        "/tasks prune output must contain removed= field; got:\n{text}"
+    );
+    assert!(
+        text.contains("skipped_active="),
+        "/tasks prune output must contain skipped_active= field; got:\n{text}"
+    );
+    // The completed task must appear in removed_ids.
+    assert!(
+        text.contains(&completed_id.to_string()),
+        "/tasks prune must list the pruned completed task id; got:\n{text}"
+    );
+}

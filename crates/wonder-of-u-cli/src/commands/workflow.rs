@@ -1295,10 +1295,15 @@ impl TasksCommand {
     }
 
     /// Handles command spec
+    ///
+    /// Key sub-commands surfaced through the description:
+    /// - Monitor: bare `/tasks` / `/tasks status` shows live background and fleet work.
+    /// - Cleanup: `/tasks remove <id>` deletes a single task; `/tasks prune` bulk-removes
+    ///   terminal tasks.
     pub fn command_spec() -> CommandSpec {
         let mut spec = CommandSpec::new(
             "tasks",
-            "Manage persisted local background tasks",
+            "Monitor/manage background tasks: status, remove <id>, prune (bulk-cleanup)",
             CommandKind::Local,
         );
         spec.required_features = BTreeSet::from([FeatureFlag::BackgroundTasks]);
