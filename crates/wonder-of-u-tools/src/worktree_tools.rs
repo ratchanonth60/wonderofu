@@ -426,6 +426,130 @@ fn default_worktree_slug(session_id: &wonder_of_u_core::SessionId) -> String {
     format!("session-{suffix}")
 }
 
+// ── Fleet-scoped public helpers ───────────────────────────────────────────────
+
+/// Derives a deterministic, filesystem-safe slug for a fleet agent worktree.
+///
+/// The slug is built from the first 8 characters of the fleet id and the first
+/// 8 characters of the request id, joined with a hyphen and prefixed with
+/// `fleet-`.  This keeps it short enough to avoid path-length issues on
+/// macOS/Linux (≤ 64 chars total) while remaining unique within a fleet run.
+///
+/// # Examples
+///
+/// ```
+/// use wonder_of_u_tools::fleet_agent_worktree_slug;
+/// let slug = fleet_agent_worktree_slug("abcdef01-xxxx", "12345678-yyyy");
+/// assert_eq!(slug, "fleet-abcdef01-12345678");
+/// ```
+#[must_use]
+pub fn fleet_agent_worktree_slug(fleet_id_str: &str, request_id: &str) -> String {
+    let fleet_prefix: String = fleet_id_str
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric())
+        .take(8)
+        .collect();
+    let req_prefix: String = request_id
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric())
+        .take(8)
+        .collect();
+    format!("fleet-{fleet_prefix}-{req_prefix}")
+}
+
+/// Creates or resumes a git worktree for a fleet agent member.
+///
+/// Delegates to the shared [`create_or_resume_worktree`] logic and returns
+/// `(worktree_path, branch_name)`.  Callers should pass the resolved `slug`
+/// from [`fleet_agent_worktree_slug`] or an explicit branch override.
+///
+/// # Errors
+///
+/// Propagates errors from git commands or filesystem operations.
+pub fn create_fleet_agent_worktree(
+    original_cwd: &Path,
+    repository_root: &Path,
+    slug: &str,
+) -> wonder_of_u_core::Result<(PathBuf, String)> {
+    create_fleet_agent_worktree_with_branch(original_cwd, repository_root, slug, None)
+}
+
+/// Creates or resumes a git worktree for a fleet agent member using an explicit
+/// branch name while keeping the worktree path derived from `slug`.
+///
+/// This is intended for user-supplied fleet branch names: the branch is used
+/// exactly as provided, while the slug remains a filesystem-safe stable path
+/// identifier for the fleet member.
+///
+/// # Errors
+///
+/// Propagates validation, git, or filesystem errors.
+pub fn create_fleet_agent_worktree_with_branch(
+    original_cwd: &Path,
+    repository_root: &Path,
+    slug: &str,
+    branch: Option<&str>,
+) -> wonder_of_u_core::Result<(PathBuf, String)> {
+    if let Some(branch) = branch {
+        validate_worktree_branch_name(branch)?;
+    }
+    let (state, _resumed) =
+        create_or_resume_worktree_with_branch(original_cwd, repository_root, slug, branch)?;
+    let branch = state
+        .worktree_branch
+        .unwrap_or_else(|| branch.map_or_else(|| worktree_branch_name(slug), str::to_string));
+    Ok((state.worktree_path, branch))
+}
+
+/// Validates an explicit worktree branch name supplied by the user.
+///
+/// Applies a minimal set of rules that git itself would reject on the branch
+/// name embedded in the slug:
+/// - Must not be empty.
+/// - Must not contain ASCII control characters, spaces, or `\`.
+/// - Must not start or end with `/` or `.`.
+/// - Must not contain `..` or `@{`.
+/// - Length must not exceed 255 bytes.
+///
+/// This is a subset of git's full ref-name rules; a stricter check happens
+/// when git actually creates the branch.
+pub fn validate_worktree_branch_name(name: &str) -> wonder_of_u_core::Result<()> {
+    use wonder_of_u_core::WonderError;
+    if name.is_empty() {
+        return Err(WonderError::validation(
+            "worktree branch name must not be empty",
+        ));
+    }
+    if name.len() > 255 {
+        return Err(WonderError::validation(
+            "worktree branch name must not exceed 255 bytes",
+        ));
+    }
+    if name.starts_with('/') || name.ends_with('/') {
+        return Err(WonderError::validation(
+            "worktree branch name must not start or end with '/'",
+        ));
+    }
+    if name.starts_with('.') || name.ends_with('.') {
+        return Err(WonderError::validation(
+            "worktree branch name must not start or end with '.'",
+        ));
+    }
+    if name.contains("..") || name.contains("@{") {
+        return Err(WonderError::validation(
+            "worktree branch name must not contain '..' or '@{'",
+        ));
+    }
+    for ch in name.chars() {
+        if ch.is_ascii_control() || ch == ' ' || ch == '\\' {
+            return Err(WonderError::validation(format!(
+                "worktree branch name contains invalid character {ch:?}"
+            )));
+        }
+    }
+    Ok(())
+}
+
 fn flatten_slug(slug: &str) -> String {
     slug.replace('/', "+")
 }
@@ -479,8 +603,18 @@ fn create_or_resume_worktree(
     repository_root: &Path,
     slug: &str,
 ) -> Result<(WorktreeSessionState, bool)> {
+    create_or_resume_worktree_with_branch(original_cwd, repository_root, slug, None)
+}
+
+fn create_or_resume_worktree_with_branch(
+    original_cwd: &Path,
+    repository_root: &Path,
+    slug: &str,
+    branch_override: Option<&str>,
+) -> Result<(WorktreeSessionState, bool)> {
     let worktree_path = worktree_path_for(repository_root, slug);
-    let worktree_branch = worktree_branch_name(slug);
+    let worktree_branch =
+        branch_override.map_or_else(|| worktree_branch_name(slug), str::to_string);
     let original_branch = get_current_branch(original_cwd).ok();
     let original_head_commit = git_stdout(repository_root, ["rev-parse", "HEAD"])?;
 
@@ -493,6 +627,14 @@ fn create_or_resume_worktree(
                 "refusing to reuse existing path {} because it is not a registered git worktree",
                 worktree_path.display()
             )));
+        }
+        if let Ok(actual_branch) = get_current_branch(&worktree_path) {
+            if actual_branch != worktree_branch {
+                return Err(WonderError::validation(format!(
+                    "refusing to reuse worktree {} because it is on branch `{actual_branch}` instead of `{worktree_branch}`",
+                    worktree_path.display()
+                )));
+            }
         }
         return Ok((
             WorktreeSessionState {
@@ -1096,5 +1238,123 @@ mod tests {
             before_branches,
             run_git(&repo, ["branch", "--list", "--format=%(refname:short)"])
         );
+    }
+
+    // ── Fleet helper tests ────────────────────────────────────────────────────
+
+    #[test]
+    fn fleet_agent_worktree_slug_is_deterministic() {
+        let slug1 = fleet_agent_worktree_slug(
+            "abcdef01-1234-5678-abcd-000000000000",
+            "12345678-aaaa-bbbb-cccc-dddddddddddd",
+        );
+        let slug2 = fleet_agent_worktree_slug(
+            "abcdef01-1234-5678-abcd-000000000000",
+            "12345678-aaaa-bbbb-cccc-dddddddddddd",
+        );
+        assert_eq!(slug1, slug2);
+        assert_eq!(slug1, "fleet-abcdef01-12345678");
+    }
+
+    #[test]
+    fn fleet_agent_worktree_slug_strips_hyphens_for_prefix() {
+        // Hyphens in UUIDs are filtered; only alphanumeric chars are kept.
+        let slug = fleet_agent_worktree_slug("----abcd1234", "----efgh5678");
+        assert_eq!(slug, "fleet-abcd1234-efgh5678");
+    }
+
+    #[test]
+    fn fleet_agent_worktree_slug_caps_at_8_chars_each() {
+        let slug = fleet_agent_worktree_slug("aabbccdd11223344", "xxyyzz00aabbccdd");
+        assert_eq!(slug, "fleet-aabbccdd-xxyyzz00");
+    }
+
+    #[test]
+    fn validate_worktree_branch_name_accepts_valid_names() {
+        for name in &["main", "feat/my-feature", "fix/issue-123", "release-1.2.3"] {
+            validate_worktree_branch_name(name)
+                .unwrap_or_else(|e| panic!("expected valid branch name {name:?}: {e}"));
+        }
+    }
+
+    #[test]
+    fn validate_worktree_branch_name_rejects_empty() {
+        let err = validate_worktree_branch_name("").unwrap_err();
+        assert!(err.to_string().contains("empty"), "got: {err}");
+    }
+
+    #[test]
+    fn validate_worktree_branch_name_rejects_leading_dot() {
+        let err = validate_worktree_branch_name(".hidden").unwrap_err();
+        assert!(err.to_string().contains("'.'"), "got: {err}");
+    }
+
+    #[test]
+    fn validate_worktree_branch_name_rejects_dotdot() {
+        let err = validate_worktree_branch_name("a..b").unwrap_err();
+        assert!(err.to_string().contains("'..'"), "got: {err}");
+    }
+
+    #[test]
+    fn validate_worktree_branch_name_rejects_space() {
+        let err = validate_worktree_branch_name("feat my feat").unwrap_err();
+        assert!(err.to_string().contains("invalid character"), "got: {err}");
+    }
+
+    #[test]
+    fn create_fleet_agent_worktree_creates_and_resumes() {
+        let repo = init_git_repo("tools-fleet-worktree-create");
+        let slug = fleet_agent_worktree_slug(
+            "aaaa0000-0000-0000-0000-000000000000",
+            "bbbb1111-1111-1111-1111-111111111111",
+        );
+
+        // First call: creates the worktree.
+        let (path1, branch1) =
+            create_fleet_agent_worktree(&repo, &repo, &slug).expect("create worktree");
+        assert!(path1.exists(), "worktree path should exist");
+        assert!(
+            branch1.contains("fleet-"),
+            "branch name should include slug: {branch1}"
+        );
+
+        // Second call: resumes the same worktree.
+        let (path2, branch2) =
+            create_fleet_agent_worktree(&repo, &repo, &slug).expect("resume worktree");
+        assert_eq!(path1, path2, "should resume at same path");
+        assert_eq!(branch1, branch2, "branch should be stable across resume");
+
+        // Confirm the branch is registered with git.
+        let worktree_list = run_git(&repo, ["worktree", "list", "--porcelain"]);
+        assert!(
+            worktree_list.contains(path1.to_string_lossy().as_ref()),
+            "worktree should be registered: {worktree_list}"
+        );
+    }
+
+    #[test]
+    fn create_fleet_agent_worktree_with_branch_preserves_explicit_branch() {
+        let repo = init_git_repo("tools-fleet-worktree-explicit-branch");
+        let slug = fleet_agent_worktree_slug(
+            "cccc2222-2222-2222-2222-222222222222",
+            "dddd3333-3333-3333-3333-333333333333",
+        );
+        let explicit_branch = "feat/fleet-member-explicit";
+
+        let (path, branch) =
+            create_fleet_agent_worktree_with_branch(&repo, &repo, &slug, Some(explicit_branch))
+                .expect("create explicit branch worktree");
+
+        assert!(path.exists(), "worktree path should exist");
+        assert_eq!(branch, explicit_branch);
+
+        let actual_branch = run_git(&path, ["branch", "--show-current"]);
+        assert_eq!(actual_branch.trim(), explicit_branch);
+
+        let (resumed_path, resumed_branch) =
+            create_fleet_agent_worktree_with_branch(&repo, &repo, &slug, Some(explicit_branch))
+                .expect("resume explicit branch worktree");
+        assert_eq!(resumed_path, path);
+        assert_eq!(resumed_branch, explicit_branch);
     }
 }

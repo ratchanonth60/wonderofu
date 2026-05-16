@@ -33,9 +33,14 @@ use wonder_of_u_agent::{ProviderResolver, ProviderStatusReport};
 use wonder_of_u_core::{
     Command, CommandContext, CommandInvocation, CommandKind, CommandOutput, CommandSpec,
     FeatureFlag, FleetAgentRole, FleetId, FleetMemberRequest, FleetRoleCatalog, FleetRunState,
-    FleetRunStatus, Result, TaskId, TaskStatus, WonderError,
+    FleetRunStatus, Result, TaskId, TaskStatus, WonderError, WorktreeIsolation,
+    WorktreeIsolationMode, get_git_root,
 };
 use wonder_of_u_storage::FleetStore;
+use wonder_of_u_tools::{
+    create_fleet_agent_worktree_with_branch, fleet_agent_worktree_slug,
+    validate_worktree_branch_name,
+};
 
 use super::{
     fleet_plan::parse_plan,
@@ -74,6 +79,9 @@ struct FleetArgs {
     command: Option<FleetSubcommand>,
 }
 
+// `FleetStartArgs` is inherently large (many CLI fields); boxing it is less
+// readable than this one-time allow on the top-level dispatch enum.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Subcommand)]
 enum FleetSubcommand {
     /// Drain pending fleet member requests into live agent tasks.
@@ -134,6 +142,17 @@ struct FleetStartArgs {
     /// Only meaningful with `--plan`. Must be > 0.
     #[arg(long)]
     max_concurrency: Option<usize>,
+    /// Enable worktree isolation for the immediate single-member agent task.
+    ///
+    /// Accepted value: `worktree`. Conflicts with `--plan`.
+    /// Setting `--worktree-branch` implies `--isolation worktree`.
+    #[arg(long, conflicts_with = "plan")]
+    isolation: Option<String>,
+    /// Explicit git branch name to use for the worktree.
+    ///
+    /// Implies `--isolation worktree`. Conflicts with `--plan`.
+    #[arg(long, conflicts_with = "plan")]
+    worktree_branch: Option<String>,
 }
 
 #[derive(Debug, Args)]
@@ -293,6 +312,11 @@ impl FleetCommand {
             }
         }
 
+        // ── Validate and resolve isolation mode ───────────────────────────────
+        // `--worktree-branch` implies `--isolation worktree`.
+        let isolation: Option<WorktreeIsolation> =
+            parse_isolation_args(args.isolation.as_deref(), args.worktree_branch.as_deref())?;
+
         // ── Single-member / no-member start (original behaviour) ─────────────
 
         // Resolve role early so we can include it in the output.
@@ -320,8 +344,7 @@ impl FleetCommand {
             Some(context.cwd.clone()),
         );
 
-        // If both --prompt and --member-name are given, launch an immediate
-        // agent task and link it to this fleet run.
+        // If --prompt is given, launch an immediate agent task.
         if let Some(prompt) = &args.prompt {
             let report = ProviderResolver::builtin().load_report(self.storage_dir.as_deref())?;
             let cwd = args.cwd.clone().unwrap_or_else(|| context.cwd.clone());
@@ -333,6 +356,13 @@ impl FleetCommand {
                 prompt.clone()
             };
 
+            // Apply worktree isolation if requested.
+            let (effective_cwd, worktree_branch) = if let Some(ref iso) = isolation {
+                resolve_worktree_cwd(&cwd, iso, &run.id.to_string(), &run.id.to_string())?
+            } else {
+                (cwd, None)
+            };
+
             let task = manager.start_agent_task(AgentTaskLaunch {
                 name: args
                     .member_name
@@ -342,11 +372,12 @@ impl FleetCommand {
                 prompt: full_prompt,
                 provider: args.provider.or(report.provider),
                 model: args.model.or(report.model),
-                cwd,
+                cwd: effective_cwd,
                 fleet_id: Some(run.id),
                 allowed_tools: resolved_role
                     .as_ref()
                     .and_then(role_allowed_tools_for_launch),
+                worktree_branch,
             })?;
             run.member_task_ids.push(task.id);
             run.status = FleetRunStatus::Running;
@@ -363,6 +394,9 @@ impl FleetCommand {
         if let Some(ref role) = resolved_role {
             lines.push(format!("role={}", role.id));
             lines.push(format!("role_name={}", sanitize_line(&role.name)));
+        }
+        if let Some(ref iso) = isolation {
+            lines.push(format!("isolation_mode={}", isolation_mode_label(iso.mode)));
         }
         for (i, task_id) in run.member_task_ids.iter().enumerate() {
             lines.push(format!("member[{i}].task_id={task_id}"));
@@ -419,6 +453,7 @@ impl FleetCommand {
             req.provider = spec.provider.clone();
             req.cwd = spec.cwd.clone();
             req.depends_on = spec.depends_on.clone();
+            req.isolation = spec.isolation.clone();
             store.queue_member_request(&req)?;
         }
 
@@ -438,6 +473,9 @@ impl FleetCommand {
                     "member[{i}].depends_on={}",
                     spec.depends_on.join(",")
                 ));
+            }
+            if spec.isolation.is_some() {
+                lines.push(format!("member[{i}].isolation=worktree"));
             }
         }
         lines.push(format!(
@@ -561,6 +599,15 @@ impl FleetCommand {
                     ));
                     if let Some(agent) = &task.agent {
                         lines.push(format!("member[{i}].name={}", sanitize_line(&agent.name)));
+                    }
+                    if let Some(ref cwd) = task.cwd {
+                        lines.push(format!("member[{i}].cwd={}", cwd.display()));
+                    }
+                    if let Some(ref branch) = task.worktree_branch {
+                        lines.push(format!(
+                            "member[{i}].worktree_branch={}",
+                            sanitize_line(branch)
+                        ));
                     }
                     if args.tail_lines > 0 {
                         if let Ok(tail) = manager.read_log_tail(*task_id, args.tail_lines) {
@@ -875,6 +922,10 @@ impl FleetCommand {
 ///
 /// If the request carries a `role` id, the role's preamble is prepended to the
 /// request prompt before the agent is launched.
+///
+/// If the request carries an `isolation` field with mode `Worktree`, a git
+/// worktree is created (or resumed) before launching the agent.  A failure to
+/// create the worktree returns an error and leaves the pending request intact.
 fn dispatch_one(
     manager: &TaskManager,
     store: &FleetStore,
@@ -905,6 +956,17 @@ fn dispatch_one(
         (req.prompt.clone(), None)
     };
 
+    // Apply worktree isolation if requested.
+    let fleet_id_str = req
+        .fleet_id
+        .map(|id| id.to_string())
+        .unwrap_or_else(|| req.id.clone());
+    let (effective_cwd, worktree_branch) = if let Some(ref iso) = req.isolation {
+        resolve_worktree_cwd(&cwd, iso, &fleet_id_str, &req.id)?
+    } else {
+        (cwd, None)
+    };
+
     let task = manager.start_agent_task(AgentTaskLaunch {
         name: req
             .name
@@ -914,9 +976,10 @@ fn dispatch_one(
         prompt,
         provider: req.provider.clone().or_else(|| report.provider.clone()),
         model: req.model.clone().or_else(|| report.model.clone()),
-        cwd,
+        cwd: effective_cwd,
         fleet_id: req.fleet_id,
         allowed_tools,
+        worktree_branch,
     })?;
 
     store.delete_pending_request_for(req)?;
@@ -1039,6 +1102,81 @@ fn runtime_disabled_message(subcommand: &str) -> String {
     )
 }
 
+/// Parses the `--isolation` / `--worktree-branch` CLI args into a
+/// [`WorktreeIsolation`] value, or returns an error for unknown mode strings.
+///
+/// `--worktree-branch` alone implies `worktree` mode.
+fn parse_isolation_args(
+    isolation: Option<&str>,
+    worktree_branch: Option<&str>,
+) -> Result<Option<WorktreeIsolation>> {
+    // `--worktree-branch` implies worktree mode.
+    if worktree_branch.is_some() && isolation.is_none() {
+        let branch = worktree_branch.map(str::to_string);
+        if let Some(ref b) = branch {
+            validate_worktree_branch_name(b)?;
+        }
+        return Ok(Some(WorktreeIsolation {
+            mode: WorktreeIsolationMode::Worktree,
+            branch,
+        }));
+    }
+
+    let Some(mode_str) = isolation else {
+        return Ok(None);
+    };
+
+    match mode_str {
+        "worktree" => {
+            let branch = worktree_branch.map(str::to_string);
+            if let Some(ref b) = branch {
+                validate_worktree_branch_name(b)?;
+            }
+            Ok(Some(WorktreeIsolation {
+                mode: WorktreeIsolationMode::Worktree,
+                branch,
+            }))
+        }
+        other => Err(WonderError::validation(format!(
+            "unknown isolation mode `{other}`; accepted: worktree"
+        ))),
+    }
+}
+
+fn isolation_mode_label(mode: WorktreeIsolationMode) -> &'static str {
+    match mode {
+        WorktreeIsolationMode::Worktree => "worktree",
+    }
+}
+
+/// Resolves the effective cwd and worktree branch for an isolated agent.
+///
+/// Verifies the cwd is inside a git repo, derives a stable member slug for the
+/// worktree path, and delegates worktree creation to the tools crate. Explicit
+/// branch names are passed as branch overrides, not as path slugs.
+fn resolve_worktree_cwd(
+    base_cwd: &std::path::Path,
+    iso: &WorktreeIsolation,
+    fleet_id_str: &str,
+    request_id: &str,
+) -> Result<(PathBuf, Option<String>)> {
+    let repository_root = get_git_root(base_cwd).map_err(|_| {
+        WonderError::validation(format!(
+            "worktree isolation requires a git repository; `{}` is not inside one",
+            base_cwd.display()
+        ))
+    })?;
+
+    let slug = fleet_agent_worktree_slug(fleet_id_str, request_id);
+    let (worktree_path, branch) = create_fleet_agent_worktree_with_branch(
+        base_cwd,
+        &repository_root,
+        &slug,
+        iso.branch.as_deref(),
+    )?;
+    Ok((worktree_path, Some(branch)))
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -1046,7 +1184,8 @@ mod tests {
     use std::path::Path;
 
     use wonder_of_u_core::{
-        FeatureSet, FleetId, FleetRunState, FleetRunStatus, PermissionMode, SessionId,
+        FeatureSet, FleetId, FleetMemberRequest, FleetRunState, FleetRunStatus, PermissionMode,
+        SessionId, WorktreeIsolationMode,
     };
     use wonder_of_u_test_support::unique_test_dir;
 
@@ -1313,6 +1452,28 @@ mod tests {
         };
         assert!(text.contains("role=rust-engineer"), "got: {text}");
         assert!(text.contains("role_name=Rust Engineer"), "got: {text}");
+    }
+
+    #[test]
+    fn fleet_start_isolation_mode_output_is_stable_snake_case() {
+        let dir = unique_test_dir("fleet-cmd-start-isolation-output");
+        let cmd = make_fleet_command(&dir);
+        // No --prompt means no task launch and no worktree creation.
+        let output = futures::executor::block_on(cmd.execute(
+            stub_context(dir.clone()),
+            invocation("start --description isolated --isolation worktree"),
+        ))
+        .expect("execute");
+
+        let text = match output {
+            CommandOutput::Text(t) => t,
+            other => panic!("unexpected: {other:?}"),
+        };
+        assert!(text.contains("isolation_mode=worktree"), "got: {text}");
+        assert!(
+            !text.contains("isolation_mode=worktreeisolationmode"),
+            "got: {text}"
+        );
     }
 
     // ── fleet start --plan tests ─────────────────────────────────────────────
@@ -1813,6 +1974,308 @@ mod tests {
         assert_eq!(
             classify_request(&req, &run, &manager),
             DepClassification::Ready
+        );
+    }
+
+    // ── Worktree isolation arg parsing ────────────────────────────────────────
+
+    #[test]
+    fn parse_isolation_worktree_mode_parses() {
+        let iso = parse_isolation_args(Some("worktree"), None).expect("parse");
+        let iso = iso.expect("some");
+        assert_eq!(iso.mode, WorktreeIsolationMode::Worktree);
+        assert!(iso.branch.is_none());
+    }
+
+    #[test]
+    fn parse_isolation_worktree_branch_implies_mode() {
+        let iso = parse_isolation_args(None, Some("feat/my-branch")).expect("parse");
+        let iso = iso.expect("some");
+        assert_eq!(iso.mode, WorktreeIsolationMode::Worktree);
+        assert_eq!(iso.branch.as_deref(), Some("feat/my-branch"));
+    }
+
+    #[test]
+    fn parse_isolation_unknown_mode_errors() {
+        let err = parse_isolation_args(Some("container"), None).unwrap_err();
+        assert!(
+            err.to_string().contains("unknown isolation mode"),
+            "got: {err}"
+        );
+    }
+
+    #[test]
+    fn parse_isolation_invalid_branch_errors() {
+        let err = parse_isolation_args(Some("worktree"), Some("feat..bad")).unwrap_err();
+        assert!(err.to_string().contains(".."), "got: {err}");
+    }
+
+    #[test]
+    fn parse_isolation_none_when_absent() {
+        let iso = parse_isolation_args(None, None).expect("parse");
+        assert!(iso.is_none());
+    }
+
+    // ── Dispatch: non-isolated path unchanged ─────────────────────────────────
+
+    #[test]
+    fn dispatch_non_isolated_request_uses_original_cwd() {
+        let dir = unique_test_dir("fleet-dispatch-no-isolation");
+        let store = FleetStore::new(&dir);
+        let req = FleetMemberRequest::new("do the thing");
+        let req_id = req.id.clone();
+        store.queue_member_request(&req).expect("queue");
+
+        let fake_bin = dir.join("fake-wonder");
+        std::fs::write(&fake_bin, "#!/bin/sh\nsleep 0\n").expect("write");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&fake_bin, std::fs::Permissions::from_mode(0o755))
+                .expect("chmod");
+        }
+        unsafe { std::env::set_var("WONDER_OF_U_CLI_BIN", &fake_bin) };
+
+        let cmd = make_fleet_command(&dir);
+        let output = futures::executor::block_on(
+            cmd.execute(stub_context(dir.clone()), invocation("dispatch")),
+        )
+        .expect("execute");
+        unsafe { std::env::remove_var("WONDER_OF_U_CLI_BIN") };
+
+        let text = match output {
+            CommandOutput::Text(t) => t,
+            other => panic!("unexpected: {other:?}"),
+        };
+        assert!(text.contains("fleet_dispatched=1"), "got: {text}");
+        // Pending file must be gone.
+        assert!(
+            store.read_pending_request(&req_id).is_err(),
+            "pending file should be deleted after dispatch"
+        );
+    }
+
+    // ── Dispatch: worktree isolation in temp git repo ─────────────────────────
+
+    fn init_git_repo_for_fleet(prefix: &str) -> PathBuf {
+        let dir = unique_test_dir(prefix);
+        let run_git = |args: &[&str]| {
+            std::process::Command::new("git")
+                .args(args)
+                .current_dir(&dir)
+                .output()
+                .expect("git")
+        };
+        run_git(&["init"]);
+        run_git(&["config", "user.name", "wonder-of-u"]);
+        run_git(&["config", "user.email", "wonder-of-u@example.com"]);
+        std::fs::write(dir.join("README.md"), "# repo\n").expect("write");
+        run_git(&["add", "README.md"]);
+        run_git(&["commit", "-m", "initial"]);
+        dir
+    }
+
+    #[test]
+    fn dispatch_isolated_request_creates_worktree_and_sets_worktree_branch() {
+        let git_repo = init_git_repo_for_fleet("fleet-dispatch-worktree");
+        // Use a separate storage dir so task files don't land in the repo.
+        let storage_dir = unique_test_dir("fleet-dispatch-worktree-storage");
+
+        let store = FleetStore::new(&storage_dir);
+        let run = FleetRunState::new("isolated-fleet", PermissionMode::Default, None);
+        let fleet_id = run.id;
+        store.write_run(&run).expect("write run");
+
+        let mut req = FleetMemberRequest::new("work in isolation");
+        req.fleet_id = Some(fleet_id);
+        req.cwd = Some(git_repo.clone());
+        req.isolation = Some(wonder_of_u_core::WorktreeIsolation {
+            mode: wonder_of_u_core::WorktreeIsolationMode::Worktree,
+            branch: None,
+        });
+        let req_id = req.id.clone();
+        store.queue_member_request(&req).expect("queue");
+
+        let fake_bin = storage_dir.join("fake-wonder");
+        std::fs::write(&fake_bin, "#!/bin/sh\nsleep 0\n").expect("write");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&fake_bin, std::fs::Permissions::from_mode(0o755))
+                .expect("chmod");
+        }
+        unsafe { std::env::set_var("WONDER_OF_U_CLI_BIN", &fake_bin) };
+
+        let cmd = make_fleet_command(&storage_dir);
+        let output = futures::executor::block_on(
+            cmd.execute(stub_context(git_repo.clone()), invocation("dispatch")),
+        )
+        .expect("execute");
+        unsafe { std::env::remove_var("WONDER_OF_U_CLI_BIN") };
+
+        let text = match output {
+            CommandOutput::Text(t) => t,
+            other => panic!("unexpected: {other:?}"),
+        };
+        assert!(text.contains("fleet_dispatched=1"), "got: {text}");
+        // Pending file must be gone.
+        assert!(store.read_pending_request(&req_id).is_err());
+
+        // The dispatched task should have worktree_branch set.
+        let task_store = wonder_of_u_storage::TaskStore::new(&storage_dir);
+        let tasks = task_store.list_tasks().expect("list tasks");
+        let task = tasks
+            .iter()
+            .find(|t| t.fleet_id == Some(fleet_id))
+            .expect("task should belong to fleet");
+        assert!(
+            task.worktree_branch.is_some(),
+            "task should have worktree_branch set; task cwd={:?}",
+            task.cwd
+        );
+        let branch = task.worktree_branch.as_ref().unwrap();
+        assert!(
+            branch.starts_with("worktree-fleet-"),
+            "branch should be fleet-prefixed: {branch}"
+        );
+    }
+
+    #[test]
+    fn dispatch_isolated_request_preserves_explicit_worktree_branch() {
+        let git_repo = init_git_repo_for_fleet("fleet-dispatch-worktree-explicit");
+        let storage_dir = unique_test_dir("fleet-dispatch-worktree-explicit-storage");
+
+        let store = FleetStore::new(&storage_dir);
+        let run = FleetRunState::new("isolated-fleet", PermissionMode::Default, None);
+        let fleet_id = run.id;
+        store.write_run(&run).expect("write run");
+
+        let explicit_branch = "feat/fleet-member-explicit";
+        let mut req = FleetMemberRequest::new("work in explicit isolation");
+        req.fleet_id = Some(fleet_id);
+        req.cwd = Some(git_repo.clone());
+        req.isolation = Some(wonder_of_u_core::WorktreeIsolation {
+            mode: wonder_of_u_core::WorktreeIsolationMode::Worktree,
+            branch: Some(explicit_branch.into()),
+        });
+        store.queue_member_request(&req).expect("queue");
+
+        let fake_bin = storage_dir.join("fake-wonder");
+        std::fs::write(&fake_bin, "#!/bin/sh\nsleep 0\n").expect("write");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&fake_bin, std::fs::Permissions::from_mode(0o755))
+                .expect("chmod");
+        }
+        unsafe { std::env::set_var("WONDER_OF_U_CLI_BIN", &fake_bin) };
+
+        let cmd = make_fleet_command(&storage_dir);
+        let output = futures::executor::block_on(
+            cmd.execute(stub_context(git_repo.clone()), invocation("dispatch")),
+        )
+        .expect("execute");
+        unsafe { std::env::remove_var("WONDER_OF_U_CLI_BIN") };
+
+        let text = match output {
+            CommandOutput::Text(t) => t,
+            other => panic!("unexpected: {other:?}"),
+        };
+        assert!(text.contains("fleet_dispatched=1"), "got: {text}");
+
+        let task_store = wonder_of_u_storage::TaskStore::new(&storage_dir);
+        let tasks = task_store.list_tasks().expect("list tasks");
+        let task = tasks
+            .iter()
+            .find(|t| t.fleet_id == Some(fleet_id))
+            .expect("task should belong to fleet");
+        assert_eq!(task.worktree_branch.as_deref(), Some(explicit_branch));
+    }
+
+    #[test]
+    fn dispatch_isolated_request_non_git_cwd_leaves_request_pending() {
+        let non_git_dir = unique_test_dir("fleet-dispatch-worktree-non-git");
+        // non_git_dir is NOT a git repo.
+        let storage_dir = unique_test_dir("fleet-dispatch-worktree-non-git-storage");
+
+        let store = FleetStore::new(&storage_dir);
+        let mut req = FleetMemberRequest::new("work in non-git");
+        req.cwd = Some(non_git_dir.clone());
+        req.isolation = Some(wonder_of_u_core::WorktreeIsolation {
+            mode: wonder_of_u_core::WorktreeIsolationMode::Worktree,
+            branch: None,
+        });
+        let req_id = req.id.clone();
+        store.queue_member_request(&req).expect("queue");
+
+        let cmd = make_fleet_command(&storage_dir);
+        let output = futures::executor::block_on(
+            cmd.execute(stub_context(non_git_dir.clone()), invocation("dispatch")),
+        )
+        .expect("execute");
+
+        let text = match output {
+            CommandOutput::Text(t) => t,
+            other => panic!("unexpected: {other:?}"),
+        };
+        assert!(text.contains("fleet_dispatch_errors=1"), "got: {text}");
+        // Request must still be pending.
+        assert!(
+            store.read_pending_request(&req_id).is_ok(),
+            "pending request should be preserved after failed worktree creation"
+        );
+    }
+
+    // ── fleet show prints worktree_branch ─────────────────────────────────────
+
+    #[test]
+    fn fleet_show_prints_worktree_branch_when_set() {
+        use wonder_of_u_core::{AgentRuntime, AgentTaskState, TaskState};
+        use wonder_of_u_storage::TaskStore;
+
+        let dir = unique_test_dir("fleet-show-worktree-branch");
+        let task_store = TaskStore::new(&dir);
+        let fleet_store = FleetStore::new(&dir);
+
+        let mut run = FleetRunState::new("show-test", PermissionMode::Default, None);
+
+        // Create a fake task with worktree_branch set.
+        let mut task = TaskState::pending_agent(
+            "isolated agent",
+            AgentTaskState {
+                name: "agent-1".into(),
+                prompt: Some("do stuff".into()),
+                provider: None,
+                model: None,
+                runtime: AgentRuntime::PromptSubprocess,
+            },
+        );
+        task.fleet_id = Some(run.id);
+        task.worktree_branch = Some("worktree-fleet-aabbccdd-11223344".into());
+        task.cwd = Some(dir.clone());
+        task_store.write_task(&task).expect("write task");
+
+        run.member_task_ids.push(task.id);
+        fleet_store.write_run(&run).expect("write run");
+
+        let cmd = make_fleet_command(&dir);
+        let output = futures::executor::block_on(cmd.execute(
+            stub_context(dir.clone()),
+            invocation(&format!("show {}", run.id)),
+        ))
+        .expect("execute");
+
+        let text = match output {
+            CommandOutput::Text(t) => t,
+            other => panic!("unexpected: {other:?}"),
+        };
+        assert!(
+            text.contains("worktree_branch="),
+            "expected worktree_branch in show output; got: {text}"
+        );
+        assert!(
+            text.contains("worktree-fleet-aabbccdd-11223344"),
+            "expected branch name in show output; got: {text}"
         );
     }
 }

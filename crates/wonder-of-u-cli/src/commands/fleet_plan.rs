@@ -17,7 +17,8 @@
 //!   "model":       "<optional>",
 //!   "provider":    "<optional>",
 //!   "cwd":         "<optional: path>",
-//!   "depends_on":  ["<id>", ...]
+//!   "depends_on":  ["<id>", ...],
+//!   "isolation":   { "mode": "worktree", "branch": "<optional branch name>" }
 //! }
 //! ```
 
@@ -25,7 +26,8 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::path::PathBuf;
 
 use serde::Deserialize;
-use wonder_of_u_core::{FleetRoleCatalog, Result, WonderError};
+use wonder_of_u_core::{FleetRoleCatalog, Result, WonderError, WorktreeIsolation};
+use wonder_of_u_tools::validate_worktree_branch_name;
 
 /// One member entry parsed from a fleet plan JSON file.
 #[derive(Clone, Debug, Deserialize)]
@@ -55,6 +57,9 @@ pub(super) struct PlanSpec {
     /// Ids of members that must complete before this one launches.
     #[serde(default)]
     pub depends_on: Vec<String>,
+    /// Optional worktree isolation for this member.
+    #[serde(default)]
+    pub isolation: Option<WorktreeIsolation>,
 }
 
 /// Parse a fleet plan from JSON text and return specs in topological order.
@@ -120,6 +125,20 @@ pub(super) fn parse_plan(json: &str) -> Result<Vec<PlanSpec>> {
                     spec.id,
                     catalog.known_ids_display()
                 )));
+            }
+        }
+    }
+
+    // ── Validate isolation branch names ───────────────────────────────────────
+    for spec in &specs {
+        if let Some(ref iso) = spec.isolation {
+            if let Some(ref branch) = iso.branch {
+                validate_worktree_branch_name(branch).map_err(|e| {
+                    WonderError::validation(format!(
+                        "fleet plan member `{}` isolation.branch is invalid: {e}",
+                        spec.id
+                    ))
+                })?;
             }
         }
     }
@@ -348,5 +367,50 @@ mod tests {
         let json = format!(r#"[{{"id":"{id}","prompt":"a"}}]"#);
         let err = parse_plan(&json).unwrap_err();
         assert!(err.to_string().contains("exceeds 63"), "got: {err}");
+    }
+
+    // ── Isolation field tests ─────────────────────────────────────────────────
+
+    #[test]
+    fn plan_member_with_worktree_isolation_parses() {
+        let json = r#"[{
+            "id": "step-1",
+            "prompt": "do the thing",
+            "isolation": {"mode": "worktree"}
+        }]"#;
+        let specs = parse_plan(json).expect("parse");
+        assert!(specs[0].isolation.is_some());
+        let iso = specs[0].isolation.as_ref().unwrap();
+        assert!(iso.branch.is_none());
+    }
+
+    #[test]
+    fn plan_member_with_explicit_isolation_branch_parses() {
+        let json = r#"[{
+            "id": "step-1",
+            "prompt": "do the thing",
+            "isolation": {"mode": "worktree", "branch": "feat/my-feature"}
+        }]"#;
+        let specs = parse_plan(json).expect("parse");
+        let iso = specs[0].isolation.as_ref().expect("isolation");
+        assert_eq!(iso.branch.as_deref(), Some("feat/my-feature"));
+    }
+
+    #[test]
+    fn plan_member_with_invalid_isolation_branch_is_rejected() {
+        let json = r#"[{
+            "id": "step-1",
+            "prompt": "do the thing",
+            "isolation": {"mode": "worktree", "branch": "feat..bad"}
+        }]"#;
+        let err = parse_plan(json).unwrap_err();
+        assert!(err.to_string().contains("isolation.branch"), "got: {err}");
+    }
+
+    #[test]
+    fn plan_member_without_isolation_defaults_to_none() {
+        let json = r#"[{"id":"step-1","prompt":"a"}]"#;
+        let specs = parse_plan(json).expect("parse");
+        assert!(specs[0].isolation.is_none());
     }
 }

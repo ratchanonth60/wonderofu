@@ -662,6 +662,12 @@ pub struct TaskState {
     /// Stores the output log
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub output_log: Option<PathBuf>,
+    /// The git worktree branch this agent task is running inside, if any.
+    ///
+    /// Set when the task was launched with worktree isolation; absent for
+    /// tasks created before worktree isolation was introduced.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worktree_branch: Option<String>,
     /// Stores the started at
     #[serde(with = "time::serde::rfc3339")]
     pub started_at: OffsetDateTime,
@@ -691,6 +697,7 @@ impl TaskState {
             agent: None,
             remote: None,
             output_log: None,
+            worktree_branch: None,
             started_at: OffsetDateTime::now_utc(),
             finished_at: None,
         }

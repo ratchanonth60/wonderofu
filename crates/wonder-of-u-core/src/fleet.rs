@@ -12,6 +12,32 @@ use time::OffsetDateTime;
 
 use crate::{FleetId, PermissionMode, TaskId, TaskStatus};
 
+// ── Worktree isolation types ─────────────────────────────────────────────────
+
+/// Isolation mode for a fleet agent member.
+///
+/// Only `Worktree` is defined today; the enum allows future modes (e.g.
+/// container, sandbox) to be added without breaking existing JSON.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WorktreeIsolationMode {
+    /// Run the agent in a dedicated git worktree branched from `HEAD`.
+    Worktree,
+}
+
+/// Describes the worktree isolation configuration for a fleet member.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct WorktreeIsolation {
+    /// Which isolation strategy to apply.
+    pub mode: WorktreeIsolationMode,
+    /// Optional explicit branch name to use / create.
+    ///
+    /// When absent a deterministic slug is derived from the fleet id and
+    /// request id at dispatch time.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub branch: Option<String>,
+}
+
 /// Schema version for [`FleetRunState`] JSON files.
 pub const FLEET_SCHEMA_VERSION: u16 = 1;
 
@@ -223,6 +249,12 @@ pub struct FleetMemberRequest {
     /// `fleet dispatch` skips requests with a non-empty `depends_on`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub depends_on: Vec<String>,
+    /// Optional worktree isolation configuration for this member.
+    ///
+    /// When set, `fleet dispatch` / `fleet reconcile` creates (or resumes) a
+    /// dedicated git worktree before launching the agent subprocess.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub isolation: Option<WorktreeIsolation>,
     /// When the request was queued.
     #[serde(with = "time::serde::rfc3339")]
     pub queued_at: OffsetDateTime,
@@ -243,6 +275,7 @@ impl FleetMemberRequest {
             provider: None,
             cwd: None,
             depends_on: Vec::new(),
+            isolation: None,
             queued_at: OffsetDateTime::now_utc(),
         }
     }
@@ -477,5 +510,74 @@ mod tests {
             !json.contains("dispatched_requests"),
             "should be omitted: {json}"
         );
+    }
+
+    // ── WorktreeIsolation serde tests ─────────────────────────────────────────
+
+    #[test]
+    fn worktree_isolation_mode_round_trips() {
+        let mode = WorktreeIsolationMode::Worktree;
+        let json = serde_json::to_string(&mode).expect("serialize");
+        assert_eq!(json, r#""worktree""#);
+        let decoded: WorktreeIsolationMode = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(decoded, mode);
+    }
+
+    #[test]
+    fn worktree_isolation_without_branch_round_trips() {
+        let iso = WorktreeIsolation {
+            mode: WorktreeIsolationMode::Worktree,
+            branch: None,
+        };
+        let json = serde_json::to_string(&iso).expect("serialize");
+        assert!(
+            !json.contains("branch"),
+            "absent branch should be omitted: {json}"
+        );
+        let decoded: WorktreeIsolation = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(decoded, iso);
+    }
+
+    #[test]
+    fn worktree_isolation_with_explicit_branch_round_trips() {
+        let iso = WorktreeIsolation {
+            mode: WorktreeIsolationMode::Worktree,
+            branch: Some("feat/my-worktree".into()),
+        };
+        let json = serde_json::to_string(&iso).expect("serialize");
+        let decoded: WorktreeIsolation = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(decoded.branch.as_deref(), Some("feat/my-worktree"));
+    }
+
+    #[test]
+    fn fleet_member_request_isolation_round_trips() {
+        let mut req = FleetMemberRequest::new("isolated task");
+        req.isolation = Some(WorktreeIsolation {
+            mode: WorktreeIsolationMode::Worktree,
+            branch: None,
+        });
+        let json = serde_json::to_string(&req).expect("serialize");
+        let decoded: FleetMemberRequest = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(decoded.isolation, req.isolation);
+    }
+
+    #[test]
+    fn fleet_member_request_no_isolation_not_serialized() {
+        let req = FleetMemberRequest::new("plain task");
+        let json = serde_json::to_string(&req).expect("serialize");
+        assert!(!json.contains("isolation"), "should be omitted: {json}");
+    }
+
+    /// Legacy JSON without `isolation` must deserialize cleanly.
+    #[test]
+    fn fleet_member_request_legacy_json_missing_isolation_deserializes() {
+        let raw = serde_json::json!({
+            "id": "550e8400-e29b-41d4-a716-446655440000",
+            "prompt": "do the thing",
+            "queued_at": "2024-06-01T12:00:00Z"
+        });
+        let req: FleetMemberRequest =
+            serde_json::from_value(raw).expect("deserialize legacy request");
+        assert!(req.isolation.is_none());
     }
 }
