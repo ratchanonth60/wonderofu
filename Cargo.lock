@@ -2051,6 +2051,7 @@ dependencies = [
  "sha2",
  "tempfile",
  "time",
+ "uuid",
  "wonder-of-u-core",
  "wonder-of-u-test-support",
 ]
