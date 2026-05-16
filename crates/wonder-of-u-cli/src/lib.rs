@@ -458,6 +458,18 @@ pub enum PluginCommand {
     List,
     /// Show detailed plugin readiness and trust information.
     Status,
+    /// Add a plugin directory to the configured discovery paths.
+    Install {
+        #[arg()]
+        /// Stores the plugin path
+        path: PathBuf,
+    },
+    /// Validate a plugin directory or manifest file.
+    Validate {
+        #[arg(default_value = ".")]
+        /// Stores the path
+        path: PathBuf,
+    },
     /// Persist a trust decision for a plugin id.
     Trust {
         #[arg()]
@@ -1160,6 +1172,14 @@ fn to_invocation(command: Commands) -> Result<CommandInvocation> {
         Commands::Plugin { command } => match command.unwrap_or(PluginCommand::List) {
             PluginCommand::List => commands::invocation_from_tokens("plugin", ["list"]),
             PluginCommand::Status => commands::invocation_from_tokens("plugin", ["status"]),
+            PluginCommand::Install { path } => commands::invocation_from_tokens(
+                "plugin",
+                vec!["install".to_string(), path.to_string_lossy().into_owned()],
+            ),
+            PluginCommand::Validate { path } => commands::invocation_from_tokens(
+                "plugin",
+                vec!["validate".to_string(), path.to_string_lossy().into_owned()],
+            ),
             PluginCommand::Trust { plugin, state } => commands::invocation_from_tokens(
                 "plugin",
                 ["trust".into(), plugin, "--state".into(), state],
@@ -3176,6 +3196,83 @@ mod tests {
         let slash_text = String::from_utf8(slash_output).expect("utf8");
         assert!(slash_text.contains("skill=release-check"));
         assert!(slash_text.contains("source=plugin:demo-plugin"));
+    }
+
+    #[test]
+    fn plugin_install_validate_and_list_accept_upstream_plugin_json() {
+        let dir = unique_test_dir("cli-plugin-install-upstream");
+        let storage_dir = dir.join("storage");
+        let storage_arg = storage_dir.to_string_lossy().into_owned();
+        let plugin_root = dir.join("upstream-plugin");
+        fs::create_dir_all(plugin_root.join("commands")).expect("commands dir");
+        fs::write(plugin_root.join("commands/run.txt"), "echo run").expect("command file");
+        fs::write(
+            plugin_root.join("plugin.json"),
+            serde_json::to_string_pretty(&json!({
+                "schema_version": 1,
+                "name": "upstream-plugin",
+                "version": "0.1.0",
+                "description": "upstream plugin",
+                "commands": [{
+                    "name": "upstream-run",
+                    "description": "Run plugin",
+                    "path": "commands/run.txt"
+                }]
+            }))
+            .expect("plugin manifest"),
+        )
+        .expect("write plugin manifest");
+
+        let mut validate_output = Vec::new();
+        run_from(
+            vec![
+                "wonder-of-u".to_string(),
+                "plugin".to_string(),
+                "validate".to_string(),
+                plugin_root.to_string_lossy().into_owned(),
+            ],
+            &mut validate_output,
+        )
+        .expect("validate plugin");
+        let validate_text = String::from_utf8(validate_output).expect("utf8");
+        assert!(validate_text.contains("valid=true"));
+        assert!(validate_text.contains("path="));
+        assert!(validate_text.contains("plugin.json"));
+        assert!(validate_text.contains("name=upstream-plugin"));
+
+        let mut install_output = Vec::new();
+        run_from(
+            vec![
+                "wonder-of-u".to_string(),
+                "--storage-dir".to_string(),
+                storage_arg.clone(),
+                "plugin".to_string(),
+                "install".to_string(),
+                plugin_root.to_string_lossy().into_owned(),
+            ],
+            &mut install_output,
+        )
+        .expect("install plugin");
+        let install_text = String::from_utf8(install_output).expect("utf8");
+        assert!(install_text.contains("installed=true"));
+        assert!(install_text.contains(&format!("path={}", plugin_root.display())));
+
+        let mut list_output = Vec::new();
+        run_from(
+            vec![
+                "wonder-of-u".to_string(),
+                "--storage-dir".to_string(),
+                storage_arg,
+                "plugin".to_string(),
+                "list".to_string(),
+            ],
+            &mut list_output,
+        )
+        .expect("list plugins");
+        let list_text = String::from_utf8(list_output).expect("utf8");
+        assert!(list_text.contains("plugins=1"));
+        assert!(list_text.contains("plugin[0]=upstream-plugin"));
+        assert!(list_text.contains("source=configured"));
     }
 
     #[test]

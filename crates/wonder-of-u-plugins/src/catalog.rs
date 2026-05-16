@@ -12,7 +12,12 @@ use crate::{
     PluginTrustDecision, normalize_plugin_id,
 };
 
-const MANIFEST_FILE_NAMES: [&str; 2] = ["plugin.json", "wonder-plugin.json"];
+/// Manifest filenames accepted during plugin discovery.
+pub const PLUGIN_MANIFEST_FILE_NAMES: [&str; 3] = [
+    "plugin.json",
+    "wonder-plugin.json",
+    "wonder-of-u-plugin.json",
+];
 /// Enumerates plugin source
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PluginSource {
@@ -153,7 +158,7 @@ impl PluginCatalog {
             match discover_plugin_dirs(&root.path) {
                 Ok(plugin_dirs) => {
                     for plugin_dir in plugin_dirs {
-                        let Some(manifest_path) = manifest_path(&plugin_dir) else {
+                        let Some(manifest_path) = plugin_manifest_path(&plugin_dir) else {
                             continue;
                         };
                         let mut entry =
@@ -308,7 +313,7 @@ fn resolve_configured_path(cwd: &Path, path: &Path) -> PathBuf {
 }
 
 fn discover_plugin_dirs(root: &Path) -> Result<Vec<PathBuf>, String> {
-    if manifest_path(root).is_some() {
+    if plugin_manifest_path(root).is_some() {
         return Ok(vec![root.to_path_buf()]);
     }
 
@@ -327,14 +332,16 @@ fn discover_plugin_dirs(root: &Path) -> Result<Vec<PathBuf>, String> {
                 .filter(|file_type| file_type.is_dir())
                 .map(|_| entry.path())
         })
-        .filter(|path| manifest_path(path).is_some())
+        .filter(|path| plugin_manifest_path(path).is_some())
         .collect::<Vec<_>>();
     plugin_dirs.sort();
     Ok(plugin_dirs)
 }
 
-fn manifest_path(root: &Path) -> Option<PathBuf> {
-    MANIFEST_FILE_NAMES
+/// Returns the first supported manifest filename found in a plugin directory.
+#[must_use]
+pub fn plugin_manifest_path(root: &Path) -> Option<PathBuf> {
+    PLUGIN_MANIFEST_FILE_NAMES
         .into_iter()
         .map(|name| root.join(name))
         .find(|path| path.is_file())
@@ -472,6 +479,38 @@ mod tests {
         .expect("manifest file");
     }
 
+    fn write_plugin_with_manifest_name(
+        root: &Path,
+        manifest_name: &str,
+        name: &str,
+        command_name: &str,
+        skill_name: &str,
+    ) {
+        let plugin_dir = root.join(name);
+        fs::create_dir_all(plugin_dir.join("commands")).expect("commands dir");
+        fs::create_dir_all(plugin_dir.join("skills").join(skill_name)).expect("skills dir");
+        fs::write(plugin_dir.join("commands/run.txt"), "echo run").expect("command file");
+        fs::write(
+            plugin_dir.join(manifest_name),
+            serde_json::to_string_pretty(&json!({
+                "schema_version": 1,
+                "name": name,
+                "version": "0.1.0",
+                "description": format!("{name} plugin"),
+                "commands": [{
+                    "name": command_name,
+                    "description": format!("{command_name} command"),
+                    "path": "commands/run.txt"
+                }],
+                "skills": [{
+                    "path": format!("skills/{skill_name}")
+                }]
+            }))
+            .expect("manifest json"),
+        )
+        .expect("manifest file");
+    }
+
     #[test]
     fn catalog_discovers_user_project_and_configured_roots() {
         let cwd = unique_test_dir("plugin-catalog-cwd");
@@ -541,6 +580,31 @@ mod tests {
             .expect("configured plugin");
         assert_eq!(plugin.readiness, PluginReadiness::Ready);
         assert_eq!(plugin.trust, PluginTrustLevel::Trusted);
+    }
+
+    #[test]
+    fn catalog_discovers_legacy_manifest_aliases() {
+        let cwd = unique_test_dir("plugin-legacy-manifest-cwd");
+        let project_root = cwd.join(".wonder/plugins");
+        write_plugin_with_manifest_name(
+            &project_root,
+            "wonder-of-u-plugin.json",
+            "legacy-plugin",
+            "legacy-run",
+            "legacy-skill",
+        );
+
+        let catalog = PluginCatalog::load(&cwd, None, &PluginConfig::default());
+        let plugin = catalog.find("legacy-plugin").expect("legacy plugin");
+
+        assert_eq!(plugin.readiness, PluginReadiness::Ready);
+        assert_eq!(
+            plugin
+                .manifest_path
+                .file_name()
+                .and_then(|name| name.to_str()),
+            Some("wonder-of-u-plugin.json")
+        );
     }
 
     #[test]
