@@ -50,15 +50,25 @@ fn render_report<W: std::io::Write>(
     writeln!(writer, "[{mode}] {}", report.source_path.display())?;
     writeln!(writer, "  session : {}", report.session_id)?;
     if report.dry_run {
-        writeln!(writer, "  would import : N/A (dry-run)")?;
+        writeln!(
+            writer,
+            "  convertible : {} message(s)",
+            report.convertible_count
+        )?;
     } else {
         writeln!(writer, "  imported : {} message(s)", report.imported_count)?;
     }
     writeln!(writer, "  skipped  : {} record(s)", report.skipped.len())?;
+    writeln!(writer, "  warnings : {}", report.warnings.len())?;
     writeln!(
         writer,
         "  paste-ref warnings : {}",
         report.paste_warnings.len()
+    )?;
+    writeln!(
+        writer,
+        "  metadata captures : {}",
+        report.captured_metadata.captured_count()
     )?;
 
     if !report.skipped.is_empty() {
@@ -81,6 +91,17 @@ fn render_report<W: std::io::Write>(
         )?;
         for w in &report.paste_warnings {
             writeln!(writer, "  line {:>4}  {:?}", w.line, w.snippet)?;
+        }
+    }
+
+    if !report.warnings.is_empty() {
+        writeln!(writer, "\nWarnings:")?;
+        for warning in &report.warnings {
+            writeln!(
+                writer,
+                "  line {:>4}  category={:?}  {}",
+                warning.line, warning.category, warning.message
+            )?;
         }
     }
 
@@ -118,6 +139,7 @@ mod tests {
 
         let output = String::from_utf8(out).expect("utf8");
         assert!(output.contains("DRY-RUN"));
+        assert!(output.contains("convertible : 2"));
         assert!(output.contains("skipped  : 0"));
 
         // Nothing written to storage (no .jsonl transcript files).
