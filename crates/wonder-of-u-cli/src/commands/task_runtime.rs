@@ -111,6 +111,16 @@ pub(crate) enum TaskHeartbeatState {
     Missing,
 }
 
+#[derive(Clone, Debug, Default)]
+pub(crate) struct TaskPruneReport {
+    /// Tasks that were successfully removed.
+    pub removed: Vec<TaskState>,
+    /// Active (non-terminal) tasks that were skipped.
+    pub skipped_active: Vec<TaskState>,
+    /// Terminal tasks skipped by a narrower prune filter.
+    pub skipped_terminal: Vec<TaskState>,
+}
+
 #[derive(Clone, Copy, Debug, Default)]
 struct TaskReconcileOutcome {
     changed: bool,
@@ -348,6 +358,59 @@ impl TaskManager {
                     }),
             )),
         }
+    }
+
+    /// Removes a single task's persisted artifacts (state, log, heartbeat, exit
+    /// files).
+    ///
+    /// * If the task is in a terminal state the artifacts are deleted and the
+    ///   task state snapshot is returned.
+    /// * If the task is still active (pending/running) the call returns an
+    ///   error *unless* `force` is `true`, in which case the artifacts are
+    ///   removed unconditionally.
+    pub fn remove_task(&self, task_id: TaskId, force: bool) -> Result<TaskState> {
+        // Reconcile so the state reflects any process exits since the last write.
+        let task = self.get_task(task_id)?;
+        if !task.status.is_terminal() && !force {
+            return Err(WonderError::validation(format!(
+                "task {} is still active (status={}); pass --force to remove it anyway",
+                task.id,
+                task_status_label(task.status),
+            )));
+        }
+        self.store.delete_task_artifacts(task_id)?;
+        Ok(task)
+    }
+
+    /// Removes all terminal tasks in bulk.
+    ///
+    /// When `completed_only` is `true` only `Completed` tasks are pruned;
+    /// otherwise every terminal status (Completed, Failed, Killed, Cancelled)
+    /// is pruned.  Active (Pending/Running) tasks are always skipped.
+    ///
+    /// Returns a [`TaskPruneReport`] with the removed and skipped lists so
+    /// callers can produce stable `key=value` output.
+    pub fn prune_tasks(&self, completed_only: bool) -> Result<TaskPruneReport> {
+        // Reconcile all tasks first so any that finished since the last
+        // heartbeat are marked terminal before we decide whether to remove them.
+        let report = self.reconcile_tasks(None)?;
+        let mut result = TaskPruneReport::default();
+        for task in report.tasks {
+            if task.status.is_terminal() {
+                let should_prune = !completed_only || task.status == TaskStatus::Completed;
+                if should_prune {
+                    self.store.delete_task_artifacts(task.id)?;
+                    result.removed.push(task);
+                } else {
+                    // Terminal but excluded by the completed-only filter.
+                    result.skipped_terminal.push(task);
+                }
+            } else {
+                // Active task – never touched.
+                result.skipped_active.push(task);
+            }
+        }
+        Ok(result)
     }
 
     fn stop_process_task(&self, mut task: TaskState, force: bool) -> Result<TaskState> {
@@ -1398,5 +1461,163 @@ mod tests {
             fs::set_permissions(&path, permissions).expect("set agent script permissions");
         }
         path
+    }
+
+    // ── remove_task / prune_tasks tests ──────────────────────────────────────
+
+    /// Helper: write a terminal shell task with a log and exit file into the
+    /// manager's store so we can test artifact cleanup without spawning a
+    /// real process.
+    fn seed_completed_task(manager: &TaskManager, label: &str) -> TaskState {
+        let dir = manager.storage_dir();
+        let mut task = TaskState::pending_shell(label, "true", dir);
+        task.mark_finished(TaskStatus::Completed, Some(0), Some("done".into()));
+        task.output_log = Some(manager.store.paths().task_log_path(task.id));
+        manager.store.write_task(&task).expect("write task");
+        manager
+            .store
+            .append_log(task.id, "output\n")
+            .expect("write log");
+        manager
+            .store
+            .write_exit_code(task.id, 0)
+            .expect("write exit code");
+        task
+    }
+
+    /// Helper: write a running shell task (no real process, pid points to the
+    /// test process so it appears alive to reconcile).
+    fn seed_running_task(manager: &TaskManager, label: &str) -> TaskState {
+        let dir = manager.storage_dir();
+        let mut task = TaskState::pending_shell(label, "sleep 999", dir);
+        task.status = TaskStatus::Running;
+        task.pid = Some(std::process::id()); // test process – always alive
+        task.output_log = Some(manager.store.paths().task_log_path(task.id));
+        manager.store.write_task(&task).expect("write task");
+        manager
+            .store
+            .append_log(task.id, "running\n")
+            .expect("write log");
+        task
+    }
+
+    #[test]
+    fn remove_completed_task_deletes_artifacts() {
+        let dir = unique_test_dir("task-remove-completed");
+        let manager = TaskManager::new(&dir);
+        let task = seed_completed_task(&manager, "cleanup-me");
+
+        let state_path = manager.store.paths().task_state_path(task.id);
+        let log_path = manager.store.paths().task_log_path(task.id);
+        assert!(state_path.exists(), "state file should exist before remove");
+        assert!(log_path.exists(), "log file should exist before remove");
+
+        let removed = manager
+            .remove_task(task.id, false)
+            .expect("remove completed task");
+        assert_eq!(removed.id, task.id);
+
+        assert!(
+            !state_path.exists(),
+            "state file should be gone after remove"
+        );
+        assert!(!log_path.exists(), "log file should be gone after remove");
+    }
+
+    #[test]
+    fn remove_running_task_rejected_without_force() {
+        let dir = unique_test_dir("task-remove-running-reject");
+        let manager = TaskManager::new(&dir);
+        let task = seed_running_task(&manager, "still-running");
+
+        let err = manager
+            .remove_task(task.id, false)
+            .expect_err("should reject active task");
+        assert!(
+            err.to_string().contains("still active"),
+            "error should mention active: {err}"
+        );
+
+        // The state file must still be present – nothing was deleted.
+        let state_path = manager.store.paths().task_state_path(task.id);
+        assert!(
+            state_path.exists(),
+            "state file must remain when remove is rejected"
+        );
+    }
+
+    #[test]
+    fn remove_running_task_succeeds_with_force() {
+        let dir = unique_test_dir("task-remove-running-force");
+        let manager = TaskManager::new(&dir);
+        let task = seed_running_task(&manager, "force-delete-me");
+
+        manager
+            .remove_task(task.id, true)
+            .expect("force remove should succeed");
+
+        let state_path = manager.store.paths().task_state_path(task.id);
+        assert!(
+            !state_path.exists(),
+            "state file should be gone after forced remove"
+        );
+    }
+
+    #[test]
+    fn prune_terminal_skips_running_tasks() {
+        let dir = unique_test_dir("task-prune-skips-running");
+        let manager = TaskManager::new(&dir);
+
+        let completed = seed_completed_task(&manager, "done-task");
+        let running = seed_running_task(&manager, "live-task");
+
+        let report = manager.prune_tasks(false).expect("prune all terminal");
+
+        assert_eq!(report.removed.len(), 1, "only the completed task removed");
+        assert_eq!(report.removed[0].id, completed.id);
+        assert_eq!(report.skipped_active.len(), 1, "running task skipped");
+        assert_eq!(report.skipped_active[0].id, running.id);
+
+        // Running task's state file must still be on disk.
+        let running_state = manager.store.paths().task_state_path(running.id);
+        assert!(
+            running_state.exists(),
+            "running task state must survive prune"
+        );
+    }
+
+    #[test]
+    fn prune_completed_only_leaves_failed_tasks() {
+        let dir = unique_test_dir("task-prune-completed-only");
+        let manager = TaskManager::new(&dir);
+
+        // Seed a completed task.
+        let completed = seed_completed_task(&manager, "ok-task");
+
+        // Seed a failed task by writing it directly.
+        let mut failed = TaskState::pending_shell("failed-task", "false", &dir);
+        failed.mark_finished(TaskStatus::Failed, Some(1), Some("error".into()));
+        failed.output_log = Some(manager.store.paths().task_log_path(failed.id));
+        manager
+            .store
+            .write_task(&failed)
+            .expect("write failed task");
+
+        let report = manager.prune_tasks(true).expect("prune completed only");
+
+        assert_eq!(report.removed.len(), 1);
+        assert_eq!(report.removed[0].id, completed.id);
+        // The failed task ends up in terminal-skipped because completed_only=true.
+        assert!(
+            report.skipped_terminal.iter().any(|t| t.id == failed.id),
+            "failed task should be in terminal skipped list under --completed"
+        );
+        assert!(report.skipped_active.is_empty());
+
+        let failed_state = manager.store.paths().task_state_path(failed.id);
+        assert!(
+            failed_state.exists(),
+            "failed task state must not be deleted under --completed"
+        );
     }
 }

@@ -1318,6 +1318,8 @@ enum TasksSubcommand {
     Show(ShowArgs),
     Start(TaskStartArgs),
     Stop(StopArgs),
+    Remove(RemoveArgs),
+    Prune(PruneArgs),
     Reconcile,
     Status,
 }
@@ -1371,6 +1373,27 @@ struct StopArgs {
     force: bool,
 }
 
+#[derive(Debug, Args)]
+struct RemoveArgs {
+    #[arg()]
+    task_id: String,
+    /// Remove even if the task is still active (pending or running).
+    #[arg(long)]
+    force: bool,
+}
+
+#[derive(Debug, Args)]
+struct PruneArgs {
+    /// Remove only completed tasks (exit code 0).  Without this flag all
+    /// terminal tasks (completed, failed, killed, cancelled) are removed.
+    #[arg(long, conflicts_with = "terminal")]
+    completed: bool,
+    /// Explicitly prune all terminal tasks (the default behaviour; provided
+    /// for clarity in scripts).
+    #[arg(long, conflicts_with = "completed")]
+    terminal: bool,
+}
+
 #[async_trait]
 impl Command for TasksCommand {
     fn spec(&self) -> CommandSpec {
@@ -1388,6 +1411,8 @@ impl Command for TasksCommand {
             TasksSubcommand::Show(args) => self.show_task(args),
             TasksSubcommand::Start(args) => self.start_task(context, args),
             TasksSubcommand::Stop(args) => self.stop_task(args),
+            TasksSubcommand::Remove(args) => self.remove_task(args),
+            TasksSubcommand::Prune(args) => self.prune_tasks(args),
             TasksSubcommand::Reconcile => self.reconcile_tasks(),
             TasksSubcommand::Status => self.status(),
         }
@@ -1456,6 +1481,21 @@ impl TasksCommand {
         let _ = manager.reconcile_tasks(None)?;
         let task = manager.stop_task(parse_task_id(&args.task_id)?, args.force)?;
         Ok(CommandOutput::Text(render_task_stopped("task", &task)))
+    }
+
+    fn remove_task(&self, args: RemoveArgs) -> Result<CommandOutput> {
+        let manager = self.require_task_manager("tasks remove requires --storage-dir")?;
+        let task = manager.remove_task(parse_task_id(&args.task_id)?, args.force)?;
+        Ok(CommandOutput::Text(render_task_removed("task", &task)))
+    }
+
+    fn prune_tasks(&self, args: PruneArgs) -> Result<CommandOutput> {
+        let manager = self.require_task_manager("tasks prune requires --storage-dir")?;
+        // --completed restricts removal to exit-code-0 tasks only.
+        // --terminal (or no flag) removes all terminal tasks.
+        let completed_only = args.completed;
+        let report = manager.prune_tasks(completed_only)?;
+        Ok(CommandOutput::Text(render_task_prune_report(&report)))
     }
 
     fn reconcile_tasks(&self) -> Result<CommandOutput> {
@@ -4479,6 +4519,147 @@ mod tests {
         permissions.set_mode(0o755);
         fs::set_permissions(&script_path, permissions).expect("chmod git proxy");
     }
+
+    // ── Fleet metadata in task list / detail output ───────────────────────────
+
+    #[test]
+    fn task_list_includes_fleet_metadata_when_present() {
+        use wonder_of_u_core::{AgentTaskState, FleetId, TaskId, TaskState};
+
+        use super::{TaskManager, render_task_list};
+        use crate::commands::task_runtime::TaskReconcileReport;
+
+        let dir = unique_test_dir("workflow-task-list-fleet");
+        let manager = TaskManager::new(&dir);
+
+        let fleet_id = FleetId::new();
+        let parent_id = TaskId::new();
+
+        let mut task = TaskState::pending_agent(
+            "fleet agent",
+            AgentTaskState::metadata_only("planner", "do work", None, None),
+        );
+        task.fleet_id = Some(fleet_id);
+        task.fleet_request_id = Some("req-001".into());
+        task.parent_id = Some(parent_id);
+        task.worktree_branch = Some("feat/fleet-branch".into());
+
+        let now = time::OffsetDateTime::now_utc();
+        let report = TaskReconcileReport {
+            reconciled_at: now,
+            tasks: vec![task],
+            changed: 0,
+            finished: 0,
+            fresh_heartbeats: 0,
+            stale_heartbeats: 0,
+            missing_heartbeats: 0,
+        };
+
+        let output = render_task_list("task", &manager, &report, 20);
+
+        assert!(
+            output.contains(&format!("task[0].fleet_id={fleet_id}")),
+            "fleet_id missing;\n{output}"
+        );
+        assert!(
+            output.contains("task[0].fleet_request_id=req-001"),
+            "fleet_request_id missing;\n{output}"
+        );
+        assert!(
+            output.contains(&format!("task[0].parent_id={parent_id}")),
+            "parent_id missing;\n{output}"
+        );
+        assert!(
+            output.contains("task[0].worktree_branch=feat/fleet-branch"),
+            "worktree_branch missing;\n{output}"
+        );
+    }
+
+    #[test]
+    fn task_list_omits_fleet_metadata_for_non_fleet_tasks() {
+        use wonder_of_u_core::{AgentTaskState, TaskState};
+
+        use super::{TaskManager, render_task_list};
+        use crate::commands::task_runtime::TaskReconcileReport;
+
+        let dir = unique_test_dir("workflow-task-list-no-fleet");
+        let manager = TaskManager::new(&dir);
+
+        let task = TaskState::pending_agent(
+            "plain agent",
+            AgentTaskState::metadata_only("planner", "do work", None, None),
+        );
+        assert!(task.fleet_id.is_none());
+
+        let now = time::OffsetDateTime::now_utc();
+        let report = TaskReconcileReport {
+            reconciled_at: now,
+            tasks: vec![task],
+            changed: 0,
+            finished: 0,
+            fresh_heartbeats: 0,
+            stale_heartbeats: 0,
+            missing_heartbeats: 0,
+        };
+
+        let output = render_task_list("task", &manager, &report, 20);
+
+        assert!(
+            !output.contains("fleet_id"),
+            "fleet_id should be absent for non-fleet task;\n{output}"
+        );
+        assert!(
+            !output.contains("fleet_request_id"),
+            "fleet_request_id should be absent;\n{output}"
+        );
+        assert!(
+            !output.contains("parent_id"),
+            "parent_id should be absent;\n{output}"
+        );
+        assert!(
+            !output.contains("worktree_branch"),
+            "worktree_branch should be absent;\n{output}"
+        );
+    }
+
+    #[test]
+    fn task_detail_includes_fleet_metadata_when_present() {
+        use wonder_of_u_core::{AgentTaskState, FleetId, TaskId, TaskState};
+
+        use super::render_task_detail;
+
+        let fleet_id = FleetId::new();
+        let parent_id = TaskId::new();
+
+        let mut task = TaskState::pending_agent(
+            "fleet detail agent",
+            AgentTaskState::metadata_only("planner", "prompt", None, None),
+        );
+        task.fleet_id = Some(fleet_id);
+        task.fleet_request_id = Some("req-detail".into());
+        task.parent_id = Some(parent_id);
+        task.worktree_branch = Some("feat/detail-branch".into());
+
+        let now = time::OffsetDateTime::now_utc();
+        let output = render_task_detail("task", &task, &[], now);
+
+        assert!(
+            output.contains(&format!("fleet_id={fleet_id}")),
+            "fleet_id missing in detail;\n{output}"
+        );
+        assert!(
+            output.contains("fleet_request_id=req-detail"),
+            "fleet_request_id missing;\n{output}"
+        );
+        assert!(
+            output.contains(&format!("parent_id={parent_id}")),
+            "parent_id missing;\n{output}"
+        );
+        assert!(
+            output.contains("worktree_branch=feat/detail-branch"),
+            "worktree_branch missing;\n{output}"
+        );
+    }
 }
 
 fn render_task_summary_lines(
@@ -4579,6 +4760,25 @@ fn render_task_list(
                 sanitize_single_line(&remote.status_summary())
             ));
         }
+        // Fleet metadata – only emitted when present so non-fleet output is unchanged.
+        if let Some(fleet_id) = task.fleet_id {
+            lines.push(format!("{prefix}[{index}].fleet_id={fleet_id}"));
+        }
+        if let Some(ref req_id) = task.fleet_request_id {
+            lines.push(format!(
+                "{prefix}[{index}].fleet_request_id={}",
+                sanitize_single_line(req_id)
+            ));
+        }
+        if let Some(parent_id) = task.parent_id {
+            lines.push(format!("{prefix}[{index}].parent_id={parent_id}"));
+        }
+        if let Some(ref branch) = task.worktree_branch {
+            lines.push(format!(
+                "{prefix}[{index}].worktree_branch={}",
+                sanitize_single_line(branch)
+            ));
+        }
     }
     if report.tasks.len() > limit {
         lines.push(format!("truncated=true ({} shown)", limit));
@@ -4668,6 +4868,19 @@ fn render_task_detail(
             ));
         }
     }
+    // Fleet metadata – only emitted when present so non-fleet output is unchanged.
+    if let Some(fleet_id) = task.fleet_id {
+        lines.push(format!("fleet_id={fleet_id}"));
+    }
+    if let Some(ref req_id) = task.fleet_request_id {
+        lines.push(format!("fleet_request_id={}", sanitize_single_line(req_id)));
+    }
+    if let Some(parent_id) = task.parent_id {
+        lines.push(format!("parent_id={parent_id}"));
+    }
+    if let Some(ref branch) = task.worktree_branch {
+        lines.push(format!("worktree_branch={}", sanitize_single_line(branch)));
+    }
     lines.push(format!("log_tail_lines={}", log_tail.len()));
     for (index, line) in log_tail.iter().enumerate() {
         lines.push(format!("log_tail[{index}]={}", sanitize_single_line(line)));
@@ -4749,6 +4962,56 @@ fn render_task_stopped(prefix: &str, task: &TaskState) -> String {
         sanitize_single_line(&task.description),
         prefix = prefix,
     )
+}
+
+fn render_task_removed(prefix: &str, task: &TaskState) -> String {
+    format!(
+        concat!(
+            "{prefix}_id={}\n",
+            "action=removed\n",
+            "kind={}\n",
+            "status={}\n",
+            "description={}"
+        ),
+        task.id,
+        task_kind_label(task.kind),
+        task_status_label(task.status),
+        sanitize_single_line(&task.description),
+        prefix = prefix,
+    )
+}
+
+fn render_task_prune_report(report: &super::task_runtime::TaskPruneReport) -> String {
+    let removed_ids = report
+        .removed
+        .iter()
+        .map(|t| t.id.to_string())
+        .collect::<Vec<_>>();
+    let skipped_ids = report
+        .skipped_active
+        .iter()
+        .map(|t| t.id.to_string())
+        .collect::<Vec<_>>();
+    let skipped_terminal_ids = report
+        .skipped_terminal
+        .iter()
+        .map(|t| t.id.to_string())
+        .collect::<Vec<_>>();
+    let mut lines = vec![
+        format!("removed={}", report.removed.len()),
+        format!("skipped_active={}", report.skipped_active.len()),
+        format!("skipped_terminal={}", report.skipped_terminal.len()),
+    ];
+    for (index, id) in removed_ids.iter().enumerate() {
+        lines.push(format!("removed_ids[{index}]={id}"));
+    }
+    for (index, id) in skipped_ids.iter().enumerate() {
+        lines.push(format!("skipped_active_ids[{index}]={id}"));
+    }
+    for (index, id) in skipped_terminal_ids.iter().enumerate() {
+        lines.push(format!("skipped_terminal_ids[{index}]={id}"));
+    }
+    lines.join("\n")
 }
 
 fn require_task_kind(task: TaskState, kind: TaskKind) -> Result<TaskState> {
