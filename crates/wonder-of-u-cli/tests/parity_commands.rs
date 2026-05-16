@@ -640,7 +640,58 @@ fn bridge_kick_is_noop_unavailable_with_no_restart_language() {
     );
 }
 
-/// /ultraplan: output must mention cloud backend unavailability and that the
+// ---------------------------------------------------------------------------
+// Telemetry / experiments honest-omission tests  (ADR 0001)
+// ---------------------------------------------------------------------------
+
+/// `/status` output must include `analytics=unsupported` and
+/// `experiments=unsupported`, confirming that no Datadog sink or GrowthBook
+/// remote evaluation is wired up (see docs/adr/0001-telemetry-experiments-omission.md).
+#[test]
+fn status_output_includes_analytics_and_experiments_unsupported() {
+    use futures::executor::block_on;
+    use wonder_of_u_core::{CommandInvocation, CommandOutput};
+
+    let dir = tempfile::tempdir().expect("temp dir");
+    let registry = build_command_registry(Some(dir.path().to_path_buf())).expect("build registry");
+    let cmd = registry
+        .resolve("status")
+        .expect("status must be registered");
+
+    let result = block_on(cmd.execute(
+        parity_ctx(dir.path()),
+        CommandInvocation {
+            name: "status".into(),
+            args: String::new(),
+            raw: "/status".into(),
+        },
+    ));
+    let output = result.expect("/status must succeed");
+    let CommandOutput::Text(text) = output else {
+        panic!("expected Text output from /status");
+    };
+
+    assert!(
+        text.contains("analytics=unsupported"),
+        "/status must emit analytics=unsupported (ADR 0001); got:\n{text}"
+    );
+    assert!(
+        text.contains("experiments=unsupported"),
+        "/status must emit experiments=unsupported (ADR 0001); got:\n{text}"
+    );
+    // Must NOT claim analytics or experiments are active/ok, as that would
+    // imply a telemetry pipeline that does not exist.
+    assert!(
+        !text.contains("analytics=ok"),
+        "/status must not claim analytics=ok; got:\n{text}"
+    );
+    assert!(
+        !text.contains("experiments=ok"),
+        "/status must not claim experiments=ok; got:\n{text}"
+    );
+}
+
+/// `/ultraplan`: output must mention cloud backend unavailability and that the
 /// flag is stored for local planning guidance only.
 #[test]
 fn ultraplan_output_says_cloud_unavailable_and_local_guidance_only() {
