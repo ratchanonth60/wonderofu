@@ -263,6 +263,75 @@ impl FleetRunState {
     }
 }
 
+// ── Fleet steering ───────────────────────────────────────────────────────────
+
+/// Schema version for [`FleetSteeringMessage`] JSON files.
+pub const FLEET_STEERING_SCHEMA_VERSION: u16 = 1;
+
+fn default_fleet_steering_schema_version() -> u16 {
+    FLEET_STEERING_SCHEMA_VERSION
+}
+
+/// A persisted steering instruction directed at an active fleet run.
+///
+/// Steering messages are queued by `fleet steer <fleet_id> <prompt...>` and
+/// stored at `fleet/steering/{fleet_id}/{id}.json`.  They are **advisory
+/// records** in V1: the operator or a future reconcile loop reads them and
+/// decides how to act.  They are never silently applied to already-running
+/// child prompts.
+///
+/// # Auditing
+///
+/// Because every message is written atomically and carries a `queued_at`
+/// timestamp, the full steering history for a run can be reconstructed from
+/// disk even after the run terminates.
+///
+/// # Back-compatibility
+///
+/// All optional fields use `#[serde(default, skip_serializing_if)]` so older
+/// readers that do not know a new field will silently ignore it.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct FleetSteeringMessage {
+    /// Storage schema guard – always [`FLEET_STEERING_SCHEMA_VERSION`].
+    #[serde(default = "default_fleet_steering_schema_version")]
+    pub schema_version: u16,
+    /// Unique identifier for this steering message (UUID v4 string).
+    pub id: String,
+    /// The fleet run this message is directed at.
+    pub fleet_id: FleetId,
+    /// The steering instruction from the operator.
+    pub prompt: String,
+    /// When the message was queued (UTC).
+    #[serde(with = "time::serde::rfc3339")]
+    pub queued_at: OffsetDateTime,
+    /// When the message was acknowledged / applied, if ever (UTC).
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        serialize_with = "time::serde::rfc3339::option::serialize",
+        deserialize_with = "time::serde::rfc3339::option::deserialize"
+    )]
+    pub applied_at: Option<OffsetDateTime>,
+}
+
+impl FleetSteeringMessage {
+    /// Creates a new steering message for `fleet_id` with a fresh UUID and
+    /// `queued_at = now`.
+    #[must_use]
+    pub fn new(fleet_id: FleetId, prompt: impl Into<String>) -> Self {
+        Self {
+            schema_version: FLEET_STEERING_SCHEMA_VERSION,
+            id: uuid::Uuid::new_v4().to_string(),
+            fleet_id,
+            prompt: prompt.into(),
+            queued_at: OffsetDateTime::now_utc(),
+            applied_at: None,
+        }
+    }
+}
+
+// ── Pending member request ───────────────────────────────────────────────────
+
 /// A pending agent dispatch request written by the `agent` tool bridge.
 ///
 /// Files are stored at `fleet/pending/{id}.json` and drained by
@@ -776,5 +845,48 @@ mod tests {
             !json.contains("\"provider\""),
             "absent provider should be omitted: {json}"
         );
+    }
+
+    // ── FleetSteeringMessage ──────────────────────────────────────────────────
+
+    #[test]
+    fn fleet_steering_message_round_trips_via_json() {
+        let fleet_id = FleetId::new();
+        let msg = FleetSteeringMessage::new(fleet_id, "focus on the auth module");
+        let json = serde_json::to_string(&msg).expect("serialize");
+        let decoded: FleetSteeringMessage = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(decoded.fleet_id, fleet_id);
+        assert_eq!(decoded.prompt, "focus on the auth module");
+        assert_eq!(decoded.schema_version, FLEET_STEERING_SCHEMA_VERSION);
+        assert!(decoded.applied_at.is_none());
+    }
+
+    #[test]
+    fn fleet_steering_message_applied_at_round_trips() {
+        let fleet_id = FleetId::new();
+        let mut msg = FleetSteeringMessage::new(fleet_id, "add logging");
+        msg.applied_at = Some(OffsetDateTime::now_utc());
+        let json = serde_json::to_string(&msg).expect("serialize");
+        let decoded: FleetSteeringMessage = serde_json::from_str(&json).expect("deserialize");
+        assert!(decoded.applied_at.is_some());
+    }
+
+    #[test]
+    fn fleet_steering_message_absent_applied_at_not_serialized() {
+        let fleet_id = FleetId::new();
+        let msg = FleetSteeringMessage::new(fleet_id, "stay on task");
+        let json = serde_json::to_string(&msg).expect("serialize");
+        assert!(
+            !json.contains("applied_at"),
+            "absent applied_at should be omitted: {json}"
+        );
+    }
+
+    #[test]
+    fn fleet_steering_message_new_assigns_unique_ids() {
+        let fleet_id = FleetId::new();
+        let a = FleetSteeringMessage::new(fleet_id, "first");
+        let b = FleetSteeringMessage::new(fleet_id, "second");
+        assert_ne!(a.id, b.id, "each message must have a unique id");
     }
 }
