@@ -10,8 +10,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use wait_timeout::ChildExt;
 use wonder_of_u_core::{
-    Result, Tool, ToolContext, ToolKind, ToolResult, ToolSchema, ToolSpec, ToolUseId, WonderError,
-    resolve_path,
+    PermissionDecision, PermissionDecisionReason, PermissionRequest, Result, ShellSafetyIssue,
+    ShellSafetyVerdict, Tool, ToolContext, ToolKind, ToolResult, ToolSchema, ToolSpec, ToolUseId,
+    WonderError, evaluate_permission, resolve_path,
 };
 
 use crate::{base_spec, display_path, parse_input, require_non_empty_path, require_non_empty_text};
@@ -85,13 +86,15 @@ impl Tool for PowerShellTool {
                     .property(
                         "run_in_background",
                         ToolSchema::boolean(
-                            "source-compatible background flag; currently unsupported",
+                            "source-compatible background flag; not supported for PowerShell — \
+                             a structured unsupported result is returned when this flag is set",
                         ),
                     )
                     .property(
                         "dangerouslyDisableSandbox",
                         ToolSchema::boolean(
-                            "source-compatible sandbox override flag; currently unsupported",
+                            "source-compatible sandbox override flag; denied by the Rust \
+                             permission model — remove this flag and run the command normally",
                         ),
                     )
                     .required("command"),
@@ -121,17 +124,42 @@ impl Tool for PowerShellTool {
                 "powershell accepts either `timeout_secs` or source-compatible `timeout`, not both",
             ));
         }
-        if input.run_in_background == Some(true) {
-            return Err(WonderError::validation(
-                "powershell run_in_background is not supported in wonder-of-u-tools",
-            ));
-        }
-        if input.dangerously_disable_sandbox == Some(true) {
-            return Err(WonderError::validation(
-                "powershell dangerouslyDisableSandbox is not supported in wonder-of-u-tools",
-            ));
-        }
         Ok(())
+    }
+
+    /// Denies `dangerouslyDisableSandbox` in the permission layer, consistent
+    /// with `BashTool`, so callers receive a structured `Deny` decision rather
+    /// than a plain validation error.  Falls through to the standard shell
+    /// safety evaluation for all other inputs.
+    fn permission_decision(&self, context: &ToolContext, input: &Value) -> PermissionDecision {
+        let sandbox_override = input
+            .get("dangerouslyDisableSandbox")
+            .or_else(|| input.get("dangerously_disable_sandbox"))
+            .and_then(Value::as_bool)
+            == Some(true);
+
+        if sandbox_override {
+            return PermissionDecision::deny(PermissionDecisionReason::ShellSafety {
+                issue: ShellSafetyIssue {
+                    verdict: ShellSafetyVerdict::Blocked,
+                    message: "dangerouslyDisableSandbox is not permitted: the Rust runtime \
+                              enforces sandboxing unconditionally; remove the flag and run \
+                              the command normally"
+                        .into(),
+                },
+            });
+        }
+
+        // Fall through to standard shell-safety and permission-rule evaluation.
+        let spec = self.spec();
+        let mut request = PermissionRequest::new(spec.name)
+            .with_aliases(spec.aliases)
+            .read_only(spec.read_only)
+            .destructive(spec.destructive);
+        if let Some(cmd) = input.get("command").and_then(Value::as_str) {
+            request = request.with_shell_command(cmd.to_string());
+        }
+        evaluate_permission(&context.permission_context(), &request)
     }
 
     async fn execute(
@@ -142,6 +170,26 @@ impl Tool for PowerShellTool {
     ) -> Result<ToolResult> {
         let input = parse_input::<PowerShellInput>("powershell", &input)?;
         self.validate_input(&serde_json::to_value(&input)?)?;
+
+        // run_in_background is not implemented for PowerShell: background
+        // process management (task store, watchdog, log files) is only wired up
+        // in BashTool.  Return a structured failure so callers can distinguish
+        // this unsupported-feature response from a genuine input error.
+        if input.run_in_background == Some(true) {
+            let mut result = ToolResult::failure(
+                use_id,
+                "powershell run_in_background is not supported in wonder-of-u-tools: \
+                 background process management is only available for bash; \
+                 use the bash tool with run_in_background instead",
+            );
+            result.metadata = json!({
+                "supported": false,
+                "unsupported_field": "run_in_background",
+                "reason": "background process management is not implemented for PowerShell; use bash",
+            });
+            return Ok(result);
+        }
+
         let cwd = input
             .cwd
             .as_deref()
@@ -456,5 +504,111 @@ mod tests {
 
         assert!(matches!(decision, PermissionDecision::Ask { .. }));
         assert!(decision.reason().to_string().contains("PowerShell"));
+    }
+
+    // ── dangerouslyDisableSandbox — permission_decision Deny ─────────────────
+
+    #[test]
+    fn powershell_permission_denies_dangerously_disable_sandbox_camel_case() {
+        // dangerouslyDisableSandbox must be denied in permission_decision() with
+        // a structured ShellSafety reason, not a plain validation error.
+        let tool = PowerShellTool;
+        let context = tool_context(PathBuf::from("/workspace"));
+        let decision = tool.permission_decision(
+            &context,
+            &json!({ "command": "Get-ChildItem", "dangerouslyDisableSandbox": true }),
+        );
+        assert!(
+            matches!(decision, PermissionDecision::Deny { .. }),
+            "expected Deny, got {decision:?}"
+        );
+        assert!(
+            decision
+                .reason()
+                .to_string()
+                .contains("dangerouslyDisableSandbox"),
+            "reason should mention the flag: {}",
+            decision.reason()
+        );
+    }
+
+    #[test]
+    fn powershell_permission_denies_dangerously_disable_sandbox_snake_case_alias() {
+        let tool = PowerShellTool;
+        let context = tool_context(PathBuf::from("/workspace"));
+        let decision = tool.permission_decision(
+            &context,
+            &json!({ "command": "Get-ChildItem", "dangerously_disable_sandbox": true }),
+        );
+        assert!(matches!(decision, PermissionDecision::Deny { .. }));
+    }
+
+    #[test]
+    fn powershell_permission_allows_normal_command_without_sandbox_flag() {
+        let tool = PowerShellTool;
+        let context = tool_context(PathBuf::from("/workspace"));
+        let decision =
+            tool.permission_decision(&context, &json!({ "command": "Get-ChildItem" }));
+        assert!(
+            !matches!(decision, PermissionDecision::Deny { .. }),
+            "plain command should not be denied: {decision:?}"
+        );
+    }
+
+    #[test]
+    fn powershell_validation_no_longer_rejects_dangerously_disable_sandbox() {
+        // validate_input() no longer rejects dangerouslyDisableSandbox: the
+        // check was moved to permission_decision() so callers receive a
+        // structured Deny with metadata rather than a hard validation error.
+        let tool = PowerShellTool;
+        tool.validate_input(&json!({
+            "command": "Get-ChildItem",
+            "dangerouslyDisableSandbox": true,
+        }))
+        .expect("validate_input should not reject dangerouslyDisableSandbox");
+    }
+
+    // ── run_in_background — structured ToolResult failure ────────────────────
+
+    #[test]
+    fn powershell_run_in_background_returns_structured_failure() {
+        // run_in_background is unsupported for PowerShell; execute() must return
+        // a structured ToolResult failure (not Err) so callers can distinguish
+        // unsupported-feature responses from genuine input mistakes.
+        use futures::executor::block_on;
+        use wonder_of_u_test_support::unique_test_dir;
+
+        let tool = PowerShellTool;
+        let dir = unique_test_dir("tools-ps-run-in-bg");
+        let result = block_on(tool.execute(
+            tool_context(dir),
+            wonder_of_u_core::ToolUseId::new(),
+            json!({ "command": "Get-ChildItem", "run_in_background": true }),
+        ))
+        .expect("execute should not return Err");
+
+        assert!(!result.success, "expected failure result");
+        assert!(
+            result.content.contains("run_in_background"),
+            "content should mention `run_in_background`: {:?}",
+            result.content
+        );
+        assert_eq!(result.metadata["supported"], serde_json::json!(false));
+        assert_eq!(
+            result.metadata["unsupported_field"],
+            serde_json::json!("run_in_background")
+        );
+    }
+
+    #[test]
+    fn powershell_validation_no_longer_rejects_run_in_background() {
+        // validate_input() must accept run_in_background; the structured failure
+        // is now deferred to execute() so callers receive a proper ToolResult.
+        let tool = PowerShellTool;
+        tool.validate_input(&json!({
+            "command": "Get-ChildItem",
+            "run_in_background": true,
+        }))
+        .expect("validate_input should not reject run_in_background");
     }
 }
