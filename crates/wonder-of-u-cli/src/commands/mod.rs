@@ -9,8 +9,10 @@ use std::{
 use clap::Parser;
 use wonder_of_u_agent::builtin_tool_registry;
 use wonder_of_u_core::{
-    CommandInvocation, CommandRegistry, CommandSpec, Result, SessionId, ToolSpec, WonderError,
+    AppState, CommandInvocation, CommandRegistry, CommandSpec, Result, SessionId, ToolResult,
+    ToolSpec, WonderError,
 };
+use wonder_of_u_tools::parse_worktree_runtime_action;
 
 mod advanced;
 pub(crate) mod auth;
@@ -387,6 +389,26 @@ pub(crate) fn detect_git_branch(cwd: &Path) -> Option<String> {
         .filter(|branch| branch != "HEAD")
 }
 
+pub(crate) fn apply_worktree_tool_result(
+    state: &mut AppState,
+    result: &ToolResult,
+) -> Result<bool> {
+    let Some(action) = parse_worktree_runtime_action(&result.metadata)? else {
+        return Ok(false);
+    };
+
+    std::env::set_current_dir(&action.cwd)?;
+    state.session.cwd = action.cwd.clone();
+    state.session.git_branch = detect_git_branch(&action.cwd).or_else(|| {
+        action
+            .session_state
+            .as_ref()
+            .and_then(|session| session.worktree_branch.clone())
+    });
+    state.session.worktree = action.session_state;
+    Ok(true)
+}
+
 pub(crate) fn open_browser(url: &str) {
     let _ = try_open_browser(url);
 }
@@ -440,7 +462,12 @@ pub(crate) fn is_hidden_path(path: &Path) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{browser_launch_disabled, try_open_browser};
+    use std::fs;
+
+    use wonder_of_u_core::{AppState, RuntimeWorktreeState, ToolResult, ToolUseId};
+    use wonder_of_u_test_support::unique_test_dir;
+
+    use super::{apply_worktree_tool_result, browser_launch_disabled, try_open_browser};
 
     #[test]
     fn shared_browser_launch_is_disabled_under_tests() {
@@ -449,5 +476,50 @@ mod tests {
             "tests must never spawn a real system browser"
         );
         assert!(!try_open_browser("https://example.invalid/browser-guard"));
+    }
+
+    #[test]
+    fn apply_worktree_tool_result_switches_session_state() {
+        let original_cwd = std::env::current_dir().expect("current dir");
+        let repo = unique_test_dir("commands-worktree-runtime");
+        let worktree = repo.join("worktree");
+        fs::create_dir_all(&worktree).expect("create worktree dir");
+
+        let mut state = AppState::new(repo.clone());
+        let result =
+            ToolResult::success(ToolUseId::new(), "entered").with_metadata(serde_json::json!({
+                "worktree_runtime_action": {
+                    "action": "enter",
+                    "cwd": worktree.clone(),
+                    "session_state": {
+                        "original_cwd": repo.clone(),
+                        "repository_root": repo.clone(),
+                        "worktree_path": worktree.clone(),
+                        "worktree_branch": "worktree-topic",
+                        "original_branch": "main",
+                        "original_head_commit": "abc123",
+                    }
+                }
+            }));
+
+        let changed =
+            apply_worktree_tool_result(&mut state, &result).expect("apply worktree action");
+
+        assert!(changed);
+        assert_eq!(state.session.cwd, worktree);
+        assert_eq!(
+            state.session.worktree,
+            Some(RuntimeWorktreeState {
+                original_cwd: repo.clone(),
+                repository_root: repo,
+                worktree_path: worktree.clone(),
+                worktree_branch: Some("worktree-topic".into()),
+                original_branch: Some("main".into()),
+                original_head_commit: Some("abc123".into()),
+                tmux_session_name: None,
+            })
+        );
+
+        std::env::set_current_dir(original_cwd).expect("restore cwd");
     }
 }

@@ -105,7 +105,8 @@ pub use wonder_of_u_mcp::{
 /// Re-exports items from `worktree_tools`
 pub use worktree_tools::{
     EnterWorktreeInput, EnterWorktreeTool, ExitWorktreeAction, ExitWorktreeInput, ExitWorktreeTool,
-    WorktreeSessionState,
+    WorktreeRuntimeAction, WorktreeRuntimeActionKind, WorktreeSessionState,
+    parse_worktree_runtime_action, validate_worktree_session_state,
 };
 /// Handles builtin tools
 #[must_use]

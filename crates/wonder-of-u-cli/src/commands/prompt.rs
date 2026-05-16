@@ -23,7 +23,7 @@ use wonder_of_u_storage::{
 use wonder_of_u_tools::{builtin_registry_with_mcp_catalog, provider_tool_specs};
 
 use super::{
-    detect_git_branch,
+    apply_worktree_tool_result, detect_git_branch,
     hooks::{HookOutcome, POST_TOOL_USE, POST_TOOL_USE_FAILURE, PRE_TOOL_USE, run_hooks},
     parse_command_args, parse_session_id,
 };
@@ -384,6 +384,7 @@ pub(crate) fn load_or_create_state(
         let store = TranscriptStore::new(storage_dir);
         let restored = store.restore_session(parse_session_id(session_id)?)?;
         let mut state = restored.state;
+        std::env::set_current_dir(&state.session.cwd)?;
         state.features = context.features.clone();
         state.permission_mode =
             restored_permission_mode(context.permission_mode, state.permission_mode);
@@ -591,12 +592,6 @@ fn execute_prompt_tool_loop(
         // No persistent storage: fall back to built-ins only.
         None => wonder_of_u_tools::builtin_registry(),
     }?;
-    let tool_context = tool_context(state);
-    let provider_tools = provider_tool_specs(&registry, &tool_context, allowed_tools.as_ref())
-        .into_iter()
-        .map(tool_spec_to_provider_tool)
-        .collect::<Vec<_>>();
-
     let user_message = append_contextual_message(
         state,
         MessagePayload::UserText {
@@ -608,6 +603,11 @@ fn execute_prompt_tool_loop(
     let mut tool_calls = 0usize;
 
     for _ in 0..MAX_TOOL_LOOP_ITERATIONS {
+        let provider_tools =
+            provider_tool_specs(&registry, &tool_context(state), allowed_tools.as_ref())
+                .into_iter()
+                .map(tool_spec_to_provider_tool)
+                .collect::<Vec<_>>();
         let response = runtime.complete_with_tool_use(
             resolved,
             &ToolUseRequest {
@@ -695,7 +695,7 @@ fn execute_prompt_tool_loop(
                         storage_dir,
                         persistence,
                         &registry,
-                        &tool_context,
+                        &tool_context(state),
                         &call,
                     )?;
                     round.results.push(result);
@@ -729,6 +729,7 @@ fn tool_context(state: &AppState) -> ToolContext {
     ToolContext {
         session_id: state.session.id,
         cwd: state.session.cwd.clone(),
+        session_worktree: state.session.worktree.clone(),
         permission_mode: state.permission_mode,
         additional_working_directories: state.additional_working_directories.clone(),
         permission_rules: Vec::new(),
@@ -872,6 +873,7 @@ fn execute_tool_call(
         )
     };
 
+    let _ = apply_worktree_tool_result(state, &result)?;
     messages.push(append_contextual_message(
         state,
         MessagePayload::ToolResult {

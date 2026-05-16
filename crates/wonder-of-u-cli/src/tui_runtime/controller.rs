@@ -915,11 +915,6 @@ impl<'a> TuiController<'a> {
             Some(root) => wonder_of_u_tools::builtin_registry_with_mcp_catalog(root),
             None => wonder_of_u_tools::builtin_registry(),
         }?;
-        let tool_context = self.tool_context();
-        let provider_tools = provider_tool_specs(&registry, &tool_context, None)
-            .into_iter()
-            .map(tool_spec_to_provider_tool)
-            .collect::<Vec<_>>();
 
         let mut rounds = pending
             .rounds
@@ -931,7 +926,7 @@ impl<'a> TuiController<'a> {
         let first_result = if approved {
             self.approve_pending_tool_call(
                 &registry,
-                &tool_context,
+                &self.tool_context(),
                 &pending_call,
                 &pending.reason,
                 before_blocking,
@@ -949,7 +944,7 @@ impl<'a> TuiController<'a> {
         for (index, call) in remaining_calls.iter().cloned().enumerate() {
             match self.execute_tool_call(
                 &registry,
-                &tool_context,
+                &self.tool_context(),
                 &call.provider_call,
                 call.use_id,
                 before_blocking,
@@ -979,7 +974,6 @@ impl<'a> TuiController<'a> {
             &pending.request_prompt,
             &runtime,
             &resolved,
-            &provider_tools,
             rounds,
             before_blocking,
         )
@@ -1079,7 +1073,6 @@ impl<'a> TuiController<'a> {
         request_prompt: &str,
         runtime: &ProviderRuntime,
         resolved: &wonder_of_u_agent::ResolvedProviderExecution,
-        provider_tools: &[ProviderToolSpec],
         mut rounds: Vec<ToolConversationRound>,
         before_blocking: &mut F,
     ) -> Result<()>
@@ -1090,9 +1083,11 @@ impl<'a> TuiController<'a> {
             Some(root) => wonder_of_u_tools::builtin_registry_with_mcp_catalog(root),
             None => wonder_of_u_tools::builtin_registry(),
         }?;
-        let tool_context = self.tool_context();
-
         for iteration in rounds.len()..MAX_TOOL_LOOP_ITERATIONS {
+            let provider_tools = provider_tool_specs(&registry, &self.tool_context(), None)
+                .into_iter()
+                .map(tool_spec_to_provider_tool)
+                .collect::<Vec<_>>();
             self.turn_state = TurnState::ModelRequestActive;
             self.state.input_mode = InputMode::Prompt;
             self.status_note = Some(format!(
@@ -1110,7 +1105,7 @@ impl<'a> TuiController<'a> {
                     system_prompt: self.state.effective_system_prompt(None),
                     max_output_tokens: None,
                     temperature: None,
-                    tools: provider_tools.to_vec(),
+                    tools: provider_tools.clone(),
                     rounds: rounds.clone(),
                     effort_level: self.state.effort_level.clone(),
                 },
@@ -1182,7 +1177,7 @@ impl<'a> TuiController<'a> {
                     for (index, call) in local_calls.iter().cloned().enumerate() {
                         match self.execute_tool_call(
                             &registry,
-                            &tool_context,
+                            &self.tool_context(),
                             &call.provider_call,
                             call.use_id,
                             before_blocking,
@@ -1404,11 +1399,6 @@ impl<'a> TuiController<'a> {
             Some(root) => wonder_of_u_tools::builtin_registry_with_mcp_catalog(root),
             None => wonder_of_u_tools::builtin_registry(),
         }?;
-        let tool_context = self.tool_context();
-        let provider_tools = provider_tool_specs(&registry, &tool_context, None)
-            .into_iter()
-            .map(tool_spec_to_provider_tool)
-            .collect::<Vec<_>>();
 
         let user_message = append_contextual_message(
             &mut self.state,
@@ -1423,6 +1413,10 @@ impl<'a> TuiController<'a> {
         let mut rounds = Vec::<ToolConversationRound>::new();
         let system_prompt = self.state.effective_system_prompt(None);
         for iteration in 0..MAX_TOOL_LOOP_ITERATIONS {
+            let provider_tools = provider_tool_specs(&registry, &self.tool_context(), None)
+                .into_iter()
+                .map(tool_spec_to_provider_tool)
+                .collect::<Vec<_>>();
             self.turn_state = TurnState::ModelRequestActive;
             self.status_note = Some(if iteration == 0 {
                 format!("awaiting {} tool-aware response", resolved.provider_id())
@@ -1518,7 +1512,7 @@ impl<'a> TuiController<'a> {
                     for (index, call) in local_calls.iter().cloned().enumerate() {
                         let outcome = self.execute_tool_call(
                             &registry,
-                            &tool_context,
+                            &self.tool_context(),
                             &call.provider_call,
                             call.use_id,
                             on_progress,
@@ -2209,6 +2203,7 @@ impl<'a> TuiController<'a> {
         ToolContext {
             session_id: self.state.session.id,
             cwd: self.state.session.cwd.clone(),
+            session_worktree: self.state.session.worktree.clone(),
             permission_mode: self.state.permission_mode,
             additional_working_directories: self.state.additional_working_directories.clone(),
             permission_rules: Vec::new(),
@@ -2348,6 +2343,7 @@ impl<'a> TuiController<'a> {
     where
         F: FnMut(&Self) -> Result<()>,
     {
+        let _ = commands::apply_worktree_tool_result(&mut self.state, &result)?;
         messages.push(append_contextual_message(
             &mut self.state,
             MessagePayload::ToolResult {
@@ -2375,6 +2371,7 @@ impl<'a> TuiController<'a> {
         self.persistence.transcript_warning_count = restored.transcript.warnings.len();
         self.persistence.persisted = true;
         self.state = restored.state;
+        std::env::set_current_dir(&self.state.session.cwd)?;
         self.state.session.entrypoint = Some("tui".into());
         self.state.session.app_version = Some(env!("CARGO_PKG_VERSION").into());
         self.rebuild_ephemeral_state();

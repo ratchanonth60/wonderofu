@@ -520,6 +520,7 @@ mod tests {
         ToolContext {
             session_id: SessionId::new(),
             cwd,
+            session_worktree: None,
             permission_mode: PermissionMode::Default,
             additional_working_directories: Vec::new(),
             permission_rules: Vec::new(),
@@ -532,6 +533,7 @@ mod tests {
         ToolContext {
             session_id: SessionId::new(),
             cwd,
+            session_worktree: None,
             permission_mode: PermissionMode::Default,
             additional_working_directories: Vec::new(),
             permission_rules: Vec::new(),
@@ -725,6 +727,7 @@ mod tests {
         let ctx1 = ToolContext {
             session_id,
             cwd: dir.clone(),
+            session_worktree: None,
             permission_mode: PermissionMode::Default,
             additional_working_directories: Vec::new(),
             permission_rules: Vec::new(),
@@ -742,6 +745,7 @@ mod tests {
         let ctx2 = ToolContext {
             session_id,
             cwd: dir,
+            session_worktree: None,
             permission_mode: PermissionMode::Default,
             additional_working_directories: Vec::new(),
             permission_rules: Vec::new(),
