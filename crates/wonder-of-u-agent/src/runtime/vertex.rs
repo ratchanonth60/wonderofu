@@ -1,15 +1,16 @@
 //! Google Vertex AI wire-protocol for Gemini models.
 //!
-//! Builds `generateContent` requests against the Vertex AI endpoint:
-//! `https://{location}-aiplatform.googleapis.com/v1/projects/{project}/locations/{location}/publishers/google/models/{model}:generateContent`
+//! Implements two endpoints against the Vertex AI REST API:
+//!
+//! * **Non-streaming** – `…/models/{model}:generateContent`
+//! * **Streaming** – `…/models/{model}:streamGenerateContent`
 //!
 //! Authentication uses a GCP OAuth2 bearer token.  Provide `GOOGLE_BEARER_TOKEN`
 //! in the environment for a pre-obtained token, or configure
 //! `GOOGLE_APPLICATION_CREDENTIALS` for key-file-based exchange (full token
 //! exchange from service account key is not yet implemented in-process).
 //!
-//! Streaming and tool-use are not yet supported; callers receive a clear
-//! validation error.
+//! Tool-use is not yet supported; callers receive a clear validation error.
 
 use std::collections::BTreeMap;
 
@@ -18,7 +19,7 @@ use wonder_of_u_core::{Result, WonderError};
 
 use crate::ResolvedProviderExecution;
 
-use super::{CompletionRequest, CompletionResponse, HttpRequest, gemini};
+use super::{CompletionRequest, CompletionResponse, HttpRequest, StreamingHttpResponse, gemini};
 
 // ─── Request builders ─────────────────────────────────────────────────────────
 
@@ -32,6 +33,25 @@ pub(super) fn build_vertex_request(
     resolved: &ResolvedProviderExecution,
     request: &CompletionRequest,
 ) -> Result<HttpRequest> {
+    build_vertex_request_internal(resolved, request, false)
+}
+
+/// Builds a streaming `streamGenerateContent` request for a Vertex AI endpoint.
+///
+/// The body is identical to the non-streaming request; only the action segment
+/// of the URL changes to `streamGenerateContent`.
+pub(super) fn build_vertex_stream_request(
+    resolved: &ResolvedProviderExecution,
+    request: &CompletionRequest,
+) -> Result<HttpRequest> {
+    build_vertex_request_internal(resolved, request, true)
+}
+
+fn build_vertex_request_internal(
+    resolved: &ResolvedProviderExecution,
+    request: &CompletionRequest,
+    stream: bool,
+) -> Result<HttpRequest> {
     let (project, location) = resolved.gcp_project_location()?;
     let bearer = resolved.gcp_access_token().ok_or_else(|| {
         WonderError::validation(
@@ -42,8 +62,13 @@ pub(super) fn build_vertex_request(
     })?;
 
     let model_encoded = utf8_percent_encode(resolved.model(), NON_ALPHANUMERIC).to_string();
+    let action = if stream {
+        "streamGenerateContent"
+    } else {
+        "generateContent"
+    };
     let url = format!(
-        "https://{location}-aiplatform.googleapis.com/v1/projects/{project}/locations/{location}/publishers/google/models/{model_encoded}:generateContent",
+        "https://{location}-aiplatform.googleapis.com/v1/projects/{project}/locations/{location}/publishers/google/models/{model_encoded}:{action}",
     );
 
     let mut contents = vec![serde_json::json!({
@@ -77,15 +102,26 @@ pub(super) fn parse_vertex_response(
     gemini::parse_gemini_response(resolved, body)
 }
 
-/// Streaming is not yet supported for the Vertex Gemini protocol.
-pub(super) fn vertex_streaming_unsupported() -> WonderError {
-    WonderError::validation(
-        "streaming is not yet supported for the `vertex_gemini` wire protocol; \
-         use a provider with `open_ai_compat` or `anthropic_compat` for streaming",
-    )
+/// Parses a Vertex AI `streamGenerateContent` SSE response.
+///
+/// Vertex streams the same SSE event shape as the Gemini REST API, so this
+/// delegates to [`gemini::parse_gemini_stream_response`].
+pub(super) fn parse_vertex_stream_response<F>(
+    resolved: &ResolvedProviderExecution,
+    response: StreamingHttpResponse,
+    on_text_delta: &mut F,
+) -> Result<CompletionResponse>
+where
+    F: FnMut(&str) -> Result<()>,
+{
+    gemini::parse_gemini_stream_response(resolved, response, on_text_delta)
 }
 
 /// Tool-use is not yet supported for the Vertex Gemini protocol.
+///
+/// Returns a descriptive validation error so callers can surface a clear
+/// message.  Use a provider with `open_ai_compat` or `anthropic_compat` for
+/// tool use.
 pub(super) fn vertex_tool_use_unsupported() -> WonderError {
     WonderError::validation(
         "tool-use is not yet supported for the `vertex_gemini` wire protocol; \
