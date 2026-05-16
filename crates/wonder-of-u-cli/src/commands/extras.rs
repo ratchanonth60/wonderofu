@@ -475,7 +475,7 @@ impl RemoteSetupCommand {
     pub fn command_spec() -> CommandSpec {
         let mut spec = CommandSpec::new(
             "web-setup",
-            "Set up Claude Code on the web (requires Claude.ai account)",
+            "Store remote/web session config only (transport unavailable in this Rust build)",
             CommandKind::Local,
         );
         spec.aliases.push("remote-setup".into());
@@ -1919,7 +1919,7 @@ fn remote_setup(storage_dir: Option<&Path>, args: &str) -> Result<String> {
     if args.is_empty() {
         return render_remote_env(storage_dir).map(|current| {
             format!(
-                "{current}\nusage=/remote-setup example.com:22 ssh\nNote: remote session transport is not implemented; config saved for future use only."
+                "{current}\nusage=/remote-setup example.com:22 ssh\nNote: stores config only; remote/web session transport is unavailable in this Rust build."
             )
         });
     }
@@ -1941,7 +1941,7 @@ fn remote_setup(storage_dir: Option<&Path>, args: &str) -> Result<String> {
     // Append the honesty note after the current-config display.
     let env_view = render_remote_env(storage_dir)?;
     Ok(format!(
-        "{env_view}\nremote session transport is not implemented\nconfig saved for future use only"
+        "{env_view}\nconfig stored locally only\nremote/web session transport is unavailable in this Rust build"
     ))
 }
 

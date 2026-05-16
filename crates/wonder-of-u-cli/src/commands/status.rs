@@ -428,6 +428,10 @@ impl Command for StatusCommand {
                     sync_status.settings_sync.cloud_attempted
                 ));
                 lines.push(format!(
+                    "settings_sync_reason={}",
+                    sync_status.settings_sync.reason
+                ));
+                lines.push(format!(
                     "remote_managed_settings={}",
                     sync_status.remote_managed_settings.status.label()
                 ));
@@ -436,12 +440,20 @@ impl Command for StatusCommand {
                     sync_status.remote_managed_settings.cloud_attempted
                 ));
                 lines.push(format!(
+                    "remote_managed_settings_reason={}",
+                    sync_status.remote_managed_settings.reason
+                ));
+                lines.push(format!(
                     "team_memory_sync={}",
                     sync_status.team_memory_sync.status.label()
                 ));
                 lines.push(format!(
                     "team_memory_sync_cloud_attempted={}",
                     sync_status.team_memory_sync.cloud_attempted
+                ));
+                lines.push(format!(
+                    "team_memory_sync_reason={}",
+                    sync_status.team_memory_sync.reason
                 ));
                 lines.push(format!(
                     "analytics={}",
