@@ -17,6 +17,16 @@ pub mod memdir;
 pub mod migrations;
 pub use migrations::{Migration, MigrationRunner, StorageVersionFile, default_migration_runner};
 
+/// TypeScript-upstream transcript importer (explicit one-shot migration path).
+///
+/// The normal [`TranscriptStore`] load path is never touched; all conversion
+/// happens through the explicit [`ts_import::import_ts_file`] /
+/// [`ts_import::inspect_ts_file`] entry points.
+pub mod ts_import;
+pub use ts_import::{
+    PasteRefWarning, SkipReason, TsImportReport, TsSkipReport, import_ts_file, inspect_ts_file,
+};
+
 use std::{
     collections::BTreeMap,
     ffi::OsStr,
