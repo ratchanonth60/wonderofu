@@ -7,8 +7,8 @@ mod manifest;
 
 /// Re-exports items from `catalog`
 pub use catalog::{
-    PluginCatalog, PluginCatalogEntry, PluginCatalogError, PluginDiscoveryRoot, PluginReadiness,
-    PluginSource, PluginTrustLevel,
+    PLUGIN_MANIFEST_FILE_NAMES, PluginCatalog, PluginCatalogEntry, PluginCatalogError,
+    PluginDiscoveryRoot, PluginReadiness, PluginSource, PluginTrustLevel, plugin_manifest_path,
 };
 /// Re-exports items from `config`
 pub use config::{
