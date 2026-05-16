@@ -1211,6 +1211,7 @@ impl AgentsCommand {
                     provider: args.provider.or(report.provider),
                     model: args.model.or(report.model),
                     cwd: context.cwd,
+                    fleet_id: None,
                 })?
             }
         };

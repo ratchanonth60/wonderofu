@@ -22,6 +22,7 @@ mod doctor;
 pub(crate) mod env;
 mod extras;
 mod features;
+mod fleet;
 mod help;
 pub(crate) mod hooks;
 pub(crate) mod import;
@@ -63,6 +64,7 @@ pub(crate) use extras::{
     execute_help_command, execute_settings_command, execute_stats_command, execute_thinking_command,
 };
 use features::FeaturesCommand;
+use fleet::FleetCommand;
 use help::HelpCommand;
 use mcp::McpCommand;
 use plugin::{PluginCommand, ReloadPluginsCommand};
@@ -203,6 +205,7 @@ pub fn registry(storage_dir: Option<PathBuf>) -> Result<CommandRegistry> {
         CreateMovedToPluginCommand::command_spec(),
         TuiCommand::command_spec(),
         SetupCommand::command_spec(),
+        FleetCommand::command_spec(),
     ]
     .into();
 
@@ -324,6 +327,7 @@ pub fn registry(storage_dir: Option<PathBuf>) -> Result<CommandRegistry> {
     registry.register(Arc::new(CreateMovedToPluginCommand::new()))?;
     registry.register(Arc::new(TuiCommand::new()))?;
     registry.register(Arc::new(SetupCommand::new(storage_dir.clone())))?;
+    registry.register(Arc::new(FleetCommand::new(storage_dir.clone())))?;
     Ok(registry)
 }
 

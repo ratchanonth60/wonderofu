@@ -46,6 +46,10 @@ pub enum FeatureFlag {
     LegacyTodoWrite,
     /// Represents source-compatible todo-v2 task list tools.
     TodoV2,
+    /// Native fleet/sub-agent multi-task orchestration.
+    ///
+    /// Enabled by default; no external service calls are required.
+    Fleet,
 }
 
 /// Deterministic set wrapper for serializable feature gates.
@@ -75,6 +79,7 @@ impl FeatureSet {
             FeatureFlag::Agents,
             FeatureFlag::BackgroundTasks,
             FeatureFlag::LegacyTodoWrite,
+            FeatureFlag::Fleet,
         ]))
     }
 
