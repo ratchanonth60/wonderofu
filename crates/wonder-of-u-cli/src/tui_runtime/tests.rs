@@ -164,6 +164,16 @@ fn ctrl_r_key() -> KeyEvent {
     }
 }
 
+fn shift_backtab_key() -> KeyEvent {
+    KeyEvent {
+        code: KeyCode::BackTab,
+        modifiers: wonder_of_u_tui::KeyModifiers {
+            shift: true,
+            ..wonder_of_u_tui::KeyModifiers::default()
+        },
+    }
+}
+
 fn seed_prompt_history(controller: &mut TuiController<'_>, entries: &[&str]) {
     let session_id = controller.state.session.id;
     for entry in entries {
@@ -1366,6 +1376,109 @@ fn controller_routes_permissions_shorthand() {
                     .as_deref()
                     .is_some_and(|text| text.contains("status=permission mode updated"))
     ));
+}
+
+#[test]
+fn controller_shift_backtab_cycles_permission_mode_in_prompt() {
+    let dir = unique_test_dir("tui-shift-backtab-permission-cycle");
+    write_provider_config(dir.as_path(), "http://127.0.0.1:1");
+    let registry = commands::registry(Some(dir.clone())).expect("registry");
+    let mut controller = TuiController::new(
+        test_context(&dir),
+        &registry,
+        Some(dir.as_path()),
+        TuiLaunchOptions { session_id: None },
+    )
+    .expect("controller");
+
+    send_prompt_key(&mut controller, shift_backtab_key());
+
+    assert_eq!(controller.state.permission_mode, PermissionMode::Plan);
+    assert_eq!(controller.state.input_mode, InputMode::Prompt);
+    assert_eq!(
+        controller.status_note.as_deref(),
+        Some("permission mode plan mode")
+    );
+    assert!(controller.view().footer.contains("plan"));
+    assert!(controller.pending_permission_picker.is_none());
+    assert!(controller.dialog.is_none());
+}
+
+#[test]
+fn controller_shift_backtab_keeps_slash_suggestions_open() {
+    let dir = unique_test_dir("tui-shift-backtab-suggestions");
+    write_provider_config(dir.as_path(), "http://127.0.0.1:1");
+    let registry = commands::registry(Some(dir.clone())).expect("registry");
+    let mut controller = TuiController::new(
+        test_context(&dir),
+        &registry,
+        Some(dir.as_path()),
+        TuiLaunchOptions { session_id: None },
+    )
+    .expect("controller");
+
+    send_prompt_key(
+        &mut controller,
+        KeyEvent {
+            code: KeyCode::Char('/'),
+            modifiers: KeyModifiers::default(),
+        },
+    );
+    assert!(controller.active_suggestions.is_some());
+
+    send_prompt_key(&mut controller, shift_backtab_key());
+
+    assert_eq!(controller.state.permission_mode, PermissionMode::Plan);
+    assert_eq!(controller.prompt.text(), "/");
+    assert!(controller.active_suggestions.is_some());
+    assert!(controller.state.messages.is_empty());
+}
+
+#[test]
+fn controller_shift_backtab_is_ignored_while_picker_overlay_is_active() {
+    let dir = unique_test_dir("tui-shift-backtab-picker-overlay");
+    write_provider_config(dir.as_path(), "http://127.0.0.1:1");
+    let registry = commands::registry(Some(dir.clone())).expect("registry");
+    let mut controller = TuiController::new(
+        test_context(&dir),
+        &registry,
+        Some(dir.as_path()),
+        TuiLaunchOptions { session_id: None },
+    )
+    .expect("controller");
+
+    controller
+        .execute_slash_command("/permissions")
+        .expect("open permissions picker");
+
+    send_dialog_key(&mut controller, shift_backtab_key(), None);
+
+    assert_eq!(controller.state.permission_mode, PermissionMode::Default);
+    assert!(controller.pending_permission_picker.is_some());
+    assert!(matches!(
+        controller.dialog.as_ref(),
+        Some(dialog) if dialog.title == "Permission mode"
+    ));
+}
+
+#[test]
+fn controller_shift_backtab_is_ignored_while_setup_overlay_is_active() {
+    let dir = unique_test_dir("tui-shift-backtab-setup-overlay");
+    let registry = commands::registry(Some(dir.clone())).expect("registry");
+    let mut controller = TuiController::new(
+        test_context(&dir),
+        &registry,
+        Some(dir.as_path()),
+        TuiLaunchOptions { session_id: None },
+    )
+    .expect("controller");
+
+    assert!(controller.pending_setup_overlay.is_some());
+
+    send_prompt_key(&mut controller, shift_backtab_key());
+
+    assert_eq!(controller.state.permission_mode, PermissionMode::Default);
+    assert!(controller.pending_setup_overlay.is_some());
 }
 
 #[test]
