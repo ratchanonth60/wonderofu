@@ -3558,6 +3558,26 @@ mod tests {
     }
 
     #[test]
+    fn fleet_steer_rejects_terminal_fleet_cancelled() {
+        let dir = unique_test_dir("fleet-steer-terminal-cancelled");
+        let cmd = make_fleet_command(&dir);
+        let store = FleetStore::new(&dir);
+        let mut run = FleetRunState::new("cancelled fleet", PermissionMode::Default, None);
+        run.status = FleetRunStatus::Cancelled;
+        let fleet_id = run.id;
+        store.write_run(&run).expect("write");
+
+        let err = futures::executor::block_on(cmd.execute(
+            stub_context(dir.clone()),
+            invocation(&format!("steer {fleet_id} resume please")),
+        ))
+        .expect_err("should reject terminal fleet");
+
+        assert!(err.to_string().contains("terminal"), "got: {err}");
+        assert!(err.to_string().contains("cancelled"), "got: {err}");
+    }
+
+    #[test]
     fn fleet_steer_rejects_missing_fleet() {
         let dir = unique_test_dir("fleet-steer-missing");
         let cmd = make_fleet_command(&dir);
