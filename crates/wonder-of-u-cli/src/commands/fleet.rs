@@ -4,6 +4,26 @@
 //! and model-callable tools coordinate groups of local-agent tasks under a
 //! single [`FleetRunState`] record.
 //!
+//! # Direct prompt mode
+//!
+//! When the first token of the invocation is **not** a known subcommand, the
+//! input is treated as a freeform natural-language prompt and routed through
+//! the *direct orchestrator* path:
+//!
+//! ```text
+//! /fleet refactor auth module and add rate limiting
+//! /fleet extract utils; write docs; update changelog
+//! ```
+//!
+//! * A single-part prompt → one [`FleetMemberRequest`] queued.
+//! * Multi-part prompt (numbered list, bullet list, or semicolons) → one
+//!   request per part queued as independent members.
+//! * Empty / whitespace-only input → validation error.
+//! * `/fleet` with no args → aggregate status (unchanged).
+//!
+//! After queuing, run `fleet reconcile <fleet_id>` or `fleet wait <fleet_id>`
+//! to drive execution.
+//!
 //! # Subcommands
 //!
 //! | Subcommand | Description |
@@ -54,6 +74,29 @@ use super::{
     parse_command_args,
     task_runtime::{AgentTaskLaunch, TaskManager},
 };
+
+/// First-token names that are handled by clap subcommand parsing.
+///
+/// SYNC: keep this list in lockstep with [`FleetSubcommand`]. Anything **not**
+/// in this list that appears as the first token of `/fleet <args>` is treated
+/// as a freeform natural-language prompt and routed through the direct
+/// orchestrator path. Flag-like tokens still go through clap so `--help` and
+/// validation errors cannot accidentally create fleet runs.
+const KNOWN_SUBCOMMANDS: &[&str] = &[
+    "dispatch",
+    "start",
+    "list",
+    "status",
+    "show",
+    "stop-all",
+    "roles",
+    "reconcile",
+    "wait",
+    "results",
+];
+
+/// Maximum characters taken from a prompt as the run description summary.
+const DESCRIPTION_MAX_CHARS: usize = 80;
 
 /// The `/fleet` slash-command.
 pub struct FleetCommand {
@@ -233,18 +276,36 @@ impl Command for FleetCommand {
         context: CommandContext,
         invocation: CommandInvocation,
     ) -> Result<CommandOutput> {
-        let args = parse_command_args::<FleetArgs>("fleet", &invocation)?;
-        match args.command.unwrap_or(FleetSubcommand::Status) {
-            FleetSubcommand::Dispatch => self.dispatch(context),
-            FleetSubcommand::Start(args) => self.start(context, args),
-            FleetSubcommand::List(args) => self.list(args),
-            FleetSubcommand::Status => self.status(),
-            FleetSubcommand::Show(args) => self.show(args),
-            FleetSubcommand::StopAll(args) => self.stop_all(args),
-            FleetSubcommand::Roles => Self::roles(),
-            FleetSubcommand::Reconcile(args) => self.reconcile(context, args),
-            FleetSubcommand::Wait(args) => self.wait(context, args),
-            FleetSubcommand::Results(args) => self.results(args),
+        // Route before handing off to clap: check whether the first token is a
+        // known subcommand.  If not, and there *are* tokens, treat the whole
+        // args string as a freeform natural-language prompt.
+        let first_token = invocation
+            .args
+            .split_whitespace()
+            .next()
+            .map(str::to_ascii_lowercase);
+
+        match first_token.as_deref() {
+            // No args → status (existing behaviour).
+            None => self.status(),
+            // Known subcommand or flag-like token → clap parse as before.
+            Some(tok) if KNOWN_SUBCOMMANDS.contains(&tok) || tok.starts_with('-') => {
+                let args = parse_command_args::<FleetArgs>("fleet", &invocation)?;
+                match args.command.unwrap_or(FleetSubcommand::Status) {
+                    FleetSubcommand::Dispatch => self.dispatch(context),
+                    FleetSubcommand::Start(args) => self.start(context, args),
+                    FleetSubcommand::List(args) => self.list(args),
+                    FleetSubcommand::Status => self.status(),
+                    FleetSubcommand::Show(args) => self.show(args),
+                    FleetSubcommand::StopAll(args) => self.stop_all(args),
+                    FleetSubcommand::Roles => Self::roles(),
+                    FleetSubcommand::Reconcile(args) => self.reconcile(context, args),
+                    FleetSubcommand::Wait(args) => self.wait(context, args),
+                    FleetSubcommand::Results(args) => self.results(args),
+                }
+            }
+            // Unknown first token → freeform direct prompt.
+            Some(_) => self.direct_prompt(context, &invocation.args),
         }
     }
 }
@@ -923,6 +984,81 @@ impl FleetCommand {
         Ok(CommandOutput::Text(lines.join("\n")))
     }
 
+    // ── Direct prompt orchestrator ────────────────────────────────────────────
+
+    /// Handles `/fleet <freeform prompt>` — the direct orchestrator path.
+    ///
+    /// Creates a [`FleetRunState`] whose description is derived from the first
+    /// `DESCRIPTION_MAX_CHARS` of the prompt, then queues one
+    /// [`FleetMemberRequest`] per logical part detected by
+    /// [`split_multipart_prompt`].
+    ///
+    /// On success the output is a stable `key=value` block:
+    ///
+    /// ```text
+    /// fleet_id=<uuid>
+    /// description=<summary>
+    /// queued_members=<n>
+    /// mode=direct_prompt
+    /// member[0].request_id=direct-1
+    /// ...
+    /// note=use `fleet reconcile <id>` or `fleet wait <id>`
+    /// ```
+    fn direct_prompt(&self, context: CommandContext, raw_prompt: &str) -> Result<CommandOutput> {
+        let prompt = raw_prompt.trim();
+        if prompt.is_empty() {
+            return Err(WonderError::validation(
+                "fleet direct prompt cannot be empty; provide a task description or use a subcommand",
+            ));
+        }
+
+        let store = match self.fleet_store() {
+            Some(s) => s,
+            None => {
+                return Ok(CommandOutput::Text(runtime_disabled_message(
+                    "fleet direct",
+                )));
+            }
+        };
+
+        let parts = split_multipart_prompt(prompt);
+        let description = prompt_summary(prompt);
+
+        let run = FleetRunState::new(&description, context.permission_mode, Some(context.cwd));
+        store.write_run(&run)?;
+
+        let mut lines = vec![
+            format!("fleet_id={}", run.id),
+            format!("description={}", sanitize_line(&description)),
+            format!("queued_members={}", parts.len()),
+            "mode=direct_prompt".to_string(),
+        ];
+
+        for (i, part) in parts.iter().enumerate() {
+            let request_id = format!("direct-{}", i + 1);
+            let mut req = FleetMemberRequest::new(part.as_str());
+            req.id = request_id.clone();
+            req.fleet_id = Some(run.id);
+            // Name is the id so reconcile output is readable.
+            req.name = Some(request_id.clone());
+            store.queue_member_request(&req)?;
+            lines.push(format!("member[{i}].request_id={request_id}"));
+            // Emit the prompt summary so callers can audit what was queued.
+            let part_summary = prompt_summary(part);
+            lines.push(format!(
+                "member[{i}].prompt_summary={}",
+                sanitize_line(&part_summary)
+            ));
+        }
+
+        let fleet_id = run.id;
+        lines.push(format!(
+            "note=use `fleet reconcile {fleet_id}` or `fleet wait {fleet_id}`"
+        ));
+
+        Ok(CommandOutput::Text(lines.join("\n")))
+    }
+
     // ── Helpers ───────────────────────────────────────────────────────────────
 
     fn task_manager(&self) -> Option<TaskManager> {
@@ -1368,6 +1504,91 @@ fn runtime_disabled_message(subcommand: &str) -> String {
         subcommand.replace(' ', "_"),
         subcommand
     )
+}
+
+/// Splits `prompt` into logical parts for independent fleet members.
+///
+/// Detection priority:
+/// 1. **Numbered list** — two or more lines matching `^\d+[.)]\s+<text>`.
+/// 2. **Bullet list** — two or more lines matching `^[-*•]\s+<text>`.
+/// 3. **Semicolons** — two or more non-empty tokens split on `;`.
+/// 4. **Single part** — the whole prompt as one member.
+///
+/// Returns at least one element; never an empty `Vec`.
+fn split_multipart_prompt(prompt: &str) -> Vec<String> {
+    // Numbered list: "1. foo\n2. bar" or "1) foo\n2) bar".
+    let numbered: Vec<String> = prompt
+        .lines()
+        .filter_map(|line| {
+            let t = line.trim();
+            // Match `<digits>[.)]\s+<content>`
+            let after_num = t.chars().take_while(char::is_ascii_digit).count();
+            if after_num == 0 {
+                return None;
+            }
+            let rest = t[after_num..].trim_start_matches(['.', ')']);
+            let rest = rest.trim();
+            if rest.is_empty() {
+                None
+            } else if t[after_num..].starts_with('.') || t[after_num..].starts_with(')') {
+                Some(rest.to_string())
+            } else {
+                None
+            }
+        })
+        .collect();
+    if numbered.len() >= 2 {
+        return numbered;
+    }
+
+    // Bullet list: "- foo\n- bar" or "* foo\n• bar".
+    let bulleted: Vec<String> = prompt
+        .lines()
+        .filter_map(|line| {
+            let t = line.trim();
+            if let Some(rest) = t
+                .strip_prefix("- ")
+                .or_else(|| t.strip_prefix("* "))
+                .or_else(|| t.strip_prefix("• "))
+            {
+                let r = rest.trim();
+                if r.is_empty() {
+                    None
+                } else {
+                    Some(r.to_string())
+                }
+            } else {
+                None
+            }
+        })
+        .collect();
+    if bulleted.len() >= 2 {
+        return bulleted;
+    }
+
+    // Semicolon-separated.
+    if prompt.contains(';') {
+        let parts: Vec<String> = prompt
+            .split(';')
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+            .collect();
+        if parts.len() >= 2 {
+            return parts;
+        }
+    }
+
+    // Single part — return the full prompt.
+    vec![prompt.trim().to_string()]
+}
+
+/// Returns the first `DESCRIPTION_MAX_CHARS` of `prompt` as a one-line summary.
+///
+/// Collapses all whitespace runs (including newlines) into a single space.
+fn prompt_summary(prompt: &str) -> String {
+    let collapsed: String = prompt.split_whitespace().collect::<Vec<_>>().join(" ");
+    truncate_chars(&collapsed, DESCRIPTION_MAX_CHARS).to_string()
 }
 
 /// Parses the `--isolation` / `--worktree-branch` CLI args into a
@@ -2805,5 +3026,320 @@ mod tests {
     #[test]
     fn truncate_chars_larger_than_input() {
         assert_eq!(truncate_chars("hi", 100), "hi");
+    }
+
+    // ── split_multipart_prompt ────────────────────────────────────────────────
+
+    #[test]
+    fn split_single_line_is_one_part() {
+        let parts = split_multipart_prompt("refactor the auth module");
+        assert_eq!(parts.len(), 1);
+        assert_eq!(parts[0], "refactor the auth module");
+    }
+
+    #[test]
+    fn split_numbered_list_detects_parts() {
+        let prompt = "1. run tests\n2. fix failures\n3. open PR";
+        let parts = split_multipart_prompt(prompt);
+        assert_eq!(parts, vec!["run tests", "fix failures", "open PR"]);
+    }
+
+    #[test]
+    fn split_numbered_list_with_parens() {
+        let prompt = "1) step one\n2) step two";
+        let parts = split_multipart_prompt(prompt);
+        assert_eq!(parts, vec!["step one", "step two"]);
+    }
+
+    #[test]
+    fn split_bullet_list_detects_parts() {
+        let prompt = "- extract utils\n- write docs\n- update changelog";
+        let parts = split_multipart_prompt(prompt);
+        assert_eq!(
+            parts,
+            vec!["extract utils", "write docs", "update changelog"]
+        );
+    }
+
+    #[test]
+    fn split_star_bullet_list_detects_parts() {
+        let prompt = "* add tests\n* lint fix";
+        let parts = split_multipart_prompt(prompt);
+        assert_eq!(parts, vec!["add tests", "lint fix"]);
+    }
+
+    #[test]
+    fn split_semicolon_detects_parts() {
+        let prompt = "extract utils; write docs; update changelog";
+        let parts = split_multipart_prompt(prompt);
+        assert_eq!(
+            parts,
+            vec!["extract utils", "write docs", "update changelog"]
+        );
+    }
+
+    #[test]
+    fn split_single_semicolon_stays_one_part() {
+        // Only one non-empty token on each side means two parts → still splits.
+        let parts = split_multipart_prompt("step a; step b");
+        assert_eq!(parts.len(), 2);
+    }
+
+    #[test]
+    fn split_trailing_semicolon_does_not_produce_empty_part() {
+        let parts = split_multipart_prompt("step a; step b;");
+        // The trailing empty string after the last `;` must be filtered out.
+        assert_eq!(parts, vec!["step a", "step b"]);
+    }
+
+    #[test]
+    fn split_one_bullet_stays_single_part() {
+        // Only one bullet → not a list; return as single prompt.
+        let parts = split_multipart_prompt("- only one thing");
+        assert_eq!(parts.len(), 1);
+        assert_eq!(parts[0], "- only one thing");
+    }
+
+    // ── prompt_summary ────────────────────────────────────────────────────────
+
+    #[test]
+    fn prompt_summary_collapses_newlines() {
+        let s = prompt_summary("line one\nline two");
+        assert_eq!(s, "line one line two");
+    }
+
+    #[test]
+    fn prompt_summary_truncates_at_max_chars() {
+        let long = "a".repeat(200);
+        assert_eq!(prompt_summary(&long).len(), DESCRIPTION_MAX_CHARS);
+    }
+
+    // ── fleet direct prompt (integration) ────────────────────────────────────
+
+    #[test]
+    fn fleet_no_args_returns_status() {
+        let dir = unique_test_dir("fleet-direct-no-args");
+        let cmd = make_fleet_command(&dir);
+        // Bare /fleet with empty args string → must return the status view.
+        let output =
+            futures::executor::block_on(cmd.execute(stub_context(dir.clone()), invocation("")))
+                .expect("execute");
+        let text = match output {
+            CommandOutput::Text(t) => t,
+            other => panic!("unexpected: {other:?}"),
+        };
+        // Status output always contains fleet_runs= and pending_dispatch_requests=.
+        assert!(text.contains("fleet_runs="), "got: {text}");
+        assert!(text.contains("pending_dispatch_requests="), "got: {text}");
+    }
+
+    #[test]
+    fn fleet_known_subcommand_still_parses() {
+        let dir = unique_test_dir("fleet-direct-known-sub");
+        let cmd = make_fleet_command(&dir);
+        // "list" is a known subcommand; it must NOT be treated as a prompt.
+        let output =
+            futures::executor::block_on(cmd.execute(stub_context(dir.clone()), invocation("list")))
+                .expect("execute");
+        let text = match output {
+            CommandOutput::Text(t) => t,
+            other => panic!("unexpected: {other:?}"),
+        };
+        // List output always contains fleet_runs=.
+        assert!(text.contains("fleet_runs="), "got: {text}");
+        // Must NOT contain mode=direct_prompt.
+        assert!(!text.contains("mode=direct_prompt"), "got: {text}");
+    }
+
+    #[test]
+    fn fleet_flag_like_args_go_to_clap_not_direct_prompt() {
+        let dir = unique_test_dir("fleet-direct-help-flag");
+        let cmd = make_fleet_command(&dir);
+        let err = futures::executor::block_on(
+            cmd.execute(stub_context(dir.clone()), invocation("--help")),
+        )
+        .expect_err("--help should be handled by clap, not direct prompt");
+        assert!(err.to_string().contains("Usage:"), "got: {err}");
+
+        let store = FleetStore::new(&dir);
+        assert!(store.list_runs().expect("runs").is_empty());
+        assert!(store.list_pending_requests().expect("pending").is_empty());
+    }
+
+    #[test]
+    fn fleet_direct_prompt_single_creates_run_and_request() {
+        let dir = unique_test_dir("fleet-direct-single");
+        let cmd = make_fleet_command(&dir);
+        let output = futures::executor::block_on(cmd.execute(
+            stub_context(dir.clone()),
+            invocation("refactor the auth module to use JWT"),
+        ))
+        .expect("execute");
+
+        let text = match output {
+            CommandOutput::Text(t) => t,
+            other => panic!("unexpected: {other:?}"),
+        };
+
+        // Key fields present.
+        assert!(text.contains("mode=direct_prompt"), "got: {text}");
+        assert!(text.contains("queued_members=1"), "got: {text}");
+        assert!(
+            text.contains("member[0].request_id=direct-1"),
+            "got: {text}"
+        );
+        assert!(text.contains("fleet reconcile"), "got: {text}");
+
+        // Extract fleet_id from output and verify the run was written.
+        let fleet_id_line = text
+            .lines()
+            .find(|l| l.starts_with("fleet_id="))
+            .expect("fleet_id line");
+        let fleet_id_str = fleet_id_line.strip_prefix("fleet_id=").unwrap();
+        let fleet_id = FleetId::parse(fleet_id_str).expect("valid fleet id");
+
+        let store = FleetStore::new(&dir);
+        let run = store.read_run(fleet_id).expect("run should be stored");
+        assert!(
+            run.description.contains("refactor"),
+            "description should contain prompt summary; got: {}",
+            run.description
+        );
+
+        // One pending request with the stable id.
+        let pending = store.list_pending_requests().expect("list");
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].id, "direct-1");
+        assert_eq!(pending[0].fleet_id, Some(fleet_id));
+    }
+
+    #[test]
+    fn fleet_direct_prompt_multipart_semicolon_queues_multiple() {
+        let dir = unique_test_dir("fleet-direct-multi-semi");
+        let cmd = make_fleet_command(&dir);
+        let output = futures::executor::block_on(cmd.execute(
+            stub_context(dir.clone()),
+            invocation("extract utils; write docs; update changelog"),
+        ))
+        .expect("execute");
+
+        let text = match output {
+            CommandOutput::Text(t) => t,
+            other => panic!("unexpected: {other:?}"),
+        };
+
+        assert!(text.contains("mode=direct_prompt"), "got: {text}");
+        assert!(text.contains("queued_members=3"), "got: {text}");
+        assert!(
+            text.contains("member[0].request_id=direct-1"),
+            "got: {text}"
+        );
+        assert!(
+            text.contains("member[1].request_id=direct-2"),
+            "got: {text}"
+        );
+        assert!(
+            text.contains("member[2].request_id=direct-3"),
+            "got: {text}"
+        );
+
+        let store = FleetStore::new(&dir);
+        let pending = store.list_pending_requests().expect("list");
+        assert_eq!(
+            pending.len(),
+            3,
+            "expected 3 pending requests; got {}",
+            pending.len()
+        );
+
+        // Prompts should match the semicolon-split parts.
+        let ids: Vec<&str> = pending.iter().map(|r| r.id.as_str()).collect();
+        assert!(ids.contains(&"direct-1"), "direct-1 missing");
+        assert!(ids.contains(&"direct-2"), "direct-2 missing");
+        assert!(ids.contains(&"direct-3"), "direct-3 missing");
+
+        let r1 = pending.iter().find(|r| r.id == "direct-1").unwrap();
+        assert_eq!(r1.prompt, "extract utils");
+        let r2 = pending.iter().find(|r| r.id == "direct-2").unwrap();
+        assert_eq!(r2.prompt, "write docs");
+    }
+
+    #[test]
+    fn fleet_direct_prompt_multipart_numbered_queues_multiple() {
+        let dir = unique_test_dir("fleet-direct-multi-numbered");
+        // Multiline list splitting is a lower-level direct_prompt behavior.
+        // The public slash/CLI route should use semicolons for portable
+        // multipart prompts because shell_words processing may normalize
+        // literal newlines.
+        let fleet_cmd = make_fleet_command(&dir);
+        let output = fleet_cmd
+            .direct_prompt(
+                stub_context(dir.clone()),
+                "1. run tests\n2. fix failures\n3. open PR",
+            )
+            .expect("execute");
+
+        let text = match output {
+            CommandOutput::Text(t) => t,
+            other => panic!("unexpected: {other:?}"),
+        };
+
+        assert!(text.contains("queued_members=3"), "got: {text}");
+        assert!(
+            text.contains("member[0].request_id=direct-1"),
+            "got: {text}"
+        );
+        assert!(
+            text.contains("member[2].request_id=direct-3"),
+            "got: {text}"
+        );
+    }
+
+    #[test]
+    fn fleet_direct_prompt_bullet_list_queues_multiple() {
+        let dir = unique_test_dir("fleet-direct-multi-bullet");
+        let fleet_cmd = make_fleet_command(&dir);
+        let output = fleet_cmd
+            .direct_prompt(
+                stub_context(dir.clone()),
+                "- extract utils\n- write docs\n- update changelog",
+            )
+            .expect("execute");
+
+        let text = match output {
+            CommandOutput::Text(t) => t,
+            other => panic!("unexpected: {other:?}"),
+        };
+
+        assert!(text.contains("queued_members=3"), "got: {text}");
+    }
+
+    #[test]
+    fn fleet_direct_prompt_empty_returns_error() {
+        let dir = unique_test_dir("fleet-direct-empty");
+        let fleet_cmd = make_fleet_command(&dir);
+        let result = fleet_cmd.direct_prompt(stub_context(dir.clone()), "   ");
+        assert!(result.is_err(), "empty prompt should return error");
+        let err = result.unwrap_err();
+        assert!(
+            err.to_string().contains("empty"),
+            "error should mention empty prompt; got: {err}"
+        );
+    }
+
+    #[test]
+    fn fleet_direct_prompt_no_storage_returns_disabled() {
+        let cmd = FleetCommand::new(None);
+        let output = cmd
+            .direct_prompt(
+                stub_context(std::env::current_dir().unwrap()),
+                "do something",
+            )
+            .expect("execute");
+        let text = match output {
+            CommandOutput::Text(t) => t,
+            other => panic!("unexpected: {other:?}"),
+        };
+        assert!(text.contains("requires --storage-dir"), "got: {text}");
     }
 }
