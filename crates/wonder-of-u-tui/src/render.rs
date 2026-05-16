@@ -84,8 +84,12 @@ impl TranscriptScrollView {
 ///
 /// ## Render order (OpenCode-style integration panel)
 ///
+/// Status is rendered second (immediately below Session) so that the
+/// real-time turn state is visible at a glance without scrolling.
+///
 /// ```text
 /// ─ Session ─       (session_lines)
+/// ─ Status ─        (status_lines)   ← promoted: most-urgent real-time info
 /// ─ Context ─       (context_lines)
 /// ─ Tools ─         (tool_lines)
 /// ─ MCP ─           (mcp_lines)
@@ -94,7 +98,6 @@ impl TranscriptScrollView {
 /// ─ Suggestions ─   (suggestions)
 /// ─ Providers ─     (provider_lines)
 /// ─ Workspace ─     (workspace_lines)
-/// ─ Status ─        (status_lines)
 /// ─ Controls ─      (control_lines)
 /// ─ Tasks ─         (task_lines)
 /// ```
@@ -729,19 +732,21 @@ fn draw_shell_sidebar(frame: &mut FrameBuffer, area: Rect, sidebar: &SidebarView
 
 /// Builds the ordered list of styled lines for the sidebar panel.
 ///
-/// Renders sections in the OpenCode-style integration-panel order:
+/// Renders sections in the OpenCode-style integration-panel order.
+/// Status is promoted to position 2 so the live turn-state indicator
+/// is always visible at the top without scrolling:
 ///
 /// ```text
 /// 1. Session      – session id / title
-/// 2. Context      – token usage bar
-/// 3. Tools        – active tool names / call counts
-/// 4. MCP          – connected MCP server states
-/// 5. LSP          – language-server diagnostics summary
-/// 6. Todo         – in-session checklist items
-/// 7. Suggestions  – proactive context-saving hints
-/// 8. Providers    – model + provider
-/// 9. Workspace    – git branch, cwd
-/// 10. Status      – turn state / loading verb
+/// 2. Status       – turn state / loading verb  (promoted)
+/// 3. Context      – token usage bar
+/// 4. Tools        – active tool names / call counts
+/// 5. MCP          – connected MCP server states
+/// 6. LSP          – language-server diagnostics summary
+/// 7. Todo         – in-session checklist items
+/// 8. Suggestions  – proactive context-saving hints
+/// 9. Providers    – model + provider
+/// 10. Workspace   – git branch, cwd
 /// 11. Controls    – compact keybinding reference
 /// 12. Tasks       – background task count
 /// ```
@@ -770,7 +775,16 @@ fn sidebar_section_lines(sidebar: &SidebarView, theme: &Theme) -> Vec<StyledLine
         accent,
         theme,
     );
-    // 2 – Context
+    // 2 – Status (promoted: turn-state is the most urgent real-time signal)
+    push_sidebar_text_section(
+        &mut out,
+        "─ Status ─",
+        &sidebar.status_lines,
+        dim,
+        accent,
+        theme,
+    );
+    // 3 – Context
     push_sidebar_text_section(
         &mut out,
         "─ Context ─",
@@ -779,7 +793,7 @@ fn sidebar_section_lines(sidebar: &SidebarView, theme: &Theme) -> Vec<StyledLine
         accent,
         theme,
     );
-    // 3 – Tools
+    // 4 – Tools
     push_sidebar_text_section(
         &mut out,
         "─ Tools ─",
@@ -788,11 +802,11 @@ fn sidebar_section_lines(sidebar: &SidebarView, theme: &Theme) -> Vec<StyledLine
         accent,
         theme,
     );
-    // 4 – MCP
+    // 5 – MCP
     push_sidebar_text_section(&mut out, "─ MCP ─", &sidebar.mcp_lines, dim, accent, theme);
-    // 5 – LSP
+    // 6 – LSP
     push_sidebar_text_section(&mut out, "─ LSP ─", &sidebar.lsp_lines, dim, accent, theme);
-    // 6 – Todo
+    // 7 – Todo
     push_sidebar_text_section(
         &mut out,
         "─ Todo ─",
@@ -801,9 +815,9 @@ fn sidebar_section_lines(sidebar: &SidebarView, theme: &Theme) -> Vec<StyledLine
         accent,
         theme,
     );
-    // 7 – Suggestions (span-coloured; handled by its own helper)
+    // 8 – Suggestions (span-coloured; handled by its own helper)
     push_sidebar_suggestions_section(&mut out, &sidebar.suggestions, theme);
-    // 8 – Providers
+    // 9 – Providers
     push_sidebar_text_section(
         &mut out,
         "─ Providers ─",
@@ -812,20 +826,11 @@ fn sidebar_section_lines(sidebar: &SidebarView, theme: &Theme) -> Vec<StyledLine
         accent,
         theme,
     );
-    // 9 – Workspace
+    // 10 – Workspace
     push_sidebar_text_section(
         &mut out,
         "─ Workspace ─",
         &sidebar.workspace_lines,
-        dim,
-        accent,
-        theme,
-    );
-    // 10 – Status
-    push_sidebar_text_section(
-        &mut out,
-        "─ Status ─",
-        &sidebar.status_lines,
         dim,
         accent,
         theme,
@@ -1076,7 +1081,8 @@ fn draw_dialog(frame: &mut FrameBuffer, viewport: Rect, dialog: &DialogView, the
         .unwrap_or(viewport.width)
         .max(viewport.width.saturating_sub(2))
         .min(viewport.width);
-    let height = u16::try_from(dialog.body.len().saturating_add(3))
+    // +4: top border (title) + blank separator + action row + bottom border.
+    let height = u16::try_from(dialog.body.len().saturating_add(4))
         .unwrap_or(viewport.height)
         .min(viewport.height);
     let rect = Rect::new(
@@ -1087,6 +1093,8 @@ fn draw_dialog(frame: &mut FrameBuffer, viewport: Rect, dialog: &DialogView, the
     );
 
     let mut body = plain_lines(&dialog.body, theme.messages);
+    // Blank separator line gives visual breathing room before the action row.
+    body.push(StyledLine::plain(String::new(), theme.footer));
     body.push(StyledLine::plain(actions, theme.status));
     draw_panel(frame, rect, Some(&dialog.title), &body, theme);
 }
@@ -2339,9 +2347,9 @@ mod tests {
                 " ╭─Confirm action───────────────────────╮",
                 " │Approve command execution             │",
                 " │This cannot be undone                 │",
+                " │                                      │",
                 " │[Confirm]  Cancel                     │",
                 " ╰──────────────────────────────────────╯",
-                "",
                 "",
                 "╭─ prompt ───────────────────────────────╮",
                 "│› continue?                             │",
@@ -4206,9 +4214,12 @@ mod tests {
         );
     }
 
-    /// Verify the full OpenCode-style render order: sections must appear in the
-    /// documented sequence (Session → Context → Tools → MCP → LSP → Todo →
-    /// Suggestions → Providers → Workspace → Status → Controls → Tasks).
+    /// Verify the full render order: sections must appear in the documented
+    /// sequence (Session → Status → Context → Tools → MCP → LSP → Todo →
+    /// Suggestions → Providers → Workspace → Controls → Tasks).
+    ///
+    /// Status is promoted to slot 2 so the live turn-state indicator is always
+    /// visible at the top of the sidebar without scrolling.
     ///
     /// We populate every section and assert that each header appears *after* its
     /// predecessor in the rendered output, using byte-offset positions.
@@ -4249,6 +4260,7 @@ mod tests {
 
         // Assert the strict ordering of every section header.
         let session_pos = pos("─ Session ─");
+        let status_pos = pos("─ Status ─");
         let context_pos = pos("─ Context ─");
         let tools_pos = pos("─ Tools ─");
         let mcp_pos = pos("─ MCP ─");
@@ -4257,11 +4269,11 @@ mod tests {
         let suggestions_pos = pos("─ Suggestions ─");
         let providers_pos = pos("─ Providers ─");
         let workspace_pos = pos("─ Workspace ─");
-        let status_pos = pos("─ Status ─");
         let controls_pos = pos("─ Controls ─");
         let tasks_pos = pos("─ Tasks ─");
 
-        assert!(session_pos < context_pos, "Session must precede Context");
+        assert!(session_pos < status_pos, "Session must precede Status");
+        assert!(status_pos < context_pos, "Status must precede Context");
         assert!(context_pos < tools_pos, "Context must precede Tools");
         assert!(tools_pos < mcp_pos, "Tools must precede MCP");
         assert!(mcp_pos < lsp_pos, "MCP must precede LSP");
@@ -4275,12 +4287,79 @@ mod tests {
             providers_pos < workspace_pos,
             "Providers must precede Workspace"
         );
-        assert!(workspace_pos < status_pos, "Workspace must precede Status");
-        assert!(status_pos < controls_pos, "Status must precede Controls");
+        assert!(workspace_pos < controls_pos, "Workspace must precede Controls");
         assert!(controls_pos < tasks_pos, "Controls must precede Tasks");
     }
 
-    /// `from_app_state` must initialise the four new fields to empty `Vec`s.
+    /// Status is the first section after Session so the turn-state indicator is
+    /// immediately visible without scrolling, even when other sections are empty.
+    #[test]
+    fn sidebar_status_renders_before_context() {
+        let view = ShellView {
+            prompt: "hi".into(),
+            sidebar: Some(SidebarView {
+                session_lines: vec!["◈ abc12345".into()],
+                status_lines: vec!["⟳ streaming".into()],
+                context_lines: vec!["500 / 128,000 tokens".into()],
+                ..SidebarView::default()
+            }),
+            ..ShellView::default()
+        };
+
+        let frame = render_snapshot(120, 20, &view, &Theme::default());
+        let text = frame.to_plain_text();
+
+        let session_pos = text
+            .find("─ Session ─")
+            .expect("Session header not found");
+        let status_pos = text.find("─ Status ─").expect("Status header not found");
+        let context_pos = text
+            .find("─ Context ─")
+            .expect("Context header not found");
+
+        assert!(
+            session_pos < status_pos,
+            "Session must precede Status; rendered:\n{text}"
+        );
+        assert!(
+            status_pos < context_pos,
+            "Status must precede Context (Status is promoted to slot 2); rendered:\n{text}"
+        );
+        // The turn-state content must also be visible.
+        assert!(
+            text.contains("streaming"),
+            "turn-state label must be visible; rendered:\n{text}"
+        );
+    }
+
+    /// Dialogs must render a blank separator line between the body text and the
+    /// action-hint row so the call-to-action has visual breathing room.
+    #[test]
+    fn dialog_has_blank_separator_before_action_row() {
+        let view = ShellView {
+            title: "Session: spacing".into(),
+            messages: vec![MessageLineView::new("ready", MessageRole::System)],
+            prompt: "test".into(),
+            dialog: Some(DialogView::notice("Info", ["This is a notice."])),
+            ..ShellView::default()
+        };
+
+        let frame = render_snapshot(44, 10, &view, &Theme::default());
+        let text = frame.to_plain_text();
+
+        // The blank separator must separate the body text from "[Close]".
+        // We look for an interior border row that contains only spaces (the blank line),
+        // sandwiched between the body content and the action hint.
+        let body_pos = text.find("This is a notice").expect("body text not found");
+        let action_pos = text.find("[Close]").expect("[Close] not found");
+        let between = &text[body_pos..action_pos];
+        assert!(
+            between.contains("│  ") || between.contains("│\n"),
+            "a blank interior row must appear between body and action hint; rendered:\n{text}"
+        );
+    }
+
+
     /// The controller owns population of these fields each frame, so the model
     /// layer must not pre-fill them.
     #[test]
