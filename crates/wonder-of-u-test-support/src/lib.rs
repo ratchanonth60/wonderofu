@@ -9,6 +9,14 @@ use std::{
 
 use uuid::Uuid;
 
+fn workspace_root() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(|path| path.parent())
+        .expect("test support crate lives under workspace crates directory")
+        .to_path_buf()
+}
+
 /// Creates a unique test directory below this repository's `target/` tree.
 /// This avoids OS temp directories so tests stay inside the workspace.
 pub fn unique_test_dir(prefix: &str) -> PathBuf {
@@ -22,8 +30,7 @@ pub fn unique_test_dir(prefix: &str) -> PathBuf {
             }
         })
         .collect::<String>();
-    let path = std::env::current_dir()
-        .expect("current directory")
+    let path = workspace_root()
         .join("target")
         .join("test-workspaces")
         .join(format!("{}-{}", safe_prefix, Uuid::new_v4()));
