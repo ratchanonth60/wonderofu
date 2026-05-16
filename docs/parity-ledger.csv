@@ -972,15 +972,15 @@ services/PromptSuggestion/speculation.ts,services,covered-by-rust-equivalent,won
 services/SessionMemory/prompts.ts,services,covered-by-rust-equivalent,services/prompts
 services/SessionMemory/sessionMemory.ts,services,covered-by-rust-equivalent,services/sessionMemory
 services/SessionMemory/sessionMemoryUtils.ts,services,covered-by-rust-equivalent,services/sessionMemoryUtils
-services/analytics/config.ts,services,covered-by-rust-equivalent,services/config
-services/analytics/datadog.ts,services,external-service-blocked,Requires external proprietary service/platform
-services/analytics/firstPartyEventLogger.ts,services,covered-by-rust-equivalent,services/firstPartyEventLogger
-services/analytics/firstPartyEventLoggingExporter.ts,services,covered-by-rust-equivalent,services/firstPartyEventLoggingExporter
-services/analytics/growthbook.ts,services,external-service-blocked,Requires external proprietary service/platform
-services/analytics/index.ts,services,covered-by-rust-equivalent,services/index
-services/analytics/metadata.ts,services,covered-by-rust-equivalent,services/metadata
-services/analytics/sink.ts,services,external-service-blocked,Requires external proprietary service/platform
-services/analytics/sinkKillswitch.ts,services,external-service-blocked,Requires external proprietary service/platform
+services/analytics/config.ts,services,intentionally-omitted/local-first,intentionally omitted; local-first privacy rationale; see docs/adr/0001-telemetry-experiments-omission.md
+services/analytics/datadog.ts,services,external-service-blocked,external service dependency; no Rust port; see docs/adr/0001-telemetry-experiments-omission.md
+services/analytics/firstPartyEventLogger.ts,services,intentionally-omitted/local-first,intentionally omitted; local-first privacy rationale; see docs/adr/0001-telemetry-experiments-omission.md
+services/analytics/firstPartyEventLoggingExporter.ts,services,intentionally-omitted/local-first,intentionally omitted; local-first privacy rationale; see docs/adr/0001-telemetry-experiments-omission.md
+services/analytics/growthbook.ts,services,external-service-blocked,external service dependency; no Rust port; see docs/adr/0001-telemetry-experiments-omission.md
+services/analytics/index.ts,services,intentionally-omitted/local-first,intentionally omitted; local-first privacy rationale; see docs/adr/0001-telemetry-experiments-omission.md
+services/analytics/metadata.ts,services,intentionally-omitted/local-first,intentionally omitted; local-first privacy rationale; see docs/adr/0001-telemetry-experiments-omission.md
+services/analytics/sink.ts,services,external-service-blocked,external service dependency; no Rust port; see docs/adr/0001-telemetry-experiments-omission.md
+services/analytics/sinkKillswitch.ts,services,external-service-blocked,external service dependency; no Rust port; see docs/adr/0001-telemetry-experiments-omission.md
 services/api/adminRequests.ts,services,covered-by-rust-equivalent,services/adminRequests
 services/api/bootstrap.ts,services,external-service-blocked,Requires external proprietary service/platform
 services/api/claude.ts,services,covered-by-rust-equivalent,services/claude
@@ -1322,7 +1322,7 @@ tools.ts,misc,covered-by-rust-equivalent,top-level tools.ts
 types/command.ts,types,covered-by-rust-equivalent,types/command
 types/generated/events_mono/claude_code/v1/claude_code_internal_event.ts,types,covered-by-rust-equivalent,types/claude_code_internal_event
 types/generated/events_mono/common/v1/auth.ts,types,covered-by-rust-equivalent,types/auth
-types/generated/events_mono/growthbook/v1/growthbook_experiment_event.ts,types,covered-by-rust-equivalent,types/growthbook_experiment_event
+types/generated/events_mono/growthbook/v1/growthbook_experiment_event.ts,types,intentionally-omitted/local-first,intentionally omitted; local-first privacy rationale; see docs/adr/0001-telemetry-experiments-omission.md
 types/generated/google/protobuf/timestamp.ts,types,covered-by-rust-equivalent,types/timestamp
 types/hooks.ts,types,covered-by-rust-equivalent,types/hooks
 types/ids.ts,types,covered-by-rust-equivalent,wonder-of-u-core/src/ids.rs
@@ -1492,7 +1492,7 @@ utils/extraUsage.ts,utils,covered-by-rust-equivalent,utils/extraUsage
 utils/fastMode.ts,utils,covered-by-rust-equivalent,utils/fastMode
 utils/file.ts,utils,covered-by-rust-equivalent,utils/file
 utils/fileHistory.ts,utils,covered-by-rust-equivalent,utils/fileHistory
-utils/fileOperationAnalytics.ts,utils,covered-by-rust-equivalent,utils/fileOperationAnalytics
+utils/fileOperationAnalytics.ts,utils,intentionally-omitted/local-first,intentionally omitted; local-first privacy rationale; see docs/adr/0001-telemetry-experiments-omission.md
 utils/filePersistence/filePersistence.ts,utils,covered-by-rust-equivalent,utils/filePersistence
 utils/filePersistence/outputsScanner.ts,utils,covered-by-rust-equivalent,utils/outputsScanner
 utils/fileRead.ts,utils,covered-by-rust-equivalent,utils/fileRead
@@ -1654,7 +1654,7 @@ utils/platform.ts,utils,covered-by-rust-equivalent,utils/platform
 utils/plugins/addDirPluginSettings.ts,utils,covered-by-rust-equivalent,utils/addDirPluginSettings
 utils/plugins/cacheUtils.ts,utils,covered-by-rust-equivalent,utils/cacheUtils
 utils/plugins/dependencyResolver.ts,utils,covered-by-rust-equivalent,utils/dependencyResolver
-utils/plugins/fetchTelemetry.ts,utils,covered-by-rust-equivalent,utils/fetchTelemetry
+utils/plugins/fetchTelemetry.ts,utils,intentionally-omitted/local-first,intentionally omitted; local-first privacy rationale; see docs/adr/0001-telemetry-experiments-omission.md
 utils/plugins/gitAvailability.ts,utils,covered-by-rust-equivalent,utils/gitAvailability
 utils/plugins/headlessPluginInstall.ts,utils,covered-by-rust-equivalent,utils/headlessPluginInstall
 utils/plugins/hintRecommendation.ts,utils,covered-by-rust-equivalent,utils/hintRecommendation
@@ -1842,16 +1842,16 @@ utils/teamMemoryOps.ts,utils,covered-by-rust-equivalent,utils/teamMemoryOps
 utils/teammate.ts,utils,covered-by-rust-equivalent,utils/teammate
 utils/teammateContext.ts,utils,covered-by-rust-equivalent,utils/teammateContext
 utils/teammateMailbox.ts,utils,covered-by-rust-equivalent,utils/teammateMailbox
-utils/telemetry/betaSessionTracing.ts,utils,covered-by-rust-equivalent,utils/betaSessionTracing
-utils/telemetry/bigqueryExporter.ts,utils,covered-by-rust-equivalent,utils/bigqueryExporter
-utils/telemetry/events.ts,utils,covered-by-rust-equivalent,utils/events
-utils/telemetry/instrumentation.ts,utils,external-service-blocked,Requires external proprietary service/platform
-utils/telemetry/logger.ts,utils,external-service-blocked,Requires external proprietary service/platform
-utils/telemetry/perfettoTracing.ts,utils,external-service-blocked,Requires external proprietary service/platform
-utils/telemetry/pluginTelemetry.ts,utils,covered-by-rust-equivalent,utils/pluginTelemetry
-utils/telemetry/sessionTracing.ts,utils,covered-by-rust-equivalent,utils/sessionTracing
-utils/telemetry/skillLoadedEvent.ts,utils,covered-by-rust-equivalent,utils/skillLoadedEvent
-utils/telemetryAttributes.ts,utils,covered-by-rust-equivalent,utils/telemetryAttributes
+utils/telemetry/betaSessionTracing.ts,utils,intentionally-omitted/local-first,intentionally omitted; local-first privacy rationale; see docs/adr/0001-telemetry-experiments-omission.md
+utils/telemetry/bigqueryExporter.ts,utils,intentionally-omitted/local-first,intentionally omitted; local-first privacy rationale; see docs/adr/0001-telemetry-experiments-omission.md
+utils/telemetry/events.ts,utils,intentionally-omitted/local-first,intentionally omitted; local-first privacy rationale; see docs/adr/0001-telemetry-experiments-omission.md
+utils/telemetry/instrumentation.ts,utils,external-service-blocked,external service dependency; no Rust port; see docs/adr/0001-telemetry-experiments-omission.md
+utils/telemetry/logger.ts,utils,external-service-blocked,external service dependency; no Rust port; see docs/adr/0001-telemetry-experiments-omission.md
+utils/telemetry/perfettoTracing.ts,utils,external-service-blocked,external service dependency; no Rust port; see docs/adr/0001-telemetry-experiments-omission.md
+utils/telemetry/pluginTelemetry.ts,utils,intentionally-omitted/local-first,intentionally omitted; local-first privacy rationale; see docs/adr/0001-telemetry-experiments-omission.md
+utils/telemetry/sessionTracing.ts,utils,intentionally-omitted/local-first,intentionally omitted; local-first privacy rationale; see docs/adr/0001-telemetry-experiments-omission.md
+utils/telemetry/skillLoadedEvent.ts,utils,intentionally-omitted/local-first,intentionally omitted; local-first privacy rationale; see docs/adr/0001-telemetry-experiments-omission.md
+utils/telemetryAttributes.ts,utils,intentionally-omitted/local-first,intentionally omitted; local-first privacy rationale; see docs/adr/0001-telemetry-experiments-omission.md
 utils/teleport/api.ts,utils,external-service-blocked,Requires external proprietary service/platform
 utils/teleport/environmentSelection.ts,utils,covered-by-rust-equivalent,utils/environmentSelection
 utils/teleport/environments.ts,utils,external-service-blocked,Requires external proprietary service/platform
