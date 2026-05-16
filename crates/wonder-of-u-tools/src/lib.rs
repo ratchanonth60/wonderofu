@@ -95,7 +95,7 @@ pub use task_tools::{
     TaskUpdateStatus, TaskUpdateTool,
 };
 /// Re-exports items from `todo_tool`
-pub use todo_tool::{TodoAction, TodoInput, TodoTool};
+pub use todo_tool::{TodoAction, TodoInput, TodoTool, TodoWriteTool};
 /// Re-exports items from `web`
 pub use web::{WebFetchInput, WebFetchTool, WebSearchInput, WebSearchTool};
 /// Re-exports items from `wonder_of_u_mcp`
@@ -145,6 +145,7 @@ pub fn builtin_tools() -> Vec<Arc<dyn Tool>> {
         Arc::new(WebFetchTool),
         Arc::new(WebSearchTool),
         Arc::new(TodoTool),
+        Arc::new(TodoWriteTool),
         Arc::new(AskUserTool),
         Arc::new(BriefTool),
         Arc::new(PlanReadTool),
@@ -338,6 +339,7 @@ mod tests {
                 "web_fetch",
                 "web_search",
                 "todo",
+                "todo_write",
                 "ask_user",
                 "send_user_message",
                 "plan_read",
@@ -564,8 +566,15 @@ mod tests {
         assert_eq!(list_peers.aliases, vec!["ListPeers".to_string()]);
 
         let todo = specs.get("todo").expect("todo");
-        assert_eq!(todo.aliases, vec!["TodoWrite".to_string()]);
+        assert!(todo.aliases.is_empty());
         assert!(has_property(todo, "todos"));
+
+        let todo_write = specs.get("todo_write").expect("todo_write");
+        assert_eq!(todo_write.aliases, vec!["TodoWrite".to_string()]);
+        assert_eq!(
+            required_properties(todo_write),
+            BTreeSet::from(["todos".into()])
+        );
 
         let ask_user = specs.get("ask_user").expect("ask_user");
         assert_eq!(ask_user.aliases, vec!["AskUserQuestion".to_string()]);
@@ -722,8 +731,32 @@ mod tests {
             .collect::<BTreeMap<_, _>>();
 
         assert_eq!(
+            feature_names(specs.get("todo_write").expect("todo_write")),
+            BTreeSet::from(["legacy-todo-write".to_string(), "tools".to_string()])
+        );
+        assert_eq!(
+            feature_names(specs.get("task_create").expect("task_create")),
+            BTreeSet::from(["todo-v2".to_string(), "tools".to_string()])
+        );
+        assert_eq!(
+            feature_names(specs.get("task_get").expect("task_get")),
+            BTreeSet::from(["todo-v2".to_string(), "tools".to_string()])
+        );
+        assert_eq!(
+            feature_names(specs.get("task_list").expect("task_list")),
+            BTreeSet::from(["todo-v2".to_string(), "tools".to_string()])
+        );
+        assert_eq!(
+            feature_names(specs.get("task_update").expect("task_update")),
+            BTreeSet::from(["todo-v2".to_string(), "tools".to_string()])
+        );
+        assert_eq!(
             feature_names(specs.get("web_fetch").expect("web_fetch")),
             BTreeSet::from(["tools".to_string(), "web-tools".to_string()])
+        );
+        assert_eq!(
+            feature_names(specs.get("todo").expect("todo")),
+            BTreeSet::from(["tools".to_string()])
         );
         assert_eq!(
             feature_names(specs.get("task_output").expect("task_output")),
@@ -776,7 +809,7 @@ mod tests {
     }
 
     #[test]
-    fn builtin_specs_gate_remote_trigger_until_feature_is_enabled() {
+    fn builtin_specs_gate_remote_trigger_and_todo_v2_tooling_until_features_are_enabled() {
         let registry = builtin_registry().expect("registry");
 
         let default_enabled = registry
@@ -784,17 +817,29 @@ mod tests {
             .into_iter()
             .map(|spec| spec.name)
             .collect::<BTreeSet<_>>();
+        assert!(default_enabled.contains("todo_write"));
+        assert!(!default_enabled.contains("task_create"));
+        assert!(!default_enabled.contains("task_get"));
+        assert!(!default_enabled.contains("task_list"));
+        assert!(!default_enabled.contains("task_update"));
         assert!(!default_enabled.contains("remote_trigger"));
         assert!(!default_enabled.contains("testing_permission"));
 
         let mut features = FeatureSet::first_release();
         features.enable(FeatureFlag::RemoteTriggers);
         features.enable(FeatureFlag::TestTools);
+        features.enable(FeatureFlag::TodoV2);
+        features.disable(FeatureFlag::LegacyTodoWrite);
         let enabled = registry
             .enabled_specs(&features)
             .into_iter()
             .map(|spec| spec.name)
             .collect::<BTreeSet<_>>();
+        assert!(!enabled.contains("todo_write"));
+        assert!(enabled.contains("task_create"));
+        assert!(enabled.contains("task_get"));
+        assert!(enabled.contains("task_list"));
+        assert!(enabled.contains("task_update"));
         assert!(enabled.contains("remote_trigger"));
         assert!(enabled.contains("testing_permission"));
     }
