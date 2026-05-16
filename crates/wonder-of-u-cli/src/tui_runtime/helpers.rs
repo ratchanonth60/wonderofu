@@ -433,7 +433,6 @@ pub(super) fn global_search_cursor_position(
     view: &ShellView,
     query_cursor: usize,
 ) -> (u16, u16) {
-    const MIN_PROMPT_HEIGHT: u16 = 4;
     const MIN_PROMPT_CAP_HEIGHT: u16 = 6;
 
     let main_width = wonder_of_u_tui::shell_main_area_width(width, view.sidebar.is_some());
