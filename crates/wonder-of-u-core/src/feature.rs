@@ -5,6 +5,14 @@ use serde::{Deserialize, Serialize};
 use crate::{Result, WonderError};
 
 /// Coarse feature switches used to filter commands, tools, and UI surfaces.
+///
+/// # Telemetry and remote experiments
+///
+/// This crate does **not** contain telemetry, analytics event emission, or
+/// remote experiment evaluation.  There is no Datadog sink, no first-party
+/// usage pipeline, and no GrowthBook SDK.  All feature gates are resolved
+/// statically from a [`FeatureSet`] value constructed at startup — no network
+/// calls are made to determine which features are enabled.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum FeatureFlag {
