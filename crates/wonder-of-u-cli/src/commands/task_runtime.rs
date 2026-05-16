@@ -46,6 +46,7 @@ pub(crate) struct AgentTaskLaunch {
     pub model: Option<String>,
     pub cwd: PathBuf,
     pub fleet_id: Option<FleetId>,
+    pub allowed_tools: Option<Vec<String>>,
 }
 
 #[cfg_attr(not(test), allow(dead_code))]
@@ -738,6 +739,12 @@ fn agent_prompt_command(storage_dir: &Path, launch: &AgentTaskLaunch) -> Result<
         tokens.push("--model".into());
         tokens.push(model.clone());
     }
+    if let Some(allowed_tools) = &launch.allowed_tools
+        && !allowed_tools.is_empty()
+    {
+        tokens.push("--allowed-tools".into());
+        tokens.push(allowed_tools.join(","));
+    }
     tokens.push(launch.prompt.clone());
     Ok(shell_words::join(tokens.iter().map(String::as_str)))
 }
@@ -1122,6 +1129,7 @@ mod tests {
                 model: Some("gpt-4.1".into()),
                 cwd: dir.clone(),
                 fleet_id: Some(fleet_id),
+                allowed_tools: Some(vec!["bash".into(), "file_read".into()]),
             })
             .expect("start agent task");
 
@@ -1146,6 +1154,11 @@ mod tests {
             task.command
                 .as_deref()
                 .is_some_and(|command| command.contains("--provider openai"))
+        );
+        assert!(
+            task.command
+                .as_deref()
+                .is_some_and(|command| command.contains("--allowed-tools bash,file_read"))
         );
 
         let mut final_task = manager.get_task(task.id).expect("agent snapshot");
@@ -1187,6 +1200,7 @@ mod tests {
                 model: Some("gpt-4.1".into()),
                 cwd: dir.clone(),
                 fleet_id: None,
+                allowed_tools: None,
             })
             .expect("start agent task");
 

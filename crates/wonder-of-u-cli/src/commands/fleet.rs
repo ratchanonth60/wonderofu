@@ -31,8 +31,8 @@ use clap::{Args, Parser, Subcommand};
 use wonder_of_u_agent::{ProviderResolver, ProviderStatusReport};
 use wonder_of_u_core::{
     Command, CommandContext, CommandInvocation, CommandKind, CommandOutput, CommandSpec,
-    FeatureFlag, FleetId, FleetMemberRequest, FleetRoleCatalog, FleetRunState, FleetRunStatus,
-    Result, TaskId, TaskStatus, WonderError,
+    FeatureFlag, FleetAgentRole, FleetId, FleetMemberRequest, FleetRoleCatalog, FleetRunState,
+    FleetRunStatus, Result, TaskId, TaskStatus, WonderError,
 };
 use wonder_of_u_storage::FleetStore;
 
@@ -279,6 +279,9 @@ impl FleetCommand {
                 model: args.model.or(report.model),
                 cwd,
                 fleet_id: Some(run.id),
+                allowed_tools: resolved_role
+                    .as_ref()
+                    .and_then(role_allowed_tools_for_launch),
             })?;
             run.member_task_ids.push(task.id);
             run.status = FleetRunStatus::Running;
@@ -566,16 +569,24 @@ fn dispatch_one(
     let cwd = req.cwd.clone().unwrap_or_else(|| context.cwd.clone());
 
     // Apply role preamble when a role id is stored on the request.
-    let prompt = if let Some(ref role_id) = req.role {
+    let (prompt, allowed_tools) = if let Some(ref role_id) = req.role {
         let catalog = FleetRoleCatalog::builtin();
-        if let Some(role) = catalog.get(role_id) {
-            role.compose_prompt(&req.prompt)
-        } else {
-            // Unknown role id — fall back gracefully to the bare prompt.
-            req.prompt.clone()
-        }
+        let role = catalog
+            .get(role_id)
+            .or_else(|| catalog.resolve_alias(role_id));
+        let role = role.ok_or_else(|| {
+            WonderError::validation(format!(
+                "unknown fleet role `{role_id}` in pending request {}; known roles: {}",
+                req.id,
+                catalog.known_ids_display()
+            ))
+        })?;
+        (
+            role.compose_prompt(&req.prompt),
+            role_allowed_tools_for_launch(role),
+        )
     } else {
-        req.prompt.clone()
+        (req.prompt.clone(), None)
     };
 
     let task = manager.start_agent_task(AgentTaskLaunch {
@@ -589,6 +600,7 @@ fn dispatch_one(
         model: req.model.clone().or_else(|| report.model.clone()),
         cwd,
         fleet_id: req.fleet_id,
+        allowed_tools,
     })?;
 
     store.delete_pending_request(&req.id)?;
@@ -632,6 +644,10 @@ fn request_name_fallback(request_id: &str) -> String {
     } else {
         prefix
     }
+}
+
+fn role_allowed_tools_for_launch(role: &FleetAgentRole) -> Option<Vec<String>> {
+    (!role.allowed_tools.is_empty()).then(|| role.allowed_tools.clone())
 }
 
 fn sanitize_line(value: &str) -> String {
@@ -738,6 +754,36 @@ mod tests {
     }
 
     #[test]
+    fn fleet_dispatch_unknown_role_reports_error_without_deleting_request() {
+        let dir = unique_test_dir("fleet-cmd-dispatch-bad-role");
+        let store = FleetStore::new(&dir);
+        let mut request = FleetMemberRequest::new("inspect the repo");
+        request.role = Some("missing-role".into());
+        let request_id = request.id.clone();
+        store.queue_member_request(&request).expect("queue");
+
+        let cmd = make_fleet_command(&dir);
+        let output = futures::executor::block_on(
+            cmd.execute(stub_context(dir.clone()), invocation("dispatch")),
+        )
+        .expect("execute");
+
+        let text = match output {
+            CommandOutput::Text(t) => t,
+            other => panic!("unexpected: {other:?}"),
+        };
+        assert!(text.contains("fleet_dispatch_errors=1"), "got: {text}");
+        assert!(
+            text.contains("unknown fleet role `missing-role`"),
+            "got: {text}"
+        );
+        assert!(
+            store.read_pending_request(&request_id).is_ok(),
+            "failed dispatch should leave pending request for inspection or retry"
+        );
+    }
+
+    #[test]
     fn fleet_list_shows_stored_runs() {
         let dir = unique_test_dir("fleet-cmd-list");
         let store = FleetStore::new(&dir);
@@ -785,6 +831,19 @@ mod tests {
         assert_eq!(request_name_fallback("abcdef123456"), "abcdef12");
         assert_eq!(request_name_fallback("abc"), "abc");
         assert_eq!(request_name_fallback(""), "agent");
+    }
+
+    #[test]
+    fn role_allowed_tools_for_launch_uses_builtin_tool_names() {
+        let catalog = FleetRoleCatalog::builtin();
+        let role = catalog.get("rust-architect").expect("role");
+        let tools = role_allowed_tools_for_launch(role).expect("allowed tools");
+
+        assert!(tools.contains(&"bash".to_string()));
+        assert!(tools.contains(&"file_read".to_string()));
+        assert!(tools.contains(&"glob".to_string()));
+        assert!(tools.contains(&"grep".to_string()));
+        assert!(!tools.contains(&"file_write".to_string()));
     }
 
     // ── Role catalog CLI tests ────────────────────────────────────────────────

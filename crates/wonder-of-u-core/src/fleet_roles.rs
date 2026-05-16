@@ -273,7 +273,7 @@ fn builtin_roles() -> Vec<FleetAgentRole> {
              `&str`/`&[T]` over owned types where possible. Run `cargo check` and \
              `cargo test` after every change. Never add `unsafe` without explicit \
              approval and a `// SAFETY:` comment.",
-            &["bash", "read_file", "write_file", "search_files"],
+            &["bash", "file_read", "file_write", "glob", "grep"],
         ),
         (
             "rust-tester",
@@ -285,7 +285,7 @@ fn builtin_roles() -> Vec<FleetAgentRole> {
              under test. Place integration tests under `<crate>/tests/`. \
              Reuse helpers from `wonder-of-u-test-support`. \
              Cover at least one happy path and one failure/edge case per item.",
-            &["bash", "read_file", "write_file", "search_files"],
+            &["bash", "file_read", "file_write", "glob", "grep"],
         ),
         (
             "rust-architect",
@@ -296,7 +296,7 @@ fn builtin_roles() -> Vec<FleetAgentRole> {
              and long-lived data model decisions. Prefer additive changes; \
              flag breaking changes explicitly. \
              Produce a structured design proposal before writing any code.",
-            &["bash", "read_file", "search_files"],
+            &["bash", "file_read", "glob", "grep"],
         ),
         (
             "rust-refactor",
@@ -306,7 +306,7 @@ fn builtin_roles() -> Vec<FleetAgentRole> {
              Improve code clarity and idiomatic style without changing observable \
              behaviour. Consolidate duplicated logic, extract helpers, and remove \
              dead code. All existing tests must continue to pass after your changes.",
-            &["bash", "read_file", "write_file", "search_files"],
+            &["bash", "file_read", "file_write", "glob", "grep"],
         ),
         (
             "rust-optimizer",
@@ -318,7 +318,7 @@ fn builtin_roles() -> Vec<FleetAgentRole> {
              Identify bottlenecks (allocations, clones, lock contention, async \
              stalls), apply the smallest effective change, and report before/after \
              numbers. Never sacrifice correctness or safety for speed.",
-            &["bash", "read_file", "write_file", "search_files"],
+            &["bash", "file_read", "file_write", "glob", "grep"],
         ),
         (
             "rust-documenter",
@@ -329,7 +329,7 @@ fn builtin_roles() -> Vec<FleetAgentRole> {
              short summary first, followed by `# Examples` where they add value. \
              Use `//!` for module-level docs. Avoid filler comments that restate \
              the code. Do not change any logic — documentation only.",
-            &["bash", "read_file", "write_file", "search_files"],
+            &["bash", "file_read", "file_write", "glob", "grep"],
         ),
         (
             "tui-designer",
@@ -340,7 +340,7 @@ fn builtin_roles() -> Vec<FleetAgentRole> {
              layouts. Minimise flicker by batching state changes. Follow the \
              existing widget and theme conventions in `wonder-of-u-tui`. \
              Propose a sketch of the component tree before writing code.",
-            &["bash", "read_file", "write_file", "search_files"],
+            &["bash", "file_read", "file_write", "glob", "grep"],
         ),
         (
             "rubber-duck",
@@ -351,7 +351,7 @@ fn builtin_roles() -> Vec<FleetAgentRole> {
              hidden assumptions, and help the user reason through the problem. \
              Restate what you understand after each explanation so the user can \
              correct misunderstandings.",
-            &["read_file", "search_files"],
+            &["file_read", "glob", "grep"],
         ),
         (
             "code-reviewer",
@@ -362,7 +362,7 @@ fn builtin_roles() -> Vec<FleetAgentRole> {
              potential panics or unsafe usage, test coverage gaps, and obvious \
              security issues. Structure your feedback as numbered findings with \
              severity (Critical / Major / Minor / Nit) and suggested fix.",
-            &["bash", "read_file", "search_files"],
+            &["bash", "file_read", "glob", "grep"],
         ),
     ];
 
