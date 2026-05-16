@@ -14,7 +14,10 @@ use wonder_of_u_core::{
     WonderError,
 };
 
-use crate::{McpCatalog, McpClient, McpConfigStore, McpResourceContents, McpResourceRegistration};
+use crate::{
+    CallToolResult, McpCatalog, McpClient, McpConfigStore, McpResourceContents,
+    McpResourceRegistration, McpToolRegistration,
+};
 /// Represents mcp resource list input
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -326,6 +329,131 @@ fn format_resource_contents(contents: &[McpResourceContents]) -> String {
         })
         .collect::<Vec<_>>()
         .join("\n\n")
+}
+
+/// A live MCP tool discovered from a running server.
+///
+/// Created by [`crate::discover_catalog_tools`] for each tool advertised by an enabled MCP
+/// server.  The qualified name (e.g. `mcp__github__create_issue`) is already baked into the
+/// spec, so the model calls it directly — no generic wrapper needed.
+///
+/// # Dispatch
+///
+/// On execution the tool re-reads the MCP config from `WONDER_OF_U_STORAGE_DIR` (or the
+/// XDG / HOME fallbacks), connects a fresh `McpClient`, and forwards the call.  The config
+/// read happens *per execution* so that server enable/disable changes take effect without
+/// restarting the session.
+#[derive(Clone, Debug)]
+pub struct DynamicMcpTool {
+    spec: ToolSpec,
+    server_name: String,
+    /// Raw tool name as the server advertised it (used in `tools/call`).
+    raw_tool_name: String,
+}
+
+impl DynamicMcpTool {
+    /// Builds a `DynamicMcpTool` from a catalog registration.
+    #[must_use]
+    pub fn from_registration(registration: &McpToolRegistration) -> Self {
+        Self {
+            spec: registration.tool_spec(),
+            server_name: registration.server_name.clone(),
+            raw_tool_name: registration.tool.name.clone(),
+        }
+    }
+
+    /// Returns the name of the MCP server this tool belongs to.
+    #[must_use]
+    pub fn server_name(&self) -> &str {
+        &self.server_name
+    }
+}
+
+#[async_trait]
+impl Tool for DynamicMcpTool {
+    fn spec(&self) -> ToolSpec {
+        self.spec.clone()
+    }
+
+    fn validate_input(&self, input: &Value) -> Result<()> {
+        if input.is_object() {
+            Ok(())
+        } else {
+            Err(WonderError::validation(format!(
+                "{}: input must be a JSON object",
+                self.spec.name
+            )))
+        }
+    }
+
+    async fn execute(
+        &self,
+        _context: ToolContext,
+        use_id: ToolUseId,
+        input: Value,
+    ) -> Result<ToolResult> {
+        let storage_root = storage_root()?;
+        let config = McpConfigStore::new(&storage_root).read()?;
+
+        let Some(server) = config.server(&self.server_name) else {
+            return Ok(ToolResult::failure(
+                use_id,
+                format!(
+                    "mcp server `{}` is not configured; add it with `mcp add`",
+                    self.server_name
+                ),
+            ));
+        };
+
+        if !server.enabled {
+            return Ok(ToolResult::failure(
+                use_id,
+                format!(
+                    "mcp server `{}` is disabled; enable it with `mcp enable {}`",
+                    self.server_name, self.server_name
+                ),
+            ));
+        }
+
+        let mut client = McpClient::connect(server, &config.client, &config.protocol_version)?;
+        let call_result = client.call_tool(&self.raw_tool_name, input)?;
+        let content = format_call_result(&call_result);
+
+        let mut result = if call_result.is_error {
+            ToolResult::failure(
+                use_id,
+                if content.is_empty() {
+                    format!(
+                        "mcp tool `{}` on `{}` returned an error",
+                        self.raw_tool_name, self.server_name
+                    )
+                } else {
+                    content
+                },
+            )
+        } else {
+            ToolResult::success(use_id, content)
+        };
+
+        result.metadata = serde_json::json!({
+            "tool": self.spec.name,
+            "server": self.server_name,
+            "tool_name": self.raw_tool_name,
+            "is_error": call_result.is_error,
+            "content_items": call_result.content.len(),
+        });
+        Ok(result)
+    }
+}
+
+/// Joins all `text`-typed content items from a `CallToolResult` into a single string.
+fn format_call_result(result: &CallToolResult) -> String {
+    result
+        .content
+        .iter()
+        .filter_map(|item| item.text.as_deref())
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 fn storage_root() -> Result<PathBuf> {

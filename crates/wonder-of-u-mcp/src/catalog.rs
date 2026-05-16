@@ -1,6 +1,6 @@
 use wonder_of_u_core::{ToolKind, ToolSource, ToolSpec};
 
-use crate::{McpResource, McpTool, build_mcp_resource_name, build_mcp_tool_name};
+use crate::{McpConfig, McpResource, McpTool, build_mcp_resource_name, build_mcp_tool_name};
 /// Stores mcp catalog
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct McpCatalog {
@@ -95,6 +95,37 @@ impl McpResourceRegistration {
             resource,
         }
     }
+}
+
+/// Discovers all [`DynamicMcpTool`] instances for every tool on every enabled server.
+///
+/// Each enabled server is contacted once: tools it advertises become individual
+/// [`DynamicMcpTool`] entries with namespaced names (e.g. `mcp__github__create_issue`).
+/// Servers that fail to connect or return an error are **silently skipped** — a single
+/// bad server must not prevent the rest from loading.  Use `mcp status` to diagnose
+/// unreachable servers.
+///
+/// [`DynamicMcpTool`]: crate::DynamicMcpTool
+#[must_use]
+pub fn discover_catalog_tools(config: &McpConfig) -> Vec<crate::DynamicMcpTool> {
+    use crate::{DynamicMcpTool, McpClient};
+
+    config
+        .servers
+        .iter()
+        .filter(|server| server.enabled)
+        .flat_map(|server| {
+            match McpClient::discover_server(server, &config.client, &config.protocol_version) {
+                Ok((_, catalog)) => catalog
+                    .tools
+                    .iter()
+                    .map(DynamicMcpTool::from_registration)
+                    .collect::<Vec<_>>(),
+                // Skip unreachable or misconfigured servers.
+                Err(_) => Vec::new(),
+            }
+        })
+        .collect()
 }
 
 #[cfg(test)]

@@ -183,6 +183,27 @@ pub fn builtin_registry() -> Result<ToolRegistry> {
     Ok(registry)
 }
 
+/// Builds the built-in registry and registers any MCP catalog tools discovered from
+/// enabled servers under `storage_root`.
+///
+/// Each enabled MCP server is contacted once to fetch its tool list.  Servers that fail
+/// to connect are silently skipped so a misconfigured server does not break the session.
+/// Discovered tools use namespaced names (e.g. `mcp__github__create_issue`) and therefore
+/// cannot shadow built-in tools.
+///
+/// If `storage_root` contains no MCP config, or if all servers are unreachable, the
+/// returned registry is identical to [`builtin_registry`].
+pub fn builtin_registry_with_mcp_catalog(storage_root: &Path) -> Result<ToolRegistry> {
+    let mut registry = builtin_registry()?;
+    if let Ok(config) = wonder_of_u_mcp::McpConfigStore::new(storage_root).read() {
+        for tool in wonder_of_u_mcp::discover_catalog_tools(&config) {
+            // Namespacing guarantees no collisions with built-ins; soft-fail just in case.
+            let _ = registry.register(Arc::new(tool));
+        }
+    }
+    Ok(registry)
+}
+
 fn base_spec(name: &str, description: &str, kind: ToolKind) -> ToolSpec {
     let mut spec = ToolSpec::new(name, description, kind);
     spec.required_features.insert(FeatureFlag::Tools);
@@ -879,5 +900,22 @@ mod tests {
             .map(|feature| serde_json::to_string(feature).expect("feature json"))
             .map(|feature| feature.trim_matches('"').to_string())
             .collect()
+    }
+
+    /// A nonexistent storage root must not panic; it should return only the
+    /// built-in tools because `McpConfigStore` will find no config file.
+    #[test]
+    fn builtin_registry_with_mcp_catalog_no_panic_for_missing_dir() {
+        let result = builtin_registry_with_mcp_catalog(Path::new("/no/such/storage/root"));
+        let registry = result.expect("registry should succeed even without mcp config");
+        // Every built-in should still be present.
+        assert!(
+            registry.resolve("bash").is_some(),
+            "bash tool must be present"
+        );
+        assert!(
+            registry.resolve("file_read").is_some(),
+            "file_read tool must be present"
+        );
     }
 }

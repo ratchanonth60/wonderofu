@@ -10,7 +10,9 @@ mod tools;
 mod types;
 
 /// Re-exports items from `catalog`
-pub use catalog::{McpCatalog, McpResourceRegistration, McpToolRegistration};
+pub use catalog::{
+    McpCatalog, McpResourceRegistration, McpToolRegistration, discover_catalog_tools,
+};
 /// Re-exports items from `client`
 pub use client::McpClient;
 /// Re-exports items from `config`
@@ -24,7 +26,8 @@ pub use names::{build_mcp_resource_name, build_mcp_tool_name, normalize_mcp_name
 pub use status::{McpServerState, McpServerStatus, McpStatusReport};
 /// Re-exports items from `tools`
 pub use tools::{
-    McpResourceListInput, McpResourceListTool, McpResourceReadInput, McpResourceReadTool,
+    DynamicMcpTool, McpResourceListInput, McpResourceListTool, McpResourceReadInput,
+    McpResourceReadTool,
 };
 /// Re-exports items from `types`
 pub use types::{

@@ -25,7 +25,7 @@ use ratatui::{
 use wonder_of_u_agent::{
     CompletionRequest, CredentialStore, ProviderRegistry, ProviderResolver, ProviderRuntime,
     ProviderSelection, ProviderToolCall, ProviderToolResultMessage, ProviderToolSpec,
-    SettingsStore, ToolConversationRound, ToolUseRequest, ToolUseResponse, builtin_tool_registry,
+    SettingsStore, ToolConversationRound, ToolUseRequest, ToolUseResponse,
     poll_copilot_access_token, request_copilot_device_code,
 };
 use wonder_of_u_core::{

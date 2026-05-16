@@ -904,7 +904,10 @@ impl<'a> TuiController<'a> {
             resolved.auth_state(),
         );
 
-        let registry = builtin_tool_registry()?;
+        let registry = match self.storage_dir.as_deref() {
+            Some(root) => wonder_of_u_tools::builtin_registry_with_mcp_catalog(root),
+            None => wonder_of_u_tools::builtin_registry(),
+        }?;
         let tool_context = self.tool_context();
         let provider_tools = provider_tool_specs(&registry, &tool_context, None)
             .into_iter()
@@ -1076,7 +1079,10 @@ impl<'a> TuiController<'a> {
     where
         F: FnMut(&Self) -> Result<()>,
     {
-        let registry = builtin_tool_registry()?;
+        let registry = match self.storage_dir.as_deref() {
+            Some(root) => wonder_of_u_tools::builtin_registry_with_mcp_catalog(root),
+            None => wonder_of_u_tools::builtin_registry(),
+        }?;
         let tool_context = self.tool_context();
 
         for iteration in rounds.len()..MAX_TOOL_LOOP_ITERATIONS {
@@ -1387,7 +1393,10 @@ impl<'a> TuiController<'a> {
         F: FnMut(&Self) -> Result<()>,
     {
         self.state.pending_tool_approval = None;
-        let registry = builtin_tool_registry()?;
+        let registry = match self.storage_dir.as_deref() {
+            Some(root) => wonder_of_u_tools::builtin_registry_with_mcp_catalog(root),
+            None => wonder_of_u_tools::builtin_registry(),
+        }?;
         let tool_context = self.tool_context();
         let provider_tools = provider_tool_specs(&registry, &tool_context, None)
             .into_iter()
@@ -2682,7 +2691,7 @@ impl<'a> TuiController<'a> {
     pub(super) fn refresh_sidebar_panel_cache(&mut self) -> bool {
         let tool_context = self.tool_context();
         let next = SidebarPanelCache {
-            tool_lines: tool_sidebar_lines(&tool_context),
+            tool_lines: tool_sidebar_lines(&tool_context, self.storage_dir.as_deref()),
             mcp_lines: mcp_sidebar_lines(self.storage_dir.as_deref()),
             lsp_lines: lsp_sidebar_lines(&self.state.session.cwd),
             todo_lines: todo_sidebar_lines(&self.state.session.cwd),
@@ -4934,10 +4943,19 @@ pub(super) const LSP_SERVERS: &[(&str, &str)] = &[
 /// Shows `N enabled / M registered` on the first line, then a breakdown of
 /// enabled tools by [`ToolKind`].  Falls back to an error line if the registry
 /// cannot be built.
-pub(super) fn tool_sidebar_lines(context: &ToolContext) -> Vec<String> {
-    let registry = match builtin_tool_registry() {
-        Ok(r) => r,
-        Err(e) => return vec![format!("⚠ tools unavailable: {e}")],
+///
+/// When `storage_dir` is `Some`, MCP catalog tools from enabled servers are
+/// included in the count (soft-fails per server).
+pub(super) fn tool_sidebar_lines(context: &ToolContext, storage_dir: Option<&Path>) -> Vec<String> {
+    let registry = {
+        let result = match storage_dir {
+            Some(root) => wonder_of_u_tools::builtin_registry_with_mcp_catalog(root),
+            None => wonder_of_u_tools::builtin_registry(),
+        };
+        match result {
+            Ok(r) => r,
+            Err(e) => return vec![format!("⚠ tools unavailable: {e}")],
+        }
     };
 
     let all_specs = registry.all_specs();
