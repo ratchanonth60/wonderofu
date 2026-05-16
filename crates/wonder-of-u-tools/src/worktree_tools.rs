@@ -471,10 +471,33 @@ pub fn create_fleet_agent_worktree(
     repository_root: &Path,
     slug: &str,
 ) -> wonder_of_u_core::Result<(PathBuf, String)> {
-    let (state, _resumed) = create_or_resume_worktree(original_cwd, repository_root, slug)?;
+    create_fleet_agent_worktree_with_branch(original_cwd, repository_root, slug, None)
+}
+
+/// Creates or resumes a git worktree for a fleet agent member using an explicit
+/// branch name while keeping the worktree path derived from `slug`.
+///
+/// This is intended for user-supplied fleet branch names: the branch is used
+/// exactly as provided, while the slug remains a filesystem-safe stable path
+/// identifier for the fleet member.
+///
+/// # Errors
+///
+/// Propagates validation, git, or filesystem errors.
+pub fn create_fleet_agent_worktree_with_branch(
+    original_cwd: &Path,
+    repository_root: &Path,
+    slug: &str,
+    branch: Option<&str>,
+) -> wonder_of_u_core::Result<(PathBuf, String)> {
+    if let Some(branch) = branch {
+        validate_worktree_branch_name(branch)?;
+    }
+    let (state, _resumed) =
+        create_or_resume_worktree_with_branch(original_cwd, repository_root, slug, branch)?;
     let branch = state
         .worktree_branch
-        .unwrap_or_else(|| worktree_branch_name(slug));
+        .unwrap_or_else(|| branch.map_or_else(|| worktree_branch_name(slug), str::to_string));
     Ok((state.worktree_path, branch))
 }
 
@@ -580,8 +603,18 @@ fn create_or_resume_worktree(
     repository_root: &Path,
     slug: &str,
 ) -> Result<(WorktreeSessionState, bool)> {
+    create_or_resume_worktree_with_branch(original_cwd, repository_root, slug, None)
+}
+
+fn create_or_resume_worktree_with_branch(
+    original_cwd: &Path,
+    repository_root: &Path,
+    slug: &str,
+    branch_override: Option<&str>,
+) -> Result<(WorktreeSessionState, bool)> {
     let worktree_path = worktree_path_for(repository_root, slug);
-    let worktree_branch = worktree_branch_name(slug);
+    let worktree_branch =
+        branch_override.map_or_else(|| worktree_branch_name(slug), str::to_string);
     let original_branch = get_current_branch(original_cwd).ok();
     let original_head_commit = git_stdout(repository_root, ["rev-parse", "HEAD"])?;
 
@@ -594,6 +627,14 @@ fn create_or_resume_worktree(
                 "refusing to reuse existing path {} because it is not a registered git worktree",
                 worktree_path.display()
             )));
+        }
+        if let Ok(actual_branch) = get_current_branch(&worktree_path) {
+            if actual_branch != worktree_branch {
+                return Err(WonderError::validation(format!(
+                    "refusing to reuse worktree {} because it is on branch `{actual_branch}` instead of `{worktree_branch}`",
+                    worktree_path.display()
+                )));
+            }
         }
         return Ok((
             WorktreeSessionState {
@@ -1289,5 +1330,31 @@ mod tests {
             worktree_list.contains(path1.to_string_lossy().as_ref()),
             "worktree should be registered: {worktree_list}"
         );
+    }
+
+    #[test]
+    fn create_fleet_agent_worktree_with_branch_preserves_explicit_branch() {
+        let repo = init_git_repo("tools-fleet-worktree-explicit-branch");
+        let slug = fleet_agent_worktree_slug(
+            "cccc2222-2222-2222-2222-222222222222",
+            "dddd3333-3333-3333-3333-333333333333",
+        );
+        let explicit_branch = "feat/fleet-member-explicit";
+
+        let (path, branch) =
+            create_fleet_agent_worktree_with_branch(&repo, &repo, &slug, Some(explicit_branch))
+                .expect("create explicit branch worktree");
+
+        assert!(path.exists(), "worktree path should exist");
+        assert_eq!(branch, explicit_branch);
+
+        let actual_branch = run_git(&path, ["branch", "--show-current"]);
+        assert_eq!(actual_branch.trim(), explicit_branch);
+
+        let (resumed_path, resumed_branch) =
+            create_fleet_agent_worktree_with_branch(&repo, &repo, &slug, Some(explicit_branch))
+                .expect("resume explicit branch worktree");
+        assert_eq!(resumed_path, path);
+        assert_eq!(resumed_branch, explicit_branch);
     }
 }
