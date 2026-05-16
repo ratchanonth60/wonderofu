@@ -42,8 +42,8 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 use wonder_of_u_core::{
-    AppState, CostState, MESSAGE_SCHEMA_VERSION, MessageEnvelope, MessageId, MessagePayload,
-    Result, SessionId, TaskId, TaskState, WonderError,
+    AppState, CostState, FleetId, FleetMemberRequest, FleetRunState, MESSAGE_SCHEMA_VERSION,
+    MessageEnvelope, MessageId, MessagePayload, Result, SessionId, TaskId, TaskState, WonderError,
 };
 
 /// Schema version for storage
@@ -306,6 +306,38 @@ impl StoragePaths {
     #[must_use]
     pub fn paste_path(&self, sha256: &str) -> PathBuf {
         self.pastes_dir().join(sha256)
+    }
+
+    // ── Fleet paths ───────────────────────────────────────────────────────────
+
+    /// Returns the root directory for fleet data.
+    #[must_use]
+    pub fn fleet_dir(&self) -> PathBuf {
+        self.base_dir.join("fleet")
+    }
+
+    /// Returns the directory where fleet run state files are stored.
+    #[must_use]
+    pub fn fleet_runs_dir(&self) -> PathBuf {
+        self.fleet_dir().join("runs")
+    }
+
+    /// Returns the directory where pending member request files are stored.
+    #[must_use]
+    pub fn fleet_pending_dir(&self) -> PathBuf {
+        self.fleet_dir().join("pending")
+    }
+
+    /// Returns the path for a fleet run state file.
+    #[must_use]
+    pub fn fleet_run_path(&self, fleet_id: wonder_of_u_core::FleetId) -> PathBuf {
+        self.fleet_runs_dir().join(format!("{fleet_id}.json"))
+    }
+
+    /// Returns the path for a pending fleet member request file.
+    #[must_use]
+    pub fn fleet_pending_path(&self, request_id: &str) -> PathBuf {
+        self.fleet_pending_dir().join(format!("{request_id}.json"))
     }
 }
 /// Stores transcript store
@@ -1258,6 +1290,249 @@ impl TaskStore {
             Err(error) if error.kind() == ErrorKind::NotFound => Ok(None),
             Err(error) => Err(error.into()),
         }
+    }
+}
+
+/// Persistent store for fleet runs and pending member requests.
+///
+/// Layout under the storage base directory:
+///
+/// ```text
+/// fleet/
+///   runs/{fleet_id}.json        ← FleetRunState records
+///   pending/{request_id}.json   ← FleetMemberRequest records awaiting dispatch
+/// ```
+#[derive(Clone, Debug)]
+pub struct FleetStore {
+    paths: StoragePaths,
+}
+
+impl FleetStore {
+    /// Creates a new `FleetStore` rooted at `base_dir`.
+    #[must_use]
+    pub fn new(base_dir: impl Into<PathBuf>) -> Self {
+        Self {
+            paths: StoragePaths::new(base_dir),
+        }
+    }
+
+    /// Returns the underlying path helper.
+    #[must_use]
+    pub fn paths(&self) -> &StoragePaths {
+        &self.paths
+    }
+
+    /// Creates `fleet/runs/` and `fleet/pending/` if they do not exist.
+    pub fn ensure_layout(&self) -> Result<()> {
+        fs::create_dir_all(self.paths.fleet_runs_dir())?;
+        fs::create_dir_all(self.paths.fleet_pending_dir())?;
+        Ok(())
+    }
+
+    // ── Run CRUD ─────────────────────────────────────────────────────────────
+
+    /// Atomically writes a [`FleetRunState`] to disk.
+    pub fn write_run(&self, run: &FleetRunState) -> Result<()> {
+        self.ensure_layout()?;
+        write_json_atomically(&self.paths.fleet_run_path(run.id), run)
+    }
+
+    /// Reads a [`FleetRunState`] by id.
+    pub fn read_run(&self, fleet_id: FleetId) -> Result<FleetRunState> {
+        let path = self.paths.fleet_run_path(fleet_id);
+        if !path.exists() {
+            return Err(WonderError::not_found("fleet run", fleet_id.to_string()));
+        }
+        let run: FleetRunState = serde_json::from_str(&fs::read_to_string(path)?)?;
+        ensure_supported_schema("fleet run", run.schema_version)?;
+        Ok(run)
+    }
+
+    /// Lists all stored fleet runs, sorted by `started_at` descending.
+    ///
+    /// Returns an empty list when the runs directory does not exist.
+    pub fn list_runs(&self) -> Result<Vec<FleetRunState>> {
+        let dir = self.paths.fleet_runs_dir();
+        match fs::read_dir(dir) {
+            Ok(entries) => {
+                let mut runs = Vec::new();
+                for entry in entries {
+                    let entry = entry?;
+                    if !entry.file_type()?.is_file() {
+                        continue;
+                    }
+                    if entry.path().extension().and_then(OsStr::to_str) != Some("json") {
+                        continue;
+                    }
+                    let run: FleetRunState =
+                        serde_json::from_str(&fs::read_to_string(entry.path())?)?;
+                    ensure_supported_schema("fleet run", run.schema_version)?;
+                    runs.push(run);
+                }
+                runs.sort_by(|a, b| {
+                    b.started_at
+                        .cmp(&a.started_at)
+                        .then_with(|| a.id.cmp(&b.id))
+                });
+                Ok(runs)
+            }
+            Err(error) if error.kind() == ErrorKind::NotFound => Ok(Vec::new()),
+            Err(error) => Err(error.into()),
+        }
+    }
+
+    // ── Pending requests ──────────────────────────────────────────────────────
+
+    /// Atomically writes a [`FleetMemberRequest`] to `fleet/pending/`.
+    pub fn queue_member_request(&self, request: &FleetMemberRequest) -> Result<()> {
+        self.ensure_layout()?;
+        write_json_atomically(&self.paths.fleet_pending_path(&request.id), request)
+    }
+
+    /// Reads a single pending request by its id.
+    pub fn read_pending_request(&self, request_id: &str) -> Result<FleetMemberRequest> {
+        let path = self.paths.fleet_pending_path(request_id);
+        if !path.exists() {
+            return Err(WonderError::not_found("fleet pending request", request_id));
+        }
+        Ok(serde_json::from_str(&fs::read_to_string(path)?)?)
+    }
+
+    /// Lists all pending requests, sorted by `queued_at` ascending (oldest
+    /// first so that `fleet dispatch` processes them in queue order).
+    ///
+    /// Returns an empty list when the pending directory does not exist.
+    pub fn list_pending_requests(&self) -> Result<Vec<FleetMemberRequest>> {
+        let dir = self.paths.fleet_pending_dir();
+        match fs::read_dir(dir) {
+            Ok(entries) => {
+                let mut requests = Vec::new();
+                for entry in entries {
+                    let entry = entry?;
+                    if !entry.file_type()?.is_file() {
+                        continue;
+                    }
+                    if entry.path().extension().and_then(OsStr::to_str) != Some("json") {
+                        continue;
+                    }
+                    let request: FleetMemberRequest =
+                        serde_json::from_str(&fs::read_to_string(entry.path())?)?;
+                    requests.push(request);
+                }
+                requests
+                    .sort_by(|a, b| a.queued_at.cmp(&b.queued_at).then_with(|| a.id.cmp(&b.id)));
+                Ok(requests)
+            }
+            Err(error) if error.kind() == ErrorKind::NotFound => Ok(Vec::new()),
+            Err(error) => Err(error.into()),
+        }
+    }
+
+    /// Deletes a pending request file after successful dispatch.
+    ///
+    /// Idempotent: if the file has already been removed this returns `Ok(())`.
+    pub fn delete_pending_request(&self, request_id: &str) -> Result<()> {
+        let path = self.paths.fleet_pending_path(request_id);
+        match fs::remove_file(&path) {
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(error.into()),
+        }
+    }
+}
+
+#[cfg(test)]
+mod fleet_store_tests {
+    use wonder_of_u_core::{FleetRunState, PermissionMode};
+    use wonder_of_u_test_support::unique_test_dir;
+
+    use super::*;
+
+    fn make_store(prefix: &str) -> FleetStore {
+        FleetStore::new(unique_test_dir(prefix))
+    }
+
+    #[test]
+    fn write_and_read_run() {
+        let store = make_store("fleet-write-read");
+        let run = FleetRunState::new("test fleet", PermissionMode::Default, None);
+        let id = run.id;
+        store.write_run(&run).expect("write");
+        let loaded = store.read_run(id).expect("read");
+        assert_eq!(loaded.id, id);
+        assert_eq!(loaded.description, "test fleet");
+    }
+
+    #[test]
+    fn list_runs_empty_when_dir_absent() {
+        let store = make_store("fleet-list-absent");
+        // Do not call ensure_layout so dirs never exist.
+        let runs = store.list_runs().expect("list");
+        assert!(runs.is_empty());
+    }
+
+    #[test]
+    fn list_runs_sorted_by_started_at_desc() {
+        let store = make_store("fleet-list-sorted");
+        for desc in ["alpha", "beta", "gamma"] {
+            let run = FleetRunState::new(desc, PermissionMode::Default, None);
+            store.write_run(&run).expect("write");
+        }
+        let runs = store.list_runs().expect("list");
+        assert_eq!(runs.len(), 3);
+        // Most recently started should come first.
+        for window in runs.windows(2) {
+            assert!(window[0].started_at >= window[1].started_at);
+        }
+    }
+
+    #[test]
+    fn queue_and_list_pending_requests() {
+        let store = make_store("fleet-pending-queue");
+        let req = FleetMemberRequest::new("do the thing");
+        let id = req.id.clone();
+        store.queue_member_request(&req).expect("queue");
+        let pending = store.list_pending_requests().expect("list");
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].id, id);
+        assert_eq!(pending[0].prompt, "do the thing");
+    }
+
+    #[test]
+    fn list_pending_empty_when_dir_absent() {
+        let store = make_store("fleet-pending-absent");
+        let pending = store.list_pending_requests().expect("list");
+        assert!(pending.is_empty());
+    }
+
+    #[test]
+    fn delete_pending_request_removes_file() {
+        let store = make_store("fleet-pending-delete");
+        let req = FleetMemberRequest::new("ephemeral");
+        let id = req.id.clone();
+        store.queue_member_request(&req).expect("queue");
+        assert_eq!(store.list_pending_requests().expect("list").len(), 1);
+        store.delete_pending_request(&id).expect("delete");
+        assert!(store.list_pending_requests().expect("list").is_empty());
+    }
+
+    #[test]
+    fn delete_nonexistent_pending_request_is_idempotent() {
+        let store = make_store("fleet-pending-delete-idempotent");
+        store.ensure_layout().expect("layout");
+        // Should not error.
+        store
+            .delete_pending_request("00000000-0000-0000-0000-000000000000")
+            .expect("idempotent delete");
+    }
+
+    #[test]
+    fn read_missing_run_returns_not_found() {
+        let store = make_store("fleet-read-missing");
+        store.ensure_layout().expect("layout");
+        let fleet_id = FleetId::new();
+        let err = store.read_run(fleet_id).expect_err("missing");
+        assert!(err.to_string().contains("not found"));
     }
 }
 /// Stores paste store

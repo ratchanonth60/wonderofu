@@ -9,7 +9,7 @@ use serde_json::Value;
 use time::OffsetDateTime;
 
 use crate::{
-    AdditionalWorkingDirectory, AuthState, FeatureSet, MessageEnvelope, PermissionMode,
+    AdditionalWorkingDirectory, AuthState, FeatureSet, FleetId, MessageEnvelope, PermissionMode,
     ProviderReadiness, Result, SessionId, TaskId, ToolUseId, WonderError,
 };
 /// Represents token usage
@@ -623,6 +623,12 @@ pub struct TaskState {
     pub description: String,
     /// Stores the status
     pub status: TaskStatus,
+    /// Optional fleet run this task belongs to.
+    ///
+    /// Absent for tasks created before fleet support; old task files remain
+    /// deserializable because this field carries `#[serde(default)]`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fleet_id: Option<FleetId>,
     /// Stores the parent identifier
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent_id: Option<TaskId>,
@@ -673,6 +679,7 @@ impl TaskState {
             kind: TaskKind::LocalShell,
             description: description.into(),
             status: TaskStatus::Pending,
+            fleet_id: None,
             parent_id: None,
             cwd: None,
             command: None,

@@ -23,6 +23,8 @@ pub mod error;
 pub mod feature;
 /// Provides fingerprint support
 pub mod fingerprint;
+/// Fleet (multi-agent) run types.
+pub mod fleet;
 /// Provides generators support
 pub mod generators;
 /// Provides git support
@@ -99,12 +101,14 @@ pub use error::{Result, WonderError};
 pub use feature::{FeatureFlag, FeatureSet};
 /// Re-exports items from `fingerprint`
 pub use fingerprint::{fingerprint_json, fingerprint_str};
+/// Re-exports items from `fleet`
+pub use fleet::{FLEET_SCHEMA_VERSION, FleetMemberRequest, FleetRunState, FleetRunStatus};
 /// Re-exports items from `generators`
 pub use generators::{enumerate, take, zip};
 /// Re-exports items from `git`
 pub use git::{GitError, get_current_branch, get_diff, get_git_root, is_git_repo, read_gitignore};
 /// Re-exports items from `ids`
-pub use ids::{CommandId, MessageId, SessionId, TaskId, ToolUseId};
+pub use ids::{CommandId, FleetId, MessageId, SessionId, TaskId, ToolUseId};
 /// Re-exports items from `lockfile`
 pub use lockfile::LockFile;
 /// Re-exports items from `memoize`

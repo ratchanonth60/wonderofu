@@ -1,15 +1,13 @@
 //! Agent task queue tool.
 
-use std::{fs, path::Path};
-
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use uuid::Uuid;
 use wonder_of_u_core::{
-    FeatureFlag, RemoteTaskState, RemoteTaskType, Result, Tool, ToolContext, ToolKind, ToolResult,
-    ToolSchema, ToolSpec, ToolUseId,
+    FeatureFlag, FleetMemberRequest, RemoteTaskState, RemoteTaskType, Result, Tool, ToolContext,
+    ToolKind, ToolResult, ToolSchema, ToolSpec, ToolUseId, WonderError,
 };
+use wonder_of_u_storage::FleetStore;
 
 use crate::{app_root, base_spec, parse_input, require_non_empty_text};
 /// Represents agent input
@@ -30,7 +28,7 @@ pub struct AgentInput {
     /// Stores the run in background
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub run_in_background: Option<bool>,
-    /// Stores the name
+    /// Agent name (fleet-compatible; mapped to `FleetMemberRequest::name`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
     /// Stores the team name
@@ -42,7 +40,8 @@ pub struct AgentInput {
     /// Stores the isolation
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub isolation: Option<String>,
-    /// Stores the cwd
+    /// Working directory override (fleet-compatible; mapped to
+    /// `FleetMemberRequest::cwd`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cwd: Option<String>,
     /// Stores the tools
@@ -57,31 +56,30 @@ impl AgentInput {
             require_non_empty_text("agent", "description", description)?;
         }
         if self.subagent_type.is_some() {
-            return Err(wonder_of_u_core::WonderError::validation(
+            return Err(WonderError::validation(
                 "agent source-compatible `subagent_type` is not supported in the Rust runtime",
             ));
         }
         if matches!(self.run_in_background, Some(false)) {
-            return Err(wonder_of_u_core::WonderError::validation(
+            return Err(WonderError::validation(
                 "agent source-compatible `run_in_background=false` is not supported because the Rust runtime only queues background agent tasks",
             ));
         }
 
         if self.isolation.as_deref() == Some("remote") {
-            return Err(wonder_of_u_core::WonderError::validation(
+            return Err(WonderError::validation(
                 RemoteTaskState::deferred(RemoteTaskType::RemoteAgent, None).start_error_message(),
             ));
         }
 
+        // team_name, mode, and non-remote isolation are still unsupported.
         for (field, is_present) in [
-            ("name", self.name.is_some()),
             ("team_name", self.team_name.is_some()),
             ("mode", self.mode.is_some()),
             ("isolation", self.isolation.is_some()),
-            ("cwd", self.cwd.is_some()),
         ] {
             if is_present {
-                return Err(wonder_of_u_core::WonderError::validation(format!(
+                return Err(WonderError::validation(format!(
                     "agent source-compatible `{field}` is not supported in the Rust runtime"
                 )));
             }
@@ -121,7 +119,7 @@ impl Tool for AgentTool {
                     .property(
                         "name",
                         ToolSchema::string(
-                            "source-compatible teammate name; currently unsupported",
+                            "agent name forwarded to the fleet dispatch request",
                         ),
                     )
                     .property(
@@ -153,7 +151,7 @@ impl Tool for AgentTool {
                     .property(
                         "cwd",
                         ToolSchema::string(
-                            "source-compatible working directory override; currently unsupported",
+                            "working directory override forwarded to the fleet dispatch request",
                         ),
                     )
                     .property(
@@ -184,13 +182,17 @@ impl Tool for AgentTool {
         let input = parse_input::<AgentInput>("agent", &input)?;
         input.validate()?;
 
-        let task_id = queue_agent_task(&app_root()?, &input)?;
-        let mut result = ToolResult::success(use_id, format!("agent task queued: {task_id}"));
+        let request_id = queue_fleet_member_request(&app_root()?, &input)?;
+        let mut result = ToolResult::success(
+            use_id,
+            format!("agent task queued for fleet dispatch: {request_id}"),
+        );
         result.metadata = json!({
-            "task_id": task_id,
-            "status": "queued",
+            "request_id": request_id,
+            "status": "pending_dispatch",
             "run_in_background": true,
             "description": input.description,
+            "dispatch_hint": "run `fleet dispatch` to launch this agent",
             "supports_send_message": false,
             "supports_team_name": false,
         });
@@ -198,30 +200,23 @@ impl Tool for AgentTool {
     }
 }
 
-fn queue_agent_task(app_root: &Path, input: &AgentInput) -> Result<String> {
-    let task_id = Uuid::new_v4().to_string();
-    let task_dir = app_root.join("tasks").join(&task_id);
-    fs::create_dir_all(&task_dir)?;
-    fs::write(task_dir.join("prompt.txt"), &input.prompt)?;
-    fs::write(task_dir.join("status.txt"), "queued\n")?;
-    fs::write(
-        task_dir.join("request.json"),
-        serde_json::to_string_pretty(&json!({
-            "description": input.description,
-            "prompt": input.prompt,
-            "model": input.model,
-            "run_in_background": input.run_in_background.unwrap_or(true),
-            "tools": input.tools,
-            "status": "queued",
-        }))?,
-    )?;
-    Ok(task_id)
+/// Queues an agent request as a [`FleetMemberRequest`] pending file.
+///
+/// Returns the request UUID string so callers can include it in tool metadata.
+fn queue_fleet_member_request(app_root: &std::path::Path, input: &AgentInput) -> Result<String> {
+    let mut request = FleetMemberRequest::new(input.prompt.clone());
+    request.description = input.description.clone();
+    request.name = input.name.clone();
+    request.model = input.model.clone();
+    request.cwd = input.cwd.as_deref().map(std::path::PathBuf::from);
+
+    let store = FleetStore::new(app_root);
+    store.queue_member_request(&request)?;
+    Ok(request.id)
 }
 
 #[cfg(test)]
 mod tests {
-    use std::fs;
-
     use serde_json::json;
     use wonder_of_u_test_support::unique_test_dir;
 
@@ -238,9 +233,9 @@ mod tests {
     }
 
     #[test]
-    fn agent_queues_task_files() {
+    fn agent_queues_pending_request_file() {
         let dir = unique_test_dir("tools-agent");
-        let task_id = queue_agent_task(
+        let request_id = queue_fleet_member_request(
             &dir,
             &AgentInput {
                 prompt: "review the patch".into(),
@@ -257,19 +252,19 @@ mod tests {
             },
         )
         .expect("queue task");
-        let task_dir = dir.join("tasks").join(&task_id);
 
-        assert!(task_dir.join("prompt.txt").exists());
-        assert_eq!(
-            fs::read_to_string(task_dir.join("status.txt")).expect("status"),
-            "queued\n"
-        );
+        let store = FleetStore::new(&dir);
+        let pending = store.list_pending_requests().expect("list");
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].id, request_id);
+        assert_eq!(pending[0].prompt, "review the patch");
+        assert_eq!(pending[0].model.as_deref(), Some("demo"));
     }
 
     #[test]
     fn queued_agent_request_records_metadata() {
         let dir = unique_test_dir("tools-agent-request");
-        let task_id = queue_agent_task(
+        let request_id = queue_fleet_member_request(
             &dir,
             &AgentInput {
                 prompt: "review".into(),
@@ -286,12 +281,24 @@ mod tests {
             },
         )
         .expect("queue task");
-        let request = fs::read_to_string(dir.join("tasks").join(task_id).join("request.json"))
-            .expect("request");
 
-        assert!(request.contains("\"status\": \"queued\""));
-        assert!(request.contains("\"description\": \"review task\""));
-        assert!(request.contains("\"run_in_background\": true"));
+        let store = FleetStore::new(&dir);
+        let req = store.read_pending_request(&request_id).expect("read");
+        assert_eq!(req.description.as_deref(), Some("review task"));
+        assert_eq!(req.prompt, "review");
+    }
+
+    #[test]
+    fn agent_name_and_cwd_are_now_accepted() {
+        let tool = AgentTool;
+        // name and cwd are forwarded to the fleet request — they should no
+        // longer raise a validation error.
+        tool.validate_input(&json!({
+            "prompt": "review",
+            "name": "reviewer",
+            "cwd": "/tmp/project",
+        }))
+        .expect("name and cwd should be accepted");
     }
 
     #[test]
@@ -300,11 +307,11 @@ mod tests {
         let error = tool
             .validate_input(&json!({
                 "prompt": "review",
-                "name": "reviewer",
+                "team_name": "alpha",
             }))
-            .expect_err("unsupported name");
+            .expect_err("unsupported team_name");
 
-        assert!(error.to_string().contains("name"));
+        assert!(error.to_string().contains("team_name"));
     }
 
     #[test]
