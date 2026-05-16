@@ -63,6 +63,21 @@ fn main() -> io::Result<()> {
                                     },
                                     "required": ["text"],
                                     "additionalProperties": false
+                                },
+                                "outputSchema": {
+                                    "type": "object",
+                                    "properties": {
+                                        "text": {"type": "string"}
+                                    }
+                                },
+                                "annotations": {
+                                    "title": "Remote Echo",
+                                    "readOnlyHint": true,
+                                    "idempotentHint": true,
+                                    "openWorldHint": true
+                                },
+                                "_meta": {
+                                    "origin": "fake-server"
                                 }
                             }
                         ]

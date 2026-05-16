@@ -4568,11 +4568,11 @@ fn controller_preserves_restored_provider_selection_on_resume() {
 
 #[test]
 fn prompt_cursor_tracks_edit_position_inside_prompt_panel() {
-    // CHROME_HEIGHT=1: available=9, prompt_height=3 (rounded single line).
-    // messages=6, prompt at y=6, content_x=1, content_y=7.
-    // cursor=2 → after "ab" → line=0, col=2, x_offset=2 → (1+2+2, 7) = (5, 7).
+    // CHROME_HEIGHT=1: available=9, prompt_height=4 (rounded single line plus
+    // integrated footer). messages=5, prompt at y=5, content_x=1, content_y=6.
+    // cursor=2 → after "ab" → line=0, col=2, x_offset=2 → (1+2+2, 6) = (5, 6).
     let (x, y) = prompt_cursor_position(40, 10, "abc", 2, false, false);
-    assert_eq!((x, y), (5, 7));
+    assert_eq!((x, y), (5, 6));
 }
 
 /// Verify that enabling brief mode injects the hint into the system prompt
@@ -6580,26 +6580,26 @@ fn sanitize_error_plain_message_passes_through_unchanged() {
 
 // ── prompt / history-search cursor at small terminal height ──────────────────
 
-/// Rounded prompt cap sanity: at height=6 the renderer uses `(h/3).max(3) = 3`.
-/// A 3-line prompt has uncapped boxed height = 5, capped to 3.
-/// With CHROME_HEIGHT=1 the prompt rect lands at y=2 and content_y=3.
+/// Rounded prompt cap sanity: at height=6 the renderer keeps the prompt tall
+/// enough for the integrated footer, so the 3-line prompt is clipped into the
+/// remaining 5-row main area with the first visible content row at y=2.
 #[test]
 fn prompt_cursor_position_small_terminal_respects_renderer_cap() {
-    // 3-line prompt: uncapped rounded height = 5.  At height=6, cap = max(2,3)=3.
+    // 3-line prompt: uncapped rounded height = 6. At height=6 the prompt box is
+    // clipped to fit while keeping one transcript row visible.
     let (x, y) = prompt_cursor_position(40, 6, "line1\nline2\nline3", 5, false, false);
     // cursor=5 → "line1" (no newline seen) → line=0, col=5, first-line x_offset=2.
-    // CHROME_HEIGHT=1: available=5, messages=2, prompt=(0,2,40,3),
-    // content_x=1, content_y=3, content_height=1.
+    // CHROME_HEIGHT=1: available=5, prompt=(0,1,40,4), content_x=1,
+    // content_y=2, content_height=1.
     assert_eq!(
         (x, y),
-        (8, 3),
+        (8, 2),
         "cursor row must land inside the prompt area rendered at the correct cap; got ({x}, {y})"
     );
 }
 
-/// Same cap-formula check for `history_search_cursor_position`.  At height=6
-/// (boxed cap=3, CHROME_HEIGHT=1) a history-search view with no match has
-/// uncapped boxed height=5, placing content_y=3.
+/// Same cap-formula check for `history_search_cursor_position`. At height=6 the
+/// history query lands on the integrated prompt footer row.
 #[test]
 fn history_search_cursor_position_small_terminal_respects_renderer_cap() {
     let view = HistorySearchView {
@@ -6608,12 +6608,11 @@ fn history_search_cursor_position_small_terminal_respects_renderer_cap() {
         match_index: 0,
         match_total: 0,
     };
-    // query_cursor=3 → x = content_x(1) + "search: ".len()(8) + 3 = 12
-    // CHROME_HEIGHT=1: available=5, messages=2, prompt=(0,2,40,3), content_y=3.
+    // query_cursor=3 → x = content_x(1) + "history: ".len()(9) + 3 = 13.
     let (x, y) = history_search_cursor_position(40, 6, &view, 3, false, false);
     assert_eq!(
         (x, y),
-        (12, 3),
+        (13, 3),
         "history-search cursor must use the renderer's box cap; got ({x}, {y})"
     );
 }
@@ -6627,17 +6626,17 @@ fn prompt_cursor_position_continuation_line_has_no_marker_offset() {
     // "abc\ndef" with cursor=6 points to 'f' on the second line.
     // Processing "abc\nde" → a(col=1), b(col=2), c(col=3), \n(line=1, col=0),
     // d(col=1), e(col=2) → line=1, col=2.
-    // On 40×16 (CHROME_HEIGHT=1): available=15, cap=max(5,3)=5.
-    //   prompt_height("abc\ndef")=4 (2 content lines + borders); capped=4 (fits).
-    //   message_height=15-4=11; prompt = Rect(0, 11, 40, 4).
-    //   content_x=1, content_y=12, content_height=2.
+    // On 40×16 (CHROME_HEIGHT=1): available=15, cap=max(5,6)=6.
+    //   prompt_height("abc\ndef")=5 (2 content lines + footer + borders); capped=5.
+    //   message_height=15-5=10; prompt = Rect(0, 10, 40, 5).
+    //   content_x=1, content_y=11, content_height=2.
     // line=1 is within content_height — the continuation path applies.
     //   x = content_x(1) + x_offset(0) + col(2) = 3
-    //   y = content_y(12) + line(1) = 13
+    //   y = content_y(11) + line(1) = 12
     let (x, y) = prompt_cursor_position(40, 16, "abc\ndef", 6, false, false);
     assert_eq!(
         (x, y),
-        (3, 13),
+        (3, 12),
         "continuation-line cursor must use x_offset=0 (no marker); got ({x}, {y})"
     );
 }
@@ -6651,7 +6650,7 @@ fn prompt_cursor_position_continuation_line_has_no_marker_offset() {
 ///
 /// Concrete geometry for width=120, height=24, CHROME_HEIGHT=1, sidebar_active=true:
 ///   effective_width = 83
-///   prompt area = Rect(0, 20, 83, 3)  →  content_x=1, content_width=81
+///   prompt area = Rect(0, 19, 83, 4)  →  content_x=1, content_width=81
 ///   first-line max cursor x = content_x(1) + x_offset(2) + max_col(78) = 81
 ///   separator sits at column 83 (render_shell draws │ there)
 ///   → cursor x must be < 83
@@ -6669,10 +6668,10 @@ fn prompt_cursor_position_wide_terminal_stays_inside_main_area() {
         "cursor x ({x}) must be left of the │ separator at column 83"
     );
     // Max reachable: content_x(1) + x_offset(2) + max_col(78) = 81.
-    // CHROME_HEIGHT=1: prompt_height=3, messages=20, prompt at y=20, content_y=21.
+    // CHROME_HEIGHT=1: prompt_height=4, messages=19, prompt at y=19, content_y=20.
     assert_eq!(
         (x, y),
-        (81, 21),
+        (81, 20),
         "wide-terminal cursor must clamp to the rightmost content cell; got ({x}, {y})"
     );
 }
@@ -6701,11 +6700,11 @@ fn history_search_cursor_wide_terminal_stays_inside_main_area() {
         x < 83,
         "history-search cursor x ({x}) must be left of the │ separator at column 83"
     );
-    // CHROME_HEIGHT=1: history search (3 lines + borders → 5 rows) places
-    // prompt at y=18; content_y=19.
+    // CHROME_HEIGHT=1: history search (1 content line + footer + borders → 4 rows)
+    // places the prompt at y=19; the query cursor sits on the footer row at y=21.
     assert_eq!(
         (x, y),
-        (81, 19),
+        (81, 21),
         "wide-terminal history-search cursor must clamp to rightmost content cell; got ({x}, {y})"
     );
 }
@@ -6717,12 +6716,12 @@ fn history_search_cursor_wide_terminal_stays_inside_main_area() {
 fn prompt_cursor_position_just_below_sidebar_threshold_uses_full_width() {
     // At width=119 shell_main_area_width returns 119 regardless of sidebar_active.
     // 10-char prompt, cursor at end → line=0, col=10, x_offset=2.
-    // effective_width=119; CHROME_HEIGHT=1: available=19, messages=16, prompt at y=16.
-    // content_y=17, x=1+2+10=13.
+    // effective_width=119; CHROME_HEIGHT=1: available=19, messages=15, prompt at y=15.
+    // content_y=16, x=1+2+10=13.
     let (x, y) = prompt_cursor_position(119, 20, &"a".repeat(10), 10, true, false);
     assert_eq!(
         (x, y),
-        (13, 17),
+        (13, 16),
         "terminal just below sidebar threshold must use full width; got ({x}, {y})"
     );
 }

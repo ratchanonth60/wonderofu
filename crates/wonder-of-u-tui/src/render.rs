@@ -243,18 +243,17 @@ pub struct ShellView {
 impl ShellView {
     /// Returns the height the prompt area should occupy.
     ///
-    /// Rounded prompt layout: content rows plus top/bottom border rows.
-    /// Minimum height is 3 so the box can always render a single input row.
+    /// Rounded prompt layout: content rows plus top border, integrated footer row,
+    /// and bottom border.
+    /// Minimum height is 4 so the box can render a single input row and keep the
+    /// dedicated footer surface visible on normal terminal sizes.
     #[must_use]
     pub fn prompt_height(&self) -> u16 {
-        let line_count = match &self.history_search {
-            Some(search) => history_search_line_count(search),
-            None => text_line_count(&self.prompt),
-        };
+        let line_count = prompt_body_line_count(self);
         u16::try_from(line_count)
             .unwrap_or(u16::MAX)
-            .saturating_add(2)
-            .max(3)
+            .saturating_add(3)
+            .max(4)
     }
     /// Handles from app state
     #[must_use]
@@ -415,10 +414,11 @@ pub fn render_shell(frame: &mut FrameBuffer, view: &ShellView, theme: &Theme) {
     };
 
     // Cap prompt height at roughly one third of the terminal so chat/history
-    // always dominates the display.  Minimum of 3 rows (top border + one content
-    // line + bottom border) to keep the box chrome intact.
+    // always dominates the display.  Minimum of 4 rows (top border + one content
+    // line + integrated footer row + bottom border) keeps the dedicated prompt
+    // footer visible without sacrificing the rounded outer chrome.
     let warning_height = u16::from(view.prompt_warning.is_some());
-    let max_prompt = (main_area.height / 3).max(3).saturating_add(warning_height);
+    let max_prompt = (main_area.height / 3).max(6).saturating_add(warning_height);
     let prompt_height = view
         .prompt_height()
         .saturating_add(warning_height)
@@ -482,7 +482,7 @@ pub fn render_shell(frame: &mut FrameBuffer, view: &ShellView, theme: &Theme) {
     // when the user has scrolled up from tail.
     let footer_display = compact_footer_text(view);
     draw_footer_line(frame, layout.footer, &footer_display, theme);
-    draw_notification_stack(frame, layout.messages, &view.notifications, theme);
+    draw_notification_stack(frame, messages_render_area, &view.notifications, theme);
 
     if let Some(dialog) = &view.dialog {
         draw_dialog(frame, layout.messages, dialog, theme);
@@ -500,7 +500,7 @@ pub fn render_shell(frame: &mut FrameBuffer, view: &ShellView, theme: &Theme) {
 
     if let Some(overlay) = &view.slash_suggestions {
         if !overlay.entries.is_empty() {
-            draw_slash_suggestions(frame, layout.messages, overlay, theme);
+            draw_slash_suggestions(frame, messages_render_area, prompt_area, overlay, theme);
         }
     }
 
@@ -630,8 +630,8 @@ fn draw_prompt_view(frame: &mut FrameBuffer, area: Rect, view: &ShellView, theme
     frame.fill_rect(area, ' ', theme.background);
 
     // Narrow / short fallback: skip the box chrome and write lines directly.
-    if area.width < 3 || area.height < 3 {
-        draw_lines(frame, area, &prompt_panel_lines(view, theme));
+    if area.width < 3 || area.height < 4 {
+        draw_lines(frame, area, &prompt_fallback_lines(view, theme));
         return;
     }
 
@@ -648,9 +648,17 @@ fn draw_prompt_view(frame: &mut FrameBuffer, area: Rect, view: &ShellView, theme
         area.x.saturating_add(1),
         area.y.saturating_add(1),
         area.width.saturating_sub(2),
-        area.height.saturating_sub(2),
+        area.height.saturating_sub(3),
     );
     draw_lines(frame, content, &prompt_panel_lines(view, theme));
+
+    let footer_area = Rect::new(
+        area.x.saturating_add(1),
+        area.bottom().saturating_sub(2),
+        area.width.saturating_sub(2),
+        1,
+    );
+    draw_prompt_footer(frame, footer_area, view, theme);
 }
 
 fn draw_prompt_warning(
@@ -1108,9 +1116,8 @@ fn draw_notification_stack(
     if notifications.is_empty() || viewport.width < 18 || viewport.height < 3 {
         return;
     }
-
-    let mut y = viewport.y.saturating_add(u16::from(viewport.height > 3));
-    for notification in notifications {
+    let mut bottom = viewport.bottom();
+    for notification in notifications.iter().rev() {
         let title = notification_title(notification);
         let lines = notification_panel_lines(notification, theme);
         let content_width = lines
@@ -1123,13 +1130,14 @@ fn draw_notification_stack(
             .unwrap_or(viewport.width)
             .clamp(18, viewport.width);
         let height = u16::try_from(lines.len().saturating_add(2)).unwrap_or(viewport.height);
-        if y.saturating_add(height) > viewport.bottom() {
+        if height > bottom.saturating_sub(viewport.y) {
             break;
         }
 
+        let y = bottom.saturating_sub(height);
         let rect = Rect::new(viewport.right().saturating_sub(width), y, width, height);
         draw_notification(frame, rect, &title, notification, &lines, theme);
-        y = y.saturating_add(height);
+        bottom = y;
     }
 }
 
@@ -1230,6 +1238,7 @@ fn draw_picker_preview(frame: &mut FrameBuffer, viewport: Rect, preview: &str, t
 fn draw_slash_suggestions(
     frame: &mut FrameBuffer,
     viewport: Rect,
+    prompt_area: Rect,
     overlay: &SlashSuggestionsOverlay,
     theme: &Theme,
 ) {
@@ -1263,10 +1272,12 @@ fn draw_slash_suggestions(
         .unwrap_or(viewport.height)
         .min(viewport.height);
 
-    // Anchor to bottom-left of viewport, just above the prompt rule.
+    // Anchor the overlay to the prompt so it reads as an autocomplete surface
+    // instead of another transcript panel.
+    let overlay_bottom = prompt_area.y.max(viewport.y.saturating_add(panel_height));
     let rect = Rect::new(
         viewport.x,
-        viewport.bottom().saturating_sub(panel_height),
+        overlay_bottom.saturating_sub(panel_height),
         panel_width,
         panel_height,
     );
@@ -1296,6 +1307,7 @@ fn draw_slash_suggestions(
         title: theme.prompt.bold(),
         ..*theme
     };
+    draw_modal_shadow(frame, rect, viewport, theme);
     draw_panel(frame, rect, Some("commands"), &lines, &border_theme);
 }
 
@@ -1767,6 +1779,19 @@ fn build_loading_progress_text(view: &ShellView) -> String {
     spinner.render_line()
 }
 
+fn draw_prompt_footer(frame: &mut FrameBuffer, area: Rect, view: &ShellView, theme: &Theme) {
+    if area.is_empty() {
+        return;
+    }
+
+    let style = if view.history_search.is_some() {
+        theme.status
+    } else {
+        theme.footer
+    };
+    frame.write_str(area.x, area.y, &prompt_footer_text(view), style, area.width);
+}
+
 fn welcome_panel_lines(theme: &Theme) -> Vec<StyledLine> {
     let art = theme.title;
     let dim = theme.footer;
@@ -1819,6 +1844,19 @@ fn message_lines_to_styled(lines: &[MessageLineView], theme: &Theme) -> Vec<Styl
         .collect()
 }
 
+fn prompt_fallback_lines(view: &ShellView, theme: &Theme) -> Vec<StyledLine> {
+    let mut lines = prompt_panel_lines(view, theme);
+    lines.push(StyledLine::plain(
+        prompt_footer_text(view),
+        if view.history_search.is_some() {
+            theme.status
+        } else {
+            theme.footer
+        },
+    ));
+    lines
+}
+
 fn prompt_panel_lines(view: &ShellView, theme: &Theme) -> Vec<StyledLine> {
     let Some(search) = &view.history_search else {
         let mut lines = split_lines(&view.prompt);
@@ -1828,15 +1866,65 @@ fn prompt_panel_lines(view: &ShellView, theme: &Theme) -> Vec<StyledLine> {
         return plain_lines(&lines, theme.prompt);
     };
 
-    let mut lines = vec![
-        StyledLine::plain(format!("search: {}", search.query), theme.status),
-        StyledLine::plain(history_match_label(search), theme.footer),
-    ];
-    lines.extend(plain_lines(
-        &split_lines(search.match_text.as_deref().unwrap_or("")),
+    plain_lines(
+        &split_lines(search.match_text.as_deref().unwrap_or(&view.prompt)),
         theme.prompt,
-    ));
-    lines
+    )
+}
+
+fn prompt_footer_text(view: &ShellView) -> String {
+    const DEFAULT_HINTS: &str = "Enter send · Shift+Enter newline · / commands · Ctrl+R history";
+    const SLASH_HINTS: &str = "slash commands · ↑↓ select · Tab/Enter apply · Esc cancel";
+    const HISTORY_ACCEPT_HINTS: &str = "↑↓/Ctrl+R cycle · Enter accept · Esc cancel";
+
+    if let Some(search) = &view.history_search {
+        let query = if search.query.is_empty() {
+            "type to search".into()
+        } else {
+            search.query.clone()
+        };
+        return format!(
+            "history: {query} · {} · {HISTORY_ACCEPT_HINTS}",
+            history_match_label(search)
+        );
+    }
+
+    if view
+        .slash_suggestions
+        .as_ref()
+        .is_some_and(|overlay| !overlay.entries.is_empty())
+    {
+        return SLASH_HINTS.into();
+    }
+
+    if view.status.is_empty() {
+        DEFAULT_HINTS.into()
+    } else {
+        let status = prompt_status_summary(&view.status);
+        if status.is_empty() {
+            DEFAULT_HINTS.into()
+        } else {
+            format!("{status} · {DEFAULT_HINTS}")
+        }
+    }
+}
+
+fn prompt_body_line_count(view: &ShellView) -> usize {
+    match &view.history_search {
+        Some(search) => text_line_count(search.match_text.as_deref().unwrap_or(&view.prompt)),
+        None => text_line_count(&view.prompt),
+    }
+}
+
+fn prompt_status_summary(status: &str) -> String {
+    status
+        .split('|')
+        .map(str::trim)
+        .filter(|segment| {
+            !segment.is_empty() && !segment.starts_with("storage=") && !segment.starts_with("turn=")
+        })
+        .collect::<Vec<_>>()
+        .join(" · ")
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -2038,10 +2126,6 @@ fn text_line_count(text: &str) -> usize {
     text.lines().count().max(1)
 }
 
-fn history_search_line_count(search: &HistorySearchView) -> usize {
-    2usize.saturating_add(text_line_count(search.match_text.as_deref().unwrap_or("")))
-}
-
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
@@ -2142,9 +2226,9 @@ mod tests {
                 "",
                 "   ██╗    ██╗  ██████╗  ██╗",
                 "   ██║    ██║ ██╔═══██╗ ██║",
-                "   ██║ █╗ ██║ ██║   ██║ ██║",
                 "╭─ prompt ───────────────────╮",
                 "│›                           │",
+                "│prompt · 0 messages · Enter │",
                 "╰────────────────────────────╯",
                 "             ctrl-c interrupt",
             ]
@@ -2196,11 +2280,11 @@ mod tests {
                 "system> ready",
                 "hello",
                 "",
-                "",
                 "Tasks",
                 "[running] shell: index workspace",
                 "╭─ prompt ─────────────────────────────────────╮",
                 "│› /status                                     │",
+                "│prompt · 2 messages · Enter send · Shift+Enter│",
                 "╰──────────────────────────────────────────────╯",
                 "              cwd=/workspace · ctrl-c interrupt",
             ]
@@ -2295,13 +2379,13 @@ mod tests {
                 "ready",
                 "",
                 "",
-                "",
                 "Queued",
                 "1. /status",
                 "2. draft migration plan",
                 "+2 more queued",
                 "╭─ prompt ───────────────────────────────╮",
                 "│› /plan                                 │",
+                "│prompt · 1 messages · Enter send · Shift│",
                 "╰────────────────────────────────────────╯",
                 "        cwd=/workspace · ctrl-c interrupt",
             ]
@@ -2344,7 +2428,6 @@ mod tests {
         assert_eq!(
             frame.to_plain_text(),
             [
-                "",
                 " ╭─Confirm action───────────────────────╮",
                 " │Approve command execution             │",
                 " │This cannot be undone                 │",
@@ -2354,6 +2437,7 @@ mod tests {
                 "",
                 "╭─ prompt ───────────────────────────────╮",
                 "│› continue?                             │",
+                "│permission · 1 messages · Enter send · S│",
                 "╰────────────────────────────────────────╯",
                 "        cwd=/workspace · ctrl-c interrupt",
             ]
@@ -2408,12 +2492,74 @@ mod tests {
                 "",
                 "",
                 "",
+                "",
                 "╭─ prompt ───────────────────────────────╮",
-                "│search: pla                             │",
-                "│match 2/3                               │",
                 "│draft plan                              │",
+                "│history: pla · match 2/3 · ↑↓/Ctrl+R cyc│",
                 "╰────────────────────────────────────────╯",
                 "        cwd=/workspace · ctrl-c interrupt",
+            ]
+            .join("\n")
+        );
+    }
+
+    #[test]
+    fn slash_suggestions_snapshot_renders_above_prompt_footer() {
+        let view = ShellView {
+            title: "Session: Slash".into(),
+            messages: vec![MessageLineView::new("ready", MessageRole::Assistant)],
+            prompt: "/".into(),
+            history_search: None,
+            status: "prompt | 1 messages".into(),
+            loading: false,
+            loading_verb: None,
+            spinner_frame: 0,
+            loading_elapsed_secs: 0,
+            loading_total_tokens: 0,
+            footer: "cwd=/workspace | ctrl-c interrupt".into(),
+            queued_panel: None,
+            task_panel: None,
+            dialog: None,
+            picker_view: None,
+            picker_list: None,
+            notifications: Vec::new(),
+            slash_suggestions: Some(SlashSuggestionsOverlay {
+                entries: vec![
+                    SlashSuggestionEntry {
+                        display: "/status".into(),
+                        description: "show session stats".into(),
+                        selected: true,
+                    },
+                    SlashSuggestionEntry {
+                        display: "/theme".into(),
+                        description: "pick theme".into(),
+                        selected: false,
+                    },
+                ],
+            }),
+            global_search: None,
+            scroll: TranscriptScrollView::default(),
+            sidebar: None,
+            prompt_warning: None,
+        };
+
+        let frame = render_snapshot(48, 12, &view, &Theme::default());
+
+        assert_eq!(
+            frame.to_plain_text(),
+            [
+                "ready",
+                "",
+                "",
+                "╭─commands─────────────────────╮",
+                "│/status ─ show session stats  │",
+                "│/theme ─ pick theme           │",
+                "╰──────────────────────────────╯",
+                "╭─ prompt ─────────────────────────────────────╮",
+                "│› /                                           │",
+                "│slash commands · ↑↓ select · Tab/Enter apply ·│",
+                "╰──────────────────────────────────────────────╯",
+                "              cwd=/workspace · ctrl-c interrupt",
             ]
             .join("\n")
         );
@@ -2498,9 +2644,9 @@ mod tests {
                 "  └ tests passed",
                 "",
                 "",
-                "",
                 "╭─ prompt ─────────────────────────────────────╮",
                 "│›                                             │",
+                "│prompt · 3 messages · Enter send · Shift+Enter│",
                 "╰──────────────────────────────────────────────╯",
                 "              cwd=/workspace · ctrl-c interrupt",
             ]
@@ -2562,9 +2708,9 @@ mod tests {
                 "                      ╭─ok Task update • focus─╮",
                 "                      │tests passed            │",
                 "                      ╰────────────────────────╯",
-                "",
                 "╭─ prompt ─────────────────────────────────────╮",
                 "│›                                             │",
+                "│prompt · 1 messages · Enter send · Shift+Enter│",
                 "╰──────────────────────────────────────────────╯",
                 "              cwd=/workspace · ctrl-c interrupt",
             ]
@@ -2905,9 +3051,9 @@ mod tests {
 
     #[test]
     fn transcript_scrolled_up_shows_earlier_window() {
-        // height=10, CHROME_HEIGHT=1 → available=9, prompt_height=3 (boxed),
-        // messages_height=6.  offset_from_bottom=1:
-        //   start = (10-6).saturating_sub(1) = 3 → shows lines 04–09.
+        // height=10, CHROME_HEIGHT=1 → available=9, prompt_height=4 (boxed with
+        // integrated footer), messages_height=5. offset_from_bottom=1:
+        //   start = (10-5).saturating_sub(1) = 4 → shows lines 05–09.
         let view = ShellView {
             title: "Session: Scrolled".into(),
             messages: make_long_transcript(10),
@@ -2923,10 +3069,10 @@ mod tests {
 
         let frame = render_snapshot(20, 10, &view, &Theme::default());
         let text = frame.to_plain_text();
-        assert!(text.contains("line 04"), "window start must be visible");
+        assert!(text.contains("line 05"), "window start must be visible");
         assert!(text.contains("line 09"), "window end must be visible");
         assert!(
-            !text.contains("line 03"),
+            !text.contains("line 04"),
             "line before window must be hidden"
         );
         assert!(!text.contains("line 10"), "newest line must not appear");
@@ -3045,32 +3191,34 @@ mod tests {
 
     #[test]
     fn prompt_height_single_line_is_line_count() {
-        // Rounded prompt: a single-line prompt occupies one content row plus borders.
+        // Rounded prompt: a single-line prompt occupies one content row, an
+        // integrated footer row, and the borders.
         let view = ShellView {
             prompt: "hello".into(),
             ..ShellView::default()
         };
-        assert_eq!(view.prompt_height(), 3);
+        assert_eq!(view.prompt_height(), 4);
     }
 
     #[test]
     fn prompt_height_multiline_counts_all_lines() {
-        // 3-line prompt → 3 content rows + 2 border rows.
+        // 3-line prompt → 3 content rows + footer row + 2 border rows.
         let view = ShellView {
             prompt: "line one\nline two\nline three".into(),
             ..ShellView::default()
         };
-        assert_eq!(view.prompt_height(), 5);
+        assert_eq!(view.prompt_height(), 6);
     }
 
     #[test]
     fn prompt_height_empty_prompt_returns_one() {
-        // An empty prompt still needs one input row plus rounded borders.
+        // An empty prompt still needs one input row, the integrated footer row,
+        // and the rounded borders.
         let view = ShellView {
             prompt: String::new(),
             ..ShellView::default()
         };
-        assert_eq!(view.prompt_height(), 3);
+        assert_eq!(view.prompt_height(), 4);
     }
 
     #[test]
@@ -3104,8 +3252,8 @@ mod tests {
 
     #[test]
     fn multiline_prompt_first_line_has_marker_continuation_lines_do_not() {
-        // Rounded prompt: prompt_height = 5 (3 content lines + borders).
-        // At height=16 the one-third cap = max(16/3, 3) = 5, which fits all rows.
+        // Rounded prompt: prompt_height = 6 (3 content lines + prompt footer +
+        // borders). A slightly taller frame keeps all three prompt lines visible.
         let view = ShellView {
             title: "Session: ML".into(),
             messages: Vec::new(),
@@ -3114,7 +3262,7 @@ mod tests {
             ..ShellView::default()
         };
 
-        let frame = render_snapshot(30, 16, &view, &Theme::default());
+        let frame = render_snapshot(30, 18, &view, &Theme::default());
         let text = frame.to_plain_text();
 
         // First line must carry the prompt marker.
@@ -3255,7 +3403,7 @@ mod tests {
         let text = frame.to_plain_text();
 
         assert!(
-            !text.contains("Enter"),
+            !text.contains("─ Providers ─") && !text.contains("─ Controls ─"),
             "sidebar must not render when field is None; rendered:\n{text}"
         );
     }
@@ -3501,9 +3649,8 @@ mod tests {
         };
 
         // width=120 → main_w=83, sidebar=36, sep=1.
-        // height=14 → max_prompt=max(4,3)=4; prompt_height=3 (3 content lines).min(4)=3.
-        // Shows all 3 content rows: "first line", "second line", "third line".
-        let frame = render_snapshot(120, 14, &view, &Theme::default());
+        // height=16 keeps the multiline prompt plus the integrated footer visible.
+        let frame = render_snapshot(120, 16, &view, &Theme::default());
         let text = frame.to_plain_text();
 
         assert!(
@@ -3921,7 +4068,7 @@ mod tests {
             ..ShellView::default()
         };
 
-        let frame = render_snapshot(40, 6, &view, &Theme::default());
+        let frame = render_snapshot(40, 7, &view, &Theme::default());
         let text = frame.to_plain_text();
 
         assert!(
@@ -3942,7 +4089,7 @@ mod tests {
             ..ShellView::default()
         };
 
-        let frame = render_snapshot(40, 6, &view, &Theme::default());
+        let frame = render_snapshot(40, 7, &view, &Theme::default());
         let text = frame.to_plain_text();
 
         assert!(
@@ -3966,7 +4113,7 @@ mod tests {
             ..ShellView::default()
         };
 
-        let frame = render_snapshot(40, 6, &view, &Theme::default());
+        let frame = render_snapshot(40, 8, &view, &Theme::default());
         let text = frame.to_plain_text();
 
         assert!(

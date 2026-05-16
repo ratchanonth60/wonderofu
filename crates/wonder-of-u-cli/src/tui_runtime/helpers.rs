@@ -251,6 +251,9 @@ pub(super) fn prompt_cursor_position(
     // Whether a context warning row is rendered above the prompt box.
     prompt_warning_visible: bool,
 ) -> (u16, u16) {
+    const MIN_PROMPT_HEIGHT: u16 = 4;
+    const MIN_PROMPT_CAP_HEIGHT: u16 = 6;
+
     let uncapped_height = ShellView {
         title: String::new(),
         messages: Vec::new(),
@@ -278,7 +281,9 @@ pub(super) fn prompt_cursor_position(
     .prompt_height();
     // Apply the same 1/3-terminal cap used by the renderer.
     let warning_height = u16::from(prompt_warning_visible);
-    let cap = (height / 3).max(3).saturating_add(warning_height);
+    let cap = (height / 3)
+        .max(MIN_PROMPT_CAP_HEIGHT)
+        .saturating_add(warning_height);
     let capped_height = uncapped_height.saturating_add(warning_height).min(cap);
     // Mirror render_shell: on wide terminals the sidebar column is carved out,
     // shrinking the area available for the prompt.
@@ -287,20 +292,35 @@ pub(super) fn prompt_cursor_position(
         wonder_of_u_tui::Rect::new(0, 0, effective_width.max(1), height.max(1)),
         capped_height,
     );
-    // Rounded prompt: content is inset by one cell inside the border.  The
-    // warning row (when visible) sits at prompt.y and bumps the box down by one.
-    let content_x = layout.prompt.x.saturating_add(1);
-    let content_y = layout
-        .prompt
-        .y
-        .saturating_add(warning_height)
-        .saturating_add(1);
-    let content_width = layout.prompt.width.saturating_sub(2);
-    let content_height = layout
-        .prompt
-        .height
-        .saturating_sub(warning_height)
-        .saturating_sub(2);
+    // Rounded prompt: content is inset by one cell inside the border.  When the
+    // prompt is tall enough to render the integrated footer row, one additional
+    // interior row is reserved for that footer surface.
+    let prompt_box_height = layout.prompt.height.saturating_sub(warning_height);
+    let boxed = layout.prompt.width >= 3 && prompt_box_height >= MIN_PROMPT_HEIGHT;
+    let content_x = if boxed {
+        layout.prompt.x.saturating_add(1)
+    } else {
+        layout.prompt.x
+    };
+    let content_y = if boxed {
+        layout
+            .prompt
+            .y
+            .saturating_add(warning_height)
+            .saturating_add(1)
+    } else {
+        layout.prompt.y.saturating_add(warning_height)
+    };
+    let content_width = if boxed {
+        layout.prompt.width.saturating_sub(2)
+    } else {
+        layout.prompt.width
+    };
+    let content_height = if boxed {
+        prompt_box_height.saturating_sub(3)
+    } else {
+        prompt_box_height
+    };
 
     let cursor_text = prompt.chars().take(cursor).collect::<String>();
     let mut line = 0u16;
@@ -337,6 +357,10 @@ pub(super) fn history_search_cursor_position(
     // Whether a context warning row is rendered above the prompt box.
     prompt_warning_visible: bool,
 ) -> (u16, u16) {
+    const HISTORY_SEARCH_PREFIX: &str = "history: ";
+    const MIN_PROMPT_HEIGHT: u16 = 4;
+    const MIN_PROMPT_CAP_HEIGHT: u16 = 6;
+
     let uncapped_height = ShellView {
         title: String::new(),
         messages: Vec::new(),
@@ -363,7 +387,9 @@ pub(super) fn history_search_cursor_position(
     }
     .prompt_height();
     let warning_height = u16::from(prompt_warning_visible);
-    let cap = (height / 3).max(3).saturating_add(warning_height);
+    let cap = (height / 3)
+        .max(MIN_PROMPT_CAP_HEIGHT)
+        .saturating_add(warning_height);
     let capped_height = uncapped_height.saturating_add(warning_height).min(cap);
     // Mirror render_shell's sidebar column deduction on wide terminals.
     let effective_width = wonder_of_u_tui::shell_main_area_width(width, sidebar_active);
@@ -371,15 +397,26 @@ pub(super) fn history_search_cursor_position(
         wonder_of_u_tui::Rect::new(0, 0, effective_width.max(1), height.max(1)),
         capped_height,
     );
-    // Rounded prompt: content is inset by one cell inside the border.
-    let content_x = layout.prompt.x.saturating_add(1);
-    let content_y = layout
-        .prompt
-        .y
-        .saturating_add(warning_height)
-        .saturating_add(1);
-    let content_width = layout.prompt.width.saturating_sub(2);
-    let query_prefix = "search: ".chars().count();
+    // History-search queries now live in the integrated prompt footer row when
+    // the rounded box has enough height; tiny fallbacks still render inline.
+    let prompt_box_height = layout.prompt.height.saturating_sub(warning_height);
+    let boxed = layout.prompt.width >= 3 && prompt_box_height >= MIN_PROMPT_HEIGHT;
+    let content_x = if boxed {
+        layout.prompt.x.saturating_add(1)
+    } else {
+        layout.prompt.x
+    };
+    let content_y = if boxed {
+        layout.prompt.bottom().saturating_sub(2)
+    } else {
+        layout.prompt.y.saturating_add(warning_height)
+    };
+    let content_width = if boxed {
+        layout.prompt.width.saturating_sub(2)
+    } else {
+        layout.prompt.width
+    };
+    let query_prefix = HISTORY_SEARCH_PREFIX.chars().count();
     (
         content_x
             .saturating_add(
@@ -396,12 +433,15 @@ pub(super) fn global_search_cursor_position(
     view: &ShellView,
     query_cursor: usize,
 ) -> (u16, u16) {
+    const MIN_PROMPT_CAP_HEIGHT: u16 = 6;
+
     let main_width = wonder_of_u_tui::shell_main_area_width(width, view.sidebar.is_some());
     let warning_height = u16::from(view.prompt_warning.is_some());
-    let prompt_height = view
-        .prompt_height()
-        .saturating_add(warning_height)
-        .min((height / 3).max(3).saturating_add(warning_height));
+    let prompt_height = view.prompt_height().saturating_add(warning_height).min(
+        (height / 3)
+            .max(MIN_PROMPT_CAP_HEIGHT)
+            .saturating_add(warning_height),
+    );
     let layout = ShellLayout::split(
         wonder_of_u_tui::Rect::new(0, 0, main_width.max(1), height.max(1)),
         prompt_height,

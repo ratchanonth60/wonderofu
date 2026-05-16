@@ -49,6 +49,13 @@ fn client_initializes_and_discovers_catalog() {
     let spec = catalog.tool_specs().pop().expect("tool spec");
     assert_eq!(spec.name, "mcp__demo__echo_text");
     assert_eq!(spec.source, ToolSource::Mcp);
+    assert!(spec.read_only);
+    assert_eq!(spec.input_schema["title"], "Remote Echo");
+    assert_eq!(spec.input_schema["x-mcp-meta"]["origin"], "fake-server");
+    assert_eq!(
+        spec.input_schema["x-mcp-output-schema"]["properties"]["text"]["type"],
+        "string"
+    );
     client.shutdown().expect("shutdown fake server");
 }
 

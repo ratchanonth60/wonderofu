@@ -1,3 +1,4 @@
+use serde_json::Value;
 use wonder_of_u_core::{ToolKind, ToolSource, ToolSpec};
 
 use crate::{McpConfig, McpResource, McpTool, build_mcp_resource_name, build_mcp_tool_name};
@@ -70,9 +71,72 @@ impl McpToolRegistration {
             ToolKind::Mcp,
         );
         spec.source = ToolSource::Mcp;
-        spec.input_schema = self.tool.input_schema.clone();
+        if self
+            .tool
+            .annotations
+            .as_ref()
+            .and_then(|annotations| annotations.destructive_hint)
+            == Some(true)
+        {
+            spec.destructive = true;
+        } else if self
+            .tool
+            .annotations
+            .as_ref()
+            .and_then(|annotations| annotations.read_only_hint)
+            == Some(true)
+        {
+            spec.read_only = true;
+        }
+        spec.input_schema = annotated_tool_schema(&self.tool);
         spec
     }
+}
+
+fn annotated_tool_schema(tool: &McpTool) -> Value {
+    let mut schema = tool.input_schema.clone();
+    let Some(object) = schema.as_object_mut() else {
+        return schema;
+    };
+
+    if let Some(title) = tool
+        .annotations
+        .as_ref()
+        .and_then(|annotations| annotations.title.as_ref())
+    {
+        object
+            .entry("title")
+            .or_insert_with(|| Value::String(title.clone()));
+    }
+    if let Some(output_schema) = &tool.output_schema {
+        object.insert("x-mcp-output-schema".into(), output_schema.clone());
+    }
+    if let Some(annotations) = &tool.annotations {
+        if let Ok(value) = serde_json::to_value(annotations) {
+            object.insert("x-mcp-tool-annotations".into(), value);
+        }
+        if annotations.open_world_hint == Some(true) {
+            object.insert("x-mcp-open-world-hint".into(), Value::Bool(true));
+        }
+        if annotations.idempotent_hint == Some(true) {
+            object.insert("x-mcp-idempotent-hint".into(), Value::Bool(true));
+        }
+        if is_search_like_hint(annotations) {
+            object.insert("x-mcp-search-like-hint".into(), Value::Bool(true));
+        }
+    }
+    if let Some(meta) = &tool.meta {
+        if let Ok(value) = serde_json::to_value(meta) {
+            object.insert("x-mcp-meta".into(), value);
+        }
+    }
+    schema
+}
+
+fn is_search_like_hint(annotations: &crate::McpToolAnnotations) -> bool {
+    annotations.read_only_hint == Some(true)
+        && annotations.open_world_hint == Some(true)
+        && annotations.destructive_hint != Some(true)
 }
 /// Represents mcp resource registration
 #[derive(Clone, Debug, PartialEq)]
@@ -134,6 +198,7 @@ mod tests {
     use wonder_of_u_core::{ToolKind, ToolSource};
 
     use super::*;
+    use crate::McpToolAnnotations;
 
     #[test]
     fn catalog_exposes_namespaced_tool_specs() {
@@ -144,6 +209,8 @@ mod tests {
                 description: Some("Create a GitHub issue".into()),
                 input_schema: json!({"type": "object"}),
                 output_schema: None,
+                annotations: None,
+                meta: None,
             }],
             vec![McpResource {
                 uri: "file:///issues".into(),
@@ -172,6 +239,8 @@ mod tests {
                 description: Some("Search remotely".into()),
                 input_schema: json!({"type": "object"}),
                 output_schema: None,
+                annotations: None,
+                meta: None,
             },
         );
 
@@ -188,6 +257,8 @@ mod tests {
                 description: Some("Remote bash".into()),
                 input_schema: json!({"type": "object"}),
                 output_schema: None,
+                annotations: None,
+                meta: None,
             },
         );
         let spec = registration.tool_spec();
@@ -196,5 +267,84 @@ mod tests {
         assert_ne!(spec.name, "bash");
         assert_eq!(spec.kind, ToolKind::Mcp);
         assert_eq!(spec.source, ToolSource::Mcp);
+    }
+
+    #[test]
+    fn mcp_tool_annotations_promote_permission_hints_and_schema_metadata() {
+        let registration = McpToolRegistration::new(
+            "my-server",
+            McpTool {
+                name: "search".into(),
+                description: Some("Search remotely".into()),
+                input_schema: json!({
+                    "type": "object",
+                    "properties": {
+                        "query": {"type": "string"}
+                    }
+                }),
+                output_schema: Some(json!({
+                    "type": "object",
+                    "properties": {
+                        "results": {"type": "array"}
+                    }
+                })),
+                annotations: Some(McpToolAnnotations {
+                    title: Some("Remote Search".into()),
+                    read_only_hint: Some(true),
+                    destructive_hint: Some(false),
+                    idempotent_hint: Some(true),
+                    open_world_hint: Some(true),
+                }),
+                meta: Some(
+                    [("origin".to_string(), json!("catalog"))]
+                        .into_iter()
+                        .collect(),
+                ),
+            },
+        );
+
+        let spec = registration.tool_spec();
+
+        assert!(spec.read_only);
+        assert!(!spec.destructive);
+        assert_eq!(spec.input_schema["title"], json!("Remote Search"));
+        assert_eq!(spec.input_schema["x-mcp-open-world-hint"], json!(true));
+        assert_eq!(spec.input_schema["x-mcp-idempotent-hint"], json!(true));
+        assert_eq!(spec.input_schema["x-mcp-search-like-hint"], json!(true));
+        assert_eq!(spec.input_schema["x-mcp-meta"]["origin"], json!("catalog"));
+        assert_eq!(
+            spec.input_schema["x-mcp-output-schema"]["properties"]["results"]["type"],
+            json!("array")
+        );
+        assert_eq!(
+            spec.input_schema["x-mcp-tool-annotations"]["readOnlyHint"],
+            json!(true)
+        );
+    }
+
+    #[test]
+    fn destructive_hint_wins_over_read_only_hint() {
+        let registration = McpToolRegistration::new(
+            "my-server",
+            McpTool {
+                name: "delete".into(),
+                description: Some("Delete remotely".into()),
+                input_schema: json!({"type": "object"}),
+                output_schema: None,
+                annotations: Some(McpToolAnnotations {
+                    title: None,
+                    read_only_hint: Some(true),
+                    destructive_hint: Some(true),
+                    idempotent_hint: None,
+                    open_world_hint: None,
+                }),
+                meta: None,
+            },
+        );
+
+        let spec = registration.tool_spec();
+
+        assert!(spec.destructive);
+        assert!(!spec.read_only);
     }
 }

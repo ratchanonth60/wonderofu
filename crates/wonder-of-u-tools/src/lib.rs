@@ -860,6 +860,16 @@ mod tests {
         let tungsten = specs.get("tungsten").expect("tungsten");
         assert!(tungsten.read_only);
         assert!(tungsten.concurrency_safe);
+
+        let mcp_resource_list = specs.get("mcp_resource_list").expect("mcp_resource_list");
+        assert_eq!(
+            mcp_resource_list.input_schema["x-mcp-resource-capability-dependent"],
+            serde_json::json!(true)
+        );
+        assert_eq!(
+            mcp_resource_list.input_schema["x-mcp-resource-dispatch"],
+            serde_json::json!("always_registered_runtime_checked")
+        );
     }
 
     fn has_property(spec: &ToolSpec, property: &str) -> bool {
