@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use wonder_of_u_core::{
     FeatureFlag, FleetMemberRequest, FleetRoleCatalog, RemoteTaskState, RemoteTaskType, Result,
-    Tool, ToolContext, ToolKind, ToolResult, ToolSchema, ToolSpec, ToolUseId, WonderError,
+    TaskId, Tool, ToolContext, ToolKind, ToolResult, ToolSchema, ToolSpec, ToolUseId, WonderError,
 };
 use wonder_of_u_storage::FleetStore;
 
@@ -47,6 +47,9 @@ pub struct AgentInput {
     /// Stores the tools
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tools: Option<Vec<String>>,
+    /// Task ids this agent should wait for before executing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub depends_on: Option<Vec<String>>,
 }
 
 impl AgentInput {
@@ -224,6 +227,33 @@ fn queue_fleet_member_request(app_root: &std::path::Path, input: &AgentInput) ->
     request.model = input.model.clone();
     request.cwd = input.cwd.as_deref().map(std::path::PathBuf::from);
 
+    // Inherit the running fleet context from env vars so child agents are
+    // automatically associated with the same fleet run.
+    if request.fleet_id.is_none() {
+        if let Ok(fleet_id_str) = std::env::var("WONDER_OF_U_FLEET_ID") {
+            if let Ok(fleet_id) = fleet_id_str.parse() {
+                request.fleet_id = Some(fleet_id);
+            }
+        }
+    }
+    // Record the spawning task as the parent so the lineage can be traced.
+    if let Ok(task_id_str) = std::env::var("WONDER_OF_U_TASK_ID") {
+        if let Ok(task_id) = task_id_str.parse::<TaskId>() {
+            request.parent_task_id = Some(task_id);
+        }
+    }
+
+    // Forward the caller-specified tool list so the sub-agent is constrained
+    // to the same (or a subset of) tools the parent agent was allowed.
+    if let Some(tools) = input.tools.clone() {
+        if !tools.is_empty() {
+            request.allowed_tools = Some(tools);
+        }
+    }
+
+    // Forward dependency list for scheduling.
+    request.depends_on = input.depends_on.clone().unwrap_or_default();
+
     // Resolve subagent_type alias → role id if provided.
     if let Some(ref subagent_type) = input.subagent_type {
         let catalog = FleetRoleCatalog::builtin();
@@ -273,6 +303,7 @@ mod tests {
                 isolation: None,
                 cwd: None,
                 tools: Some(vec!["bash".into()]),
+                depends_on: None,
             },
         )
         .expect("queue task");
@@ -302,6 +333,7 @@ mod tests {
                 isolation: None,
                 cwd: None,
                 tools: None,
+                depends_on: None,
             },
         )
         .expect("queue task");
@@ -402,6 +434,7 @@ mod tests {
                 isolation: None,
                 cwd: None,
                 tools: None,
+                depends_on: None,
             },
         )
         .expect("queue task");

@@ -374,6 +374,8 @@ impl FleetCommand {
                 model: args.model.or(report.model),
                 cwd: effective_cwd,
                 fleet_id: Some(run.id),
+                fleet_request_id: None,
+                parent_task_id: None,
                 allowed_tools: resolved_role
                     .as_ref()
                     .and_then(role_allowed_tools_for_launch),
@@ -953,7 +955,9 @@ fn dispatch_one(
             role_allowed_tools_for_launch(role),
         )
     } else {
-        (req.prompt.clone(), None)
+        // Fall back to per-request allowed_tools (set by the `agent` tool when
+        // the caller passes an explicit `tools` list).
+        (req.prompt.clone(), req.allowed_tools.clone())
     };
 
     // Apply worktree isolation if requested.
@@ -978,6 +982,8 @@ fn dispatch_one(
         model: req.model.clone().or_else(|| report.model.clone()),
         cwd: effective_cwd,
         fleet_id: req.fleet_id,
+        fleet_request_id: Some(req.id.clone()),
+        parent_task_id: req.parent_task_id,
         allowed_tools,
         worktree_branch,
     })?;

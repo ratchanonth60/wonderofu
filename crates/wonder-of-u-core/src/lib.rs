@@ -105,8 +105,8 @@ pub use feature::{FeatureFlag, FeatureSet};
 pub use fingerprint::{fingerprint_json, fingerprint_str};
 /// Re-exports items from `fleet`
 pub use fleet::{
-    FLEET_SCHEMA_VERSION, FleetMemberRequest, FleetRunState, FleetRunStatus, WorktreeIsolation,
-    WorktreeIsolationMode,
+    AGENT_TASK_RESULT_SCHEMA_VERSION, AgentTaskResult, FLEET_SCHEMA_VERSION, FleetMemberRequest,
+    FleetRunState, FleetRunStatus, WorktreeIsolation, WorktreeIsolationMode,
 };
 /// Re-exports items from `fleet_roles`
 pub use fleet_roles::{FleetAgentRole, FleetRoleCatalog};

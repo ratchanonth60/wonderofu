@@ -10,6 +10,7 @@ mod communication_tools;
 mod cron_remote;
 mod extended;
 mod files;
+mod fleet_tools;
 mod orchestration;
 mod plan_tool;
 mod search;
@@ -57,6 +58,8 @@ pub use files::{
     FileEditInput, FileEditTool, FileReadInput, FileReadTool, FileWriteInput, FileWriteMode,
     FileWriteTool,
 };
+/// Re-exports items from `fleet_tools`
+pub use fleet_tools::{FleetResultsInput, FleetResultsTool, FleetWaitInput, FleetWaitTool};
 /// Re-exports items from `orchestration`
 pub use orchestration::{
     BYTES_PER_TOKEN, DEFAULT_MAX_CONCURRENT_TOOL_USES, DEFAULT_MAX_RESULT_SIZE_CHARS,
@@ -162,6 +165,8 @@ pub fn builtin_tools() -> Vec<Arc<dyn Tool>> {
         Arc::new(TaskStopTool),
         Arc::new(SkillTool),
         Arc::new(AgentTool),
+        Arc::new(FleetResultsTool),
+        Arc::new(FleetWaitTool),
         Arc::new(SendMessageTool),
         Arc::new(TeamCreateTool),
         Arc::new(TeamDeleteTool),
@@ -356,6 +361,8 @@ mod tests {
                 "task_stop",
                 "skill",
                 "agent",
+                "fleet_results",
+                "fleet_wait",
                 "send_message",
                 "team_create",
                 "team_delete",

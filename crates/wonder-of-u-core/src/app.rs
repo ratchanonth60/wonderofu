@@ -629,6 +629,13 @@ pub struct TaskState {
     /// deserializable because this field carries `#[serde(default)]`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fleet_id: Option<FleetId>,
+    /// Fleet member request id that triggered this task, if any.
+    ///
+    /// Populated when the task is launched by `fleet dispatch` / `fleet reconcile`
+    /// or the `agent` tool.  Used to correlate result sidecars back to the
+    /// originating request.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fleet_request_id: Option<String>,
     /// Stores the parent identifier
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent_id: Option<TaskId>,
@@ -686,6 +693,7 @@ impl TaskState {
             description: description.into(),
             status: TaskStatus::Pending,
             fleet_id: None,
+            fleet_request_id: None,
             parent_id: None,
             cwd: None,
             command: None,
