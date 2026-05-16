@@ -432,7 +432,7 @@ impl CompactCommand {
     pub fn command_spec() -> CommandSpec {
         let mut spec = CommandSpec::new(
             "compact",
-            "Persist a compacted resume view for the latest or specified session",
+            "Clear conversation history but keep a summary in context. Optional: /compact --instructions <hint for summarization>",
             CommandKind::Local,
         );
         spec.required_features = BTreeSet::from([FeatureFlag::SessionPersistence]);
@@ -446,6 +446,10 @@ struct CompactArgs {
     session_id: Option<String>,
     #[arg(long, default_value_t = 8)]
     keep_last: usize,
+    /// Optional hint passed to the summarization step, e.g.
+    /// `--instructions "focus on tool calls only"`.
+    #[arg(long)]
+    instructions: Option<String>,
 }
 
 #[async_trait]
@@ -464,6 +468,7 @@ impl Command for CompactCommand {
             args.session_id.as_deref(),
             args.keep_last,
             ViewAction::Compact,
+            args.instructions.as_deref(),
         )
     }
 }
@@ -475,7 +480,13 @@ impl ClearCommand {
         keep_last: usize,
         action: ViewAction,
     ) -> Result<CommandOutput> {
-        persist_view_state(&self.storage_dir, requested_session_id, keep_last, action)
+        persist_view_state(
+            &self.storage_dir,
+            requested_session_id,
+            keep_last,
+            action,
+            None,
+        )
     }
 }
 
@@ -485,8 +496,15 @@ impl CompactCommand {
         requested_session_id: Option<&str>,
         keep_last: usize,
         action: ViewAction,
+        custom_instructions: Option<&str>,
     ) -> Result<CommandOutput> {
-        persist_view_state(&self.storage_dir, requested_session_id, keep_last, action)
+        persist_view_state(
+            &self.storage_dir,
+            requested_session_id,
+            keep_last,
+            action,
+            custom_instructions,
+        )
     }
 }
 
@@ -510,13 +528,20 @@ fn persist_view_state(
     requested_session_id: Option<&str>,
     keep_last: usize,
     action: ViewAction,
+    custom_instructions: Option<&str>,
 ) -> Result<CommandOutput> {
     let (store, session_id) = resolve_session_target(storage_dir, requested_session_id)?;
     let restored = store.restore_session(session_id)?;
     let compacted_messages = restored.transcript.messages.len().saturating_sub(keep_last);
     let mut state = restored.state;
-    state.messages =
-        compacted_view_messages(&restored.transcript, session_id, keep_last, action, &state);
+    state.messages = compacted_view_messages(
+        &restored.transcript,
+        session_id,
+        keep_last,
+        action,
+        &state,
+        custom_instructions,
+    );
     state.input_mode = InputMode::Prompt;
     state.session.updated_at = time::OffsetDateTime::now_utc();
     persist_session_state(
@@ -538,6 +563,9 @@ fn persist_view_state(
         format!("status={}", session_status_text(&state)),
         format!("footer={}", session_footer_text(&state)),
     ];
+    if let Some(instructions) = custom_instructions {
+        lines.push(format!("custom_instructions={instructions}"));
+    }
     if let Some(summary) = state.messages.first().and_then(boundary_summary) {
         lines.push(format!("boundary_summary={summary}"));
     }
@@ -727,6 +755,7 @@ fn compacted_view_messages(
     keep_last: usize,
     action: ViewAction,
     state: &AppState,
+    custom_instructions: Option<&str>,
 ) -> Vec<MessageEnvelope> {
     if transcript.messages.is_empty() {
         return Vec::new();
@@ -742,7 +771,7 @@ fn compacted_view_messages(
             MessageEnvelope::new(
                 session_id,
                 MessagePayload::CompactBoundary {
-                    summary: summarized_messages_summary(summarized, action),
+                    summary: summarized_messages_summary(summarized, action, custom_instructions),
                 },
             )
             .with_context(
@@ -760,7 +789,11 @@ fn compacted_view_messages(
     visible
 }
 
-fn summarized_messages_summary(messages: &[MessageEnvelope], action: ViewAction) -> String {
+fn summarized_messages_summary(
+    messages: &[MessageEnvelope],
+    action: ViewAction,
+    custom_instructions: Option<&str>,
+) -> String {
     let count = messages.len();
     let first_timestamp = messages
         .first()
@@ -777,12 +810,24 @@ fn summarized_messages_summary(messages: &[MessageEnvelope], action: ViewAction)
         .unwrap_or_else(|| "none".into());
 
     match action {
-        ViewAction::Clear => format!(
-            "Cleared the visible transcript and summarized {count} messages ({first_timestamp} -> {last_timestamp}; {counts}). Last summarized message: {last_message}"
-        ),
-        ViewAction::Compact => format!(
-            "Compacted {count} earlier messages ({first_timestamp} -> {last_timestamp}; {counts}). Last summarized message: {last_message}"
-        ),
+        ViewAction::Clear => {
+            let mut s = format!(
+                "Cleared the visible transcript and summarized {count} messages ({first_timestamp} -> {last_timestamp}; {counts}). Last summarized message: {last_message}"
+            );
+            if let Some(instructions) = custom_instructions {
+                s.push_str(&format!("\nSummarization instructions: {instructions}"));
+            }
+            s
+        }
+        ViewAction::Compact => {
+            let mut s = format!(
+                "Compacted {count} earlier messages ({first_timestamp} -> {last_timestamp}; {counts}). Last summarized message: {last_message}"
+            );
+            if let Some(instructions) = custom_instructions {
+                s.push_str(&format!("\nSummarization instructions: {instructions}"));
+            }
+            s
+        }
     }
 }
 
@@ -932,5 +977,92 @@ fn message_summary(message: &MessageEnvelope) -> String {
         MessagePayload::ProviderError { kind, message } => {
             format!("error[{kind}]: {message}")
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::{CompactCommand, ViewAction, summarized_messages_summary};
+    use wonder_of_u_core::CommandSpec;
+
+    // ── CompactCommand spec ──────────────────────────────────────────────────
+
+    #[test]
+    fn compact_spec_name_is_compact() {
+        let spec: CommandSpec = CompactCommand::command_spec();
+        assert_eq!(spec.name, "compact");
+    }
+
+    #[test]
+    fn compact_spec_description_mentions_instructions() {
+        let spec = CompactCommand::command_spec();
+        assert!(
+            spec.description.contains("instructions") || spec.description.contains("hint"),
+            "compact description should mention custom instructions; got: {}",
+            spec.description
+        );
+    }
+
+    #[test]
+    fn compact_spec_description_mentions_compact_or_history() {
+        let spec = CompactCommand::command_spec();
+        let desc = spec.description.to_lowercase();
+        assert!(
+            desc.contains("compact") || desc.contains("history"),
+            "compact description should mention compact/history; got: {}",
+            spec.description
+        );
+    }
+
+    // ── summarized_messages_summary ─────────────────────────────────────────
+
+    #[test]
+    fn summarized_messages_summary_without_instructions() {
+        let summary = summarized_messages_summary(&[], ViewAction::Compact, None);
+        assert!(
+            summary.contains("Compacted"),
+            "summary without instructions must use Compact wording; got: {summary}"
+        );
+        assert!(
+            !summary.contains("Summarization instructions"),
+            "summary without instructions must not include instructions line; got: {summary}"
+        );
+    }
+
+    #[test]
+    fn summarized_messages_summary_with_instructions_includes_hint() {
+        let summary =
+            summarized_messages_summary(&[], ViewAction::Compact, Some("focus on tool calls only"));
+        assert!(
+            summary.contains("Summarization instructions: focus on tool calls only"),
+            "summary with instructions must include them; got: {summary}"
+        );
+    }
+
+    #[test]
+    fn summarized_messages_summary_clear_action_without_instructions() {
+        let summary = summarized_messages_summary(&[], ViewAction::Clear, None);
+        assert!(
+            summary.contains("Cleared"),
+            "clear summary must use Cleared wording; got: {summary}"
+        );
+        assert!(
+            !summary.contains("Summarization instructions"),
+            "clear without instructions must not include instructions line; got: {summary}"
+        );
+    }
+
+    #[test]
+    fn summarized_messages_summary_clear_action_with_instructions() {
+        let summary =
+            summarized_messages_summary(&[], ViewAction::Clear, Some("remove tool results"));
+        assert!(
+            summary.contains("Summarization instructions: remove tool results"),
+            "clear with instructions must include them; got: {summary}"
+        );
     }
 }

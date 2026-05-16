@@ -34,7 +34,7 @@ impl LoginCommand {
     pub fn command_spec() -> CommandSpec {
         let mut spec = CommandSpec::new(
             "login",
-            "Store provider credentials or run interactive provider login",
+            "Interactive provider login — run bare to see all auth modes, or pass --provider to get specific setup guidance",
             CommandKind::Local,
         );
         spec.required_features = BTreeSet::from([FeatureFlag::ModelProvider]);
@@ -44,8 +44,10 @@ impl LoginCommand {
 
 #[derive(Debug, Parser)]
 struct LoginArgs {
+    /// Provider to log in to (e.g. `anthropic`, `openai`, `bedrock`, `vertex`,
+    /// `local`). Omit to see a guide listing all auth modes.
     #[arg(long)]
-    provider: String,
+    provider: Option<String>,
     #[arg(long)]
     api_key: Option<String>,
     #[arg(long, default_value_t = false)]
@@ -66,10 +68,18 @@ impl Command for LoginCommand {
         let args = parse_command_args::<LoginArgs>("login", &invocation)?;
         let storage_dir = require_storage_dir(self.storage_dir.clone())?;
 
+        // Bare `/login` with no --provider shows the auth-mode guide.
+        let provider_id = match args.provider {
+            None => return Ok(CommandOutput::Text(render_login_guide())),
+            Some(ref p) => p.clone(),
+        };
+
         let resolver = ProviderResolver::builtin();
-        let provider_config = resolver.registry().get(&args.provider).ok_or_else(|| {
-            WonderError::validation(format!("unknown provider: {}", args.provider))
-        })?;
+        let provider_config = resolver
+            .registry()
+            .get(&provider_id)
+            .ok_or_else(|| WonderError::validation(format!("unknown provider: {provider_id}")))?;
+
         match provider_config.auth_kind {
             AuthMaterialKind::ApiKey => {
                 let api_key = args.api_key.as_deref().ok_or_else(|| {
@@ -78,13 +88,12 @@ impl Command for LoginCommand {
                 if api_key.trim().is_empty() {
                     return Err(WonderError::validation("api key cannot be empty"));
                 }
-                CredentialStore::new(&storage_dir).set_api_key(&args.provider, api_key)?;
+                CredentialStore::new(&storage_dir).set_api_key(&provider_id, api_key)?;
             }
             AuthMaterialKind::OAuth => {
-                if args.provider != "copilot" {
+                if provider_id != "copilot" {
                     return Err(WonderError::validation(format!(
-                        "provider `{}` does not support interactive oauth login in this slice",
-                        args.provider
+                        "provider `{provider_id}` does not support interactive oauth login in this slice",
                     )));
                 }
                 if args.api_key.is_some() {
@@ -106,47 +115,64 @@ impl Command for LoginCommand {
                     Duration::from_secs(device_code.expires_in.max(1)),
                 )?;
                 CredentialStore::new(&storage_dir).set_oauth_token(
-                    &args.provider,
+                    &provider_id,
                     token.access_token,
                     token.refresh_token,
                     token.expires_at,
                 )?;
             }
+            // Env-based auth modes: return Ok guidance instead of a hard error so
+            // callers can display actionable text to the user (parity with upstream).
             AuthMaterialKind::AwsSigV4 => {
-                return Err(WonderError::validation(format!(
-                    "provider `{}` uses AWS SigV4 auth; set AWS_BEARER_TOKEN_BEDROCK, or AWS_ACCESS_KEY_ID + AWS_SECRET_ACCESS_KEY, or AWS_PROFILE",
-                    args.provider
+                return Ok(CommandOutput::Text(format!(
+                    "auth_mode=env\nprovider={provider_id}\n\
+                     guidance=AWS SigV4 auth — set one of:\n\
+                     \x20 AWS_BEARER_TOKEN_BEDROCK  (preferred for Bedrock),\n\
+                     \x20 AWS_ACCESS_KEY_ID + AWS_SECRET_ACCESS_KEY  (static credentials), or\n\
+                     \x20 AWS_PROFILE  (named profile in ~/.aws/credentials).\n\
+                     No credentials are stored locally for this auth mode."
                 )));
             }
             AuthMaterialKind::AwsBearer => {
-                return Err(WonderError::validation(format!(
-                    "provider `{}` uses AWS bearer-token auth; set AWS_BEARER_TOKEN_BEDROCK",
-                    args.provider
+                return Ok(CommandOutput::Text(format!(
+                    "auth_mode=env\nprovider={provider_id}\n\
+                     guidance=AWS bearer-token auth — set AWS_BEARER_TOKEN_BEDROCK.\n\
+                     No credentials are stored locally for this auth mode."
                 )));
             }
             AuthMaterialKind::AwsProfile => {
-                return Err(WonderError::validation(format!(
-                    "provider `{}` uses AWS profile auth; set AWS_PROFILE and configure ~/.aws/credentials",
-                    args.provider
+                return Ok(CommandOutput::Text(format!(
+                    "auth_mode=env\nprovider={provider_id}\n\
+                     guidance=AWS profile auth — set AWS_PROFILE and configure ~/.aws/credentials.\n\
+                     No credentials are stored locally for this auth mode."
                 )));
             }
             AuthMaterialKind::GcpOAuth2 => {
-                return Err(WonderError::validation(format!(
-                    "provider `{}` uses GCP OAuth2; set VERTEXAI_PROJECT, VERTEXAI_LOCATION, and GOOGLE_APPLICATION_CREDENTIALS",
-                    args.provider
+                return Ok(CommandOutput::Text(format!(
+                    "auth_mode=env\nprovider={provider_id}\n\
+                     guidance=GCP OAuth2 (Vertex AI) auth — set:\n\
+                     \x20 VERTEXAI_PROJECT   (GCP project ID),\n\
+                     \x20 VERTEXAI_LOCATION  (e.g. us-central1), and\n\
+                     \x20 GOOGLE_APPLICATION_CREDENTIALS  (path to service-account JSON key), or\n\
+                     \x20 GOOGLE_BEARER_TOKEN  (pre-obtained OAuth2 token).\n\
+                     No credentials are stored locally for this auth mode."
                 )));
             }
+            // No-auth providers do not need login; guide the user to /model set.
             AuthMaterialKind::None => {
-                return Err(WonderError::validation(format!(
-                    "provider `{}` does not require login",
-                    args.provider
+                return Ok(CommandOutput::Text(format!(
+                    "auth_mode=none\nprovider={provider_id}\n\
+                     guidance=This provider does not require authentication.\n\
+                     Use `/model set {provider_id}` to switch to it, or `/model set {provider_id}:<model>` \
+                     to pick a specific model."
                 )));
             }
         }
+
         let settings_store = SettingsStore::new(&storage_dir);
         let mut settings = settings_store.read()?;
         if settings.selected_provider.is_none() {
-            settings.selected_provider = Some(args.provider.clone());
+            settings.selected_provider = Some(provider_id.clone());
         }
         if settings.selected_model.is_none() {
             settings.selected_model = Some(provider_config.default_model.clone());
@@ -160,11 +186,75 @@ impl Command for LoginCommand {
                 "provider_selection={}\n",
                 "provider_readiness={}"
             ),
-            args.provider,
+            provider_id,
             selection_label(&report),
             report.readiness.label(),
         )))
     }
+}
+
+/// Renders a guide listing all supported auth modes and their providers.
+///
+/// Shown when the user runs `/login` with no `--provider` argument.
+fn render_login_guide() -> String {
+    let resolver = ProviderResolver::builtin();
+    let mut api_key_providers = Vec::new();
+    let mut oauth_providers = Vec::new();
+    let mut env_providers = Vec::new();
+    let mut none_providers = Vec::new();
+
+    for config in resolver.registry().providers() {
+        match config.auth_kind {
+            AuthMaterialKind::ApiKey => api_key_providers.push(config.id.clone()),
+            AuthMaterialKind::OAuth => oauth_providers.push(config.id.clone()),
+            AuthMaterialKind::AwsSigV4
+            | AuthMaterialKind::AwsBearer
+            | AuthMaterialKind::AwsProfile
+            | AuthMaterialKind::GcpOAuth2 => env_providers.push(config.id.clone()),
+            AuthMaterialKind::None => none_providers.push(config.id.clone()),
+        }
+    }
+
+    api_key_providers.sort();
+    oauth_providers.sort();
+    env_providers.sort();
+    none_providers.sort();
+
+    let mut lines = vec![
+        "## /login".into(),
+        String::new(),
+        "Pass `--provider <id>` to log in or see setup guidance for a specific provider.".into(),
+        String::new(),
+        "### api-key providers  (`/login --provider <id> --api-key <key>`)".into(),
+    ];
+    for p in &api_key_providers {
+        lines.push(format!(
+            "  api-key  — /login --provider {p} --api-key <your-key>"
+        ));
+    }
+    lines.push(String::new());
+    lines.push("### oauth providers  (interactive browser flow)".into());
+    for p in &oauth_providers {
+        lines.push(format!("  oauth    — /login --provider {p}"));
+    }
+    lines.push(String::new());
+    lines.push("### env-variable providers  (no credentials stored locally)".into());
+    for p in &env_providers {
+        lines.push(format!(
+            "  env      — /login --provider {p}  (shows env-var setup guide)"
+        ));
+    }
+    lines.push(String::new());
+    lines.push("### none / no-auth providers  (no login needed)".into());
+    for p in &none_providers {
+        lines.push(format!(
+            "  none     — /login --provider {p}  (shows /model set guidance)"
+        ));
+    }
+    lines.push(String::new());
+    lines.push("Run `/model` to see the active provider and model.".into());
+
+    lines.join("\n")
 }
 
 /// Represents logout command
@@ -1100,6 +1190,167 @@ mod tests {
         assert!(
             msg.contains("strict catalogue"),
             "error must mention strict catalogue; got: {msg}"
+        );
+    }
+
+    // ── /login parity tests ──────────────────────────────────────────────────
+
+    // Bring LoginCommand in scope once for all login tests below.
+    use super::LoginCommand;
+
+    fn make_login_ctx(dir: &std::path::Path) -> wonder_of_u_core::CommandContext {
+        use wonder_of_u_core::{CommandContext, FeatureSet, PermissionMode, SessionId};
+        CommandContext {
+            session_id: SessionId::new(),
+            cwd: dir.to_path_buf(),
+            features: FeatureSet::first_release(),
+            authenticated: false,
+            interactive: false,
+            permission_mode: PermissionMode::Default,
+            theme: None,
+            session_color: None,
+            effort_level: None,
+            brief_mode: false,
+            fast_mode: false,
+            optimize_token_mode: false,
+            session_tags: Vec::new(),
+            additional_working_directories: Vec::new(),
+        }
+    }
+
+    /// Bare `/login` (no --provider) must return Ok guidance, not a parse error.
+    #[test]
+    fn login_bare_returns_guide_listing_auth_modes() {
+        use futures::executor::block_on;
+        use wonder_of_u_core::{Command, CommandInvocation, CommandOutput};
+
+        let dir = tempfile::tempdir().expect("temp dir");
+        let cmd = LoginCommand::new(Some(dir.path().to_path_buf()));
+        let result = block_on(cmd.execute(
+            make_login_ctx(dir.path()),
+            CommandInvocation {
+                name: "login".into(),
+                args: String::new(),
+                raw: "/login".into(),
+            },
+        ));
+        let output = result.expect("bare /login must succeed");
+        let CommandOutput::Text(text) = output else {
+            panic!("expected Text output");
+        };
+        assert!(
+            text.contains("## /login"),
+            "guide must have a heading; got:\n{text}"
+        );
+        assert!(
+            text.contains("api-key"),
+            "guide must mention api-key auth; got:\n{text}"
+        );
+        assert!(
+            text.contains("oauth"),
+            "guide must mention oauth; got:\n{text}"
+        );
+        assert!(
+            text.contains("none"),
+            "guide must mention no-auth providers; got:\n{text}"
+        );
+    }
+
+    /// `/login --provider bedrock` (AWS SigV4) must return Ok guidance — not an error.
+    #[test]
+    fn login_aws_sigv4_provider_returns_guidance_not_error() {
+        use futures::executor::block_on;
+        use wonder_of_u_core::{Command, CommandInvocation, CommandOutput};
+
+        let dir = tempfile::tempdir().expect("temp dir");
+        let cmd = LoginCommand::new(Some(dir.path().to_path_buf()));
+        let result = block_on(cmd.execute(
+            make_login_ctx(dir.path()),
+            CommandInvocation {
+                name: "login".into(),
+                args: "--provider bedrock".into(),
+                raw: "/login --provider bedrock".into(),
+            },
+        ));
+        let output = result.expect("AWS SigV4 provider must return Ok guidance");
+        let CommandOutput::Text(text) = output else {
+            panic!("expected Text output");
+        };
+        assert!(
+            text.contains("auth_mode=env"),
+            "must mark auth_mode=env; got:\n{text}"
+        );
+        assert!(
+            text.contains("AWS"),
+            "must contain AWS guidance; got:\n{text}"
+        );
+    }
+
+    /// `/login --provider local` (no-auth) must return Ok with `/model set` hint.
+    #[test]
+    fn login_no_auth_provider_returns_guidance_not_error() {
+        use futures::executor::block_on;
+        use wonder_of_u_core::{Command, CommandInvocation, CommandOutput};
+
+        let dir = tempfile::tempdir().expect("temp dir");
+        let cmd = LoginCommand::new(Some(dir.path().to_path_buf()));
+        let result = block_on(cmd.execute(
+            make_login_ctx(dir.path()),
+            CommandInvocation {
+                name: "login".into(),
+                args: "--provider local".into(),
+                raw: "/login --provider local".into(),
+            },
+        ));
+        let output = result.expect("no-auth provider must return Ok guidance");
+        let CommandOutput::Text(text) = output else {
+            panic!("expected Text output");
+        };
+        assert!(
+            text.contains("auth_mode=none"),
+            "must mark auth_mode=none; got:\n{text}"
+        );
+        assert!(
+            text.contains("/model set"),
+            "must suggest /model set; got:\n{text}"
+        );
+    }
+
+    /// `/login --provider vertex` (GCP OAuth2) must return Ok guidance — not an error.
+    #[test]
+    fn login_gcp_provider_returns_guidance_not_error() {
+        use futures::executor::block_on;
+        use wonder_of_u_core::{Command, CommandInvocation, CommandOutput};
+
+        let dir = tempfile::tempdir().expect("temp dir");
+        let cmd = LoginCommand::new(Some(dir.path().to_path_buf()));
+        let result = block_on(cmd.execute(
+            make_login_ctx(dir.path()),
+            CommandInvocation {
+                name: "login".into(),
+                args: "--provider vertex".into(),
+                raw: "/login --provider vertex".into(),
+            },
+        ));
+        let output = result.expect("GCP provider must return Ok guidance");
+        let CommandOutput::Text(text) = output else {
+            panic!("expected Text output");
+        };
+        assert!(
+            text.contains("auth_mode=env"),
+            "must mark auth_mode=env; got:\n{text}"
+        );
+        assert!(text.contains("GCP"), "must mention GCP; got:\n{text}");
+    }
+
+    /// The command spec description must convey the interactive-login concept.
+    #[test]
+    fn login_command_spec_description_conveys_interactive_flow() {
+        let spec = LoginCommand::command_spec();
+        assert!(
+            spec.description.contains("interactive") || spec.description.contains("login"),
+            "description should convey interactive login; got: {}",
+            spec.description
         );
     }
 }

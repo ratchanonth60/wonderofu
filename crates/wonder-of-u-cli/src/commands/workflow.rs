@@ -2573,12 +2573,61 @@ fn render_statusline_enqueue(args: &str) -> String {
     .join("\n")
 }
 
+/// Terminals that natively decode Shift+Enter via the Kitty keyboard protocol,
+/// so no extra keybinding setup is needed for multi-line input.
+const NATIVE_CSIU_TERMINALS: &[&str] =
+    &["ghostty", "kitty", "iTerm.app", "WezTerm", "WarpTerminal"];
+
+/// Returns the value of `TERM_PROGRAM`, or `"unknown"` when the variable is
+/// not set or is empty.  Used by `render_terminal_setup_notice` to tailor its advice.
+pub(crate) fn detect_terminal_type() -> String {
+    std::env::var("TERM_PROGRAM")
+        .ok()
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "unknown".to_string())
+}
+
+/// Returns `true` when `terminal` natively handles the Kitty keyboard protocol
+/// (so Shift+Enter already works without any extra setup).
+fn is_native_csiu_terminal(terminal: &str) -> bool {
+    NATIVE_CSIU_TERMINALS
+        .iter()
+        .any(|&t| t.eq_ignore_ascii_case(terminal))
+}
+
+/// Returns a short human-readable recommendation for the given terminal.
+fn terminal_setup_recommendation(terminal: &str) -> &'static str {
+    match terminal {
+        "Apple_Terminal" => {
+            "Use Option+Enter (⌥↵) for newlines. Shift+Enter is not supported in Apple Terminal."
+        }
+        "vscode" | "cursor" | "windsurf" => {
+            "Use Shift+Enter for newlines. Your editor's built-in terminal handles the keybinding."
+        }
+        t if is_native_csiu_terminal(t) => {
+            "Your terminal natively supports Shift+Enter via the Kitty keyboard protocol — no extra setup needed."
+        }
+        _ => {
+            "Use `/keybindings open` to add a Shift+Enter → insert_newline keybinding to the config file."
+        }
+    }
+}
+
 fn render_terminal_setup_notice(storage_dir: Option<&Path>) -> String {
     let path = resolve_keybindings_path(storage_dir);
+    let terminal = detect_terminal_type();
+    let setup_needed = !is_native_csiu_terminal(&terminal)
+        && terminal != "vscode"
+        && terminal != "cursor"
+        && terminal != "windsurf";
+    let recommendation = terminal_setup_recommendation(&terminal);
+
     [
         "## Terminal Setup".into(),
-        "The Rust port does not install platform-specific Shift+Enter or terminal keybinding integrations.".into(),
-        "In the TUI prompt, Enter submits by default and the prompt buffer stays single-line unless you add a keybinding that triggers `insert_newline`.".into(),
+        format!("terminal_type={terminal}"),
+        format!("setup_needed={setup_needed}"),
+        recommendation.into(),
+        String::new(),
         "Use `/keybindings` to inspect the active shortcuts.".into(),
         format!(
             "Use `/keybindings open` to create or edit {} with the starter template, which includes a Shift+Enter -> insert_newline example.",
@@ -3574,10 +3623,11 @@ mod tests {
 
     use super::{
         CommitCommand, CommitPushPrCommand, OptimizeTonkenAction, PlanAction,
-        PrivacySettingsCommand, SecurityReviewCommand, TerminalSetupCommand, ensure_hooks_file,
-        ensure_keybindings_file, load_keybinding_resolver, normalize_color_invocation,
-        normalize_effort_invocation, normalize_permissions_invocation, normalize_theme_invocation,
-        normalize_vim_invocation, parse_brief_action, parse_effort_level_name, parse_fast_action,
+        PrivacySettingsCommand, SecurityReviewCommand, TerminalSetupCommand, detect_terminal_type,
+        ensure_hooks_file, ensure_keybindings_file, is_native_csiu_terminal,
+        load_keybinding_resolver, normalize_color_invocation, normalize_effort_invocation,
+        normalize_permissions_invocation, normalize_theme_invocation, normalize_vim_invocation,
+        parse_brief_action, parse_effort_level_name, parse_fast_action,
         parse_optimize_tonken_action, parse_plan_action, parse_session_color_name,
         render_brief_status, render_brief_transition, render_color_status, render_color_transition,
         render_commit_enqueue, render_commit_push_pr_enqueue, render_effort_status,
@@ -3586,7 +3636,8 @@ mod tests {
         render_optimize_tonken_transition, render_plan_display, render_privacy_settings_summary,
         render_review_enqueue, render_security_review_enqueue, render_statusline_enqueue,
         render_terminal_setup_notice, render_theme_status, resolve_hooks_path,
-        resolve_keybindings_path, resolve_plan_path, write_persisted_effort, write_persisted_fast,
+        resolve_keybindings_path, resolve_plan_path, terminal_setup_recommendation,
+        write_persisted_effort, write_persisted_fast,
     };
 
     fn test_context(cwd: &Path) -> CommandContext {
@@ -4195,10 +4246,20 @@ mod tests {
     #[test]
     fn terminal_setup_notice_points_to_keybindings_flow() {
         let dir = unique_test_dir("workflow-terminal-setup-notice");
+        // Run with TERM_PROGRAM unset so the output is deterministic regardless
+        // of the CI environment.
+        let _guard = EnvVarGuard::set("TERM_PROGRAM", "");
         let rendered = render_terminal_setup_notice(Some(dir.as_path()));
 
         assert!(rendered.starts_with("## Terminal Setup"));
-        assert!(rendered.contains("does not install platform-specific Shift+Enter"));
+        assert!(
+            rendered.contains("terminal_type="),
+            "must include terminal_type field; got:\n{rendered}"
+        );
+        assert!(
+            rendered.contains("setup_needed="),
+            "must include setup_needed field; got:\n{rendered}"
+        );
         assert!(rendered.contains("Use `/keybindings` to inspect the active shortcuts."));
         assert!(rendered.contains(&format!(
             "Use `/keybindings open` to create or edit {}",
@@ -4209,6 +4270,7 @@ mod tests {
     #[test]
     fn terminal_setup_command_renders_notice() {
         let dir = unique_test_dir("workflow-terminal-setup-command");
+        let _guard = EnvVarGuard::set("TERM_PROGRAM", "");
         let output = block_on(TerminalSetupCommand::new(Some(dir.clone())).execute(
             test_context(&dir),
             CommandInvocation {
@@ -4223,7 +4285,92 @@ mod tests {
             panic!("expected text output");
         };
         assert!(text.contains("## Terminal Setup"));
+        assert!(
+            text.contains("terminal_type="),
+            "must include terminal_type field; got:\n{text}"
+        );
+        assert!(
+            text.contains("setup_needed="),
+            "must include setup_needed field; got:\n{text}"
+        );
         assert!(text.contains("Shift+Enter -> insert_newline"));
+    }
+
+    // ── terminal detection / per-terminal advice ─────────────────────────────
+
+    /// With TERM_PROGRAM unset, detect_terminal_type returns "unknown".
+    #[test]
+    fn detect_terminal_type_returns_unknown_when_unset() {
+        let _guard = EnvVarGuard::set("TERM_PROGRAM", "");
+        assert_eq!(detect_terminal_type(), "unknown");
+    }
+
+    /// With TERM_PROGRAM set, detect_terminal_type echoes its value.
+    #[test]
+    fn detect_terminal_type_echoes_term_program() {
+        let _guard = EnvVarGuard::set("TERM_PROGRAM", "ghostty");
+        assert_eq!(detect_terminal_type(), "ghostty");
+    }
+
+    /// Kitty-protocol-native terminals must report setup_needed=false.
+    #[test]
+    fn native_csiu_terminals_report_setup_not_needed() {
+        for terminal in &["ghostty", "kitty", "WezTerm", "WarpTerminal"] {
+            assert!(
+                is_native_csiu_terminal(terminal),
+                "{terminal} should be recognised as a native Kitty-protocol terminal"
+            );
+        }
+    }
+
+    /// iTerm.app (mixed case) must also be recognised.
+    #[test]
+    fn iterm_app_is_native_csiu_terminal() {
+        assert!(is_native_csiu_terminal("iTerm.app"));
+    }
+
+    /// Apple Terminal gets the Option+Enter advice.
+    #[test]
+    fn terminal_setup_apple_terminal_shows_option_enter_advice() {
+        let _guard = EnvVarGuard::set("TERM_PROGRAM", "Apple_Terminal");
+        let dir = unique_test_dir("workflow-terminal-setup-apple");
+        let rendered = render_terminal_setup_notice(Some(dir.as_path()));
+        assert!(
+            rendered.contains("Option+Enter"),
+            "Apple Terminal advice must mention Option+Enter; got:\n{rendered}"
+        );
+        assert!(
+            rendered.contains("setup_needed=true"),
+            "Apple Terminal must require setup; got:\n{rendered}"
+        );
+    }
+
+    /// Ghostty (a native Kitty-protocol terminal) must report setup_needed=false.
+    #[test]
+    fn terminal_setup_ghostty_reports_no_setup_needed() {
+        let _guard = EnvVarGuard::set("TERM_PROGRAM", "ghostty");
+        let dir = unique_test_dir("workflow-terminal-setup-ghostty");
+        let rendered = render_terminal_setup_notice(Some(dir.as_path()));
+        assert!(
+            rendered.contains("setup_needed=false"),
+            "ghostty must not need setup; got:\n{rendered}"
+        );
+    }
+
+    /// VSCode reports setup_needed=false and Shift+Enter advice.
+    #[test]
+    fn terminal_setup_vscode_shows_shift_enter_advice() {
+        let _guard = EnvVarGuard::set("TERM_PROGRAM", "vscode");
+        let dir = unique_test_dir("workflow-terminal-setup-vscode");
+        let rendered = render_terminal_setup_notice(Some(dir.as_path()));
+        assert!(
+            terminal_setup_recommendation("vscode").contains("Shift+Enter"),
+            "VSCode advice must mention Shift+Enter"
+        );
+        assert!(
+            rendered.contains("terminal_type=vscode"),
+            "must include terminal_type=vscode; got:\n{rendered}"
+        );
     }
 
     #[test]
