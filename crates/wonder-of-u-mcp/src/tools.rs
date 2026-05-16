@@ -38,20 +38,64 @@ impl McpResourceListInput {
         Ok(())
     }
 }
-/// Represents mcp resource read input
+/// Input for reading a single MCP resource.
+///
+/// Two dispatch modes are supported (upstream `ReadMcpResourceTool` parity):
+///
+/// * **By qualified name** — supply `resource_name` (e.g. `mcp__demo__resource__readme`).
+///   The tool discovers all configured servers and searches their catalogs.
+/// * **By server + URI** — supply both `server` and `uri` for a direct read without
+///   catalog discovery.  Exactly mirrors the upstream `{ server, uri }` input contract.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct McpResourceReadInput {
-    /// Stores the resource name
-    pub resource_name: String,
+    /// Qualified MCP resource name searched across all configured servers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resource_name: Option<String>,
+    /// MCP server name — required when using `uri` for a direct resource read.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub server: Option<String>,
+    /// Resource URI for a direct read — required when using `server`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub uri: Option<String>,
 }
 
 impl McpResourceReadInput {
     fn validate(&self) -> Result<()> {
-        if self.resource_name.trim().is_empty() {
-            return Err(WonderError::validation(
-                "mcp_resource_read requires a non-empty `resource_name`",
-            ));
+        match (&self.resource_name, &self.server, &self.uri) {
+            // resource_name only
+            (Some(name), None, None) => {
+                if name.trim().is_empty() {
+                    return Err(WonderError::validation(
+                        "mcp_resource_read `resource_name` must be non-empty",
+                    ));
+                }
+            }
+            // server + uri (upstream ReadMcpResourceTool parity)
+            (None, Some(server), Some(uri)) => {
+                if server.trim().is_empty() {
+                    return Err(WonderError::validation(
+                        "mcp_resource_read `server` must be non-empty",
+                    ));
+                }
+                if uri.trim().is_empty() {
+                    return Err(WonderError::validation(
+                        "mcp_resource_read `uri` must be non-empty",
+                    ));
+                }
+            }
+            // Nothing provided at all
+            (None, None, None) => {
+                return Err(WonderError::validation(
+                    "mcp_resource_read requires either `resource_name` or both `server` and `uri`",
+                ));
+            }
+            // Partial / mixed combination
+            _ => {
+                return Err(WonderError::validation(
+                    "mcp_resource_read: provide either `resource_name` alone, or both `server` and `uri` together",
+                ));
+            }
         }
         Ok(())
     }
@@ -111,9 +155,23 @@ impl Tool for McpResourceReadTool {
                 ToolSchema::object()
                     .property(
                         "resource_name",
-                        ToolSchema::string("qualified MCP resource name"),
+                        ToolSchema::string(
+                            "qualified MCP resource name searched across all configured servers                              (e.g. `mcp__demo__resource__readme`)",
+                        ),
                     )
-                    .required("resource_name"),
+                    .property(
+                        "server",
+                        ToolSchema::string(
+                            "MCP server name — use together with `uri` for a direct resource                              read (parity with upstream ReadMcpResourceTool)",
+                        ),
+                    )
+                    .property(
+                        "uri",
+                        ToolSchema::string(
+                            "resource URI for a direct read — use together with `server`",
+                        ),
+                    ),
+                // No JSON-schema `required` array: validate() enforces the two valid patterns.
             );
         spec.aliases.push("ReadMcpResourceTool".into());
         spec.read_only = true;
@@ -142,7 +200,18 @@ impl Tool for McpResourceReadTool {
         })?;
         input.validate()?;
 
-        let content = read_resource_in_storage(&storage_root()?, &input.resource_name)?;
+        let root = storage_root()?;
+        let content = match (&input.resource_name, &input.server, &input.uri) {
+            // Direct read by server + URI (upstream ReadMcpResourceTool parity).
+            (None, Some(server), Some(uri)) => {
+                read_resource_by_server_uri(&root, server, uri)?
+            }
+            // Catalog search by qualified name.
+            _ => {
+                let name = input.resource_name.as_deref().expect("validated");
+                read_resource_in_storage(&root, name)?
+            }
+        };
         Ok(ToolResult::success(use_id, content))
     }
 }
@@ -185,6 +254,29 @@ fn read_resource_in_storage(storage_root: &Path, resource_name: &str) -> Result<
     }
 
     Err(WonderError::not_found("mcp resource", resource_name))
+}
+
+/// Read a resource directly by MCP server name and URI, without catalog discovery.
+///
+/// This mirrors the upstream `ReadMcpResourceTool { server, uri }` dispatch path and lets
+/// callers skip the full catalog round-trip when they already know the resource address.
+fn read_resource_by_server_uri(storage_root: &Path, server_name: &str, uri: &str) -> Result<String> {
+    let store = McpConfigStore::new(storage_root);
+    let config = store.read()?;
+
+    let server = config
+        .server(server_name)
+        .ok_or_else(|| WonderError::not_found("mcp server", server_name))?;
+
+    if !server.enabled {
+        return Err(WonderError::validation(format!(
+            "mcp server `{server_name}` is disabled"
+        )));
+    }
+
+    let mut client = McpClient::connect(server, &config.client, &config.protocol_version)?;
+    let result = client.read_resource(uri)?;
+    Ok(format_resource_contents(&result.contents))
 }
 
 fn format_resource_list(catalog: &McpCatalog, server_name: Option<&str>) -> Vec<String> {
@@ -289,8 +381,10 @@ mod tests {
         assert!(rendered[0].contains("mcp__demo__resource__demo"));
     }
 
+    // --- McpResourceReadInput validation ---
+
     #[test]
-    fn read_input_requires_resource_name() {
+    fn read_input_requires_resource_name_non_empty() {
         let tool = McpResourceReadTool;
         let error = tool
             .validate_input(&json!({ "resource_name": "" }))
@@ -300,12 +394,103 @@ mod tests {
     }
 
     #[test]
+    fn read_input_rejects_empty_object() {
+        let error = McpResourceReadInput {
+            resource_name: None,
+            server: None,
+            uri: None,
+        }
+        .validate()
+        .expect_err("empty input");
+
+        assert!(error.to_string().contains("resource_name"));
+    }
+
+    #[test]
+    fn read_input_accepts_server_and_uri() {
+        McpResourceReadInput {
+            resource_name: None,
+            server: Some("demo".into()),
+            uri: Some("file:///workspace/Cargo.toml".into()),
+        }
+        .validate()
+        .expect("server + uri is valid");
+    }
+
+    #[test]
+    fn read_input_rejects_server_without_uri() {
+        let error = McpResourceReadInput {
+            resource_name: None,
+            server: Some("demo".into()),
+            uri: None,
+        }
+        .validate()
+        .expect_err("server alone is invalid");
+
+        assert!(error.to_string().contains("server") || error.to_string().contains("uri"));
+    }
+
+    #[test]
+    fn read_input_rejects_uri_without_server() {
+        let error = McpResourceReadInput {
+            resource_name: None,
+            server: None,
+            uri: Some("file:///workspace/Cargo.toml".into()),
+        }
+        .validate()
+        .expect_err("uri alone is invalid");
+
+        assert!(error.to_string().contains("server") || error.to_string().contains("uri"));
+    }
+
+    #[test]
+    fn read_input_rejects_mixing_resource_name_with_server_uri() {
+        let error = McpResourceReadInput {
+            resource_name: Some("mcp__demo__resource__readme".into()),
+            server: Some("demo".into()),
+            uri: Some("file:///workspace/README.md".into()),
+        }
+        .validate()
+        .expect_err("mixing modes is invalid");
+
+        assert!(
+            error.to_string().contains("resource_name")
+                || error.to_string().contains("server")
+                || error.to_string().contains("uri")
+        );
+    }
+
+    #[test]
+    fn read_input_rejects_empty_server_in_server_uri_mode() {
+        let error = McpResourceReadInput {
+            resource_name: None,
+            server: Some("   ".into()),
+            uri: Some("file:///workspace/Cargo.toml".into()),
+        }
+        .validate()
+        .expect_err("empty server in server+uri mode");
+
+        assert!(error.to_string().contains("server"));
+    }
+
+    #[test]
     fn read_spec_captures_permission_metadata_and_alias() {
         let spec = McpResourceReadTool.spec();
 
         assert!(spec.read_only);
         assert!(spec.concurrency_safe);
         assert!(spec.aliases.contains(&"ReadMcpResourceTool".to_string()));
+    }
+
+    #[test]
+    fn read_spec_exposes_server_and_uri_properties() {
+        let spec = McpResourceReadTool.spec();
+        let schema = &spec.input_schema;
+
+        // All three dispatch fields must be described in the JSON schema.
+        assert!(schema["properties"]["resource_name"].is_object());
+        assert!(schema["properties"]["server"].is_object());
+        assert!(schema["properties"]["uri"].is_object());
     }
 
     #[test]
