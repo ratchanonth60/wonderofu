@@ -41,6 +41,17 @@ async fn integration_mcp_fake_server_tool_call() {
     let tools = client.list_tools().expect("list tools");
     assert_eq!(tools.len(), 1);
     assert_eq!(tools[0].name, "Echo Text");
+    assert_eq!(
+        tools[0]
+            .annotations
+            .as_ref()
+            .and_then(|annotations| annotations.read_only_hint),
+        Some(true)
+    );
+    assert_eq!(
+        tools[0].meta.as_ref().expect("meta")["origin"],
+        json!("fake-server")
+    );
 
     let result = client
         .call_tool("Echo Text", json!({ "text": "hello integration" }))
@@ -144,6 +155,14 @@ fn discover_catalog_tools_returns_one_tool_from_fake_server() {
         tool.spec().name,
         "mcp__demo__echo_text",
         "qualified name should be namespaced with server prefix"
+    );
+    assert!(
+        tool.spec().read_only,
+        "readOnlyHint should propagate to ToolSpec"
+    );
+    assert_eq!(
+        tool.spec().input_schema["x-mcp-search-like-hint"],
+        json!(true)
     );
     assert_eq!(tool.server_name(), "demo");
 }

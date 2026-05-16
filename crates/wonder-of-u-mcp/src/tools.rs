@@ -8,7 +8,7 @@ use std::{
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{Value, json};
 use wonder_of_u_core::{
     FeatureFlag, Result, Tool, ToolContext, ToolKind, ToolResult, ToolSchema, ToolSpec, ToolUseId,
     WonderError,
@@ -118,6 +118,7 @@ impl Tool for McpResourceListTool {
                 "server",
                 ToolSchema::string("optional MCP server name filter"),
             ));
+        annotate_resource_dispatch_schema(&mut spec);
         spec.aliases.push("ListMcpResourcesTool".into());
         spec.read_only = true;
         spec.concurrency_safe = true;
@@ -153,29 +154,34 @@ impl Tool for McpResourceListTool {
 #[async_trait]
 impl Tool for McpResourceReadTool {
     fn spec(&self) -> ToolSpec {
-        let mut spec = ToolSpec::new("mcp_resource_read", "Read an MCP resource", ToolKind::Mcp)
-            .with_input_schema(
-                ToolSchema::object()
-                    .property(
-                        "resource_name",
-                        ToolSchema::string(
-                            "qualified MCP resource name searched across all configured servers                              (e.g. `mcp__demo__resource__readme`)",
-                        ),
-                    )
-                    .property(
-                        "server",
-                        ToolSchema::string(
-                            "MCP server name — use together with `uri` for a direct resource                              read (parity with upstream ReadMcpResourceTool)",
-                        ),
-                    )
-                    .property(
-                        "uri",
-                        ToolSchema::string(
-                            "resource URI for a direct read — use together with `server`",
-                        ),
+        let mut spec = ToolSpec::new(
+            "mcp_resource_read",
+            "Read an MCP resource",
+            ToolKind::Mcp,
+        )
+        .with_input_schema(
+            ToolSchema::object()
+                .property(
+                    "resource_name",
+                    ToolSchema::string(
+                        "qualified MCP resource name searched across all configured servers                              (e.g. `mcp__demo__resource__readme`)",
                     ),
-                // No JSON-schema `required` array: validate() enforces the two valid patterns.
-            );
+                )
+                .property(
+                    "server",
+                    ToolSchema::string(
+                        "MCP server name — use together with `uri` for a direct resource                              read (parity with upstream ReadMcpResourceTool)",
+                    ),
+                )
+                .property(
+                    "uri",
+                    ToolSchema::string(
+                        "resource URI for a direct read — use together with `server`",
+                    ),
+                ),
+            // No JSON-schema `required` array: validate() enforces the two valid patterns.
+        );
+        annotate_resource_dispatch_schema(&mut spec);
         spec.aliases.push("ReadMcpResourceTool".into());
         spec.read_only = true;
         spec.concurrency_safe = true;
@@ -456,6 +462,19 @@ fn format_call_result(result: &CallToolResult) -> String {
         .join("\n")
 }
 
+fn annotate_resource_dispatch_schema(spec: &mut ToolSpec) {
+    if let Some(object) = spec.input_schema.as_object_mut() {
+        object.insert(
+            "x-mcp-resource-capability-dependent".into(),
+            Value::Bool(true),
+        );
+        object.insert(
+            "x-mcp-resource-dispatch".into(),
+            json!("always_registered_runtime_checked"),
+        );
+    }
+}
+
 fn storage_root() -> Result<PathBuf> {
     storage_root_from_env(|name| env::var_os(name))
 }
@@ -621,6 +640,29 @@ mod tests {
         assert!(schema["properties"]["resource_name"].is_object());
         assert!(schema["properties"]["server"].is_object());
         assert!(schema["properties"]["uri"].is_object());
+    }
+
+    #[test]
+    fn resource_specs_document_runtime_capability_dependency() {
+        let list_spec = McpResourceListTool.spec();
+        let read_spec = McpResourceReadTool.spec();
+
+        assert_eq!(
+            list_spec.input_schema["x-mcp-resource-capability-dependent"],
+            json!(true)
+        );
+        assert_eq!(
+            list_spec.input_schema["x-mcp-resource-dispatch"],
+            json!("always_registered_runtime_checked")
+        );
+        assert_eq!(
+            read_spec.input_schema["x-mcp-resource-capability-dependent"],
+            json!(true)
+        );
+        assert_eq!(
+            read_spec.input_schema["x-mcp-resource-dispatch"],
+            json!("always_registered_runtime_checked")
+        );
     }
 
     #[test]

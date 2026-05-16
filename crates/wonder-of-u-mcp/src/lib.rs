@@ -34,6 +34,7 @@ pub use types::{
     CallToolParams, CallToolResult, ClientCapabilities, ClientInfo, InitializeParams,
     InitializeResult, JsonRpcError, JsonRpcNotification, JsonRpcRequest, JsonRpcResponse,
     ListChangedCapability, ListResourcesParams, ListResourcesResult, ListToolsParams,
-    ListToolsResult, McpContent, McpResource, McpResourceContents, McpTool, ReadResourceParams,
-    ReadResourceResult, ResourcesCapability, ServerCapabilities, ServerInfo, ToolsCapability,
+    ListToolsResult, McpContent, McpResource, McpResourceContents, McpTool, McpToolAnnotations,
+    ReadResourceParams, ReadResourceResult, ResourcesCapability, ServerCapabilities, ServerInfo,
+    ToolsCapability,
 };
