@@ -458,8 +458,10 @@ fn render_output_persistent(stdout: &str, exit_code: i32) -> String {
 #[cfg(test)]
 mod tests {
     use std::{
-        path::PathBuf,
-        sync::{Arc, Mutex},
+        env,
+        ffi::OsString,
+        path::{Path, PathBuf},
+        sync::{Arc, Mutex, MutexGuard, OnceLock},
     };
 
     use futures::executor::block_on;
@@ -471,6 +473,48 @@ mod tests {
     use wonder_of_u_test_support::unique_test_dir;
 
     use super::*;
+
+    fn storage_env_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
+
+    struct StorageEnvGuard {
+        previous: Option<OsString>,
+        _lock: MutexGuard<'static, ()>,
+    }
+
+    impl StorageEnvGuard {
+        fn set(path: &Path) -> Self {
+            let lock = storage_env_lock()
+                .lock()
+                .expect("storage env lock poisoned");
+            let previous = env::var_os("WONDER_OF_U_STORAGE_DIR");
+            // SAFETY: The mutex serializes tests that mutate this process-wide
+            // variable, and Drop restores the prior value.
+            unsafe {
+                env::set_var("WONDER_OF_U_STORAGE_DIR", path.display().to_string());
+            }
+            Self {
+                previous,
+                _lock: lock,
+            }
+        }
+    }
+
+    impl Drop for StorageEnvGuard {
+        fn drop(&mut self) {
+            // SAFETY: The guard holds the module-wide mutex while restoring the
+            // process-wide environment variable to its previous value.
+            unsafe {
+                if let Some(previous) = &self.previous {
+                    env::set_var("WONDER_OF_U_STORAGE_DIR", previous);
+                } else {
+                    env::remove_var("WONDER_OF_U_STORAGE_DIR");
+                }
+            }
+        }
+    }
 
     fn tool_context(cwd: PathBuf) -> ToolContext {
         ToolContext {
@@ -580,22 +624,18 @@ mod tests {
     #[test]
     fn bash_run_in_background_spawns_task_and_returns_id() {
         let storage_dir = unique_test_dir("tools-bash-background-storage");
-        // SAFETY: This test mutates an env var to point app_root() at a temp dir.
-        // Tests in this module run in a single process; concurrent access to this
-        // specific var is acceptable because each call to unique_test_dir returns
-        // a distinct path, and the var is read only once per execute() call.
-        unsafe {
-            std::env::set_var("WONDER_OF_U_STORAGE_DIR", storage_dir.display().to_string());
-        }
 
         let dir = unique_test_dir("tools-bash-background");
         let tool = BashTool;
-        let result = block_on(tool.execute(
-            tool_context(dir),
-            ToolUseId::new(),
-            json!({ "command": "echo background_ok", "run_in_background": true }),
-        ))
-        .expect("run background bash tool");
+        let result = {
+            let _storage_env = StorageEnvGuard::set(&storage_dir);
+            block_on(tool.execute(
+                tool_context(dir),
+                ToolUseId::new(),
+                json!({ "command": "echo background_ok", "run_in_background": true }),
+            ))
+            .expect("run background bash tool")
+        };
 
         assert!(
             result.success,
@@ -727,20 +767,18 @@ mod tests {
     #[test]
     fn bash_run_in_background_watchdog_marks_task_completed() {
         let storage_dir = unique_test_dir("tools-bash-watchdog-storage");
-        // SAFETY: Env-var mutation is acceptable for test isolation; see the
-        // comment in `bash_run_in_background_spawns_task_and_returns_id`.
-        unsafe {
-            std::env::set_var("WONDER_OF_U_STORAGE_DIR", storage_dir.display().to_string());
-        }
 
         let dir = unique_test_dir("tools-bash-watchdog");
         let tool = BashTool;
-        let result = block_on(tool.execute(
-            tool_context(dir),
-            ToolUseId::new(),
-            json!({ "command": "exit 0", "run_in_background": true }),
-        ))
-        .expect("run background bash tool");
+        let result = {
+            let _storage_env = StorageEnvGuard::set(&storage_dir);
+            block_on(tool.execute(
+                tool_context(dir),
+                ToolUseId::new(),
+                json!({ "command": "exit 0", "run_in_background": true }),
+            ))
+            .expect("run background bash tool")
+        };
 
         assert!(result.success, "expected success: {:?}", result.content);
         let task_id_str = result.metadata["background_task_id"]
@@ -773,18 +811,18 @@ mod tests {
     #[test]
     fn bash_run_in_background_watchdog_marks_task_failed_on_nonzero_exit() {
         let storage_dir = unique_test_dir("tools-bash-watchdog-fail-storage");
-        unsafe {
-            std::env::set_var("WONDER_OF_U_STORAGE_DIR", storage_dir.display().to_string());
-        }
 
         let dir = unique_test_dir("tools-bash-watchdog-fail");
         let tool = BashTool;
-        let result = block_on(tool.execute(
-            tool_context(dir),
-            ToolUseId::new(),
-            json!({ "command": "exit 42", "run_in_background": true }),
-        ))
-        .expect("run background bash tool");
+        let result = {
+            let _storage_env = StorageEnvGuard::set(&storage_dir);
+            block_on(tool.execute(
+                tool_context(dir),
+                ToolUseId::new(),
+                json!({ "command": "exit 42", "run_in_background": true }),
+            ))
+            .expect("run background bash tool")
+        };
 
         assert!(
             result.success,
