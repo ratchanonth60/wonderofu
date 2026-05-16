@@ -22,8 +22,15 @@ use crate::{app_root, base_spec, parse_input, require_non_empty_text};
 const DEFAULT_TASK_OUTPUT_LINES: u32 = 50;
 const DEFAULT_TASK_OUTPUT_TIMEOUT_MS: u64 = 30_000;
 const TASK_OUTPUT_POLL_INTERVAL: Duration = Duration::from_millis(100);
-const SOURCE_TASK_RUNTIME_UNAVAILABLE: &str =
-    "the Rust port does not implement the source task-list runtime in wonder-of-u-tools yet";
+const SOURCE_TASK_RUNTIME_UNAVAILABLE: &str = concat!(
+    "todo-v2 task tools are blocked in the Rust port: ToolContext does not expose a logical ",
+    "task-list state, and TaskStore persists background runtime tasks rather than source-compatible ",
+    "TaskCreate/TaskUpdate entries"
+);
+const SOURCE_TASK_RUNTIME_BLOCKERS: [&str; 2] = [
+    "ToolContext does not expose a logical task-list state for todo-v2 tools",
+    "TaskStore persists background runtime tasks rather than source-compatible task-list entries",
+];
 /// Represents task create input
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -307,6 +314,7 @@ impl Tool for TaskCreateTool {
         );
         spec.aliases.push("TaskCreate".into());
         spec.concurrency_safe = true;
+        spec.required_features.insert(FeatureFlag::TodoV2);
         spec
     }
 
@@ -342,6 +350,7 @@ impl Tool for TaskGetTool {
         spec.aliases.push("TaskGet".into());
         spec.read_only = true;
         spec.concurrency_safe = true;
+        spec.required_features.insert(FeatureFlag::TodoV2);
         spec
     }
 
@@ -373,6 +382,7 @@ impl Tool for TaskListTool {
         spec.aliases.push("TaskList".into());
         spec.read_only = true;
         spec.concurrency_safe = true;
+        spec.required_features.insert(FeatureFlag::TodoV2);
         spec
     }
 
@@ -440,6 +450,7 @@ impl Tool for TaskUpdateTool {
         spec.aliases.push("TaskUpdate".into());
         spec.concurrency_safe = true;
         spec.destructive = true;
+        spec.required_features.insert(FeatureFlag::TodoV2);
         spec
     }
 
@@ -587,15 +598,14 @@ fn require_non_empty_string_list(tool_name: &str, field: &str, values: &[String]
 fn unsupported_task_list_result(use_id: ToolUseId, tool_name: &str) -> ToolResult {
     let mut result = ToolResult::failure(
         use_id,
-        format!(
-            "{tool_name} is unavailable: {SOURCE_TASK_RUNTIME_UNAVAILABLE}; only source-compatible input validation is implemented"
-        ),
+        format!("{tool_name} is unavailable: {SOURCE_TASK_RUNTIME_UNAVAILABLE}"),
     );
     result.metadata = json!({
         "supported": false,
         "tool": tool_name,
-        "tool_family": "source_task_list",
+        "tool_family": "todo_v2_task_list",
         "reason": SOURCE_TASK_RUNTIME_UNAVAILABLE,
+        "blocked_by": SOURCE_TASK_RUNTIME_BLOCKERS,
     });
     result
 }
@@ -949,6 +959,14 @@ mod tests {
         assert!(result.content.contains("task_create is unavailable"));
         assert_eq!(result.metadata["supported"], false);
         assert_eq!(result.metadata["tool"], "task_create");
+        assert_eq!(result.metadata["tool_family"], "todo_v2_task_list");
+        assert_eq!(
+            result.metadata["blocked_by"],
+            json!([
+                "ToolContext does not expose a logical task-list state for todo-v2 tools",
+                "TaskStore persists background runtime tasks rather than source-compatible task-list entries",
+            ])
+        );
     }
 
     #[test]
