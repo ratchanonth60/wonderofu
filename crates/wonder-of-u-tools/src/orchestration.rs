@@ -396,6 +396,7 @@ mod tests {
         ToolContext {
             session_id: SessionId::new(),
             cwd: PathBuf::from("/workspace"),
+            session_worktree: None,
             permission_mode: PermissionMode::Default,
             additional_working_directories: Vec::new(),
             permission_rules: Vec::new(),

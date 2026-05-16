@@ -89,6 +89,29 @@ impl Default for CostState {
         Self::new()
     }
 }
+
+/// Session-scoped git worktree state persisted across tool calls.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct RuntimeWorktreeState {
+    /// Stores the original cwd before entering the worktree.
+    pub original_cwd: PathBuf,
+    /// Stores the repository root used to create the worktree.
+    pub repository_root: PathBuf,
+    /// Stores the linked worktree path.
+    pub worktree_path: PathBuf,
+    /// Stores the linked worktree branch.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worktree_branch: Option<String>,
+    /// Stores the original branch at enter time.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub original_branch: Option<String>,
+    /// Stores the original head commit at enter time.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub original_head_commit: Option<String>,
+    /// Stores an optional tmux session name associated with the worktree.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tmux_session_name: Option<String>,
+}
 /// Represents session state
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct SessionState {
@@ -107,6 +130,9 @@ pub struct SessionState {
     /// Stores the app version
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub app_version: Option<String>,
+    /// Stores the active EnterWorktree session state when the runtime switched into one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worktree: Option<RuntimeWorktreeState>,
     /// Stores the tags
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tags: Vec<String>,
@@ -130,6 +156,7 @@ impl SessionState {
             git_branch: None,
             entrypoint: None,
             app_version: None,
+            worktree: None,
             tags: Vec::new(),
             created_at: now,
             updated_at: now,

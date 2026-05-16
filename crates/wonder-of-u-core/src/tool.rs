@@ -10,8 +10,8 @@ use serde_json::{Map, Value, json};
 
 use crate::{
     AdditionalWorkingDirectory, FeatureFlag, FeatureSet, PermissionDecision, PermissionMode,
-    PermissionRequest, PermissionRule, Result, SessionId, ShellSessionStore, ToolPermissionContext,
-    ToolUseId, WonderError, evaluate_permission,
+    PermissionRequest, PermissionRule, Result, RuntimeWorktreeState, SessionId, ShellSessionStore,
+    ToolPermissionContext, ToolUseId, WonderError, evaluate_permission,
 };
 /// Enumerates tool kind
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -286,6 +286,8 @@ pub struct ToolContext {
     pub session_id: SessionId,
     /// Stores the cwd
     pub cwd: PathBuf,
+    /// Stores active worktree session state when the runtime has switched into one.
+    pub session_worktree: Option<RuntimeWorktreeState>,
     /// Stores the permission mode
     pub permission_mode: PermissionMode,
     /// Stores the additional working directories
@@ -652,6 +654,7 @@ mod tests {
         ToolContext {
             session_id: SessionId::new(),
             cwd: PathBuf::from("/workspace"),
+            session_worktree: None,
             permission_mode: PermissionMode::Default,
             additional_working_directories: Vec::new(),
             permission_rules: Vec::new(),
