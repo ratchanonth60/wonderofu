@@ -1081,6 +1081,17 @@ fn task_output_metadata(
     not_ready: bool,
     legacy: bool,
 ) -> Value {
+    // Include progress metrics only when data exists so legacy consumers
+    // that check for key absence are unaffected.
+    let progress = if task.progress.has_data() {
+        Some(serde_json::json!({
+            "tool_use_count": task.progress.tool_use_count,
+            "token_count": task.progress.token_count,
+            "last_tool_name": task.progress.last_tool_name,
+        }))
+    } else {
+        None
+    };
     json!({
         "task_id": task_id,
         "status": task_status_label(task.status),
@@ -1093,6 +1104,7 @@ fn task_output_metadata(
         "lines": lines,
         "legacy": legacy,
         "cwd": task.cwd.as_ref().map(|cwd| cwd.display().to_string()),
+        "progress": progress,
     })
 }
 

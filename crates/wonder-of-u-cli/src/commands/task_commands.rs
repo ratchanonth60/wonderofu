@@ -716,6 +716,24 @@ pub(super) fn render_task_detail(
     if let Some(ref branch) = task.worktree_branch {
         lines.push(format!("worktree_branch={}", sanitize_single_line(branch)));
     }
+    // Progress metrics – only emitted when at least one counter is non-zero,
+    // so output for tasks with no recorded activity is unchanged.
+    if task.progress.has_data() {
+        lines.push(format!(
+            "progress.tool_use_count={}",
+            task.progress.tool_use_count
+        ));
+        lines.push(format!(
+            "progress.token_count={}",
+            task.progress.token_count
+        ));
+        if let Some(ref name) = task.progress.last_tool_name {
+            lines.push(format!("progress.last_tool={}", sanitize_single_line(name)));
+        }
+        if let Some(at) = task.progress.last_tool_at {
+            lines.push(format!("progress.last_tool_at={at}"));
+        }
+    }
     lines.push(format!("log_tail_lines={}", log_tail.len()));
     for (index, line) in log_tail.iter().enumerate() {
         lines.push(format!("log_tail[{index}]={}", sanitize_single_line(line)));
@@ -1040,6 +1058,68 @@ mod tests {
         assert!(
             text.contains("storage_dir=disabled"),
             "status without storage should say disabled; got:\n{text}"
+        );
+    }
+
+    // ── Progress-tracking rendering tests ─────────────────────────────────────
+
+    #[test]
+    fn task_detail_omits_progress_lines_when_no_data() {
+        let task = TaskState::pending("no progress task");
+        let now = time::OffsetDateTime::now_utc();
+        let output = render_task_detail("task", &task, &[], now);
+        assert!(
+            !output.contains("progress."),
+            "progress lines should be absent when no data recorded;\n{output}"
+        );
+    }
+
+    #[test]
+    fn task_detail_includes_progress_lines_when_data_present() {
+        let mut task = TaskState::pending("with progress task");
+        task.record_tool_use("bash");
+        task.record_tool_use("read_file");
+        task.record_tokens(2048);
+
+        let now = time::OffsetDateTime::now_utc();
+        let output = render_task_detail("task", &task, &[], now);
+
+        assert!(
+            output.contains("progress.tool_use_count=2"),
+            "tool_use_count should be 2;\n{output}"
+        );
+        assert!(
+            output.contains("progress.token_count=2048"),
+            "token_count should be 2048;\n{output}"
+        );
+        assert!(
+            output.contains("progress.last_tool=read_file"),
+            "last tool should be read_file;\n{output}"
+        );
+        assert!(
+            output.contains("progress.last_tool_at="),
+            "last_tool_at timestamp should be present;\n{output}"
+        );
+    }
+
+    #[test]
+    fn task_detail_progress_lines_appear_before_log_tail() {
+        let mut task = TaskState::pending("ordering check");
+        task.record_tool_use("bash");
+
+        let now = time::OffsetDateTime::now_utc();
+        let log_tail = vec!["some log line".into()];
+        let output = render_task_detail("task", &task, &log_tail, now);
+
+        let progress_pos = output
+            .find("progress.tool_use_count")
+            .expect("progress line present");
+        let log_pos = output
+            .find("log_tail_lines=")
+            .expect("log_tail_lines present");
+        assert!(
+            progress_pos < log_pos,
+            "progress lines should appear before log_tail_lines;\n{output}"
         );
     }
 }
