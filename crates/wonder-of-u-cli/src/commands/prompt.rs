@@ -1238,13 +1238,19 @@ fn execute_tool_call(
                     ToolResult::failure(call.use_id, format!("hook blocked tool: {reason}"))
                 }
                 HookOutcome::Allow => {
-                    let tool_result = match tool
-                        .permission_decision(context, &call.provider_call.arguments)
-                    {
+                    // A hook may replace the tool input via `{"updatedInput": {...}}`.
+                    // Use the updated input for both the permission check and execution
+                    // so that the approval flow operates on what the hook actually approved.
+                    let effective_input = pre_hook_report
+                        .updated_input
+                        .as_ref()
+                        .unwrap_or(&call.provider_call.arguments);
+
+                    let tool_result = match tool.permission_decision(context, effective_input) {
                         PermissionDecision::Allow { .. } => {
                             let tool = tool.clone();
                             let context = context.clone();
-                            let arguments = call.provider_call.arguments.clone();
+                            let arguments = effective_input.clone();
                             let use_id = call.use_id;
                             match std::thread::spawn(move || {
                                 futures::executor::block_on(
@@ -1290,6 +1296,8 @@ fn execute_tool_call(
                     };
 
                     // PostToolUse / PostToolUseFailure hooks run after execution.
+                    // Pass effective_input so post-hooks see the same input that
+                    // was actually executed, not the original AI-provided input.
                     let post_event = if tool_result.success {
                         POST_TOOL_USE
                     } else {
@@ -1304,7 +1312,7 @@ fn execute_tool_call(
                     let post_hook_report = run_hooks(
                         post_event,
                         &call.provider_call.tool_name,
-                        &call.provider_call.arguments,
+                        effective_input,
                         Some(&tool_response_json),
                         &context.cwd,
                         storage_dir,
