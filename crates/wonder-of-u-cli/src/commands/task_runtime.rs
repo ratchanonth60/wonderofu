@@ -22,6 +22,10 @@ const HEARTBEAT_INTERVAL_SECS: u64 = 2;
 const STALE_HEARTBEAT_AFTER_SECS: i64 = 8;
 const CLI_BIN_OVERRIDE_ENV: &str = "WONDER_OF_U_CLI_BIN";
 
+/// Environment variable injected into every named agent subprocess so the
+/// subprocess can poll its own mailbox inbox at turn start.
+pub(crate) const WONDER_OF_U_AGENT_NAME_ENV: &str = "WONDER_OF_U_AGENT_NAME";
+
 #[derive(Clone, Debug)]
 pub(crate) struct TaskManager {
     store: TaskStore,
@@ -318,6 +322,11 @@ impl TaskManager {
         // recursive fork guard in AgentTool::execute().
         if let Some(depth) = launch.fork_depth {
             env_vars.push(("WONDER_OF_U_FORK_DEPTH".into(), depth.to_string()));
+        }
+        // Inject agent name so the child subprocess can locate its own mailbox
+        // inbox when polling for unread messages at turn start.
+        if !launch.name.is_empty() {
+            env_vars.push((WONDER_OF_U_AGENT_NAME_ENV.into(), launch.name.clone()));
         }
 
         let pid = spawn_background_task(

@@ -22,7 +22,7 @@ use wonder_of_u_core::{
 use wonder_of_u_core::{MailboxKind, MailboxMessage};
 use wonder_of_u_storage::{
     AgentTaskResultStore, CostStore, FleetStore, MailboxStore, SessionCostLedger,
-    SessionMemoryIndexStore, SessionMetadata, SessionSnapshot, TranscriptStore,
+    SessionMemoryIndexStore, SessionMetadata, SessionSnapshot, TaskStore, TranscriptStore,
 };
 use wonder_of_u_tools::{builtin_registry_with_mcp_catalog, provider_tool_specs};
 
@@ -31,6 +31,7 @@ use super::{
     fleet::direct_launch_fleet_request,
     hooks::{HookOutcome, POST_TOOL_USE, POST_TOOL_USE_FAILURE, PRE_TOOL_USE, run_hooks},
     parse_command_args, parse_session_id,
+    task_runtime::WONDER_OF_U_AGENT_NAME_ENV,
 };
 
 const MAX_TOOL_LOOP_ITERATIONS: usize = 6;
@@ -193,6 +194,23 @@ pub(crate) fn execute_prompt_run(
         &input.session_title,
         input.entrypoint,
     )?;
+
+    // ── inbox polling ─────────────────────────────────────────────────────────
+    // When this process was launched as a named agent subprocess, check for
+    // any unread mailbox messages and prepend them to the conversation turn so
+    // the model sees them immediately.  Each message is consumed exactly once
+    // via MailboxStore::mark_read; storage errors are surfaced as System
+    // transcript entries rather than silently swallowed.
+    let inbox_preamble = storage_dir
+        .map(|dir| poll_and_inject_inbox_messages(dir, &mut state, &mut persistence))
+        .unwrap_or_default();
+    let effective_prompt = if inbox_preamble.is_empty() {
+        input.prompt
+    } else {
+        format!("{inbox_preamble}\n\n---\n\n{}", input.prompt)
+    };
+    // ─────────────────────────────────────────────────────────────────────────
+
     let turn_result = execute_prompt_turn(
         storage_dir,
         &mut state,
@@ -205,8 +223,8 @@ pub(crate) fn execute_prompt_run(
             temperature: input.temperature,
             tool_use: input.tool_use,
             allowed_tools: input.allowed_tools,
-            user_prompt: input.prompt.clone(),
-            request_prompt: input.prompt,
+            user_prompt: effective_prompt.clone(),
+            request_prompt: effective_prompt,
         },
     );
 
@@ -1532,6 +1550,171 @@ fn permission_decision_label(decision: &PermissionDecision) -> &'static str {
     }
 }
 
+// ── Inbox polling ─────────────────────────────────────────────────────────────
+
+/// Polls the agent mailbox inbox for unread messages and returns a formatted
+/// preamble to prepend to the conversation turn.
+///
+/// # Behaviour
+///
+/// * Reads `WONDER_OF_U_AGENT_NAME` from the environment.  When absent or empty
+///   (i.e. the process was not launched as a named agent subprocess) the
+///   function returns an empty string immediately.
+/// * Lists the inbox via [`MailboxStore::list`].  Any storage error is persisted
+///   as a [`MessagePayload::System`] entry in the transcript and written to the
+///   task log; an empty string is returned so the turn still proceeds.
+/// * For each message whose ID has **not** yet been marked read, calls
+///   [`MailboxStore::mark_read`].  A `true` return means the message was newly
+///   consumed; a `false` return means it was already processed in a prior
+///   invocation and is skipped.  Mark-read errors are surfaced the same way as
+///   list errors and the message is skipped to avoid double-delivery.
+/// * Returns a human-readable, XML-structured preamble containing all newly
+///   consumed messages.  The caller prepends this to both `user_prompt` and
+///   `request_prompt` so the model sees the inbox content in the current turn.
+fn poll_and_inject_inbox_messages(
+    storage_dir: &Path,
+    state: &mut AppState,
+    persistence: &mut SessionPersistenceState,
+) -> String {
+    // Only act when this process was launched as a named agent subprocess.
+    let agent_name = match env::var(WONDER_OF_U_AGENT_NAME_ENV) {
+        Ok(n) if !n.is_empty() => n,
+        _ => return String::new(),
+    };
+
+    let store = MailboxStore::new(storage_dir);
+
+    let messages = match store.list(MailboxKind::Agent, &agent_name) {
+        Ok(msgs) => msgs,
+        Err(e) => {
+            let content =
+                format!("[inbox-poll] storage error listing inbox for agent \"{agent_name}\": {e}");
+            surface_inbox_error(storage_dir, state, persistence, &content);
+            return String::new();
+        }
+    };
+
+    if messages.is_empty() {
+        return String::new();
+    }
+
+    let mut preamble_parts = Vec::<String>::new();
+    let mut injected = 0usize;
+
+    for msg in &messages {
+        match store.mark_read(MailboxKind::Agent, &agent_name, msg.id) {
+            Ok(true) => {
+                // Freshly consumed — include in the model-facing preamble.
+                preamble_parts.push(format_inbox_message_xml(msg));
+                injected += 1;
+            }
+            Ok(false) => {
+                // Already consumed in a prior invocation — deterministic skip.
+            }
+            Err(e) => {
+                // Surfacing the error is critical; skipping the message avoids
+                // a potential double-delivery if the next invocation succeeds.
+                let content = format!(
+                    "[inbox-poll] error marking message {} read for agent \"{agent_name}\": {e}; \
+                     message skipped to prevent double-delivery",
+                    msg.id
+                );
+                surface_inbox_error(storage_dir, state, persistence, &content);
+            }
+        }
+    }
+
+    if injected == 0 {
+        return String::new();
+    }
+
+    // Write a task-log entry so operators can observe inbox activity without
+    // needing to parse the transcript.
+    append_inbox_poll_task_log(
+        storage_dir,
+        &format!(
+            "[wonder-of-u inbox-poll] at={} agent={agent_name} injected={injected}\n",
+            time::OffsetDateTime::now_utc(),
+        ),
+    );
+
+    format!(
+        "The following {injected} inbox message(s) have been delivered to agent \
+         \"{agent_name}\" since the last turn:\n\n{}",
+        preamble_parts.join("\n\n")
+    )
+}
+
+/// Formats a [`MailboxMessage`] as an XML-like block for model injection.
+///
+/// The `from`, `to`, `subject`, and `body` fields are XML-escaped so special
+/// characters in free-text content do not corrupt the surrounding structure.
+fn format_inbox_message_xml(msg: &MailboxMessage) -> String {
+    format!(
+        concat!(
+            "<mailbox_message",
+            " id=\"{id}\"",
+            " from=\"{from}\"",
+            " to=\"{to}\"",
+            " created_at=\"{created_at}\">\n",
+            "  <subject>{subject}</subject>\n",
+            "  <body>{body}</body>\n",
+            "</mailbox_message>"
+        ),
+        id = msg.id,
+        from = xml_escape(&msg.from),
+        to = xml_escape(&msg.to),
+        created_at = msg.created_at,
+        subject = xml_escape(&msg.subject),
+        body = xml_escape(&msg.body),
+    )
+}
+
+/// Minimal XML character escaping for embedding free text in attribute values
+/// and element content.
+fn xml_escape(s: &str) -> String {
+    // Only the five predefined XML entities need escaping; `&` must come first
+    // to avoid double-escaping the introduced `&` characters.
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&apos;")
+}
+
+/// Surfaces `error` as a [`MessagePayload::System`] transcript entry and writes
+/// it to the task log so neither the model nor operators miss it.
+fn surface_inbox_error(
+    storage_dir: &Path,
+    state: &mut AppState,
+    persistence: &mut SessionPersistenceState,
+    error: &str,
+) {
+    if let Ok(msg) = append_contextual_message(
+        state,
+        MessagePayload::System {
+            content: error.to_string(),
+        },
+    ) {
+        let _ = persist_messages_and_state(Some(storage_dir), state, persistence, &[msg]);
+    }
+    append_inbox_poll_task_log(storage_dir, &format!("{error}\n"));
+}
+
+/// Appends `entry` to the task log identified by `WONDER_OF_U_TASK_ID`.
+///
+/// Silently does nothing when the env var is absent, unparseable, or the log
+/// write fails — this is a best-effort observability path.
+fn append_inbox_poll_task_log(storage_dir: &Path, entry: &str) {
+    let Ok(id_str) = env::var("WONDER_OF_U_TASK_ID") else {
+        return;
+    };
+    let Ok(task_id) = id_str.parse::<TaskId>() else {
+        return;
+    };
+    let _ = TaskStore::new(storage_dir).append_log(task_id, entry);
+}
+
 #[cfg(test)]
 mod tests {
     use wonder_of_u_core::{
@@ -1994,6 +2177,267 @@ mod tests {
             state.lookup_agent_by_name("planner"),
             None,
             "name should be gone after deregister"
+        );
+    }
+
+    // ── Inbox polling unit tests ───────────────────────────────────────────────
+
+    /// `format_inbox_message_xml` preserves sender, recipient, subject, and body
+    /// in the structured XML output.
+    #[test]
+    fn format_inbox_message_xml_preserves_metadata() {
+        use wonder_of_u_core::mailbox::MailboxMessage;
+
+        let msg = MailboxMessage::new(
+            "orchestrator",
+            "worker-01",
+            "Deploy ready",
+            "Please deploy v1.2.",
+        );
+        let xml = format_inbox_message_xml(&msg);
+
+        assert!(
+            xml.contains(&format!("id=\"{}\"", msg.id)),
+            "id in attributes"
+        );
+        assert!(xml.contains("from=\"orchestrator\""), "from in attributes");
+        assert!(xml.contains("to=\"worker-01\""), "to in attributes");
+        assert!(
+            xml.contains("<subject>Deploy ready</subject>"),
+            "subject element"
+        );
+        assert!(
+            xml.contains("<body>Please deploy v1.2.</body>"),
+            "body element"
+        );
+    }
+
+    /// `xml_escape` converts the five XML special characters correctly.
+    #[test]
+    fn xml_escape_handles_special_chars() {
+        assert_eq!(xml_escape("a & b"), "a &amp; b");
+        assert_eq!(xml_escape("<tag>"), "&lt;tag&gt;");
+        assert_eq!(xml_escape("say \"hi\""), "say &quot;hi&quot;");
+        assert_eq!(xml_escape("it's"), "it&apos;s");
+        // Already-escaped text should not double-escape.
+        assert_eq!(xml_escape("plain text"), "plain text");
+    }
+
+    /// Special XML characters in message fields are escaped in the XML output.
+    #[test]
+    fn format_inbox_message_xml_escapes_special_chars() {
+        use wonder_of_u_core::mailbox::MailboxMessage;
+
+        let msg = MailboxMessage::new(
+            "agent<1>",
+            "team&ops",
+            "subject with \"quotes\"",
+            "body with <tags> & entities",
+        );
+        let xml = format_inbox_message_xml(&msg);
+
+        assert!(xml.contains("from=\"agent&lt;1&gt;\""), "from is escaped");
+        assert!(xml.contains("to=\"team&amp;ops\""), "to is escaped");
+        assert!(
+            xml.contains("<subject>subject with &quot;quotes&quot;</subject>"),
+            "subject escaped"
+        );
+        assert!(
+            xml.contains("<body>body with &lt;tags&gt; &amp; entities</body>"),
+            "body escaped"
+        );
+    }
+
+    /// Inbox polling returns an empty string when `WONDER_OF_U_AGENT_NAME` is
+    /// not set — the function must be a no-op outside agent subprocesses.
+    #[test]
+    fn poll_inbox_returns_empty_without_agent_name_env() {
+        let dir = unique_test_dir("inbox-poll-no-agent-name");
+        let _rm = EnvVarGuard::remove(WONDER_OF_U_AGENT_NAME_ENV);
+
+        let mut state = AppState::new(dir.clone());
+        let mut persistence = SessionPersistenceState {
+            transcript_message_count: 0,
+            transcript_warning_count: 0,
+            persisted: false,
+        };
+        let result = poll_and_inject_inbox_messages(&dir, &mut state, &mut persistence);
+        assert!(
+            result.is_empty(),
+            "should be empty without agent name env var"
+        );
+        assert!(state.messages.is_empty(), "no messages should be appended");
+    }
+
+    /// Inbox polling returns an empty string (and does not error) when the inbox
+    /// has no messages yet.
+    #[test]
+    fn poll_inbox_returns_empty_when_no_messages() {
+        let dir = unique_test_dir("inbox-poll-empty-inbox");
+        let _ag = EnvVarGuard::set(WONDER_OF_U_AGENT_NAME_ENV, "worker01");
+
+        let mut state = AppState::new(dir.clone());
+        let mut persistence = SessionPersistenceState {
+            transcript_message_count: 0,
+            transcript_warning_count: 0,
+            persisted: false,
+        };
+        let result = poll_and_inject_inbox_messages(&dir, &mut state, &mut persistence);
+        assert!(result.is_empty(), "no preamble for empty inbox");
+    }
+
+    /// Inbox polling reads each appended message exactly once: the first poll
+    /// returns a non-empty preamble; a second poll returns nothing.
+    #[test]
+    fn poll_inbox_reads_messages_exactly_once() {
+        use wonder_of_u_core::{MailboxKind, mailbox::MailboxMessage};
+        use wonder_of_u_storage::MailboxStore;
+
+        let dir = unique_test_dir("inbox-poll-exactly-once");
+        let _ag = EnvVarGuard::set(WONDER_OF_U_AGENT_NAME_ENV, "worker01");
+
+        // Append two messages to the agent inbox.
+        let store = MailboxStore::new(&dir);
+        let m1 = MailboxMessage::new("orchestrator", "worker01", "Task A", "Do task A.");
+        let m2 = MailboxMessage::new("orchestrator", "worker01", "Task B", "Do task B.");
+        store.append(MailboxKind::Agent, "worker01", &m1).unwrap();
+        store.append(MailboxKind::Agent, "worker01", &m2).unwrap();
+
+        let mut state = AppState::new(dir.clone());
+        let mut persistence = SessionPersistenceState {
+            transcript_message_count: 0,
+            transcript_warning_count: 0,
+            persisted: false,
+        };
+
+        // First poll: both messages should be injected.
+        let first = poll_and_inject_inbox_messages(&dir, &mut state, &mut persistence);
+        assert!(!first.is_empty(), "first poll should return a preamble");
+        assert!(
+            first.contains("Task A"),
+            "first message subject in preamble"
+        );
+        assert!(
+            first.contains("Task B"),
+            "second message subject in preamble"
+        );
+        assert!(
+            first.contains("from=\"orchestrator\""),
+            "sender metadata in preamble"
+        );
+        assert!(
+            first.contains("to=\"worker01\""),
+            "recipient metadata in preamble"
+        );
+
+        // Second poll: both messages are already marked read, preamble must be empty.
+        let second = poll_and_inject_inbox_messages(&dir, &mut state, &mut persistence);
+        assert!(
+            second.is_empty(),
+            "second poll must not re-inject already-read messages"
+        );
+
+        // Confirm the read index was persisted correctly.
+        assert_eq!(
+            store.unread_count(MailboxKind::Agent, "worker01").unwrap(),
+            0,
+            "unread count should be zero after poll"
+        );
+    }
+
+    /// Sender and recipient metadata is preserved in the model-facing XML output.
+    #[test]
+    fn poll_inbox_preserves_sender_recipient_metadata() {
+        use wonder_of_u_core::{MailboxKind, mailbox::MailboxMessage};
+        use wonder_of_u_storage::MailboxStore;
+
+        let dir = unique_test_dir("inbox-poll-metadata");
+        let _ag = EnvVarGuard::set(WONDER_OF_U_AGENT_NAME_ENV, "reviewer");
+
+        let store = MailboxStore::new(&dir);
+        let msg = MailboxMessage::new(
+            "lead-agent",
+            "reviewer",
+            "Review PR #42",
+            "Please review the auth module changes.",
+        );
+        let msg_id = msg.id;
+        store.append(MailboxKind::Agent, "reviewer", &msg).unwrap();
+
+        let mut state = AppState::new(dir.clone());
+        let mut persistence = SessionPersistenceState {
+            transcript_message_count: 0,
+            transcript_warning_count: 0,
+            persisted: false,
+        };
+
+        let preamble = poll_and_inject_inbox_messages(&dir, &mut state, &mut persistence);
+
+        assert!(
+            preamble.contains(&format!("id=\"{msg_id}\"")),
+            "message id in output"
+        );
+        assert!(preamble.contains("from=\"lead-agent\""), "sender preserved");
+        assert!(preamble.contains("to=\"reviewer\""), "recipient preserved");
+        assert!(
+            preamble.contains("<subject>Review PR #42</subject>"),
+            "subject preserved"
+        );
+        assert!(
+            preamble.contains("<body>Please review the auth module changes.</body>"),
+            "body preserved"
+        );
+    }
+
+    /// When `MailboxStore::list` fails (e.g. corrupted index), the error is
+    /// surfaced as a System transcript entry rather than silently dropped.
+    #[test]
+    fn poll_inbox_surfaces_storage_error_in_transcript() {
+        use std::io::Write;
+        use wonder_of_u_storage::MailboxStore;
+
+        let dir = unique_test_dir("inbox-poll-storage-error");
+        let _ag = EnvVarGuard::set(WONDER_OF_U_AGENT_NAME_ENV, "broken-agent");
+
+        // Write a corrupt JSONL line so `list` returns an error.
+        let store = MailboxStore::new(&dir);
+        store
+            .ensure_layout(wonder_of_u_core::MailboxKind::Agent, "broken-agent")
+            .unwrap();
+        let log_path = store
+            .paths()
+            .mailbox_inbox_log_path(wonder_of_u_core::MailboxKind::Agent, "broken-agent");
+        let mut f = std::fs::File::create(&log_path).unwrap();
+        writeln!(f, "{{\"schema_version\":9999,\"invalid\":true}}").unwrap();
+
+        let mut state = AppState::new(dir.clone());
+        let mut persistence = SessionPersistenceState {
+            transcript_message_count: 0,
+            transcript_warning_count: 0,
+            persisted: false,
+        };
+
+        // Polling should return empty (safe degradation) but persist an error.
+        let preamble = poll_and_inject_inbox_messages(&dir, &mut state, &mut persistence);
+        assert!(
+            preamble.is_empty(),
+            "should degrade gracefully on storage error"
+        );
+
+        // A System message carrying the error text must be in state.messages.
+        let error_message = state.messages.iter().find(|m| {
+            matches!(&m.payload, MessagePayload::System { content }
+                if content.contains("[inbox-poll]") && content.contains("broken-agent"))
+        });
+        assert!(
+            error_message.is_some(),
+            "storage error should appear as System message in transcript; \
+             messages: {:?}",
+            state
+                .messages
+                .iter()
+                .map(|m| &m.payload)
+                .collect::<Vec<_>>()
         );
     }
 }
