@@ -14,6 +14,7 @@ mod fleet_tools;
 mod orchestration;
 mod plan_tool;
 mod search;
+mod shell_stall_watchdog;
 mod source_compat;
 mod special_tools;
 mod task_tools;
@@ -80,6 +81,8 @@ pub use plan_tool::{
 };
 /// Re-exports items from `search`
 pub use search::{GlobEntryType, GlobInput, GlobTool, GrepInput, GrepTool};
+/// Re-exports items from `shell_stall_watchdog`
+pub use shell_stall_watchdog::looks_like_prompt;
 /// Re-exports items from `source_compat`
 pub use source_compat::{
     BriefInput, BriefTool, ConfigInput, ConfigTool, LspInput, LspTool, SkillInput, SkillTool,
