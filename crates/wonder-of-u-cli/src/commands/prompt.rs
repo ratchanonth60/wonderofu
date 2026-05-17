@@ -950,7 +950,7 @@ pub(crate) fn process_tool_effects(
         match effect {
             ToolEffect::LaunchAgentTask(spec) => {
                 if let Some(dir) = storage_dir {
-                    match direct_launch_fleet_request(dir, &spec.request, cwd) {
+                    match direct_launch_fleet_request(dir, &spec, cwd) {
                         Ok(task_id) => {
                             result.content = format!("agent task launched: {task_id}");
                             let meta = ensure_meta(&mut result);
@@ -1406,7 +1406,10 @@ mod tests {
             build_fleet_member_request_with_catalog(&input, catalog).expect("build request");
         let use_id = ToolUseId::new();
         ToolResult::success(use_id, "launch_requested").with_effects(vec![
-            ToolEffect::LaunchAgentTask(AgentLaunchSpec { request }),
+            ToolEffect::LaunchAgentTask(AgentLaunchSpec {
+                request,
+                reserved_task_id: None,
+            }),
         ])
     }
 

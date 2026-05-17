@@ -11,7 +11,7 @@ use serde_json::{Map, Value, json};
 use crate::{
     AdditionalWorkingDirectory, FeatureFlag, FeatureSet, FleetMemberRequest, ForkContextSnapshot,
     PermissionDecision, PermissionMode, PermissionRequest, PermissionRule, Result,
-    RuntimeWorktreeState, SessionId, ShellSessionStore, ToolPermissionContext, ToolUseId,
+    RuntimeWorktreeState, SessionId, ShellSessionStore, TaskId, ToolPermissionContext, ToolUseId,
     WonderError, evaluate_permission,
 };
 /// Enumerates tool kind
@@ -336,11 +336,35 @@ impl ToolContext {
 /// Wraps a fully-constructed [`FleetMemberRequest`] — including the definition
 /// snapshot, lineage, allowed tools, and model override — so the runtime can
 /// start a real task without re-reading any files.
+///
+/// # Output paths
+///
+/// When `reserved_task_id` is `Some`, the runtime **must** use that id when
+/// creating the task record so the output paths published in the tool result
+/// metadata remain stable.  The paths are deterministic given the app-root
+/// and task-id:
+///
+/// | field | path |
+/// |---|---|
+/// | `output_log_path` | `tasks/logs/{task_id}.log` |
+/// | `result_path` | `tasks/results/{task_id}.json` |
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct AgentLaunchSpec {
     /// The fully-constructed request ready for the runtime to convert into an
     /// `AgentTaskLaunch` and pass to `TaskManager::start_agent_task`.
     pub request: FleetMemberRequest,
+
+    /// Pre-allocated task id chosen at tool-call time.
+    ///
+    /// When present the runtime **must** use this id instead of generating a
+    /// fresh one so that the output paths published in the accompanying
+    /// `ToolResult::metadata` stay stable and can be consumed by the caller
+    /// before the task reaches a terminal state.
+    ///
+    /// `None` is serialized as absent for backward compatibility with runtimes
+    /// that predate this field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reserved_task_id: Option<TaskId>,
 }
 
 /// Plain-data spec carried by [`ToolEffect::SendAgentMessage`].
@@ -1006,6 +1030,7 @@ mod tests {
         let req = FleetMemberRequest::new("test prompt");
         let spec = AgentLaunchSpec {
             request: req.clone(),
+            reserved_task_id: None,
         };
         let effect = ToolEffect::LaunchAgentTask(spec);
         let json = serde_json::to_value(&effect).expect("serialize effect");
@@ -1016,7 +1041,10 @@ mod tests {
         let roundtripped: ToolEffect = serde_json::from_value(json).expect("deserialize effect");
         assert_eq!(
             roundtripped,
-            ToolEffect::LaunchAgentTask(AgentLaunchSpec { request: req })
+            ToolEffect::LaunchAgentTask(AgentLaunchSpec {
+                request: req,
+                reserved_task_id: None,
+            })
         );
     }
 

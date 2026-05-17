@@ -287,6 +287,7 @@ impl AgentsCommand {
                     worktree_branch: None,
                     system_prompt: None,
                     fork_depth: None,
+                    reserved_task_id: None,
                 })?
             }
         };
