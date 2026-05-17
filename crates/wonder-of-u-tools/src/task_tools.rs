@@ -141,10 +141,12 @@ impl TaskUpdateInput {
         }
         if let Some(add_blocks) = &self.add_blocks {
             require_non_empty_string_list("task_update", "addBlocks", add_blocks)?;
+            reject_self_dependency("addBlocks", &self.task_id, add_blocks)?;
             updated = true;
         }
         if let Some(add_blocked_by) = &self.add_blocked_by {
             require_non_empty_string_list("task_update", "addBlockedBy", add_blocked_by)?;
+            reject_self_dependency("addBlockedBy", &self.task_id, add_blocked_by)?;
             updated = true;
         }
         if let Some(remove_blocks) = &self.remove_blocks {
@@ -806,6 +808,15 @@ fn require_non_empty_string_list(tool_name: &str, field: &str, values: &[String]
     Ok(())
 }
 
+fn reject_self_dependency(field: &str, task_id: &str, values: &[String]) -> Result<()> {
+    if values.iter().any(|value| value == task_id) {
+        return Err(WonderError::validation(format!(
+            "task_update {field} cannot reference the task itself"
+        )));
+    }
+    Ok(())
+}
+
 #[derive(Clone, Debug, PartialEq)]
 struct TaskOutputRead {
     content: String,
@@ -1064,7 +1075,7 @@ mod tests {
     use wonder_of_u_core::{FeatureSet, PermissionMode, SessionId, TaskState, TodoTaskStatus};
     use wonder_of_u_core::{RemoteTaskState, RemoteTaskType};
     use wonder_of_u_storage::TodoTaskStore;
-    use wonder_of_u_test_support::unique_test_dir;
+    use wonder_of_u_test_support::{EnvVarGuard, unique_test_dir};
 
     use super::*;
 
@@ -1125,6 +1136,26 @@ mod tests {
     }
 
     #[test]
+    fn task_update_validation_rejects_self_dependencies() {
+        let tool = TaskUpdateTool;
+        let add_blocks_error = tool
+            .validate_input(&json!({
+                "taskId": "task-1",
+                "addBlocks": ["task-1"],
+            }))
+            .expect_err("self block should be rejected");
+        assert!(add_blocks_error.to_string().contains("task itself"));
+
+        let add_blocked_by_error = tool
+            .validate_input(&json!({
+                "taskId": "task-1",
+                "addBlockedBy": ["task-1"],
+            }))
+            .expect_err("self blocked-by should be rejected");
+        assert!(add_blocked_by_error.to_string().contains("task itself"));
+    }
+
+    #[test]
     fn task_update_validation_rejects_blank_remove_dependency_ids() {
         let tool = TaskUpdateTool;
         let error = tool
@@ -1155,22 +1186,14 @@ mod tests {
         }
     }
 
-    /// Sets WONDER_OF_U_STORAGE_DIR for tests that drive `execute()`.
-    ///
-    /// # Safety
-    /// The test binary must run single-threaded (`--test-threads=1`).  Modifying
-    /// environment variables is unsafe only when other threads may concurrently
-    /// read them; single-threaded execution makes this safe.
-    fn set_storage_dir(dir: &std::path::Path) {
-        // SAFETY: tests are run with --test-threads=1, so no concurrent thread
-        // reads or writes this environment variable.
-        unsafe { std::env::set_var("WONDER_OF_U_STORAGE_DIR", dir) };
+    fn set_storage_dir(dir: &std::path::Path) -> EnvVarGuard {
+        EnvVarGuard::set("WONDER_OF_U_STORAGE_DIR", dir.as_os_str())
     }
 
     #[test]
     fn task_create_execute_persists_task_and_returns_success() {
         let dir = unique_test_dir("tools-task-create-happy");
-        set_storage_dir(&dir);
+        let _storage_guard = set_storage_dir(&dir);
         let ctx = tool_context_with_dir(&dir);
         let session_id = ctx.session_id;
 
@@ -1210,7 +1233,7 @@ mod tests {
     #[test]
     fn task_list_execute_returns_visible_tasks_and_hides_deleted() {
         let dir = unique_test_dir("tools-task-list-filter");
-        set_storage_dir(&dir);
+        let _storage_guard = set_storage_dir(&dir);
         let ctx = tool_context_with_dir(&dir);
         let session_id = ctx.session_id;
 
@@ -1242,7 +1265,7 @@ mod tests {
     #[test]
     fn task_get_execute_returns_task_or_not_found() {
         let dir = unique_test_dir("tools-task-get");
-        set_storage_dir(&dir);
+        let _storage_guard = set_storage_dir(&dir);
         let ctx = tool_context_with_dir(&dir);
         let session_id = ctx.session_id;
 
@@ -1285,7 +1308,7 @@ mod tests {
     #[test]
     fn task_update_execute_applies_scalar_changes() {
         let dir = unique_test_dir("tools-task-update-scalar");
-        set_storage_dir(&dir);
+        let _storage_guard = set_storage_dir(&dir);
         let store = TodoTaskStore::new(&dir);
         let session_id = SessionId::new();
         let mut list = wonder_of_u_core::TodoTaskList::empty(session_id);
@@ -1320,7 +1343,7 @@ mod tests {
     #[test]
     fn task_update_execute_null_metadata_removes_keys() {
         let dir = unique_test_dir("tools-task-update-meta-null");
-        set_storage_dir(&dir);
+        let _storage_guard = set_storage_dir(&dir);
         let store = TodoTaskStore::new(&dir);
         let session_id = SessionId::new();
         let mut list = wonder_of_u_core::TodoTaskList::empty(session_id);
@@ -1358,7 +1381,7 @@ mod tests {
     #[test]
     fn task_update_execute_bidirectional_add_blocks() {
         let dir = unique_test_dir("tools-task-update-add-blocks");
-        set_storage_dir(&dir);
+        let _storage_guard = set_storage_dir(&dir);
         let store = TodoTaskStore::new(&dir);
         let session_id = SessionId::new();
         let mut list = wonder_of_u_core::TodoTaskList::empty(session_id);
@@ -1399,7 +1422,7 @@ mod tests {
     #[test]
     fn task_update_execute_bidirectional_remove_blocks_deduplicates() {
         let dir = unique_test_dir("tools-task-update-remove-blocks");
-        set_storage_dir(&dir);
+        let _storage_guard = set_storage_dir(&dir);
         let store = TodoTaskStore::new(&dir);
         let session_id = SessionId::new();
         let mut list = wonder_of_u_core::TodoTaskList::empty(session_id);
@@ -1438,7 +1461,7 @@ mod tests {
     #[test]
     fn task_update_execute_errors_on_missing_dependency_id() {
         let dir = unique_test_dir("tools-task-update-missing-dep");
-        set_storage_dir(&dir);
+        let _storage_guard = set_storage_dir(&dir);
         let store = TodoTaskStore::new(&dir);
         let session_id = SessionId::new();
         let mut list = wonder_of_u_core::TodoTaskList::empty(session_id);

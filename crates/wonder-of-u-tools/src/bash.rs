@@ -458,10 +458,8 @@ fn render_output_persistent(stdout: &str, exit_code: i32) -> String {
 #[cfg(test)]
 mod tests {
     use std::{
-        env,
-        ffi::OsString,
         path::{Path, PathBuf},
-        sync::{Arc, Mutex, MutexGuard, OnceLock},
+        sync::{Arc, Mutex},
     };
 
     use futures::executor::block_on;
@@ -470,50 +468,12 @@ mod tests {
         FeatureSet, PermissionDecision, PermissionMode, SessionId, ShellSessionStore, ToolContext,
         ToolUseId,
     };
-    use wonder_of_u_test_support::unique_test_dir;
+    use wonder_of_u_test_support::{EnvVarGuard, unique_test_dir};
 
     use super::*;
 
-    fn storage_env_lock() -> &'static Mutex<()> {
-        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-        LOCK.get_or_init(|| Mutex::new(()))
-    }
-
-    struct StorageEnvGuard {
-        previous: Option<OsString>,
-        _lock: MutexGuard<'static, ()>,
-    }
-
-    impl StorageEnvGuard {
-        fn set(path: &Path) -> Self {
-            let lock = storage_env_lock()
-                .lock()
-                .expect("storage env lock poisoned");
-            let previous = env::var_os("WONDER_OF_U_STORAGE_DIR");
-            // SAFETY: The mutex serializes tests that mutate this process-wide
-            // variable, and Drop restores the prior value.
-            unsafe {
-                env::set_var("WONDER_OF_U_STORAGE_DIR", path.display().to_string());
-            }
-            Self {
-                previous,
-                _lock: lock,
-            }
-        }
-    }
-
-    impl Drop for StorageEnvGuard {
-        fn drop(&mut self) {
-            // SAFETY: The guard holds the module-wide mutex while restoring the
-            // process-wide environment variable to its previous value.
-            unsafe {
-                if let Some(previous) = &self.previous {
-                    env::set_var("WONDER_OF_U_STORAGE_DIR", previous);
-                } else {
-                    env::remove_var("WONDER_OF_U_STORAGE_DIR");
-                }
-            }
-        }
+    fn storage_env_guard(path: &Path) -> EnvVarGuard {
+        EnvVarGuard::set("WONDER_OF_U_STORAGE_DIR", path.as_os_str())
     }
 
     fn tool_context(cwd: PathBuf) -> ToolContext {
@@ -636,7 +596,7 @@ mod tests {
         let dir = unique_test_dir("tools-bash-background");
         let tool = BashTool;
         let result = {
-            let _storage_env = StorageEnvGuard::set(&storage_dir);
+            let _storage_env = storage_env_guard(&storage_dir);
             block_on(tool.execute(
                 tool_context(dir),
                 ToolUseId::new(),
@@ -787,7 +747,7 @@ mod tests {
         let dir = unique_test_dir("tools-bash-watchdog");
         let tool = BashTool;
         let result = {
-            let _storage_env = StorageEnvGuard::set(&storage_dir);
+            let _storage_env = storage_env_guard(&storage_dir);
             block_on(tool.execute(
                 tool_context(dir),
                 ToolUseId::new(),
@@ -831,7 +791,7 @@ mod tests {
         let dir = unique_test_dir("tools-bash-watchdog-fail");
         let tool = BashTool;
         let result = {
-            let _storage_env = StorageEnvGuard::set(&storage_dir);
+            let _storage_env = storage_env_guard(&storage_dir);
             block_on(tool.execute(
                 tool_context(dir),
                 ToolUseId::new(),
