@@ -28,7 +28,7 @@ use std::collections::BTreeSet;
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
 
-use crate::{MailboxMessageId, Result, WonderError};
+use crate::{MailboxMessageId, Result, ToolUseId, WonderError};
 
 // ── Schema versions ───────────────────────────────────────────────────────────
 
@@ -115,6 +115,14 @@ pub struct MailboxMessage {
     #[serde(with = "time::serde::rfc3339")]
     pub created_at: OffsetDateTime,
 
+    /// The `tool_use_id` of the `SendMessage` tool call that created this
+    /// message, linking the mailbox record back to the tool invocation in the
+    /// conversation transcript.
+    ///
+    /// Optional – absent for messages created outside a tool-call context.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_use_id: Option<ToolUseId>,
+
     /// Arbitrary caller-supplied tags for filtering.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tags: Vec<String>,
@@ -147,8 +155,28 @@ impl MailboxMessage {
             subject: subject.into(),
             body: body.into(),
             created_at: OffsetDateTime::now_utc(),
+            tool_use_id: None,
             tags: Vec::new(),
         }
+    }
+
+    /// Attaches the originating `tool_use_id` to this message, linking the
+    /// mailbox record back to the tool invocation in the conversation
+    /// transcript.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use wonder_of_u_core::{ToolUseId, mailbox::MailboxMessage};
+    ///
+    /// let id = ToolUseId::new();
+    /// let msg = MailboxMessage::new("a", "b", "s", "body").with_tool_use_id(id);
+    /// assert_eq!(msg.tool_use_id, Some(id));
+    /// ```
+    #[must_use]
+    pub fn with_tool_use_id(mut self, id: ToolUseId) -> Self {
+        self.tool_use_id = Some(id);
+        self
     }
 }
 
@@ -351,5 +379,34 @@ mod tests {
         assert_eq!(msg.subject, "subj");
         assert_eq!(msg.body, "body text");
         assert!(msg.tags.is_empty());
+        assert!(msg.tool_use_id.is_none(), "tool_use_id defaults to None");
+    }
+
+    #[test]
+    fn mailbox_message_with_tool_use_id_round_trips() {
+        use crate::ToolUseId;
+
+        let id = ToolUseId::new();
+        let msg = MailboxMessage::new("a", "b", "s", "body").with_tool_use_id(id);
+        assert_eq!(msg.tool_use_id, Some(id));
+
+        // Serialise → deserialise and confirm the field survives.
+        let json = serde_json::to_string(&msg).expect("serialize");
+        let back: MailboxMessage = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(
+            back.tool_use_id,
+            Some(id),
+            "tool_use_id survives round-trip"
+        );
+    }
+
+    #[test]
+    fn mailbox_message_without_tool_use_id_omitted_from_json() {
+        let msg = MailboxMessage::new("a", "b", "s", "body");
+        let json = serde_json::to_string(&msg).expect("serialize");
+        assert!(
+            !json.contains("tool_use_id"),
+            "tool_use_id must be absent from JSON when None; json={json}"
+        );
     }
 }

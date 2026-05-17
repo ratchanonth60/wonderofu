@@ -1097,6 +1097,11 @@ pub(crate) fn process_tool_effects(
                 let sender_task_id_str = std::env::var("WONDER_OF_U_TASK_ID").ok();
                 let sender_identity = sender_task_id_str.as_deref().unwrap_or("unknown");
 
+                // Capture the tool_use_id so it can be embedded in the stored
+                // message and surfaced in result metadata, linking the mailbox
+                // record back to the conversation transcript entry.
+                let originating_tool_use_id = result.use_id;
+
                 let local_target = if spec.to != "*" {
                     app_state
                         .as_deref()
@@ -1117,8 +1122,11 @@ pub(crate) fn process_tool_effects(
                             .unwrap_or(spec.content.len());
                         &spec.content[..end]
                     });
+                    // Attach tool_use_id so the stored record and inbox XML
+                    // can be correlated with the model transcript.
                     let mailbox_msg =
-                        MailboxMessage::new(sender_identity, &spec.to, subject, &spec.content);
+                        MailboxMessage::new(sender_identity, &spec.to, subject, &spec.content)
+                            .with_tool_use_id(originating_tool_use_id);
                     let mailbox_id = mailbox_msg.id;
 
                     let mailbox_store = MailboxStore::new(dir);
@@ -1165,8 +1173,12 @@ pub(crate) fn process_tool_effects(
                             };
 
                             result.content = format!(
-                                "message delivered to agent \"{}\"\u{2019}s mailbox inbox",
-                                spec.to
+                                "local-delivery: message written to agent \"{recipient}\" \
+                                 mailbox (message_id={mailbox_id}, \
+                                 tool_use_id={tool_use_id})",
+                                recipient = spec.to,
+                                mailbox_id = mailbox_id,
+                                tool_use_id = originating_tool_use_id,
                             );
                             let meta = ensure_meta(&mut result);
                             meta.insert(
@@ -1174,8 +1186,25 @@ pub(crate) fn process_tool_effects(
                                 serde_json::Value::String("delivered_mailbox".into()),
                             );
                             meta.insert(
+                                "delivery_kind".into(),
+                                serde_json::Value::String("local".into()),
+                            );
+                            meta.insert(
+                                "message_id".into(),
+                                serde_json::Value::String(mailbox_id.to_string()),
+                            );
+                            // Keep backward-compat alias `mailbox_id`.
+                            meta.insert(
                                 "mailbox_id".into(),
                                 serde_json::Value::String(mailbox_id.to_string()),
+                            );
+                            meta.insert(
+                                "tool_use_id".into(),
+                                serde_json::Value::String(originating_tool_use_id.to_string()),
+                            );
+                            meta.insert(
+                                "sender".into(),
+                                serde_json::Value::String(sender_identity.to_owned()),
                             );
                             meta.insert(
                                 "recipient".into(),
@@ -1649,14 +1678,24 @@ fn poll_and_inject_inbox_messages(
 ///
 /// The `from`, `to`, `subject`, and `body` fields are XML-escaped so special
 /// characters in free-text content do not corrupt the surrounding structure.
+/// When present, `tool_use_id` is included as an attribute so the model can
+/// correlate the inbox message with the originating tool invocation.
 fn format_inbox_message_xml(msg: &MailboxMessage) -> String {
+    // Build the optional tool_use_id attribute fragment separately so the
+    // happy-path format string stays readable.
+    let tool_use_id_attr = msg
+        .tool_use_id
+        .map(|id| format!(" tool_use_id=\"{id}\""))
+        .unwrap_or_default();
+
     format!(
         concat!(
             "<mailbox_message",
             " id=\"{id}\"",
             " from=\"{from}\"",
             " to=\"{to}\"",
-            " created_at=\"{created_at}\">\n",
+            " created_at=\"{created_at}\"",
+            "{tool_use_id_attr}>\n",
             "  <subject>{subject}</subject>\n",
             "  <body>{body}</body>\n",
             "</mailbox_message>"
@@ -1665,6 +1704,7 @@ fn format_inbox_message_xml(msg: &MailboxMessage) -> String {
         from = xml_escape(&msg.from),
         to = xml_escape(&msg.to),
         created_at = msg.created_at,
+        tool_use_id_attr = tool_use_id_attr,
         subject = xml_escape(&msg.subject),
         body = xml_escape(&msg.body),
     )
@@ -2438,6 +2478,280 @@ mod tests {
                 .iter()
                 .map(|m| &m.payload)
                 .collect::<Vec<_>>()
+        );
+    }
+
+    // ── Structured local delivery parity tests ────────────────────────────────
+
+    /// Local delivery stores all structured fields: sender, recipient, body,
+    /// tool_use_id, timestamp, and routing outcome.
+    #[test]
+    fn local_delivery_stores_all_structured_fields() {
+        use wonder_of_u_core::{MailboxKind, TaskId};
+        use wonder_of_u_storage::MailboxStore;
+
+        let dir = unique_test_dir("structured-local-delivery-fields");
+
+        let mut state = AppState::new(dir.clone());
+        let target_id = TaskId::new();
+        state
+            .register_agent_name("backend".into(), target_id)
+            .expect("register backend");
+
+        let fake_sender = TaskId::new();
+        let _tid = EnvVarGuard::set("WONDER_OF_U_TASK_ID", fake_sender.to_string().as_str());
+
+        let result = send_message_effect_result("backend", "run migration now", Some("migration"));
+        // Capture tool_use_id before moving result into process_tool_effects.
+        let expected_tool_use_id = result.use_id;
+
+        let processed = process_tool_effects(result, Some(&dir), &dir, Some(&mut state));
+
+        // ── result content & metadata ─────────────────────────────────────────
+        assert!(
+            processed.success,
+            "structured local delivery should succeed; content: {}",
+            processed.content
+        );
+        assert_eq!(
+            processed.metadata["status"].as_str(),
+            Some("delivered_mailbox"),
+            "routing outcome must be delivered_mailbox"
+        );
+        assert_eq!(
+            processed.metadata["delivery_kind"].as_str(),
+            Some("local"),
+            "delivery_kind must be local"
+        );
+        assert_eq!(processed.metadata["is_local_agent"], true);
+
+        // sender field in metadata
+        assert_eq!(
+            processed.metadata["sender"].as_str(),
+            Some(fake_sender.to_string().as_str()),
+            "sender must match WONDER_OF_U_TASK_ID"
+        );
+        // recipient field in metadata
+        assert_eq!(
+            processed.metadata["recipient"].as_str(),
+            Some("backend"),
+            "recipient must match spec.to"
+        );
+        assert_eq!(
+            processed.metadata["recipient_task_id"].as_str(),
+            Some(target_id.to_string().as_str()),
+            "recipient_task_id must match registered target"
+        );
+
+        // tool_use_id in metadata links transcript to mailbox
+        assert_eq!(
+            processed.metadata["tool_use_id"].as_str(),
+            Some(expected_tool_use_id.to_string().as_str()),
+            "tool_use_id must be present in metadata"
+        );
+        // message_id must also be set and match mailbox_id
+        let message_id = processed.metadata["message_id"]
+            .as_str()
+            .expect("message_id must be set");
+        assert_eq!(
+            processed.metadata["mailbox_id"].as_str(),
+            Some(message_id),
+            "mailbox_id must equal message_id for backward compat"
+        );
+        // result content must mention tool_use_id for explicit testability
+        assert!(
+            processed.content.contains("local-delivery"),
+            "content must declare local-delivery; got: {}",
+            processed.content
+        );
+        assert!(
+            processed
+                .content
+                .contains(&expected_tool_use_id.to_string()),
+            "content must include tool_use_id; got: {}",
+            processed.content
+        );
+
+        // ── mailbox record ────────────────────────────────────────────────────
+        let mailbox = MailboxStore::new(&dir);
+        let msgs = mailbox.list(MailboxKind::Agent, "backend").unwrap();
+        assert_eq!(msgs.len(), 1, "exactly one mailbox message");
+        let stored = &msgs[0];
+        assert_eq!(stored.from, fake_sender.to_string(), "sender preserved");
+        assert_eq!(stored.to, "backend", "recipient preserved");
+        assert_eq!(stored.body, "run migration now", "body preserved");
+        assert_eq!(stored.subject, "migration", "subject from summary");
+        // tool_use_id is embedded in the stored record
+        assert_eq!(
+            stored.tool_use_id,
+            Some(expected_tool_use_id),
+            "tool_use_id must be stored in mailbox record"
+        );
+        // timestamp must be present (not zero / epoch)
+        assert!(
+            stored.created_at.unix_timestamp() > 0,
+            "created_at must be a real timestamp"
+        );
+    }
+
+    /// Inbox XML for a message with a tool_use_id includes the attribute.
+    #[test]
+    fn inbox_xml_includes_tool_use_id_when_present() {
+        use wonder_of_u_core::{ToolUseId, mailbox::MailboxMessage};
+
+        let id = ToolUseId::new();
+        let msg =
+            MailboxMessage::new("orchestrator", "worker-01", "Task", "Do it.").with_tool_use_id(id);
+
+        let xml = format_inbox_message_xml(&msg);
+
+        assert!(
+            xml.contains(&format!("tool_use_id=\"{id}\"")),
+            "tool_use_id attribute missing from XML; got:\n{xml}"
+        );
+        assert!(xml.contains(&format!("id=\"{}\"", msg.id)), "message id");
+        assert!(xml.contains("from=\"orchestrator\""), "from");
+        assert!(xml.contains("to=\"worker-01\""), "to");
+        assert!(xml.contains("created_at="), "timestamp attribute");
+        assert!(xml.contains("<subject>Task</subject>"), "subject element");
+        assert!(xml.contains("<body>Do it.</body>"), "body element");
+    }
+
+    /// Inbox XML for a message without a tool_use_id omits the attribute.
+    #[test]
+    fn inbox_xml_omits_tool_use_id_when_absent() {
+        use wonder_of_u_core::mailbox::MailboxMessage;
+
+        let msg = MailboxMessage::new("src", "dst", "Subject", "Body");
+        let xml = format_inbox_message_xml(&msg);
+
+        assert!(
+            !xml.contains("tool_use_id="),
+            "tool_use_id attribute should be absent; got:\n{xml}"
+        );
+    }
+
+    /// Broadcast recipients (`to="*"`) fall back to fleet steering and do NOT
+    /// write to any agent mailbox.
+    #[test]
+    fn broadcast_recipient_uses_fleet_steering_not_mailbox() {
+        let dir = unique_test_dir("structured-broadcast-steering");
+
+        let mut state = AppState::new(dir.clone());
+        // Register an agent so we can prove "*" skips local delivery.
+        let tid = wonder_of_u_core::TaskId::new();
+        state
+            .register_agent_name("agent-a".into(), tid)
+            .expect("register agent-a");
+
+        let store = FleetStore::new(&dir);
+        let run = FleetRunState::new("broadcast fleet", PermissionMode::Default, None);
+        let fleet_id = run.id;
+        store.write_run(&run).expect("write run");
+        let _fid = EnvVarGuard::set("WONDER_OF_U_FLEET_ID", fleet_id.to_string().as_str());
+
+        let result = send_message_effect_result("*", "all hands on deck", Some("all hands"));
+        let processed = process_tool_effects(result, Some(&dir), &dir, Some(&mut state));
+
+        // Broadcast falls through to fleet steering.
+        assert!(
+            processed.success,
+            "broadcast should succeed via fleet steering; content: {}",
+            processed.content
+        );
+        assert_eq!(
+            processed.metadata["status"].as_str(),
+            Some("queued_advisory"),
+            "broadcast must use queued_advisory, not delivered_mailbox"
+        );
+        assert_eq!(processed.metadata["is_local_agent"], false);
+
+        // No mailbox directory should be created for "*".
+        let mailbox_star = dir.join("mailboxes").join("agents").join("*");
+        assert!(!mailbox_star.exists(), "no mailbox for '*'");
+    }
+
+    /// Unknown recipients fall back to fleet steering and do NOT write to a
+    /// target agent's mailbox.
+    #[test]
+    fn unknown_recipient_uses_fleet_steering_not_mailbox() {
+        let dir = unique_test_dir("structured-unknown-steering");
+
+        let mut state = AppState::new(dir.clone());
+
+        let store = FleetStore::new(&dir);
+        let run = FleetRunState::new("unknown-rcpt fleet", PermissionMode::Default, None);
+        let fleet_id = run.id;
+        store.write_run(&run).expect("write run");
+        let _fid = EnvVarGuard::set("WONDER_OF_U_FLEET_ID", fleet_id.to_string().as_str());
+
+        let result =
+            send_message_effect_result("ghost-agent", "message for nobody", Some("ghost msg"));
+        let processed = process_tool_effects(result, Some(&dir), &dir, Some(&mut state));
+
+        assert!(
+            processed.success,
+            "unknown recipient should fall back to steering; content: {}",
+            processed.content
+        );
+        assert_eq!(
+            processed.metadata["status"].as_str(),
+            Some("queued_advisory")
+        );
+        assert_eq!(processed.metadata["is_local_agent"], false);
+
+        let mailbox_path = dir.join("mailboxes").join("agents").join("ghost-agent");
+        assert!(
+            !mailbox_path.exists(),
+            "no mailbox must be created for unknown recipient"
+        );
+    }
+
+    /// A second poll after messages have been consumed returns nothing (exactly-once).
+    #[test]
+    fn repeated_polling_is_exactly_once() {
+        use wonder_of_u_core::{MailboxKind, ToolUseId, mailbox::MailboxMessage};
+        use wonder_of_u_storage::MailboxStore;
+
+        let dir = unique_test_dir("structured-exactly-once-repoll");
+        let _ag = EnvVarGuard::set(WONDER_OF_U_AGENT_NAME_ENV, "dispatcher");
+
+        // Write a message that carries a tool_use_id.
+        let store = MailboxStore::new(&dir);
+        let tuid = ToolUseId::new();
+        let msg = MailboxMessage::new("lead", "dispatcher", "Deploy", "Deploy v2.")
+            .with_tool_use_id(tuid);
+        store
+            .append(MailboxKind::Agent, "dispatcher", &msg)
+            .unwrap();
+
+        let mut state = AppState::new(dir.clone());
+        let mut persistence = SessionPersistenceState {
+            transcript_message_count: 0,
+            transcript_warning_count: 0,
+            persisted: false,
+        };
+
+        // First poll delivers the message including tool_use_id in XML.
+        let first = poll_and_inject_inbox_messages(&dir, &mut state, &mut persistence);
+        assert!(!first.is_empty(), "first poll must return a preamble");
+        assert!(
+            first.contains(&format!("tool_use_id=\"{tuid}\"")),
+            "first poll XML must include tool_use_id; got:\n{first}"
+        );
+
+        // Second poll must return nothing — the message was already consumed.
+        let second = poll_and_inject_inbox_messages(&dir, &mut state, &mut persistence);
+        assert!(
+            second.is_empty(),
+            "second poll must be empty (exactly-once); got:\n{second}"
+        );
+        assert_eq!(
+            store
+                .unread_count(MailboxKind::Agent, "dispatcher")
+                .unwrap(),
+            0,
+            "unread count must be zero after first poll"
         );
     }
 }
