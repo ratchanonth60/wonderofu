@@ -32,6 +32,10 @@ pub use ts_import::{
 pub mod todo_task;
 pub use todo_task::TodoTaskStore;
 
+/// Local-first mailbox storage for team and agent inboxes.
+pub mod mailbox;
+pub use mailbox::MailboxStore;
+
 use std::{
     collections::BTreeMap,
     ffi::OsStr,
@@ -48,8 +52,9 @@ use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 use wonder_of_u_core::{
     AGENT_TASK_RESULT_SCHEMA_VERSION, AgentTaskResult, AppState, CostState, FLEET_SCHEMA_VERSION,
     FLEET_STEERING_SCHEMA_VERSION, FleetId, FleetMemberRequest, FleetRunState,
-    FleetSteeringMessage, MESSAGE_SCHEMA_VERSION, MessageEnvelope, MessageId, MessagePayload,
-    Result, SessionId, TODO_TASK_LIST_SCHEMA_VERSION, TaskId, TaskState, TaskStatus, WonderError,
+    FleetSteeringMessage, MAILBOX_MESSAGE_SCHEMA_VERSION, MAILBOX_READ_INDEX_SCHEMA_VERSION,
+    MESSAGE_SCHEMA_VERSION, MailboxKind, MessageEnvelope, MessageId, MessagePayload, Result,
+    SessionId, TODO_TASK_LIST_SCHEMA_VERSION, TaskId, TaskState, TaskStatus, WonderError,
 };
 
 /// Schema version for storage
@@ -68,6 +73,8 @@ pub(crate) fn ensure_supported_schema(kind: &str, version: u16) -> Result<()> {
         "fleet steering" => FLEET_STEERING_SCHEMA_VERSION,
         "agent task result" => AGENT_TASK_RESULT_SCHEMA_VERSION,
         "todo task list" => TODO_TASK_LIST_SCHEMA_VERSION,
+        "mailbox message" => MAILBOX_MESSAGE_SCHEMA_VERSION,
+        "mailbox read index" => MAILBOX_READ_INDEX_SCHEMA_VERSION,
         _ => STORAGE_SCHEMA_VERSION,
     };
 
@@ -411,6 +418,40 @@ impl StoragePaths {
     ) -> PathBuf {
         self.fleet_steering_dir(fleet_id)
             .join(format!("{steering_id}.json"))
+    }
+
+    // ── Mailbox paths ─────────────────────────────────────────────────────────
+
+    /// Returns the root directory for all mailbox data.
+    ///
+    /// Layout: `{base_dir}/mailboxes/`
+    #[must_use]
+    pub fn mailboxes_dir(&self) -> PathBuf {
+        self.base_dir.join("mailboxes")
+    }
+
+    /// Returns the inbox directory for a specific `(kind, name)` pair.
+    ///
+    /// Layout: `{base_dir}/mailboxes/{kind}/{name}/`
+    #[must_use]
+    pub fn mailbox_inbox_dir(&self, kind: MailboxKind, name: &str) -> PathBuf {
+        self.mailboxes_dir().join(kind.dir_name()).join(name)
+    }
+
+    /// Returns the path of the append-only message log for an inbox.
+    ///
+    /// Layout: `{base_dir}/mailboxes/{kind}/{name}/inbox.jsonl`
+    #[must_use]
+    pub fn mailbox_inbox_log_path(&self, kind: MailboxKind, name: &str) -> PathBuf {
+        self.mailbox_inbox_dir(kind, name).join("inbox.jsonl")
+    }
+
+    /// Returns the path of the read-message index for an inbox.
+    ///
+    /// Layout: `{base_dir}/mailboxes/{kind}/{name}/inbox.read.json`
+    #[must_use]
+    pub fn mailbox_read_index_path(&self, kind: MailboxKind, name: &str) -> PathBuf {
+        self.mailbox_inbox_dir(kind, name).join("inbox.read.json")
     }
 }
 /// Stores transcript store

@@ -9,6 +9,8 @@
 pub mod agent_definition;
 /// Filesystem loader for project-level agent definitions.
 pub mod agent_loader;
+/// Runtime name → task-id registry for local SendMessage routing.
+pub mod agent_name_registry;
 /// Provides app support
 pub mod app;
 /// Provides command support
@@ -39,6 +41,8 @@ pub mod git;
 pub mod ids;
 /// Provides lockfile support
 pub mod lockfile;
+/// Local-first team/agent inbox mailbox types.
+pub mod mailbox;
 /// Provides memoize support
 pub mod memoize;
 /// Provides message support
@@ -84,6 +88,8 @@ pub use agent_definition::{
     BACKGROUND_RESTRICTED_TOOLS, DefinitionParseError, RawDefinitionFields, parse_json_definition,
     parse_markdown_frontmatter, render_definition_md,
 };
+/// Re-exports items from `agent_name_registry`
+pub use agent_name_registry::{AgentNameRegistry, NameConflictError, RegisterOutcome};
 /// Re-exports items from `app`
 pub use app::{
     AgentRuntime, AgentTaskState, AppState, CostState, InputMode, PendingLocalToolCall,
@@ -131,9 +137,14 @@ pub use generators::{enumerate, take, zip};
 /// Re-exports items from `git`
 pub use git::{GitError, get_current_branch, get_diff, get_git_root, is_git_repo, read_gitignore};
 /// Re-exports items from `ids`
-pub use ids::{CommandId, FleetId, MessageId, SessionId, TaskId, ToolUseId};
+pub use ids::{CommandId, FleetId, MailboxMessageId, MessageId, SessionId, TaskId, ToolUseId};
 /// Re-exports items from `lockfile`
 pub use lockfile::LockFile;
+/// Re-exports items from `mailbox`
+pub use mailbox::{
+    MAILBOX_MESSAGE_SCHEMA_VERSION, MAILBOX_READ_INDEX_SCHEMA_VERSION, MailboxKind, MailboxMessage,
+    MailboxReadIndex, sanitize_mailbox_name,
+};
 /// Re-exports items from `memoize`
 pub use memoize::MemoCache;
 /// Re-exports items from `message`

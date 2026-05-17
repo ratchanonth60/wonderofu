@@ -11,6 +11,7 @@ use time::OffsetDateTime;
 use crate::{
     AdditionalWorkingDirectory, AuthState, FeatureSet, FleetId, MessageEnvelope, PermissionMode,
     ProviderReadiness, Result, SessionId, TaskId, ToolUseId, WonderError,
+    agent_name_registry::{AgentNameRegistry, NameConflictError, RegisterOutcome},
 };
 /// Represents token usage
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
@@ -944,6 +945,14 @@ pub struct AppState {
     pub queued_commands: VecDeque<QueuedCommand>,
     /// Stores the background tasks
     pub background_tasks: BTreeMap<TaskId, TaskState>,
+    /// Runtime-only name → task-id registry for local `SendMessage` routing.
+    ///
+    /// Never persisted: populated at task launch time by
+    /// [`register_agent_name`][Self::register_agent_name] and cleared
+    /// automatically when a task reaches a terminal state via
+    /// [`upsert_task`][Self::upsert_task].
+    #[serde(skip)]
+    pub(crate) agent_name_registry: AgentNameRegistry,
     /// Stores the provider
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider: Option<String>,
@@ -1014,6 +1023,7 @@ impl AppState {
             messages: Vec::new(),
             queued_commands: VecDeque::new(),
             background_tasks: BTreeMap::new(),
+            agent_name_registry: AgentNameRegistry::new(),
             provider: None,
             model: None,
             theme: None,
@@ -1188,8 +1198,58 @@ impl AppState {
 
     /// Handles upsert task
     pub fn upsert_task(&mut self, task: TaskState) {
+        // Auto-deregister the name when the task reaches a terminal state so
+        // the slot becomes available for a future task with the same name.
+        if task.status.is_terminal() {
+            self.agent_name_registry.deregister_by_task_id(task.id);
+        }
         self.background_tasks.insert(task.id, task);
         self.session.updated_at = OffsetDateTime::now_utc();
+    }
+
+    /// Registers `name` as owned by `task_id` in the runtime name registry.
+    ///
+    /// Call this at agent task launch time (after [`upsert_task`][Self::upsert_task])
+    /// to make the task addressable by name for local `SendMessage` routing.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NameConflictError`] when `name` is already held by a different
+    /// active task.
+    pub fn register_agent_name(
+        &mut self,
+        name: String,
+        task_id: TaskId,
+    ) -> std::result::Result<RegisterOutcome, NameConflictError> {
+        self.agent_name_registry.register(name, task_id)
+    }
+
+    /// Looks up the task id currently registered under `name`, or `None`.
+    ///
+    /// Used by `SendMessage` routing to resolve a bare teammate name to a live
+    /// [`TaskId`].
+    #[must_use]
+    pub fn lookup_agent_by_name(&self, name: &str) -> Option<TaskId> {
+        self.agent_name_registry.lookup(name)
+    }
+
+    /// Removes any name entry associated with `task_id` from the registry.
+    ///
+    /// Returns the name that was removed, or `None` if no entry existed.
+    /// Normally called automatically by [`upsert_task`][Self::upsert_task] when
+    /// a task transitions to a terminal status; this method is provided for
+    /// explicit cleanup (e.g. task prune / force-remove paths).
+    pub fn deregister_agent_task(&mut self, task_id: TaskId) -> Option<String> {
+        self.agent_name_registry.deregister_by_task_id(task_id)
+    }
+
+    /// Returns a read-only reference to the agent name registry.
+    ///
+    /// Useful in tests and diagnostic commands that need to inspect the full
+    /// registry contents without mutating it.
+    #[must_use]
+    pub fn agent_name_registry(&self) -> &AgentNameRegistry {
+        &self.agent_name_registry
     }
     /// Handles provider readiness
     #[must_use]
