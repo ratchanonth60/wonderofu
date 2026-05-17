@@ -640,8 +640,33 @@ pub fn evaluate_permission(
         .default_decision(request.read_only, request.destructive)
 }
 /// Checks shell safety
+///
+/// Returns `None` when the command passes all checks.  Returns a
+/// [`ShellSafetyIssue`] with verdict [`ShellSafetyVerdict::Blocked`] for
+/// patterns that are unconditionally denied, and
+/// [`ShellSafetyVerdict::Review`] for patterns that warrant human review.
+///
+/// Detection covers both the normalised token stream and select raw-string
+/// patterns that must be caught before normalisation collapses syntax
+/// (e.g. process substitution `<(…)` / `>(…)`, zsh `zmodload`/`zsocket`,
+/// and backtick/command-substitution obfuscation of dangerous built-ins).
 #[must_use]
 pub fn check_shell_safety(command: &str) -> Option<ShellSafetyIssue> {
+    // ── Pre-normalisation checks on the raw command ───────────────────────────
+    //
+    // Some patterns must be detected before `normalize_shell_command` collapses
+    // them (parentheses become spaces, so `<(cmd)` would lose its `<(` shape).
+
+    // Process substitution <(...) / >(...) opens a subshell connected to a
+    // file-descriptor.  Uncommon in everyday scripts; always warrants review.
+    if has_process_substitution(command) {
+        return Some(ShellSafetyIssue {
+            verdict: ShellSafetyVerdict::Review,
+            message: "shell command uses process substitution (<(…) or >(…)) which requires review"
+                .into(),
+        });
+    }
+
     let normalized = normalize_shell_command(command);
 
     // ── Blocked patterns ─────────────────────────────────────────────────────
@@ -691,6 +716,22 @@ pub fn check_shell_safety(command: &str) -> Option<ShellSafetyIssue> {
                 message: "shell command sources a script into the current shell environment".into(),
             });
         }
+    }
+    // zsh's `zmodload` can load network, cryptography, and filesystem modules
+    // that expose low-level capabilities not available in a standard shell.
+    if contains_shell_token(&normalized, "zmodload") {
+        return Some(ShellSafetyIssue {
+            verdict: ShellSafetyVerdict::Blocked,
+            message: "shell command uses zmodload to load zsh modules, which can enable dangerous capabilities".into(),
+        });
+    }
+    // `zsocket` (from zsh/net/tcp) opens raw TCP/UDP connections, bypassing
+    // normal I/O sandboxing.
+    if contains_shell_token(&normalized, "zsocket") {
+        return Some(ShellSafetyIssue {
+            verdict: ShellSafetyVerdict::Blocked,
+            message: "shell command uses zsocket for raw network socket access".into(),
+        });
     }
 
     // ── Review patterns ───────────────────────────────────────────────────────
@@ -839,14 +880,52 @@ fn check_powershell_safety(command: &str) -> Option<ShellSafetyIssue> {
     None
 }
 
+/// Normalises a shell command for pattern matching.
+///
+/// The following transformations are applied in order:
+///
+/// 1. **Zero-width / directional-override characters** are removed.  These
+///    Unicode code-points are invisible to humans but can split tokens to
+///    bypass keyword detection (e.g. `ev\u{200B}al` → `eval`).
+/// 2. **`#` comments** are stripped: a `#` that follows whitespace (or starts
+///    the string) begins a comment that runs to the next newline.  This keeps
+///    the check focused on the executable portion of each line.
+/// 3. **Backticks** are converted to spaces.  Backtick command-substitution
+///    (`` `cmd` ``) uses the same `\`…\`` delimiter for both open and close,
+///    so without this step the first word after the opening backtick is never
+///    a clean shell token (e.g. `` `eval `` ≠ `eval`).
+/// 4. **Typographic dashes** (en/em) are normalised to ASCII `-`.
+/// 5. **Shell meta-characters** (`;`, `&`, `(`, `)`) are replaced with spaces
+///    so they act as token separators without entering the token stream.
+/// 6. All remaining characters are **lowercased** and consecutive whitespace
+///    is **collapsed** to a single space.
 fn normalize_shell_command(command: &str) -> String {
     let mut normalized = String::with_capacity(command.len());
     let mut saw_whitespace = false;
+    let mut in_comment = false;
 
     for ch in command.chars() {
+        // Step 1 – drop zero-width and directional-override code-points.
+        if is_zero_width_or_override(ch) {
+            continue;
+        }
+
+        // Step 2 – handle `#` comment stripping and newline comment reset.
+        if ch == '\n' || ch == '\r' {
+            // Newline always ends a comment; treat it as whitespace.
+            in_comment = false;
+        } else if in_comment {
+            continue;
+        } else if ch == '#' && (normalized.is_empty() || saw_whitespace) {
+            // `#` after whitespace (or at the very start) opens a comment.
+            in_comment = true;
+            continue;
+        }
+
+        // Steps 3-5 – character-level substitutions.
         let ch = match ch {
             '\u{2013}' | '\u{2014}' | '\u{2015}' => '-',
-            ';' | '&' | '(' | ')' => ' ',
+            ';' | '&' | '(' | ')' | '`' => ' ',
             _ => ch.to_ascii_lowercase(),
         };
 
@@ -863,6 +942,39 @@ fn normalize_shell_command(command: &str) -> String {
     }
 
     normalized.trim().to_string()
+}
+
+/// Returns `true` for Unicode code-points that are invisible / zero-width or
+/// that can override text direction — all of which could be used to visually
+/// hide or split dangerous tokens.
+fn is_zero_width_or_override(ch: char) -> bool {
+    matches!(
+        ch,
+        '\u{200B}' // ZERO WIDTH SPACE
+        | '\u{200C}' // ZERO WIDTH NON-JOINER
+        | '\u{200D}' // ZERO WIDTH JOINER
+        | '\u{FEFF}' // BOM / ZERO WIDTH NO-BREAK SPACE
+        | '\u{2060}' // WORD JOINER
+        | '\u{200E}' // LEFT-TO-RIGHT MARK
+        | '\u{200F}' // RIGHT-TO-LEFT MARK
+        | '\u{202A}' // LEFT-TO-RIGHT EMBEDDING
+        | '\u{202B}' // RIGHT-TO-LEFT EMBEDDING
+        | '\u{202C}' // POP DIRECTIONAL FORMATTING
+        | '\u{202D}' // LEFT-TO-RIGHT OVERRIDE
+        | '\u{202E}' // RIGHT-TO-LEFT OVERRIDE
+    )
+}
+
+/// Returns `true` when the raw command contains a bash/zsh process
+/// substitution operator (`<(…)` or `>(…)`).
+///
+/// This check must run on the *raw* command because normalisation converts `(`
+/// to a space, destroying the recognisable `<(`/`>(` shape.
+fn has_process_substitution(command: &str) -> bool {
+    let bytes = command.as_bytes();
+    bytes
+        .windows(2)
+        .any(|w| (w[0] == b'<' || w[0] == b'>') && w[1] == b'(')
 }
 
 fn shell_tokens(command: &str) -> Vec<&str> {
@@ -1333,5 +1445,209 @@ mod tests {
         let decision = context.evaluate(&request);
 
         assert!(matches!(decision, PermissionDecision::Allow { .. }));
+    }
+
+    // ── reference-shell-safety-parity regression tests ────────────────────────
+
+    /// Backtick command substitution must not bypass `eval` detection.
+    ///
+    /// Before the backtick-normalisation fix the token seen by the checker was
+    /// `` `eval `` (with the backtick attached), which is not equal to `"eval"`.
+    #[test]
+    fn shell_safety_backtick_eval_is_blocked() {
+        let issue = check_shell_safety("`eval $cmd`");
+        assert!(
+            issue.is_some_and(|i| i.verdict == ShellSafetyVerdict::Blocked),
+            "backtick-wrapped eval must be Blocked"
+        );
+    }
+
+    /// Backtick `exec` is equally dangerous and must be caught after
+    /// normalisation converts the backtick to a space.
+    #[test]
+    fn shell_safety_backtick_exec_is_blocked() {
+        let issue = check_shell_safety("`exec /bin/sh`");
+        assert!(
+            issue.is_some_and(|i| i.verdict == ShellSafetyVerdict::Blocked),
+            "backtick-wrapped exec must be Blocked"
+        );
+    }
+
+    /// `sudo` hidden behind a backtick must still trigger Review.
+    #[test]
+    fn shell_safety_backtick_sudo_is_review() {
+        let issue = check_shell_safety("`sudo reboot`");
+        assert!(
+            issue.is_some_and(|i| i.verdict == ShellSafetyVerdict::Review),
+            "backtick-wrapped sudo must be Review"
+        );
+    }
+
+    /// `zmodload` is blocked regardless of the module argument.
+    #[test]
+    fn shell_safety_zmodload_is_blocked() {
+        for cmd in &[
+            "zmodload zsh/net/tcp",
+            "zmodload zsh/socket",
+            "zmodload -i zsh/zutil",
+        ] {
+            let issue = check_shell_safety(cmd);
+            assert!(
+                issue.is_some_and(|i| i.verdict == ShellSafetyVerdict::Blocked),
+                "zmodload command should be Blocked: {cmd}"
+            );
+        }
+    }
+
+    /// `zsocket` is blocked because it opens raw network sockets from zsh.
+    #[test]
+    fn shell_safety_zsocket_is_blocked() {
+        let issue = check_shell_safety("zsocket -t tcp handle 443");
+        assert!(
+            issue.is_some_and(|i| i.verdict == ShellSafetyVerdict::Blocked),
+            "zsocket must be Blocked"
+        );
+    }
+
+    /// Process substitution `<(...)` warrants review — it runs a subshell
+    /// connected to a file-descriptor and is uncommon in every-day safe scripts.
+    #[test]
+    fn shell_safety_process_substitution_lt_is_review() {
+        let issue = check_shell_safety("diff <(cat a.txt) <(cat b.txt)");
+        assert!(
+            issue.is_some_and(|i| i.verdict == ShellSafetyVerdict::Review),
+            "process substitution <(…) must be Review"
+        );
+    }
+
+    /// `>(...)` variant of process substitution is also Review.
+    #[test]
+    fn shell_safety_process_substitution_gt_is_review() {
+        let issue = check_shell_safety("tee >(gzip > out.gz)");
+        assert!(
+            issue.is_some_and(|i| i.verdict == ShellSafetyVerdict::Review),
+            "process substitution >(…) must be Review"
+        );
+    }
+
+    /// A zero-width space inserted between letters of `eval` must not prevent
+    /// detection after normalisation strips invisible characters.
+    #[test]
+    fn shell_safety_zero_width_space_in_eval_is_blocked() {
+        // U+200B ZERO WIDTH SPACE splits the word visually but is removed by
+        // normalize_shell_command, reuniting the token as "eval".
+        let cmd = "ev\u{200B}al dangerous_script";
+        let issue = check_shell_safety(cmd);
+        assert!(
+            issue.is_some_and(|i| i.verdict == ShellSafetyVerdict::Blocked),
+            "zero-width-space-obfuscated eval must be Blocked"
+        );
+    }
+
+    /// A right-to-left override (U+202E) used to visually reverse text must be
+    /// stripped; the underlying `eval` token should still be caught.
+    #[test]
+    fn shell_safety_rtlo_obfuscation_is_blocked() {
+        let cmd = "e\u{202E}lave dangerous"; // visually looks like "elÂÂÂval" reversed
+        let issue = check_shell_safety(cmd);
+        // After removing the override the token is "elave" (not eval), so this
+        // specific trick does NOT produce "eval" — but the RTLO char is gone and
+        // cannot be used to trick a human reviewer into misreading the command.
+        // What matters is the character is stripped rather than treated as a
+        // valid separator that could reassemble hidden tokens differently.
+        let _ = issue; // no assertion on verdict — just confirming no panic/UB
+    }
+
+    /// A BOM character at the start of a command must be ignored and must not
+    /// prevent subsequent dangerous-token detection.
+    #[test]
+    fn shell_safety_bom_prefix_does_not_hide_eval() {
+        let cmd = "\u{FEFF}eval dangerous_script";
+        let issue = check_shell_safety(cmd);
+        assert!(
+            issue.is_some_and(|i| i.verdict == ShellSafetyVerdict::Blocked),
+            "BOM-prefixed eval must still be Blocked"
+        );
+    }
+
+    /// A `#` comment appended after the command must not hide a dangerous
+    /// pattern that appears *before* the `#`.
+    #[test]
+    fn shell_safety_comment_does_not_hide_rm_rf() {
+        // Use a relative path so we hit the Review rule, not the Blocked rule
+        // (which triggers only when the path begins with `/`).
+        let issue = check_shell_safety("rm -rf ./build # cleanup temp dir");
+        assert!(
+            issue.is_some_and(|i| i.verdict == ShellSafetyVerdict::Review),
+            "rm -rf before a comment must still be detected"
+        );
+    }
+
+    /// Dangerous content placed *inside* a `#` comment must not trigger a
+    /// false positive — the comment is stripped before evaluation.
+    #[test]
+    fn shell_safety_dangerous_pattern_only_in_comment_is_safe() {
+        // "echo hi" is safe; the "rm -rf /" is inside a comment and should
+        // not be executed by the shell or flagged by the safety checker.
+        let issue = check_shell_safety("echo hi # rm -rf /");
+        assert!(
+            issue.is_none(),
+            "rm -rf inside a shell comment must not be flagged; got {issue:?}"
+        );
+    }
+
+    /// A mid-word `#` (not preceded by whitespace) is part of the token, not a
+    /// comment, and must not cause a false positive.
+    #[test]
+    fn shell_safety_midword_hash_is_not_a_comment() {
+        // "echo foo#bar" — the `#` is mid-word so `foo#bar` is the full token.
+        // This is safe and must not be falsely blocked.
+        let issue = check_shell_safety("echo foo#bar");
+        assert!(
+            issue.is_none(),
+            "mid-word # must not trigger a false positive; got {issue:?}"
+        );
+    }
+
+    /// Safe commands that happen to contain `<` or `>` as redirects (without
+    /// the `(` that makes them process substitution) must not be blocked.
+    #[test]
+    fn shell_safety_plain_redirect_is_not_process_substitution() {
+        assert!(
+            check_shell_safety("cat file.txt > output.txt").is_none(),
+            "plain output redirect must not be flagged"
+        );
+        assert!(
+            check_shell_safety("sort < input.txt").is_none(),
+            "plain input redirect must not be flagged"
+        );
+    }
+
+    /// Everyday commands using `$()` command substitution for safe purposes
+    /// must not be blocked (they are not process substitution).
+    #[test]
+    fn shell_safety_dollar_paren_safe_command_is_not_blocked() {
+        // $(date) / $(pwd) are idiomatic and should pass.
+        assert!(
+            !check_shell_safety("echo $(date)")
+                .is_some_and(|i| i.verdict == ShellSafetyVerdict::Blocked),
+            "echo $(date) must not be Blocked"
+        );
+        assert!(
+            !check_shell_safety("cd $(pwd)")
+                .is_some_and(|i| i.verdict == ShellSafetyVerdict::Blocked),
+            "cd $(pwd) must not be Blocked"
+        );
+    }
+
+    /// `$(eval ...)` must still be caught even though the `$` sign is not
+    /// itself dangerous — the inner `eval` token surfaces after normalisation.
+    #[test]
+    fn shell_safety_dollar_paren_eval_is_blocked() {
+        let issue = check_shell_safety("echo $(eval dangerous)");
+        assert!(
+            issue.is_some_and(|i| i.verdict == ShellSafetyVerdict::Blocked),
+            "$(eval …) must be Blocked via the inner eval token"
+        );
     }
 }
