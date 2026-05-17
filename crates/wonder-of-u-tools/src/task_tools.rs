@@ -356,7 +356,7 @@ impl Tool for TaskCreateTool {
         list.touch();
         store.write(&list)?;
 
-        let content = serde_json::to_string_pretty(&entry).unwrap_or_default();
+        let content = format!("Task #{task_id} created successfully: {}", entry.subject);
         let mut result = ToolResult::success(use_id, content);
         result.metadata = json!({
             "supported": true,
@@ -364,6 +364,7 @@ impl Tool for TaskCreateTool {
             "tool_family": "todo_v2_task_list",
             "task_id": task_id,
             "session_id": context.session_id.to_string(),
+            "task": serde_json::to_value(&entry).unwrap_or_default(),
         });
         Ok(result)
     }
@@ -406,12 +407,23 @@ impl Tool for TaskGetTool {
         let store = TodoTaskStore::new(&app_root);
         let list = store.read_or_default(context.session_id)?;
 
-        let entry = list
-            .tasks
-            .get(&input.task_id)
-            .ok_or_else(|| WonderError::not_found("todo task", &input.task_id))?;
+        // Return a model-friendly success (not an error) when the task is not
+        // found — this prevents the runtime from cancelling sibling tool calls.
+        let Some(entry) = list.tasks.get(&input.task_id) else {
+            let mut result =
+                ToolResult::success(use_id, format!("Task '{}' not found.", input.task_id));
+            result.metadata = json!({
+                "supported": true,
+                "tool": "task_get",
+                "tool_family": "todo_v2_task_list",
+                "task_id": input.task_id,
+                "session_id": context.session_id.to_string(),
+                "not_found": true,
+            });
+            return Ok(result);
+        };
 
-        let content = serde_json::to_string_pretty(entry).unwrap_or_default();
+        let content = format_task_entry(entry);
         let mut result = ToolResult::success(use_id, content);
         result.metadata = json!({
             "supported": true,
@@ -419,6 +431,8 @@ impl Tool for TaskGetTool {
             "tool_family": "todo_v2_task_list",
             "task_id": input.task_id,
             "session_id": context.session_id.to_string(),
+            "not_found": false,
+            "task": serde_json::to_value(entry).unwrap_or_default(),
         });
         Ok(result)
     }
@@ -456,14 +470,16 @@ impl Tool for TaskListTool {
         let store = TodoTaskStore::new(&app_root);
         let list = store.read_or_default(context.session_id)?;
 
-        // Deleted tasks are hidden from model-facing output; they stay on disk for audit.
+        // Deleted tasks and internal (`metadata._internal = true`) tasks are
+        // hidden from model-facing output; they stay on disk for audit.
         let visible: Vec<&TodoTaskEntry> = list
             .tasks
             .values()
             .filter(|e| e.status != TodoTaskStatus::Deleted)
+            .filter(|e| !is_internal_task(e))
             .collect();
 
-        let content = serde_json::to_string_pretty(&visible).unwrap_or_default();
+        let content = format_task_list(&visible, &list.tasks);
         let mut result = ToolResult::success(use_id, content);
         result.metadata = json!({
             "supported": true,
@@ -549,6 +565,9 @@ impl Tool for TaskUpdateTool {
     ) -> Result<ToolResult> {
         let input = parse_input::<TaskUpdateInput>("task_update", &input)?;
         input.validate()?;
+
+        // Collect the names of fields being changed before we consume `input`.
+        let changed_fields = collect_changed_fields(&input);
 
         let app_root = app_root()?;
         let store = TodoTaskStore::new(&app_root);
@@ -670,7 +689,8 @@ impl Tool for TaskUpdateTool {
         store.write(&list)?;
 
         let updated_entry = list.tasks.get(&input.task_id).expect("entry still present");
-        let content = serde_json::to_string_pretty(updated_entry).unwrap_or_default();
+        let fields_display = changed_fields.join(", ");
+        let content = format!("Updated task #{}: {fields_display}", input.task_id);
         let mut result = ToolResult::success(use_id, content);
         result.metadata = json!({
             "supported": true,
@@ -678,6 +698,8 @@ impl Tool for TaskUpdateTool {
             "tool_family": "todo_v2_task_list",
             "task_id": input.task_id,
             "session_id": context.session_id.to_string(),
+            "changed_fields": changed_fields,
+            "task": serde_json::to_value(updated_entry).unwrap_or_default(),
         });
         Ok(result)
     }
@@ -815,6 +837,140 @@ fn reject_self_dependency(field: &str, task_id: &str, values: &[String]) -> Resu
         )));
     }
     Ok(())
+}
+
+// ── Human-readable result text helpers ────────────────────────────────────────
+
+/// Returns `true` if the entry carries `metadata._internal = true`.
+///
+/// Internal tasks are used for bookkeeping and should never appear in
+/// model-facing output.
+fn is_internal_task(entry: &TodoTaskEntry) -> bool {
+    entry
+        .metadata
+        .get("_internal")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+}
+
+/// Returns `true` if the blocker task is resolved (completed or deleted).
+fn is_blocker_resolved(
+    blocker_id: &str,
+    all_tasks: &std::collections::BTreeMap<String, TodoTaskEntry>,
+) -> bool {
+    match all_tasks.get(blocker_id) {
+        Some(t) => matches!(
+            t.status,
+            TodoTaskStatus::Completed | TodoTaskStatus::Deleted
+        ),
+        // Unknown blocker — treat as unresolved to be conservative.
+        None => false,
+    }
+}
+
+/// Formats a single [`TodoTaskEntry`] as a human-readable multi-line string.
+fn format_task_entry(entry: &TodoTaskEntry) -> String {
+    let status_label = todo_status_label(entry.status);
+    let mut lines = vec![
+        format!("Task #{}", entry.task_id),
+        format!("  Subject:     {}", entry.subject),
+        format!("  Status:      {status_label}"),
+        format!("  Description: {}", entry.description),
+    ];
+    if let Some(form) = &entry.active_form {
+        lines.push(format!("  Active form: {form}"));
+    }
+    if let Some(owner) = &entry.owner {
+        lines.push(format!("  Owner:       {owner}"));
+    }
+    if !entry.blocks.is_empty() {
+        lines.push(format!("  Blocks:      {}", entry.blocks.join(", ")));
+    }
+    if !entry.blocked_by.is_empty() {
+        lines.push(format!("  Blocked by:  {}", entry.blocked_by.join(", ")));
+    }
+    lines.join("\n")
+}
+
+/// Formats the visible task list as human-readable text.
+///
+/// `blocked_by` entries whose blocker is already completed or deleted are
+/// omitted — they are resolved and no longer meaningful to the model.
+fn format_task_list(
+    visible: &[&TodoTaskEntry],
+    all_tasks: &std::collections::BTreeMap<String, TodoTaskEntry>,
+) -> String {
+    if visible.is_empty() {
+        return "No tasks.".to_string();
+    }
+
+    let mut lines: Vec<String> = Vec::new();
+    for entry in visible {
+        let status_label = todo_status_label(entry.status);
+        let mut line = format!("[{}] #{} — {}", status_label, entry.task_id, entry.subject);
+
+        // Show active blockers only — skip resolved ones.
+        let active_blockers: Vec<&str> = entry
+            .blocked_by
+            .iter()
+            .filter(|id| !is_blocker_resolved(id, all_tasks))
+            .map(String::as_str)
+            .collect();
+
+        if !active_blockers.is_empty() {
+            line.push_str(&format!(" (blocked by: {})", active_blockers.join(", ")));
+        }
+        lines.push(line);
+    }
+    lines.join("\n")
+}
+
+/// Collects the names of fields being changed in a [`TaskUpdateInput`].
+fn collect_changed_fields(input: &TaskUpdateInput) -> Vec<String> {
+    let mut fields = Vec::new();
+    if input.subject.is_some() {
+        fields.push("subject".to_string());
+    }
+    if input.description.is_some() {
+        fields.push("description".to_string());
+    }
+    if input.active_form.is_some() {
+        fields.push("active_form".to_string());
+    }
+    if input.status.is_some() {
+        fields.push("status".to_string());
+    }
+    if input.add_blocks.is_some() {
+        fields.push("blocks".to_string());
+    }
+    if input.add_blocked_by.is_some() {
+        fields.push("blocked_by".to_string());
+    }
+    if input.remove_blocks.is_some() {
+        fields.push("blocks".to_string());
+    }
+    if input.remove_blocked_by.is_some() {
+        fields.push("blocked_by".to_string());
+    }
+    if input.owner.is_some() {
+        fields.push("owner".to_string());
+    }
+    if input.metadata.is_some() {
+        fields.push("metadata".to_string());
+    }
+    // Deduplicate while preserving order (e.g. both addBlocks and removeBlocks).
+    let mut seen = std::collections::HashSet::new();
+    fields.retain(|f| seen.insert(f.clone()));
+    fields
+}
+
+const fn todo_status_label(status: TodoTaskStatus) -> &'static str {
+    match status {
+        TodoTaskStatus::Pending => "pending",
+        TodoTaskStatus::InProgress => "in_progress",
+        TodoTaskStatus::Completed => "completed",
+        TodoTaskStatus::Deleted => "deleted",
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -1291,18 +1447,29 @@ mod tests {
         assert!(result.success);
         assert!(result.content.contains("Get me"));
 
-        // Not found.
+        // Not found — must succeed (model-friendly) with not_found=true in metadata.
         let ctx3 = ToolContext {
             session_id,
             ..tool_context_with_dir(&dir)
         };
-        let err = block_on(TaskGetTool.execute(
+        let not_found_result = block_on(TaskGetTool.execute(
             ctx3,
             ToolUseId::new(),
             json!({ "taskId": "todo-missing" }),
         ))
-        .expect_err("not found");
-        assert!(err.to_string().contains("not found"));
+        .expect("not-found should be a success result, not an error");
+        assert!(
+            not_found_result.success,
+            "not-found result must be success to avoid cancelling sibling calls"
+        );
+        assert_eq!(
+            not_found_result.metadata["not_found"], true,
+            "metadata must carry not_found=true"
+        );
+        assert!(
+            not_found_result.content.contains("not found"),
+            "content should mention 'not found'"
+        );
     }
 
     #[test]
@@ -1680,5 +1847,267 @@ mod tests {
 
         tool.validate_input(&json!({ "shell_id": "task-1" }))
             .expect("legacy shell id");
+    }
+
+    // ── Result-text tests ──────────────────────────────────────────────────────
+
+    #[test]
+    fn task_create_result_text_contains_id_and_subject() {
+        let dir = unique_test_dir("tools-task-create-text");
+        let _storage_guard = set_storage_dir(&dir);
+        let ctx = tool_context_with_dir(&dir);
+
+        let result = block_on(TaskCreateTool.execute(
+            ctx,
+            ToolUseId::new(),
+            json!({ "subject": "Deploy hotfix", "description": "Push the patch" }),
+        ))
+        .expect("execute");
+
+        let task_id = result.metadata["task_id"].as_str().expect("task_id");
+        assert!(
+            result.content.contains(task_id),
+            "content should contain the task id"
+        );
+        assert!(
+            result.content.contains("Deploy hotfix"),
+            "content should contain the subject"
+        );
+        assert!(
+            result.content.contains("created successfully"),
+            "content should say 'created successfully'"
+        );
+        // Structured task is still accessible via metadata.
+        assert!(
+            result.metadata["task"].is_object(),
+            "metadata must carry structured task"
+        );
+    }
+
+    #[test]
+    fn task_get_result_text_is_human_readable() {
+        let dir = unique_test_dir("tools-task-get-text");
+        let _storage_guard = set_storage_dir(&dir);
+        let ctx = tool_context_with_dir(&dir);
+        let session_id = ctx.session_id;
+
+        let store = TodoTaskStore::new(&dir);
+        let mut list = wonder_of_u_core::TodoTaskList::empty(session_id);
+        list.tasks.insert(
+            "todo-hr1".into(),
+            wonder_of_u_core::TodoTaskEntry::new("todo-hr1", "Write docs", "All public APIs"),
+        );
+        store.write(&list).expect("seed");
+
+        let result = block_on(TaskGetTool.execute(
+            ToolContext {
+                session_id,
+                ..tool_context_with_dir(&dir)
+            },
+            ToolUseId::new(),
+            json!({ "taskId": "todo-hr1" }),
+        ))
+        .expect("execute");
+
+        assert!(result.success);
+        assert!(result.content.contains("todo-hr1"), "id in content");
+        assert!(result.content.contains("Write docs"), "subject in content");
+        assert!(result.content.contains("pending"), "status in content");
+        // The raw JSON blob must NOT appear as the top-level content.
+        assert!(
+            !result.content.starts_with('{'),
+            "content must not be raw JSON"
+        );
+        // Structured task is in metadata.
+        assert!(result.metadata["task"].is_object(), "task in metadata");
+        assert_eq!(result.metadata["not_found"], false);
+    }
+
+    #[test]
+    fn task_list_result_text_is_human_readable() {
+        let dir = unique_test_dir("tools-task-list-text");
+        let _storage_guard = set_storage_dir(&dir);
+        let ctx = tool_context_with_dir(&dir);
+        let session_id = ctx.session_id;
+
+        let store = TodoTaskStore::new(&dir);
+        let mut list = wonder_of_u_core::TodoTaskList::empty(session_id);
+        list.tasks.insert(
+            "todo-lt1".into(),
+            wonder_of_u_core::TodoTaskEntry::new("todo-lt1", "Write tests", "all the tests"),
+        );
+        store.write(&list).expect("seed");
+
+        let result =
+            block_on(TaskListTool.execute(ctx, ToolUseId::new(), json!({}))).expect("execute");
+
+        assert!(result.success);
+        // Must be a line-based summary, not a raw JSON array.
+        // Our format starts with "[status] #id — subject", not "[{…}]".
+        assert!(!result.content.starts_with("[{"), "not raw JSON array");
+        assert!(result.content.contains("Write tests"), "subject present");
+        assert!(result.content.contains("todo-lt1"), "id present");
+    }
+
+    #[test]
+    fn task_list_filters_internal_tasks() {
+        let dir = unique_test_dir("tools-task-list-internal");
+        let _storage_guard = set_storage_dir(&dir);
+        let ctx = tool_context_with_dir(&dir);
+        let session_id = ctx.session_id;
+
+        let store = TodoTaskStore::new(&dir);
+        let mut list = wonder_of_u_core::TodoTaskList::empty(session_id);
+        let visible = wonder_of_u_core::TodoTaskEntry::new("todo-vis1", "Visible task", "public");
+        let mut internal =
+            wonder_of_u_core::TodoTaskEntry::new("todo-int1", "Internal task", "hidden");
+        internal
+            .metadata
+            .insert("_internal".into(), serde_json::json!(true));
+        list.tasks.insert("todo-vis1".into(), visible);
+        list.tasks.insert("todo-int1".into(), internal);
+        store.write(&list).expect("seed");
+
+        let result =
+            block_on(TaskListTool.execute(ctx, ToolUseId::new(), json!({}))).expect("execute");
+
+        assert!(result.success);
+        assert_eq!(result.metadata["count"], 1, "only visible task counted");
+        assert!(
+            result.content.contains("Visible task"),
+            "visible task in output"
+        );
+        assert!(
+            !result.content.contains("Internal task"),
+            "internal task must be hidden"
+        );
+    }
+
+    #[test]
+    fn task_list_filters_resolved_blocked_by_entries() {
+        let dir = unique_test_dir("tools-task-list-blockers");
+        let _storage_guard = set_storage_dir(&dir);
+        let ctx = tool_context_with_dir(&dir);
+        let session_id = ctx.session_id;
+
+        let store = TodoTaskStore::new(&dir);
+        let mut list = wonder_of_u_core::TodoTaskList::empty(session_id);
+
+        // Blocker A is completed.
+        let mut blocker_done =
+            wonder_of_u_core::TodoTaskEntry::new("todo-blk-done", "Blocker done", "finished");
+        blocker_done.status = TodoTaskStatus::Completed;
+
+        // Blocker B is still pending.
+        let blocker_pending =
+            wonder_of_u_core::TodoTaskEntry::new("todo-blk-pending", "Blocker pending", "wait");
+
+        // Task blocked by both.
+        let mut blocked =
+            wonder_of_u_core::TodoTaskEntry::new("todo-blocked", "Blocked task", "waiting");
+        blocked.blocked_by.push("todo-blk-done".into());
+        blocked.blocked_by.push("todo-blk-pending".into());
+
+        list.tasks.insert("todo-blk-done".into(), blocker_done);
+        list.tasks
+            .insert("todo-blk-pending".into(), blocker_pending);
+        list.tasks.insert("todo-blocked".into(), blocked);
+        store.write(&list).expect("seed");
+
+        let result =
+            block_on(TaskListTool.execute(ctx, ToolUseId::new(), json!({}))).expect("execute");
+
+        assert!(result.success);
+        // Only the active (pending) blocker should appear in the "blocked by:"
+        // annotation for the blocked task itself.  The completed blocker
+        // appears as its own visible line (completed tasks remain visible) but
+        // must NOT be listed in the "(blocked by: …)" annotation.
+        let blocked_line = result
+            .content
+            .lines()
+            .find(|l| l.contains("Blocked task"))
+            .expect("line for Blocked task");
+        assert!(
+            blocked_line.contains("todo-blk-pending"),
+            "active blocker must appear in annotation"
+        );
+        assert!(
+            !blocked_line.contains("todo-blk-done"),
+            "resolved blocker must be omitted from annotation"
+        );
+    }
+
+    #[test]
+    fn task_update_result_text_lists_changed_fields() {
+        let dir = unique_test_dir("tools-task-update-text");
+        let _storage_guard = set_storage_dir(&dir);
+        let store = TodoTaskStore::new(&dir);
+        let session_id = SessionId::new();
+        let mut list = wonder_of_u_core::TodoTaskList::empty(session_id);
+        list.tasks.insert(
+            "todo-upd-txt".into(),
+            wonder_of_u_core::TodoTaskEntry::new("todo-upd-txt", "Old", "desc"),
+        );
+        store.write(&list).expect("seed");
+
+        let ctx = ToolContext {
+            session_id,
+            ..tool_context_with_dir(&dir)
+        };
+        let result = block_on(TaskUpdateTool.execute(
+            ctx,
+            ToolUseId::new(),
+            json!({
+                "taskId": "todo-upd-txt",
+                "subject": "New subject",
+                "status": "completed",
+            }),
+        ))
+        .expect("execute");
+
+        assert!(result.success);
+        assert!(
+            result.content.contains("todo-upd-txt"),
+            "content should reference the task id"
+        );
+        assert!(
+            result.content.contains("subject"),
+            "subject in changed list"
+        );
+        assert!(result.content.contains("status"), "status in changed list");
+        // Structured task still accessible via metadata.
+        assert!(result.metadata["task"].is_object(), "task in metadata");
+        let changed: Vec<&str> = result.metadata["changed_fields"]
+            .as_array()
+            .expect("changed_fields array")
+            .iter()
+            .filter_map(Value::as_str)
+            .collect();
+        assert!(changed.contains(&"subject"));
+        assert!(changed.contains(&"status"));
+    }
+
+    #[test]
+    fn is_internal_task_detects_internal_flag() {
+        let mut entry = wonder_of_u_core::TodoTaskEntry::new("todo-int-flag", "S", "D");
+        assert!(!is_internal_task(&entry), "no flag → not internal");
+
+        entry
+            .metadata
+            .insert("_internal".into(), serde_json::json!(true));
+        assert!(is_internal_task(&entry), "_internal=true → internal");
+
+        *entry.metadata.get_mut("_internal").unwrap() = serde_json::json!(false);
+        assert!(!is_internal_task(&entry), "_internal=false → not internal");
+    }
+
+    #[test]
+    fn is_blocker_resolved_treats_unknown_id_as_unresolved() {
+        let all: std::collections::BTreeMap<String, wonder_of_u_core::TodoTaskEntry> =
+            std::collections::BTreeMap::new();
+        assert!(
+            !is_blocker_resolved("todo-ghost", &all),
+            "unknown blocker is unresolved"
+        );
     }
 }
