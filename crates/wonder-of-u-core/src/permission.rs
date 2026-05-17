@@ -3,6 +3,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use glob::{MatchOptions, Pattern as GlobPattern};
 use serde::{Deserialize, Serialize};
 
 /// User-facing permission modes planned for command and tool execution.
@@ -175,8 +176,10 @@ impl PermissionRule {
     /// Handles matches
     #[must_use]
     pub fn matches(&self, context: &ToolPermissionContext, request: &PermissionRequest) -> bool {
-        let tool = normalize_tool_name(&self.tool);
-        if tool.as_deref() != Some("*") && !request.matches_tool_name(&self.tool) {
+        let Some(pattern) = ToolPattern::parse(&self.tool) else {
+            return false;
+        };
+        if !pattern.matches_request(request) {
             return false;
         }
 
@@ -956,6 +959,142 @@ fn normalize_tool_name(name: &str) -> Option<String> {
     (!normalized.is_empty()).then_some(normalized)
 }
 
+// ── ToolPattern ──────────────────────────────────────────────────────────────
+
+/// A parsed permission-rule tool specifier that supports the reference
+/// `Tool(glob_pattern)` syntax used by Claude Code settings.
+///
+/// Three forms are accepted:
+///
+/// | Stored string        | Tool matched     | Argument constraint        |
+/// |----------------------|------------------|----------------------------|
+/// | `*`                  | any tool         | none                       |
+/// | `Bash`               | `bash` (exact)   | none (migration compat)    |
+/// | `Bash(git *)`        | `bash` (exact)   | shell command matches glob |
+/// | `FileRead(src/*)`    | `fileread`       | first path matches glob    |
+///
+/// When an arg-glob is present it is tested against:
+/// 1. `request.shell_command` if present, **or**
+/// 2. `request.paths[0]` converted to a string slice, **or**
+/// 3. Falls back to checking whether the pattern is `*` (no argument).
+///
+/// Glob matching uses [`MatchOptions`] with `require_literal_separator:
+/// false` so that `*` spans slashes and spaces, matching typical shell
+/// command patterns like `git *` or file patterns like `src/**`.
+#[derive(Debug, Clone)]
+pub struct ToolPattern {
+    /// Normalised tool name, or the sentinel `"*"` for any-tool.
+    tool: String,
+    /// Optional glob applied to the request's primary argument.
+    /// `None` means any argument passes (bare-name migration compat).
+    arg_glob: Option<GlobPattern>,
+}
+
+impl ToolPattern {
+    /// Parses a raw rule `tool` string into a `ToolPattern`.
+    ///
+    /// Returns `None` when the string is empty or the embedded glob is
+    /// syntactically invalid.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use wonder_of_u_core::permission::ToolPattern;
+    ///
+    /// assert!(ToolPattern::parse("Bash(git *)").is_some());
+    /// assert!(ToolPattern::parse("*").is_some());
+    /// assert!(ToolPattern::parse("bash").is_some());
+    /// assert!(ToolPattern::parse("").is_none());
+    /// ```
+    #[must_use]
+    pub fn parse(raw: &str) -> Option<Self> {
+        let raw = raw.trim();
+        if raw.is_empty() {
+            return None;
+        }
+
+        // Global wildcard — matches any tool with any argument.
+        if raw == "*" {
+            return Some(Self {
+                tool: "*".to_string(),
+                arg_glob: None,
+            });
+        }
+
+        // `ToolName(glob_pattern)` form.
+        if let Some(open) = raw.find('(') {
+            if raw.ends_with(')') {
+                let tool_part = raw[..open].trim();
+                let pattern_str = raw[open + 1..raw.len() - 1].trim();
+                let tool = normalize_tool_name(tool_part)?;
+                // Invalid glob patterns are rejected so callers get None.
+                let arg_glob = GlobPattern::new(pattern_str).ok()?;
+                return Some(Self {
+                    tool,
+                    arg_glob: Some(arg_glob),
+                });
+            }
+        }
+
+        // Bare tool name: migration-compatible — any argument passes.
+        let tool = normalize_tool_name(raw)?;
+        Some(Self {
+            tool,
+            arg_glob: None,
+        })
+    }
+
+    /// Returns `true` when `request`'s tool name and primary argument both
+    /// satisfy this pattern.
+    #[must_use]
+    pub fn matches_request(&self, request: &PermissionRequest) -> bool {
+        // ── 1. Tool-name check ────────────────────────────────────────────────
+        if self.tool != "*" {
+            let req_tool = match normalize_tool_name(&request.tool_name) {
+                Some(t) => t,
+                None => return false,
+            };
+            let tool_match = req_tool == self.tool
+                || request
+                    .tool_aliases
+                    .iter()
+                    .filter_map(|a| normalize_tool_name(a))
+                    .any(|a| a == self.tool);
+            if !tool_match {
+                return false;
+            }
+        }
+
+        // ── 2. Optional argument-glob check ──────────────────────────────────
+        let Some(pattern) = &self.arg_glob else {
+            // No arg constraint (bare name or `*`) — always passes.
+            return true;
+        };
+
+        // Glob options: `*` spans separators and is case-insensitive on
+        // Windows.  We keep `require_literal_separator: false` so patterns
+        // like `git *` match `git log --oneline` without special syntax.
+        let opts = MatchOptions {
+            case_sensitive: false,
+            require_literal_separator: false,
+            require_literal_leading_dot: false,
+        };
+
+        // Prefer shell_command, fall back to the first path, then give up.
+        if let Some(cmd) = &request.shell_command {
+            return pattern.matches_with(cmd, opts);
+        }
+        if let Some(path) = request.paths.first() {
+            if let Some(s) = path.to_str() {
+                return pattern.matches_with(s, opts);
+            }
+        }
+
+        // No matchable argument in the request — only `*` can pass.
+        pattern.as_str() == "*"
+    }
+}
+
 fn normalize_path(path: &Path) -> PathBuf {
     let mut normalized = PathBuf::new();
     let mut absolute = false;
@@ -1333,5 +1472,285 @@ mod tests {
         let decision = context.evaluate(&request);
 
         assert!(matches!(decision, PermissionDecision::Allow { .. }));
+    }
+
+    // ── ToolPattern parsing tests ────────────────────────────────────────────
+
+    #[test]
+    fn tool_pattern_parse_empty_returns_none() {
+        assert!(ToolPattern::parse("").is_none());
+        assert!(ToolPattern::parse("   ").is_none());
+    }
+
+    #[test]
+    fn tool_pattern_parse_wildcard() {
+        let p = ToolPattern::parse("*").unwrap();
+        assert_eq!(p.tool, "*");
+        assert!(p.arg_glob.is_none());
+    }
+
+    #[test]
+    fn tool_pattern_parse_bare_name_is_migration_compat() {
+        let p = ToolPattern::parse("Bash").unwrap();
+        assert_eq!(p.tool, "bash");
+        assert!(p.arg_glob.is_none(), "bare name should carry no arg glob");
+    }
+
+    #[test]
+    fn tool_pattern_parse_tool_with_glob() {
+        let p = ToolPattern::parse("Bash(git *)").unwrap();
+        assert_eq!(p.tool, "bash");
+        assert!(p.arg_glob.is_some());
+    }
+
+    #[test]
+    fn tool_pattern_parse_file_read_wildcard() {
+        let p = ToolPattern::parse("FileRead(*)").unwrap();
+        assert_eq!(p.tool, "fileread");
+        assert!(p.arg_glob.is_some());
+    }
+
+    #[test]
+    fn tool_pattern_parse_invalid_glob_returns_none() {
+        // A lone `[` is an invalid glob character class.
+        assert!(ToolPattern::parse("Bash([invalid)").is_none());
+    }
+
+    // ── ToolPattern.matches_request tests ───────────────────────────────────
+
+    #[test]
+    fn tool_pattern_wildcard_matches_any_tool() {
+        let p = ToolPattern::parse("*").unwrap();
+        let req = PermissionRequest::new("any_tool");
+        assert!(p.matches_request(&req));
+    }
+
+    #[test]
+    fn tool_pattern_bare_name_exact_match() {
+        let p = ToolPattern::parse("bash").unwrap();
+        assert!(p.matches_request(&PermissionRequest::new("bash")));
+        assert!(!p.matches_request(&PermissionRequest::new("file_read")));
+    }
+
+    #[test]
+    fn tool_pattern_bare_name_case_insensitive_normalization() {
+        let p = ToolPattern::parse("Bash").unwrap();
+        // Request uses lowercase — still matches after normalization.
+        assert!(p.matches_request(&PermissionRequest::new("bash")));
+    }
+
+    #[test]
+    fn tool_pattern_bare_name_matches_regardless_of_command() {
+        // Migration-compat: bare name = any argument.
+        let p = ToolPattern::parse("bash").unwrap();
+        let req = PermissionRequest::new("bash").with_shell_command("rm -rf build");
+        assert!(
+            p.matches_request(&req),
+            "bare name should match regardless of command"
+        );
+    }
+
+    #[test]
+    fn tool_pattern_glob_matches_shell_command() {
+        let p = ToolPattern::parse("Bash(git *)").unwrap();
+
+        let git_req = PermissionRequest::new("bash").with_shell_command("git status");
+        assert!(
+            p.matches_request(&git_req),
+            "git status should match 'git *'"
+        );
+
+        let cargo_req = PermissionRequest::new("bash").with_shell_command("cargo build");
+        assert!(
+            !p.matches_request(&cargo_req),
+            "cargo build should not match 'git *'"
+        );
+    }
+
+    #[test]
+    fn tool_pattern_glob_matches_shell_command_with_slash() {
+        // `*` must span slashes (e.g. paths embedded in commands).
+        let p = ToolPattern::parse("Bash(cat /etc/*)").unwrap();
+        let req = PermissionRequest::new("bash").with_shell_command("cat /etc/passwd");
+        assert!(p.matches_request(&req));
+    }
+
+    #[test]
+    fn tool_pattern_glob_matches_path() {
+        let p = ToolPattern::parse("FileRead(src/*)").unwrap();
+
+        let in_src = PermissionRequest::new("fileread").with_path("src/lib.rs");
+        assert!(p.matches_request(&in_src));
+
+        let outside = PermissionRequest::new("fileread").with_path("tests/integration.rs");
+        assert!(!p.matches_request(&outside));
+    }
+
+    #[test]
+    fn tool_pattern_glob_wildcard_arg_matches_any_tool_command() {
+        let p = ToolPattern::parse("Bash(*)").unwrap();
+        let req = PermissionRequest::new("bash").with_shell_command("any command here");
+        assert!(p.matches_request(&req));
+    }
+
+    #[test]
+    fn tool_pattern_tool_mismatch_no_match() {
+        let p = ToolPattern::parse("Bash(git *)").unwrap();
+        // Tool name is file_read, not bash — should not match even if command matches.
+        let req = PermissionRequest::new("file_read").with_shell_command("git status");
+        assert!(!p.matches_request(&req));
+    }
+
+    #[test]
+    fn tool_pattern_glob_no_arg_in_request_only_star_passes() {
+        // Pattern `Bash(*)` on a request with no shell_command and no paths.
+        let star = ToolPattern::parse("Bash(*)").unwrap();
+        let req = PermissionRequest::new("bash");
+        assert!(
+            star.matches_request(&req),
+            "Bash(*) with no arg should pass"
+        );
+
+        let specific = ToolPattern::parse("Bash(git *)").unwrap();
+        assert!(
+            !specific.matches_request(&req),
+            "Bash(git *) with no arg should not pass"
+        );
+    }
+
+    #[test]
+    fn tool_pattern_alias_match() {
+        let p = ToolPattern::parse("sh").unwrap();
+        let req = PermissionRequest::new("bash").with_alias("sh");
+        assert!(
+            p.matches_request(&req),
+            "alias 'sh' should match pattern 'sh'"
+        );
+    }
+
+    // ── Integration: evaluate() with glob-pattern rules ──────────────────────
+
+    #[test]
+    fn glob_rule_allows_matching_git_command() {
+        let ctx = ToolPermissionContext::new("/workspace", PermissionMode::Default).with_rule(
+            PermissionRule::new(
+                "Bash(git *)",
+                PermissionRuleBehavior::Allow,
+                PermissionRuleSource::User,
+            ),
+        );
+        let req = PermissionRequest::new("bash").with_shell_command("git log --oneline");
+        assert!(
+            matches!(ctx.evaluate(&req), PermissionDecision::Allow { .. }),
+            "git command should be allowed by Bash(git *) rule"
+        );
+    }
+
+    #[test]
+    fn glob_rule_does_not_allow_non_git_command() {
+        let ctx = ToolPermissionContext::new("/workspace", PermissionMode::Default).with_rule(
+            PermissionRule::new(
+                "Bash(git *)",
+                PermissionRuleBehavior::Allow,
+                PermissionRuleSource::User,
+            ),
+        );
+        // `cargo build` does not match `git *` so the rule is not triggered.
+        // Default mode without a matched rule → Ask.
+        let req = PermissionRequest::new("bash").with_shell_command("cargo build");
+        assert!(
+            matches!(
+                ctx.evaluate(&req),
+                PermissionDecision::Ask { .. } | PermissionDecision::Deny { .. }
+            ),
+            "non-git command should not be covered by Bash(git *) allow rule"
+        );
+    }
+
+    #[test]
+    fn glob_deny_rule_overrides_allow_rule_for_same_tool() {
+        // Deny `Bash(rm *)` from Policy; allow `Bash(*)` from User.
+        // Policy precedence must win → Deny.
+        let ctx = ToolPermissionContext::new("/workspace", PermissionMode::Default)
+            .with_rule(PermissionRule::new(
+                "Bash(*)",
+                PermissionRuleBehavior::Allow,
+                PermissionRuleSource::User,
+            ))
+            .with_rule(PermissionRule::new(
+                "Bash(rm *)",
+                PermissionRuleBehavior::Deny,
+                PermissionRuleSource::Policy,
+            ));
+        let req = PermissionRequest::new("bash").with_shell_command("rm -rf build");
+        assert!(
+            matches!(ctx.evaluate(&req), PermissionDecision::Deny { .. }),
+            "policy deny rule must beat user allow rule"
+        );
+    }
+
+    #[test]
+    fn glob_allow_rule_with_fileread_wildcard() {
+        let ctx = ToolPermissionContext::new("/workspace", PermissionMode::Default).with_rule(
+            PermissionRule::new(
+                "FileRead(*)",
+                PermissionRuleBehavior::Allow,
+                PermissionRuleSource::CliArg,
+            ),
+        );
+        // File outside working dir would normally Ask; glob rule allows it.
+        let req = PermissionRequest::new("fileread")
+            .read_only(true)
+            .with_path("/etc/passwd");
+        assert!(
+            matches!(ctx.evaluate(&req), PermissionDecision::Allow { .. }),
+            "FileRead(*) allow rule should permit any file read"
+        );
+    }
+
+    #[test]
+    fn bare_tool_name_rule_still_works_as_before() {
+        // Migration compat: rules written before glob support (bare "bash")
+        // must continue to function as exact-tool-match with any argument.
+        let ctx = ToolPermissionContext::new("/workspace", PermissionMode::Default).with_rule(
+            PermissionRule::new(
+                "bash",
+                PermissionRuleBehavior::Allow,
+                PermissionRuleSource::User,
+            ),
+        );
+        let req = PermissionRequest::new("bash").with_shell_command("echo hello");
+        assert!(
+            matches!(ctx.evaluate(&req), PermissionDecision::Allow { .. }),
+            "bare 'bash' rule should still allow all bash commands"
+        );
+    }
+
+    #[test]
+    fn glob_rule_allow_deny_precedence_across_sources() {
+        // SessionRuntime allow + Project deny → SessionRuntime wins (lower precedence number).
+        // Session = 2, Project = 5 → Session beats Project.
+        let ctx = ToolPermissionContext::new("/workspace", PermissionMode::Default)
+            .with_rule(PermissionRule::new(
+                "Bash(git *)",
+                PermissionRuleBehavior::Allow,
+                PermissionRuleSource::SessionRuntime,
+            ))
+            .with_rule(PermissionRule::new(
+                "Bash(git *)",
+                PermissionRuleBehavior::Deny,
+                PermissionRuleSource::Project,
+            ));
+        let req = PermissionRequest::new("bash").with_shell_command("git status");
+        // Both rules match; resolve picks lowest (source_prec, behavior_prec).
+        // SessionRuntime(2) < Project(5), so SessionRuntime allow wins.
+        // But wait: same source, behavior: allow(2) vs deny(0) → deny wins.
+        // Here they're *different* sources: SessionRuntime(2) vs Project(5).
+        // The resolver picks the min by (source_prec, behavior_prec, index).
+        // SessionRuntime has lower source_prec → it's chosen regardless of behavior.
+        assert!(
+            matches!(ctx.evaluate(&req), PermissionDecision::Allow { .. }),
+            "SessionRuntime rule should beat Project rule"
+        );
     }
 }
