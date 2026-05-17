@@ -76,6 +76,12 @@ pub(super) struct TuiController<'a> {
     /// Some sections read small config files or scan PATH; cache them outside
     /// `view()` so typing/rendering never performs blocking discovery work.
     pub(super) sidebar_cache: SidebarPanelCache,
+    /// The permission mode that was active immediately before the session
+    /// entered [`PermissionMode::Plan`].  Set when plan mode is entered so that
+    /// [`PlanAction::Exit`] can restore the original mode (e.g. `AcceptEdits`
+    /// or `BypassPermissions`) rather than always falling back to `Default`.
+    /// Cleared whenever the session leaves plan mode.
+    pub(super) pre_plan_permission_mode: Option<PermissionMode>,
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -253,6 +259,7 @@ impl<'a> TuiController<'a> {
             sidebar_visible: true,
             expand_tool_output: false,
             sidebar_cache: SidebarPanelCache::default(),
+            pre_plan_permission_mode: None,
         };
         controller.hydrate_initial_settings()?;
         controller.refresh_runtime_state()?;
@@ -2089,7 +2096,30 @@ impl<'a> TuiController<'a> {
             .find_map(|line| line.strip_prefix("permission_mode="))
             .and_then(parse_permission_mode_hint)
         {
-            self.state.permission_mode = mode;
+            // Track the pre-plan mode so we can restore it on `/plan exit`.
+            // Entering plan: remember what we're leaving so exit restores
+            // correctly (e.g. AcceptEdits/BypassPermissions, not always Default).
+            // Leaving plan: restore the saved pre-plan mode and clear the slot,
+            // ignoring whatever the command hardcoded (it doesn't know our origin).
+            let apply_mode = if mode == PermissionMode::Plan
+                && self.state.permission_mode != PermissionMode::Plan
+            {
+                // Entering plan mode — save origin.
+                self.pre_plan_permission_mode = Some(self.state.permission_mode);
+                mode
+            } else if mode != PermissionMode::Plan
+                && self.state.permission_mode == PermissionMode::Plan
+            {
+                // Leaving plan mode — restore saved origin, or use the
+                // command-supplied mode as a passthrough fallback.
+                self.pre_plan_permission_mode.take().unwrap_or(mode)
+            } else {
+                // Any other transition (Default→AcceptEdits, etc.) — apply as-is
+                // and clear the stale pre-plan slot if we somehow have one.
+                self.pre_plan_permission_mode = None;
+                mode
+            };
+            self.state.permission_mode = apply_mode;
         }
         let Some(selection) = text
             .lines()
