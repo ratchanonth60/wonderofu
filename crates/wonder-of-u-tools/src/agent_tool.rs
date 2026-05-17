@@ -4,13 +4,14 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use wonder_of_u_core::{
-    AgentCatalog, AgentDefinitionSource, FeatureFlag, FleetMemberRequest, RemoteTaskState,
-    RemoteTaskType, Result, TaskId, Tool, ToolContext, ToolKind, ToolResult, ToolSchema, ToolSpec,
-    ToolUseId, WonderError, agent_loader::AgentDefinitionLoader, get_git_root,
+    AgentCatalog, AgentDefinitionSource, AgentLaunchSpec, FeatureFlag, FleetMemberRequest,
+    RemoteTaskState, RemoteTaskType, Result, TaskId, Tool, ToolContext, ToolEffect, ToolKind,
+    ToolResult, ToolSchema, ToolSpec, ToolUseId, WonderError, agent_loader::AgentDefinitionLoader,
+    get_git_root,
 };
 use wonder_of_u_storage::FleetStore;
 
-use crate::{app_root, base_spec, parse_input, require_non_empty_text};
+use crate::{base_spec, parse_input, require_non_empty_text};
 /// Represents agent input
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -196,28 +197,35 @@ impl Tool for AgentTool {
         let loader = AgentDefinitionLoader::new(&definition_root);
         let (catalog, warnings) = loader.build_catalog()?;
 
-        let request_id = queue_fleet_member_request_with_catalog(&app_root()?, &input, &catalog)?;
-        let mut result = ToolResult::success(
-            use_id,
-            format!("agent task queued for fleet dispatch: {request_id}"),
-        );
+        // Build the fully-populated request (snapshot, lineage, tools) but do
+        // NOT write any pending file here.  The runtime processes the returned
+        // ToolEffect::LaunchAgentTask and decides whether to:
+        //   a) directly call TaskManager::start_agent_task (preferred), or
+        //   b) write a pending FleetMemberRequest file as fallback.
+        let request = build_fleet_member_request_with_catalog(&input, &catalog)?;
+        let request_id = request.id.clone();
+
+        let effect = ToolEffect::LaunchAgentTask(AgentLaunchSpec { request });
+
+        let mut result =
+            ToolResult::success(use_id, format!("agent task launch requested: {request_id}"));
         result.metadata = json!({
             "request_id": request_id,
-            "status": "pending_dispatch",
+            "status": "launch_requested",
             "run_in_background": true,
             "description": input.description,
-            "dispatch_hint": "run `fleet dispatch` to launch this agent",
+            "dispatch_hint": "runtime will launch directly or fall back to `fleet dispatch`",
             "supports_send_message": false,
             "supports_team_name": false,
             "definition_root": definition_root,
             "agent_definition_warnings": warnings.iter().map(|w| w.message()).collect::<Vec<_>>(),
         });
+        result.effects = vec![effect];
         Ok(result)
     }
 }
 
-/// Queues an agent request as a [`FleetMemberRequest`] pending file, using
-/// the built-in catalog only.
+/// Queues an agent request as a [`FleetMemberRequest`] pending file.
 ///
 /// Used by tests that do not need project-level definition loading.
 #[cfg(test)]
@@ -226,28 +234,25 @@ fn queue_fleet_member_request(app_root: &std::path::Path, input: &AgentInput) ->
     queue_fleet_member_request_with_catalog(app_root, input, &catalog)
 }
 
-/// Queues an agent request as a [`FleetMemberRequest`] pending file.
+/// Builds a [`FleetMemberRequest`] from an `AgentInput` and catalog **without
+/// writing any pending file to disk**.
 ///
-/// Accepts an explicit `catalog` so the caller controls which definitions are
-/// available for `subagent_type` resolution (built-ins only, or built-ins +
-/// project).
+/// This is the pure-data construction step used by:
+/// - [`AgentTool::execute`] (returns the request as a [`ToolEffect`]),
+/// - [`queue_fleet_member_request_with_catalog`] (builds then writes).
 ///
 /// # Snapshot
 ///
-/// When `input.subagent_type` resolves to a known definition, an
-/// [`AgentDefinitionSnapshot`] capturing the effective fields is stored on the
-/// [`FleetMemberRequest`].  This ensures the dispatcher always has a stable
-/// copy of the configuration even if the source file is later edited or deleted.
-///
-/// If no `subagent_type` is provided, the `general-purpose` built-in is used
-/// as the default definition and is snapshotted for dispatch.
-///
-/// Returns the request UUID string so callers can include it in tool metadata.
-pub fn queue_fleet_member_request_with_catalog(
-    app_root: &std::path::Path,
+/// When `input.subagent_type` resolves to a known definition an
+/// [`AgentDefinitionSnapshot`] is embedded in the returned request.  If no
+/// `subagent_type` is provided the `general-purpose` built-in is used as the
+/// default and is snapshotted for the dispatcher.
+pub fn build_fleet_member_request_with_catalog(
     input: &AgentInput,
     catalog: &AgentCatalog,
-) -> Result<String> {
+) -> Result<FleetMemberRequest> {
+    validate_subagent_type(input, catalog)?;
+
     let mut request = FleetMemberRequest::new(input.prompt.clone());
     request.description = input.description.clone();
     request.name = input.name.clone();
@@ -282,41 +287,56 @@ pub fn queue_fleet_member_request_with_catalog(
     request.depends_on = input.depends_on.clone().unwrap_or_default();
 
     // Resolve subagent_type → definition + snapshot.
-    //
-    // When subagent_type is explicitly provided, it must resolve to a known
-    // definition; unknown types are rejected with a helpful catalog listing.
-    // When omitted, `general-purpose` is used as the default definition.
     let resolved_def = if let Some(ref subagent_type) = input.subagent_type {
-        match catalog.resolve_alias(subagent_type) {
-            Some(def) => Some(def),
-            None => {
-                return Err(WonderError::validation(format!(
-                    "agent `subagent_type` value `{subagent_type}` is not recognised; \
-                     known definitions: {}",
-                    catalog.known_ids_display()
-                )));
-            }
-        }
+        catalog.resolve_alias(subagent_type)
     } else {
         // Default to general-purpose for snapshot metadata when no type is given.
         catalog.get("general-purpose")
     };
 
     if let Some(def) = resolved_def {
-        // Store the stable role id on the request for the dispatcher.
         request.role = Some(def.id.clone());
-
-        // Snapshot the effective definition so the dispatcher never needs to
-        // re-resolve from disk.
         request.definition_snapshot = Some(def.snapshot());
-
-        // For built-in roles that originated from FleetAgentRole, also honour
-        // the model override from the definition if the caller didn't provide one.
+        // For built-in roles honour the model override from the definition
+        // if the caller didn't provide one.
         if request.model.is_none() && def.source == AgentDefinitionSource::Builtin {
             request.model = def.model.clone();
         }
     }
 
+    Ok(request)
+}
+
+fn validate_subagent_type(input: &AgentInput, catalog: &AgentCatalog) -> Result<()> {
+    if let Some(ref subagent_type) = input.subagent_type {
+        if catalog.resolve_alias(subagent_type).is_none() {
+            return Err(WonderError::validation(format!(
+                "agent `subagent_type` value `{subagent_type}` is not recognised; \
+                 known definitions: {}",
+                catalog.known_ids_display()
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// Queues an agent request as a [`FleetMemberRequest`] pending file.
+///
+/// Accepts an explicit `catalog` so the caller controls which definitions are
+/// available for `subagent_type` resolution (built-ins only, or built-ins +
+/// project).
+///
+/// When `input.subagent_type` is explicitly provided and does **not** resolve
+/// to a known definition the call returns a validation error with a catalog
+/// listing hint.
+///
+/// Returns the request UUID string so callers can include it in tool metadata.
+pub fn queue_fleet_member_request_with_catalog(
+    app_root: &std::path::Path,
+    input: &AgentInput,
+    catalog: &AgentCatalog,
+) -> Result<String> {
+    let request = build_fleet_member_request_with_catalog(input, catalog)?;
     let store = FleetStore::new(app_root);
     store.queue_member_request(&request)?;
     Ok(request.id)
@@ -733,5 +753,153 @@ mod tests {
             .expect_err("foreground unsupported");
 
         assert!(error.to_string().contains("run_in_background"));
+    }
+
+    // ── AgentTool::execute returns ToolEffect::LaunchAgentTask ────────────────
+
+    /// Verify that execute() returns a LaunchAgentTask effect and does NOT
+    /// write any pending file.  This is the core contract of the new design:
+    /// the tool is pure – it delegates side-effects to the runtime.
+    #[test]
+    fn agent_execute_returns_launch_effect_without_writing_pending_file() {
+        use wonder_of_u_core::{FeatureSet, PermissionMode, SessionId, ToolEffect};
+
+        let dir = unique_test_dir("tools-agent-execute-effect");
+        // ToolContext with cwd pointing at our temp dir (not a git repo).
+        let context = wonder_of_u_core::ToolContext {
+            session_id: SessionId::new(),
+            cwd: dir.clone(),
+            session_worktree: None,
+            permission_mode: PermissionMode::Default,
+            additional_working_directories: vec![],
+            provider: None,
+            model: None,
+            permission_rules: vec![],
+            features: FeatureSet::first_release(),
+            bash_session_store: None,
+        };
+        let use_id = wonder_of_u_core::ToolUseId::new();
+        let input = json!({ "prompt": "review this code" });
+        let tool = AgentTool;
+
+        let result = futures::executor::block_on(tool.execute(context, use_id, input))
+            .expect("execute should succeed");
+
+        // Must succeed and carry exactly one LaunchAgentTask effect.
+        assert!(result.success, "result should be success");
+        assert_eq!(result.effects.len(), 1, "expected exactly one effect");
+        let ToolEffect::LaunchAgentTask(ref spec) = result.effects[0];
+        assert_eq!(spec.request.prompt, "review this code");
+
+        // Metadata status must be "launch_requested", not "pending_dispatch".
+        let status = result.metadata["status"].as_str().unwrap_or("");
+        assert_eq!(
+            status, "launch_requested",
+            "metadata.status should be launch_requested, got: {status}"
+        );
+
+        // No pending file should have been written — no FleetStore on dir.
+        let store = FleetStore::new(&dir);
+        assert!(
+            store.list_pending_requests().unwrap().is_empty(),
+            "execute() must not write a pending file"
+        );
+    }
+
+    /// build_fleet_member_request_with_catalog constructs the request but does
+    /// not touch the filesystem — a FleetStore on the same dir stays empty.
+    #[test]
+    fn build_helper_does_not_write_pending_file() {
+        let dir = unique_test_dir("tools-agent-build-no-write");
+        let catalog = AgentCatalog::builtin();
+        let input = AgentInput {
+            prompt: "just build".into(),
+            description: None,
+            subagent_type: None,
+            model: None,
+            run_in_background: None,
+            name: None,
+            team_name: None,
+            mode: None,
+            isolation: None,
+            cwd: None,
+            tools: None,
+            depends_on: None,
+        };
+
+        let request =
+            build_fleet_member_request_with_catalog(&input, &catalog).expect("build request");
+        assert_eq!(request.prompt, "just build");
+
+        // definition_snapshot defaults to general-purpose.
+        let snap = request.definition_snapshot.as_ref().unwrap();
+        assert_eq!(snap.definition_id, "general-purpose");
+
+        // No file written.
+        let store = FleetStore::new(&dir);
+        assert!(store.list_pending_requests().unwrap().is_empty());
+    }
+
+    /// The queue helper (used for fallback and backward-compat) still writes a
+    /// file even after the refactor.
+    #[test]
+    fn queue_helper_still_writes_pending_file_after_refactor() {
+        let dir = unique_test_dir("tools-agent-queue-still-writes");
+        let catalog = AgentCatalog::builtin();
+        let input = AgentInput {
+            prompt: "queue me".into(),
+            description: None,
+            subagent_type: None,
+            model: None,
+            run_in_background: None,
+            name: None,
+            team_name: None,
+            mode: None,
+            isolation: None,
+            cwd: None,
+            tools: None,
+            depends_on: None,
+        };
+
+        let request_id =
+            queue_fleet_member_request_with_catalog(&dir, &input, &catalog).expect("queue");
+
+        let store = FleetStore::new(&dir);
+        let pending = store.list_pending_requests().unwrap();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].id, request_id);
+    }
+
+    #[test]
+    fn agent_execute_rejects_unknown_subagent_type() {
+        use wonder_of_u_core::{FeatureSet, PermissionMode, SessionId};
+
+        let dir = unique_test_dir("tools-agent-execute-unknown-type");
+        let context = wonder_of_u_core::ToolContext {
+            session_id: SessionId::new(),
+            cwd: dir,
+            session_worktree: None,
+            permission_mode: PermissionMode::Default,
+            additional_working_directories: vec![],
+            provider: None,
+            model: None,
+            permission_rules: vec![],
+            features: FeatureSet::first_release(),
+            bash_session_store: None,
+        };
+        let tool = AgentTool;
+        let error = futures::executor::block_on(tool.execute(
+            context,
+            wonder_of_u_core::ToolUseId::new(),
+            json!({
+                "prompt": "review",
+                "subagent_type": "does-not-exist",
+            }),
+        ))
+        .expect_err("unknown subagent_type should be rejected");
+
+        let message = error.to_string();
+        assert!(message.contains("does-not-exist"), "got: {message}");
+        assert!(message.contains("known definitions"), "got: {message}");
     }
 }

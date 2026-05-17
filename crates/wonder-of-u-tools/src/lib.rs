@@ -33,7 +33,10 @@ use serde_json::Value;
 use wonder_of_u_core::{FeatureFlag, Result, Tool, ToolKind, ToolRegistry, ToolSpec, WonderError};
 
 /// Re-exports items from `agent_tool`
-pub use agent_tool::{AgentInput, AgentTool};
+pub use agent_tool::{
+    AgentInput, AgentTool, build_fleet_member_request_with_catalog,
+    queue_fleet_member_request_with_catalog,
+};
 /// Re-exports items from `ask_user_tool`
 pub use ask_user_tool::{AskUserInput, AskUserTool};
 /// Re-exports items from `bash`

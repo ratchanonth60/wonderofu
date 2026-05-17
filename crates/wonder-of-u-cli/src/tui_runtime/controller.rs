@@ -2345,6 +2345,8 @@ impl<'a> TuiController<'a> {
     where
         F: FnMut(&Self) -> Result<()>,
     {
+        let result =
+            process_tool_effects(result, self.storage_dir.as_deref(), &self.state.session.cwd);
         let _ = commands::apply_worktree_tool_result(&mut self.state, &result)?;
         messages.push(append_contextual_message(
             &mut self.state,
