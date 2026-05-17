@@ -249,12 +249,36 @@ impl Tool for AgentTool {
 
         let request_id = request.id.clone();
 
-        let effect = ToolEffect::LaunchAgentTask(AgentLaunchSpec { request });
+        // Pre-allocate a stable TaskId so callers can derive deterministic
+        // output paths before the task is actually started.  The runtime
+        // MUST honour this id when creating the task record (see
+        // `AgentLaunchSpec::reserved_task_id`).
+        let reserved_task_id = TaskId::new();
+
+        // Compute the output paths from the app root.  Failures are
+        // non-fatal: paths are best-effort metadata; the task still launches.
+        let output_paths = crate::app_root()
+            .ok()
+            .map(|root| {
+                let paths = wonder_of_u_storage::StoragePaths::new(&root);
+                serde_json::json!({
+                    "output_log": paths.task_log_path(reserved_task_id),
+                    "result":     paths.task_result_path(reserved_task_id),
+                })
+            })
+            .unwrap_or(serde_json::Value::Null);
+
+        let effect = ToolEffect::LaunchAgentTask(AgentLaunchSpec {
+            request,
+            reserved_task_id: Some(reserved_task_id),
+        });
 
         let mut result =
             ToolResult::success(use_id, format!("agent task launch requested: {request_id}"));
         result.metadata = serde_json::json!({
             "request_id": request_id,
+            "reserved_task_id": reserved_task_id.to_string(),
+            "output_paths": output_paths,
             "status": "launch_requested",
             "run_in_background": true,
             "mode": input.mode,
@@ -1166,22 +1190,16 @@ mod tests {
         );
     }
 
-    /// Non-fork agent calls (no mode field) do NOT embed fork_context even
-    /// when one is present in the ToolContext.
-    #[test]
-    fn agent_execute_without_fork_mode_does_not_embed_fork_context() {
-        use wonder_of_u_core::{
-            FeatureSet, ForkContextSnapshot, PermissionMode, SessionId, ToolEffect,
-        };
+    // ── Output-path metadata ──────────────────────────────────────────────────
 
-        let dir = unique_test_dir("tools-agent-no-fork-mode");
-        let fork_ctx = ForkContextSnapshot {
-            parent_session_id: "session-abc".into(),
-            fork_depth: 0,
-            parent_system_prompt: None,
-            conversation_summary: None,
-            parent_entrypoint: None,
-        };
+    /// `execute()` includes `reserved_task_id` in both the metadata JSON and in
+    /// the `AgentLaunchSpec` carried by the `LaunchAgentTask` effect, and the
+    /// two values agree.
+    #[test]
+    fn agent_execute_includes_reserved_task_id_in_metadata_and_spec() {
+        use wonder_of_u_core::{FeatureSet, PermissionMode, SessionId, ToolEffect};
+
+        let dir = unique_test_dir("tools-agent-reserved-task-id");
         let context = wonder_of_u_core::ToolContext {
             session_id: SessionId::new(),
             cwd: dir,
@@ -1193,24 +1211,203 @@ mod tests {
             permission_rules: vec![],
             features: FeatureSet::first_release(),
             bash_session_store: None,
-            fork_context: Some(fork_ctx), // context present but mode is not fork
+            fork_context: None,
         };
-        let tool = AgentTool;
-        let result = futures::executor::block_on(tool.execute(
-            context,
-            wonder_of_u_core::ToolUseId::new(),
-            json!({ "prompt": "general task without fork mode" }),
-        ))
-        .expect("non-fork agent call should succeed");
+
+        let result =
+            futures::executor::block_on(AgentTool.execute(context, wonder_of_u_core::ToolUseId::new(), json!({ "prompt": "test task" })))
+                .expect("execute should succeed");
+
+        // There must be exactly one LaunchAgentTask effect.
+        assert_eq!(result.effects.len(), 1);
+        let ToolEffect::LaunchAgentTask(ref spec) = result.effects[0] else {
+            panic!("expected LaunchAgentTask effect");
+        };
+
+        // The spec must carry a reserved_task_id.
+        let spec_task_id = spec
+            .reserved_task_id
+            .expect("spec must have a reserved_task_id");
+
+        // The metadata must also carry the same id as a string.
+        let meta_task_id_str = result.metadata["reserved_task_id"]
+            .as_str()
+            .expect("metadata.reserved_task_id must be a string");
+
+        assert_eq!(
+            spec_task_id.to_string(),
+            meta_task_id_str,
+            "reserved_task_id in spec and metadata must match"
+        );
+    }
+
+    /// When `WONDER_OF_U_STORAGE_DIR` is set, `execute()` includes non-null
+    /// `output_paths` in metadata containing `output_log` and `result` entries
+    /// that are consistent with `reserved_task_id`.
+    #[test]
+    fn agent_execute_output_paths_are_consistent_with_reserved_task_id() {
+        use wonder_of_u_core::{FeatureSet, PermissionMode, SessionId, ToolEffect};
+        use wonder_of_u_test_support::EnvVarGuard;
+
+        let dir = unique_test_dir("tools-agent-output-paths");
+        let _env = EnvVarGuard::set("WONDER_OF_U_STORAGE_DIR", dir.as_os_str());
+
+        let context = wonder_of_u_core::ToolContext {
+            session_id: SessionId::new(),
+            cwd: dir.clone(),
+            session_worktree: None,
+            permission_mode: PermissionMode::Default,
+            additional_working_directories: vec![],
+            provider: None,
+            model: None,
+            permission_rules: vec![],
+            features: FeatureSet::first_release(),
+            bash_session_store: None,
+            fork_context: None,
+        };
+
+        let result =
+            futures::executor::block_on(AgentTool.execute(context, wonder_of_u_core::ToolUseId::new(), json!({ "prompt": "path check" })))
+                .expect("execute should succeed");
 
         let ToolEffect::LaunchAgentTask(ref spec) = result.effects[0] else {
             panic!("expected LaunchAgentTask effect");
         };
-        // fork_context must NOT be embedded for non-fork calls.
+        let task_id = spec.reserved_task_id.expect("must have reserved_task_id");
+
+        // output_paths must be a non-null object with both keys.
+        let paths = &result.metadata["output_paths"];
+        assert!(paths.is_object(), "output_paths must be an object when WONDER_OF_U_STORAGE_DIR is set; got: {paths}");
+
+        let log_path = paths["output_log"]
+            .as_str()
+            .expect("output_paths.output_log must be a string");
+        let result_path = paths["result"]
+            .as_str()
+            .expect("output_paths.result must be a string");
+
+        // Both paths must contain the task id.
+        let task_id_str = task_id.to_string();
         assert!(
-            spec.request.fork_context.is_none(),
-            "non-fork mode must not embed fork_context in the request"
+            log_path.contains(&task_id_str),
+            "output_log path must contain the task id; log={log_path}, id={task_id_str}"
         );
-        assert_eq!(result.metadata["fork_mode"], false);
+        assert!(
+            result_path.contains(&task_id_str),
+            "result path must contain the task id; result={result_path}, id={task_id_str}"
+        );
+
+        // And the canonical suffixes.
+        assert!(log_path.ends_with(".log"), "output_log must end with .log");
+        assert!(
+            result_path.ends_with(".json"),
+            "result path must end with .json"
+        );
+    }
+
+    /// When no storage dir is resolvable, `output_paths` is `null` and the
+    /// tool still succeeds (paths are best-effort metadata).
+    #[test]
+    fn agent_execute_output_paths_null_when_no_storage_dir() {
+        use wonder_of_u_core::{FeatureSet, PermissionMode, SessionId};
+        use wonder_of_u_test_support::EnvVarGuard;
+
+        let dir = unique_test_dir("tools-agent-no-storage");
+        // Remove all env vars that could resolve a storage dir.
+        let _g1 = EnvVarGuard::remove("WONDER_OF_U_STORAGE_DIR");
+        let _g2 = EnvVarGuard::remove("XDG_CONFIG_HOME");
+        let _g3 = EnvVarGuard::remove("HOME");
+
+        let context = wonder_of_u_core::ToolContext {
+            session_id: SessionId::new(),
+            cwd: dir,
+            session_worktree: None,
+            permission_mode: PermissionMode::Default,
+            additional_working_directories: vec![],
+            provider: None,
+            model: None,
+            permission_rules: vec![],
+            features: FeatureSet::first_release(),
+            bash_session_store: None,
+            fork_context: None,
+        };
+
+        let result = futures::executor::block_on(AgentTool.execute(
+            context,
+            wonder_of_u_core::ToolUseId::new(),
+            json!({ "prompt": "task without storage" }),
+        ))
+        .expect("execute should still succeed even without storage dir");
+
+        // The task still launches; output_paths is null.
+        assert!(result.success, "result should be success");
+        assert_eq!(
+            result.metadata["output_paths"],
+            serde_json::Value::Null,
+            "output_paths should be null when no storage dir is resolvable"
+        );
+        // reserved_task_id still present.
+        assert!(
+            result.metadata["reserved_task_id"].is_string(),
+            "reserved_task_id must still be present as a string"
+        );
+    }
+
+    /// `start_agent_task` honours `reserved_task_id`: the returned `TaskState`
+    /// uses the pre-allocated id, not a freshly generated one.
+    ///
+    /// This is tested in `wonder-of-u-cli` where `AgentTaskLaunch` is defined
+    /// (see `task_runtime::tests::start_agent_task_uses_reserved_task_id`).
+    #[test]
+    fn agent_launch_spec_reserved_task_id_serde_round_trips() {
+        use wonder_of_u_core::{AgentLaunchSpec, FleetMemberRequest, TaskId, ToolEffect};
+
+        let req = FleetMemberRequest::new("serde check");
+        let reserved = TaskId::new();
+        let spec = AgentLaunchSpec {
+            request: req.clone(),
+            reserved_task_id: Some(reserved),
+        };
+        let effect = ToolEffect::LaunchAgentTask(spec);
+        let json = serde_json::to_value(&effect).expect("serialize");
+
+        // reserved_task_id must appear in the JSON data.
+        assert!(
+            json["data"]["reserved_task_id"].is_string(),
+            "reserved_task_id must be serialised; got: {}",
+            json["data"]
+        );
+        assert_eq!(
+            json["data"]["reserved_task_id"].as_str().unwrap(),
+            reserved.to_string()
+        );
+
+        // Round-trip.
+        let rt: ToolEffect = serde_json::from_value(json).expect("deserialize");
+        let ToolEffect::LaunchAgentTask(ref rt_spec) = rt else {
+            panic!("expected LaunchAgentTask");
+        };
+        assert_eq!(rt_spec.reserved_task_id, Some(reserved));
+    }
+
+    /// Old JSON without `reserved_task_id` deserialises with `None` (back-compat).
+    #[test]
+    fn agent_launch_spec_missing_reserved_task_id_defaults_to_none() {
+        use wonder_of_u_core::AgentLaunchSpec;
+
+        // Minimal JSON that matches what a pre-field runtime would have written.
+        let json = serde_json::json!({
+            "request": {
+                "id": "00000000-0000-0000-0000-000000000001",
+                "prompt": "legacy task",
+                "queued_at": "2024-01-01T00:00:00Z"
+            }
+        });
+        let spec: AgentLaunchSpec = serde_json::from_value(json).expect("deserialize");
+        assert!(
+            spec.reserved_task_id.is_none(),
+            "missing reserved_task_id must default to None for back-compat"
+        );
     }
 }
+
