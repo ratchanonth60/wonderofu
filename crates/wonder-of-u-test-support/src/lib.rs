@@ -85,6 +85,43 @@ impl EnvVarGuard {
             previous,
         }
     }
+
+    /// Removes `key` from the environment for the duration of the guard, then
+    /// restores its previous value (if any) on drop.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// let _guard = EnvVarGuard::remove("MY_VAR");
+    /// assert!(std::env::var("MY_VAR").is_err()); // absent during test
+    /// // restored (or still absent if it wasn't set before) after drop
+    /// ```
+    pub fn remove(key: impl Into<String>) -> Self {
+        let key = key.into();
+
+        let depth = ENV_LOCK_DEPTH.get();
+        let lock = if depth == 0 {
+            Some(
+                ENV_LOCK
+                    .get_or_init(|| Mutex::new(()))
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner()),
+            )
+        } else {
+            None
+        };
+        ENV_LOCK_DEPTH.set(depth + 1);
+
+        let previous = env::var_os(&key);
+        unsafe {
+            env::remove_var(&key);
+        }
+        Self {
+            _lock: lock,
+            key,
+            previous,
+        }
+    }
 }
 
 impl Drop for EnvVarGuard {
