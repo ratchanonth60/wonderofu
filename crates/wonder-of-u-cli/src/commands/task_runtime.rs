@@ -51,6 +51,12 @@ pub(crate) struct AgentTaskLaunch {
     /// Parent agent task id (i.e. the task that queued this one via the `agent` tool).
     pub parent_task_id: Option<TaskId>,
     pub allowed_tools: Option<Vec<String>>,
+    /// Explicitly denied tool names for the spawned agent subprocess.
+    ///
+    /// Propagated from [`wonder_of_u_core::FleetMemberRequest::disallowed_tools`]
+    /// at dispatch time and forwarded as `--disallowed-tools` in the child
+    /// subprocess command so filtering is enforced, not only computed.
+    pub disallowed_tools: Vec<String>,
     /// Git worktree branch the agent will run inside, if any.
     pub worktree_branch: Option<String>,
     /// Composed child system prompt forwarded from the parent session via fork-lite.
@@ -842,6 +848,11 @@ fn agent_prompt_command(storage_dir: &Path, launch: &AgentTaskLaunch) -> Result<
         tokens.push("--allowed-tools".into());
         tokens.push(allowed_tools.join(","));
     }
+    // Propagate the deny-list so the child subprocess enforces tool restrictions.
+    if !launch.disallowed_tools.is_empty() {
+        tokens.push("--disallowed-tools".into());
+        tokens.push(launch.disallowed_tools.join(","));
+    }
     // Pass the composed fork system prompt to the child subprocess.
     if let Some(ref system_prompt) = launch.system_prompt {
         tokens.push("--system".into());
@@ -1238,6 +1249,7 @@ mod tests {
                 fleet_request_id: None,
                 parent_task_id: None,
                 allowed_tools: Some(vec!["bash".into(), "file_read".into()]),
+                disallowed_tools: vec![],
                 worktree_branch: None,
                 system_prompt: None,
                 fork_depth: None,
@@ -1314,6 +1326,7 @@ mod tests {
                 fleet_request_id: None,
                 parent_task_id: None,
                 allowed_tools: None,
+                disallowed_tools: vec![],
                 worktree_branch: None,
                 system_prompt: None,
                 fork_depth: None,
@@ -1638,6 +1651,83 @@ mod tests {
         assert!(
             failed_state.exists(),
             "failed task state must not be deleted under --completed"
+        );
+    }
+
+    // ── disallowed_tools subprocess propagation ───────────────────────────────
+
+    /// `disallowed_tools` must appear as `--disallowed-tools <csv>` in the
+    /// composed subprocess command string.
+    #[test]
+    fn disallowed_tools_appear_in_subprocess_command() {
+        let dir = unique_test_dir("task-disallowed-tools-cmd");
+        let script =
+            write_agent_script(&dir, "disallowed-echo.sh", "printf 'args: %s\\n' \"$*\"\n");
+        let _env = EnvVarGuard::set(CLI_BIN_OVERRIDE_ENV, script.into_os_string());
+        let manager = TaskManager::new(&dir);
+
+        let task = manager
+            .start_agent_task(AgentTaskLaunch {
+                name: "tester".into(),
+                description: None,
+                prompt: "do nothing".into(),
+                provider: None,
+                model: None,
+                cwd: dir.clone(),
+                fleet_id: None,
+                fleet_request_id: None,
+                parent_task_id: None,
+                allowed_tools: None,
+                disallowed_tools: vec!["computer_use".into(), "bash".into()],
+                worktree_branch: None,
+                system_prompt: None,
+                fork_depth: None,
+            })
+            .expect("start agent task");
+
+        let cmd = task.command.expect("command must be recorded");
+        assert!(
+            cmd.contains("--disallowed-tools"),
+            "command must include --disallowed-tools; got: {cmd}"
+        );
+        assert!(
+            cmd.contains("computer_use") && cmd.contains("bash"),
+            "command must list all disallowed tools; got: {cmd}"
+        );
+    }
+
+    /// When `disallowed_tools` is empty the `--disallowed-tools` flag must
+    /// **not** appear in the subprocess command (no spurious empty args).
+    #[test]
+    fn empty_disallowed_tools_omitted_from_subprocess_command() {
+        let dir = unique_test_dir("task-no-disallowed-tools-cmd");
+        let script = write_agent_script(&dir, "no-disallowed-echo.sh", "printf 'ok'\n");
+        let _env = EnvVarGuard::set(CLI_BIN_OVERRIDE_ENV, script.into_os_string());
+        let manager = TaskManager::new(&dir);
+
+        let task = manager
+            .start_agent_task(AgentTaskLaunch {
+                name: "clean".into(),
+                description: None,
+                prompt: "do nothing".into(),
+                provider: None,
+                model: None,
+                cwd: dir.clone(),
+                fleet_id: None,
+                fleet_request_id: None,
+                parent_task_id: None,
+                allowed_tools: None,
+                disallowed_tools: vec![],
+                worktree_branch: None,
+                system_prompt: None,
+                fork_depth: None,
+            })
+            .expect("start agent task");
+
+        let cmd = task.command.expect("command must be recorded");
+        assert!(
+            !cmd.contains("--disallowed-tools"),
+            "command must NOT include --disallowed-tools when list is empty; got: {cmd}"
         );
     }
 }

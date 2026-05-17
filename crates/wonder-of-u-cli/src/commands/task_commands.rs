@@ -284,6 +284,7 @@ impl AgentsCommand {
                     fleet_request_id: None,
                     parent_task_id: None,
                     allowed_tools: None,
+                    disallowed_tools: vec![],
                     worktree_branch: None,
                     system_prompt: None,
                     fork_depth: None,

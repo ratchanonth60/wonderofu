@@ -119,7 +119,7 @@ pub use fingerprint::{fingerprint_json, fingerprint_str};
 pub use fleet::{
     AGENT_TASK_RESULT_SCHEMA_VERSION, AgentTaskResult, FLEET_SCHEMA_VERSION,
     FLEET_STEERING_SCHEMA_VERSION, FORK_SYSTEM_PROMPT_CAP_BYTES, FleetMemberRequest, FleetRunState,
-    FleetRunStatus, FleetSteeringMessage, ForkContextSnapshot, SteeringSource,
+    FleetRunStatus, FleetSteeringMessage, ForkContextSnapshot, MAX_FORK_DEPTH, SteeringSource,
     WONDER_OF_U_FORK_DEPTH_ENV, WorktreeIsolation, WorktreeIsolationMode,
 };
 /// Re-exports items from `fleet_roles`

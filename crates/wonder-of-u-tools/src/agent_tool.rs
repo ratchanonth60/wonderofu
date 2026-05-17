@@ -226,6 +226,11 @@ impl Tool for AgentTool {
                      fork context was not populated in this runtime (no active prompt or TUI session)",
                 ));
             }
+            // Validate the fork context contents eagerly so the error is caught
+            // at queue time (here) rather than only at dispatch time.
+            if let Some(ref ctx) = context.fork_context {
+                ctx.validate()?;
+            }
         }
 
         // Build the full catalog from the project root when available so a tool

@@ -409,6 +409,13 @@ impl FleetSteeringMessage {
 /// has a long custom system prompt.
 pub const FORK_SYSTEM_PROMPT_CAP_BYTES: usize = 8192;
 
+/// Maximum allowed fork nesting depth.
+///
+/// The child subprocess increments `fork_depth` by one before launch.  Any
+/// request that would exceed this limit is rejected at dispatch time with a
+/// clear error rather than silently launching a deeply-nested fork chain.
+pub const MAX_FORK_DEPTH: u32 = 1;
+
 /// Compact snapshot of a parent conversation's context for fork-lite subagents.
 ///
 /// Embedded in [`FleetMemberRequest`] when a subagent is launched via
@@ -459,7 +466,34 @@ pub struct ForkContextSnapshot {
     pub parent_entrypoint: Option<String>,
 }
 
-// ── Pending member request ───────────────────────────────────────────────────
+impl ForkContextSnapshot {
+    /// Validates that the snapshot is internally consistent.
+    ///
+    /// Checks:
+    /// - `parent_session_id` must be non-empty (prevents phantom fork sessions).
+    /// - `fork_depth` must not exceed [`MAX_FORK_DEPTH`] (prevents recursive forks).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::WonderError::Validation`] with a clear message describing
+    /// which invariant was violated.
+    pub fn validate(&self) -> crate::Result<()> {
+        if self.parent_session_id.trim().is_empty() {
+            return Err(crate::WonderError::validation(
+                "fork context `parent_session_id` must not be empty; \
+                 fork mode requires an active parent session identifier",
+            ));
+        }
+        if self.fork_depth > MAX_FORK_DEPTH {
+            return Err(crate::WonderError::validation(format!(
+                "fork context `fork_depth` ({}) exceeds the maximum allowed depth ({}); \
+                 nested fork subagents are not supported",
+                self.fork_depth, MAX_FORK_DEPTH
+            )));
+        }
+        Ok(())
+    }
+}
 
 /// A pending agent dispatch request written by the `agent` tool bridge.
 ///
@@ -1177,6 +1211,72 @@ mod tests {
         assert!(
             !json.contains("sender_task_id"),
             "absent sender_task_id should be omitted: {json}"
+        );
+    }
+
+    // ── ForkContextSnapshot::validate ─────────────────────────────────────────
+
+    #[test]
+    fn fork_context_valid_snapshot_passes() {
+        let ctx = ForkContextSnapshot {
+            parent_session_id: "abc-123".into(),
+            fork_depth: 0,
+            parent_system_prompt: None,
+            conversation_summary: None,
+            parent_entrypoint: None,
+        };
+        assert!(ctx.validate().is_ok());
+    }
+
+    #[test]
+    fn fork_context_validates_empty_session_id() {
+        let ctx = ForkContextSnapshot {
+            parent_session_id: "   ".into(),
+            fork_depth: 0,
+            parent_system_prompt: None,
+            conversation_summary: None,
+            parent_entrypoint: None,
+        };
+        let err = ctx.validate().expect_err("empty session id should fail");
+        assert!(
+            err.to_string().contains("parent_session_id"),
+            "error must mention parent_session_id; got: {err}"
+        );
+    }
+
+    #[test]
+    fn fork_context_validates_max_depth() {
+        let ctx = ForkContextSnapshot {
+            parent_session_id: "abc-123".into(),
+            fork_depth: MAX_FORK_DEPTH + 1,
+            parent_system_prompt: None,
+            conversation_summary: None,
+            parent_entrypoint: None,
+        };
+        let err = ctx
+            .validate()
+            .expect_err("depth over MAX_FORK_DEPTH should fail");
+        assert!(
+            err.to_string().contains("fork_depth"),
+            "error must mention fork_depth; got: {err}"
+        );
+    }
+
+    #[test]
+    fn fork_context_at_max_depth_is_valid() {
+        // fork_depth == MAX_FORK_DEPTH is the boundary — still valid at dispatch time.
+        // The child increments to MAX_FORK_DEPTH + 1, and the recursive guard in
+        // AgentTool::execute catches it via WONDER_OF_U_FORK_DEPTH_ENV.
+        let ctx = ForkContextSnapshot {
+            parent_session_id: "abc-123".into(),
+            fork_depth: MAX_FORK_DEPTH,
+            parent_system_prompt: None,
+            conversation_summary: None,
+            parent_entrypoint: None,
+        };
+        assert!(
+            ctx.validate().is_ok(),
+            "depth == MAX_FORK_DEPTH should be valid"
         );
     }
 }

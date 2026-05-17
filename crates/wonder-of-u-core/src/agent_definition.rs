@@ -100,6 +100,11 @@ pub const BACKGROUND_RESTRICTED_TOOLS: &[&str] = &["ask_user"];
 ///     source: AgentDefinitionSource::Builtin,
 ///     content_hash: None,
 ///     source_path: None,
+///     effort: None,
+///     background: false,
+///     required_mcp_servers: vec![],
+///     initial_prompt: None,
+///     omit_claude_md: false,
 /// };
 ///
 /// // Caller provides a broader list — only the intersection is allowed.
@@ -1756,6 +1761,11 @@ mod tests {
             source: AgentDefinitionSource::Builtin,
             content_hash: None,
             source_path: None,
+            effort: None,
+            background: false,
+            required_mcp_servers: vec![],
+            initial_prompt: None,
+            omit_claude_md: false,
         }
     }
 
