@@ -4981,6 +4981,12 @@ fn chrome_status_text(state: &AppState) -> String {
 ///
 /// Called once at TUI startup; the result is stored on `TuiController` and
 /// re-used (with live filtering) on every keystroke.
+///
+/// When a [`CommandSpec`] carries an `argument_hint` (e.g. `[on|off]`), the
+/// hint is appended to the display text so the autocomplete overlay reads e.g.
+/// `/fast [on|off]`.  The *replacement* text stays as just `/commandname` so
+/// the cursor lands right after the command name, ready for the user to type
+/// their argument.
 pub(super) fn build_slash_suggestions(registry: &CommandRegistry) -> Vec<PromptSuggestion> {
     registry
         .all_specs()
@@ -4988,7 +4994,11 @@ pub(super) fn build_slash_suggestions(registry: &CommandRegistry) -> Vec<PromptS
         .filter(|spec| !spec.hidden)
         .map(|spec| {
             let slash = format!("/{}", spec.name);
-            PromptSuggestion::new(spec.name.clone(), slash.clone(), slash)
+            let display = match &spec.argument_hint {
+                Some(hint) => format!("{slash} {hint}"),
+                None => slash.clone(),
+            };
+            PromptSuggestion::new(spec.name.clone(), display, slash)
                 .with_description(spec.description.clone())
                 .with_keywords(spec.aliases.iter().map(|a| format!("/{a}")))
         })
@@ -5252,4 +5262,97 @@ pub(super) fn binary_on_path(name: &str) -> bool {
         return false;
     };
     std::env::split_paths(&paths).any(|dir| dir.join(name).is_file())
+}
+
+#[cfg(test)]
+mod build_slash_suggestions_tests {
+    use std::sync::Arc;
+
+    use async_trait::async_trait;
+    use wonder_of_u_core::{
+        Command, CommandContext, CommandInvocation, CommandKind, CommandOutput, CommandRegistry,
+        CommandSpec, Result,
+    };
+
+    use super::build_slash_suggestions;
+
+    struct FakeCmd(CommandSpec);
+
+    #[async_trait]
+    impl Command for FakeCmd {
+        fn spec(&self) -> CommandSpec {
+            self.0.clone()
+        }
+
+        async fn execute(&self, _: CommandContext, _: CommandInvocation) -> Result<CommandOutput> {
+            Ok(CommandOutput::Noop)
+        }
+    }
+
+    fn registry_with(specs: impl IntoIterator<Item = CommandSpec>) -> CommandRegistry {
+        let mut reg = CommandRegistry::new();
+        for spec in specs {
+            reg.register(Arc::new(FakeCmd(spec))).expect("register");
+        }
+        reg
+    }
+
+    #[test]
+    fn no_hint_produces_slash_name_display_and_replacement() {
+        let spec = CommandSpec::new("status", "show status", CommandKind::Local);
+        let reg = registry_with([spec]);
+        let suggestions = build_slash_suggestions(&reg);
+        assert_eq!(suggestions.len(), 1);
+        assert_eq!(suggestions[0].display_text, "/status");
+        assert_eq!(suggestions[0].replacement, "/status");
+    }
+
+    #[test]
+    fn hint_appended_to_display_text_but_not_replacement() {
+        let spec = CommandSpec::new("fast", "fast mode", CommandKind::Local)
+            .with_argument_hint("[on|off]");
+        let reg = registry_with([spec]);
+        let suggestions = build_slash_suggestions(&reg);
+        assert_eq!(suggestions.len(), 1);
+        // Display shows the hint so the user knows what to type.
+        assert_eq!(suggestions[0].display_text, "/fast [on|off]");
+        // Replacement stays bare so the cursor lands right after the command
+        // name, ready for the user to type their argument.
+        assert_eq!(suggestions[0].replacement, "/fast");
+    }
+
+    #[test]
+    fn hidden_commands_are_excluded_from_suggestions() {
+        let mut hidden = CommandSpec::new("internal", "internal cmd", CommandKind::Local);
+        hidden.hidden = true;
+        let visible = CommandSpec::new("help", "help", CommandKind::Local);
+        let reg = registry_with([hidden, visible]);
+        let suggestions = build_slash_suggestions(&reg);
+        assert_eq!(suggestions.len(), 1);
+        assert_eq!(suggestions[0].display_text, "/help");
+    }
+
+    #[test]
+    fn aliases_become_keywords_in_suggestion() {
+        let mut spec = CommandSpec::new("resume", "resume", CommandKind::Local);
+        spec.aliases = vec!["continue".into()];
+        let reg = registry_with([spec]);
+        let suggestions = build_slash_suggestions(&reg);
+        assert!(
+            suggestions[0].keywords.contains(&"/continue".to_string()),
+            "expected /continue in keywords"
+        );
+    }
+
+    #[test]
+    fn description_is_passed_through_to_suggestion() {
+        let spec = CommandSpec::new("effort", "set effort level", CommandKind::Local)
+            .with_argument_hint("[low|medium|high|max|auto]");
+        let reg = registry_with([spec]);
+        let suggestions = build_slash_suggestions(&reg);
+        assert_eq!(
+            suggestions[0].description.as_deref(),
+            Some("set effort level")
+        );
+    }
 }

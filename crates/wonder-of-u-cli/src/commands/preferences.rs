@@ -79,6 +79,7 @@ impl ColorCommand {
             CommandKind::Local,
         )
         .with_immediate(true)
+        .with_argument_hint("<color|default>")
     }
 }
 
@@ -151,6 +152,7 @@ impl FastCommand {
             CommandKind::Local,
         )
         .with_immediate(true)
+        .with_argument_hint("[on|off]")
     }
 }
 
@@ -174,6 +176,7 @@ impl EffortCommand {
             CommandKind::Local,
         )
         .with_immediate(true)
+        .with_argument_hint("[low|medium|high|max|auto]")
     }
 }
 
@@ -1295,5 +1298,35 @@ mod tests {
         assert_eq!(settings.effort_level.as_deref(), Some("max"));
         assert!(rendered.contains("effort_level=max"));
         assert!(rendered.contains("persisted=true"));
+    }
+
+    #[test]
+    fn color_command_spec_carries_argument_hint() {
+        let spec = super::ColorCommand::command_spec();
+        assert_eq!(
+            spec.argument_hint.as_deref(),
+            Some("<color|default>"),
+            "/color spec should carry the argument hint"
+        );
+    }
+
+    #[test]
+    fn fast_command_spec_carries_argument_hint() {
+        let spec = super::FastCommand::command_spec();
+        assert_eq!(
+            spec.argument_hint.as_deref(),
+            Some("[on|off]"),
+            "/fast spec should carry the argument hint"
+        );
+    }
+
+    #[test]
+    fn effort_command_spec_carries_argument_hint() {
+        let spec = super::EffortCommand::command_spec();
+        assert_eq!(
+            spec.argument_hint.as_deref(),
+            Some("[low|medium|high|max|auto]"),
+            "/effort spec should carry the argument hint"
+        );
     }
 }
