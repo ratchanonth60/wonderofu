@@ -955,7 +955,7 @@ fn tasks_remove_output_has_action_removed_field() {
     use time::OffsetDateTime;
     use wonder_of_u_core::{
         AgentRuntime, AgentTaskState, CommandInvocation, CommandOutput, TaskId, TaskKind,
-        TaskState, TaskStatus,
+        TaskProgress, TaskState, TaskStatus,
     };
     use wonder_of_u_storage::TaskStore;
 
@@ -990,6 +990,7 @@ fn tasks_remove_output_has_action_removed_field() {
         remote: None,
         output_log: None,
         worktree_branch: None,
+        progress: TaskProgress::default(),
         started_at: OffsetDateTime::now_utc(),
         finished_at: Some(OffsetDateTime::now_utc()),
     };
@@ -1032,7 +1033,7 @@ fn tasks_prune_output_has_required_fields() {
     use time::OffsetDateTime;
     use wonder_of_u_core::{
         AgentRuntime, AgentTaskState, CommandInvocation, CommandOutput, TaskId, TaskKind,
-        TaskState, TaskStatus,
+        TaskProgress, TaskState, TaskStatus,
     };
     use wonder_of_u_storage::TaskStore;
 
@@ -1074,6 +1075,7 @@ fn tasks_prune_output_has_required_fields() {
                 remote: None,
                 output_log: None,
                 worktree_branch: None,
+                progress: TaskProgress::default(),
                 started_at: OffsetDateTime::now_utc(),
                 finished_at: finished.then(OffsetDateTime::now_utc),
             })
