@@ -89,6 +89,21 @@ pub(crate) struct DefinitionsCreateArgs {
     /// Maximum conversation turns.
     #[arg(long)]
     pub(crate) max_turns: Option<u32>,
+    /// Thinking-effort hint (`low`, `medium`, or `high`).
+    #[arg(long)]
+    pub(crate) effort: Option<String>,
+    /// Run this agent in the background instead of the foreground.
+    #[arg(long)]
+    pub(crate) background: bool,
+    /// Required MCP server names (comma-separated; informational, not executed).
+    #[arg(long, value_delimiter = ',')]
+    pub(crate) required_mcp_servers: Vec<String>,
+    /// Initial prompt pre-seeded into the agent's conversation.
+    #[arg(long)]
+    pub(crate) initial_prompt: Option<String>,
+    /// Do not inject CLAUDE.md into the agent's context.
+    #[arg(long)]
+    pub(crate) omit_claude_md: bool,
     /// Target directory: `dot-claude` (`.claude/agents/`) or `agents`.
     #[arg(long, default_value = "dot-claude")]
     pub(crate) target: DefinitionTarget,
@@ -129,6 +144,21 @@ pub(crate) struct DefinitionsEditArgs {
     /// New maximum conversation turns.
     #[arg(long)]
     pub(crate) max_turns: Option<u32>,
+    /// New thinking-effort hint (`low`, `medium`, or `high`; pass empty string to clear).
+    #[arg(long)]
+    pub(crate) effort: Option<String>,
+    /// Set background flag (`true` or `false`).
+    #[arg(long)]
+    pub(crate) background: Option<bool>,
+    /// New required MCP server names (replaces existing list; comma-separated).
+    #[arg(long, value_delimiter = ',')]
+    pub(crate) required_mcp_servers: Option<Vec<String>>,
+    /// New initial prompt (pass empty string to clear).
+    #[arg(long)]
+    pub(crate) initial_prompt: Option<String>,
+    /// Set omit-claude-md flag (`true` or `false`).
+    #[arg(long)]
+    pub(crate) omit_claude_md: Option<bool>,
 }
 
 // ── Entry point ───────────────────────────────────────────────────────────────
@@ -218,6 +248,18 @@ pub(crate) fn definitions_show(root: &Path, id: &str) -> Result<CommandOutput> {
         "max_turns={}",
         def.max_turns.map(|n| n.to_string()).unwrap_or_default()
     ));
+    lines.push(format!("effort={}", def.effort.as_deref().unwrap_or("")));
+    lines.push(format!("background={}", def.background));
+    if !def.required_mcp_servers.is_empty() {
+        lines.push(format!(
+            "required_mcp_servers={}",
+            def.required_mcp_servers.join(",")
+        ));
+    }
+    if let Some(ip) = &def.initial_prompt {
+        lines.push(format!("initial_prompt={}", sanitize_single_line(ip)));
+    }
+    lines.push(format!("omit_claude_md={}", def.omit_claude_md));
     lines.push(format!("system_prompt_bytes={}", def.system_prompt.len()));
     let preview: String = def.system_prompt.chars().take(200).collect();
     lines.push(format!(
@@ -256,6 +298,15 @@ pub(crate) fn definitions_create(
         color: args.color,
         permission_mode: args.permission_mode,
         max_turns: args.max_turns,
+        effort: args.effort,
+        background: if args.background { Some(true) } else { None },
+        required_mcp_servers: non_empty_list(split_and_dedupe(args.required_mcp_servers)),
+        initial_prompt: args.initial_prompt,
+        omit_claude_md: if args.omit_claude_md {
+            Some(true)
+        } else {
+            None
+        },
         ..Default::default()
     };
     let def = AgentDefinition::from_raw(raw, source, "")?;
@@ -324,6 +375,11 @@ pub(crate) fn definitions_edit(root: &Path, args: DefinitionsEditArgs) -> Result
         && args.color.is_none()
         && args.permission_mode.is_none()
         && args.max_turns.is_none()
+        && args.effort.is_none()
+        && args.background.is_none()
+        && args.required_mcp_servers.is_none()
+        && args.initial_prompt.is_none()
+        && args.omit_claude_md.is_none()
     {
         return Err(WonderError::validation(
             "at least one field must be specified for edit \
@@ -405,6 +461,23 @@ pub(crate) fn definitions_edit(root: &Path, args: DefinitionsEditArgs) -> Result
         color: args.color.or_else(|| def.color.clone()),
         permission_mode: args.permission_mode.or_else(|| def.permission_mode.clone()),
         max_turns: args.max_turns.or(def.max_turns),
+        effort: match args.effort {
+            Some(e) if e.trim().is_empty() => None,
+            Some(e) => Some(e),
+            None => def.effort.clone(),
+        },
+        background: Some(args.background.unwrap_or(def.background)),
+        required_mcp_servers: Some(
+            args.required_mcp_servers
+                .map(split_and_dedupe)
+                .unwrap_or_else(|| def.required_mcp_servers.clone()),
+        ),
+        initial_prompt: match args.initial_prompt {
+            Some(ip) if ip.trim().is_empty() => None,
+            Some(ip) => Some(ip),
+            None => def.initial_prompt.clone(),
+        },
+        omit_claude_md: Some(args.omit_claude_md.unwrap_or(def.omit_claude_md)),
         // Dangerous fields always stripped.
         hooks: None,
         mcp_servers: None,
@@ -579,6 +652,11 @@ mod tests {
             color: None,
             permission_mode: None,
             max_turns: None,
+            effort: None,
+            background: false,
+            required_mcp_servers: vec![],
+            initial_prompt: None,
+            omit_claude_md: false,
             target: DefinitionTarget::DotClaude,
             overwrite: false,
         }
@@ -806,6 +884,11 @@ mod tests {
                 color: None,
                 permission_mode: None,
                 max_turns: None,
+                effort: None,
+                background: None,
+                required_mcp_servers: None,
+                initial_prompt: None,
+                omit_claude_md: None,
             },
         );
         assert!(
@@ -830,6 +913,11 @@ mod tests {
                 color: None,
                 permission_mode: None,
                 max_turns: None,
+                effort: None,
+                background: None,
+                required_mcp_servers: None,
+                initial_prompt: None,
+                omit_claude_md: None,
             },
         );
         assert!(
@@ -860,6 +948,11 @@ mod tests {
                 color: Some("blue".into()),
                 permission_mode: None,
                 max_turns: None,
+                effort: None,
+                background: None,
+                required_mcp_servers: None,
+                initial_prompt: None,
+                omit_claude_md: None,
             },
         );
         assert!(out.contains("updated=true"), "got:\n{out}");
@@ -900,6 +993,11 @@ mod tests {
                 color: None,
                 permission_mode: None,
                 max_turns: None,
+                effort: None,
+                background: None,
+                required_mcp_servers: None,
+                initial_prompt: None,
+                omit_claude_md: None,
             },
         );
         assert!(out.contains("updated=true"), "got:\n{out}");
@@ -959,6 +1057,11 @@ mod tests {
                 color: None,
                 permission_mode: None,
                 max_turns: None,
+                effort: None,
+                background: None,
+                required_mcp_servers: None,
+                initial_prompt: None,
+                omit_claude_md: None,
             },
         );
         assert!(out.contains("updated=true"), "got:\n{out}");
@@ -1004,6 +1107,261 @@ mod tests {
         assert!(
             out.contains("source=project agents"),
             "source should be project agents; got:\n{out}"
+        );
+    }
+
+    // ── reference field (effort / background / requiredMcpServers /
+    // initialPrompt / omitClaudeMd) tests ────────────────────────────────────
+
+    #[test]
+    fn agents_definition_create_with_reference_fields() {
+        let root = unique_test_dir("def-create-reference-fields");
+        let args = DefinitionsCreateArgs {
+            effort: Some("high".into()),
+            background: true,
+            required_mcp_servers: vec!["github".into(), "linear".into()],
+            initial_prompt: Some("Ready to assist.".into()),
+            omit_claude_md: true,
+            ..create_args_minimal("Reference Agent", "Has reference fields", "Work hard.")
+        };
+        let out = def_create(&root, args);
+        assert!(out.contains("created=true"), "got:\n{out}");
+
+        let path = root
+            .join(".claude")
+            .join("agents")
+            .join("reference-agent.md");
+        let content = fs::read_to_string(&path).unwrap();
+        assert!(
+            content.contains("effort: high"),
+            "effort missing:\n{content}"
+        );
+        assert!(
+            content.contains("background: true"),
+            "background missing:\n{content}"
+        );
+        assert!(
+            content.contains("requiredMcpServers"),
+            "requiredMcpServers missing:\n{content}"
+        );
+        assert!(
+            content.contains("initialPrompt: Ready to assist."),
+            "initialPrompt missing:\n{content}"
+        );
+        assert!(
+            content.contains("omitClaudeMd: true"),
+            "omitClaudeMd missing:\n{content}"
+        );
+    }
+
+    #[test]
+    fn agents_definition_show_displays_reference_fields() {
+        let root = unique_test_dir("def-show-reference-fields");
+        let agents_dir = root.join(".claude").join("agents");
+        fs::create_dir_all(&agents_dir).unwrap();
+        fs::write(
+            agents_dir.join("smart.md"),
+            "---\n\
+             name: Smart Agent\n\
+             description: Uses thinking\n\
+             effort: medium\n\
+             background: true\n\
+             requiredMcpServers:\n  - github\n\
+             initialPrompt: Hello!\n\
+             omitClaudeMd: true\n\
+             ---\n\nThink deeply.",
+        )
+        .unwrap();
+
+        let out = def_show(&root, "smart-agent");
+        assert!(out.contains("effort=medium"), "effort missing:\n{out}");
+        assert!(
+            out.contains("background=true"),
+            "background missing:\n{out}"
+        );
+        assert!(
+            out.contains("required_mcp_servers=github"),
+            "required_mcp_servers missing:\n{out}"
+        );
+        assert!(
+            out.contains("initial_prompt=Hello!"),
+            "initial_prompt missing:\n{out}"
+        );
+        assert!(
+            out.contains("omit_claude_md=true"),
+            "omit_claude_md missing:\n{out}"
+        );
+    }
+
+    #[test]
+    fn agents_definition_show_omits_absent_reference_fields() {
+        let root = unique_test_dir("def-show-no-reference-fields");
+        // Built-in `explore` has no reference fields.
+        let out = def_show(&root, "explore");
+        // background and omit_claude_md should show false (always emitted).
+        assert!(
+            out.contains("background=false"),
+            "background should always appear:\n{out}"
+        );
+        assert!(
+            out.contains("omit_claude_md=false"),
+            "omit_claude_md should always appear:\n{out}"
+        );
+        // effort should show empty string when absent.
+        assert!(
+            out.contains("effort="),
+            "effort line should always appear:\n{out}"
+        );
+        // required_mcp_servers line should be absent when empty.
+        assert!(
+            !out.contains("required_mcp_servers="),
+            "empty required_mcp_servers should be omitted:\n{out}"
+        );
+    }
+
+    #[test]
+    fn agents_definition_edit_updates_reference_fields() {
+        let root = unique_test_dir("def-edit-reference-fields");
+        def_create(
+            &root,
+            create_args_minimal("Effort Agent", "Has effort", "Original prompt."),
+        );
+
+        let out = def_edit(
+            &root,
+            DefinitionsEditArgs {
+                id: "effort-agent".into(),
+                name: None,
+                description: None,
+                prompt: None,
+                model: None,
+                tools: None,
+                disallowed_tools: None,
+                color: None,
+                permission_mode: None,
+                max_turns: None,
+                effort: Some("low".into()),
+                background: Some(true),
+                required_mcp_servers: Some(vec!["toolbox".into()]),
+                initial_prompt: Some("Start here.".into()),
+                omit_claude_md: Some(true),
+            },
+        );
+        assert!(out.contains("updated=true"), "got:\n{out}");
+
+        let path = root.join(".claude").join("agents").join("effort-agent.md");
+        let content = fs::read_to_string(&path).unwrap();
+        assert!(
+            content.contains("effort: low"),
+            "effort missing:\n{content}"
+        );
+        assert!(
+            content.contains("background: true"),
+            "background missing:\n{content}"
+        );
+        assert!(
+            content.contains("requiredMcpServers"),
+            "requiredMcpServers missing:\n{content}"
+        );
+        assert!(
+            content.contains("initialPrompt: Start here."),
+            "initialPrompt missing:\n{content}"
+        );
+        assert!(
+            content.contains("omitClaudeMd: true"),
+            "omitClaudeMd missing:\n{content}"
+        );
+    }
+
+    #[test]
+    fn agents_definition_edit_clears_effort_with_empty_string() {
+        let root = unique_test_dir("def-edit-clear-effort");
+        def_create(
+            &root,
+            DefinitionsCreateArgs {
+                effort: Some("high".into()),
+                ..create_args_minimal("Effort Agent2", "Original effort", "Original prompt.")
+            },
+        );
+
+        let out = def_edit(
+            &root,
+            DefinitionsEditArgs {
+                id: "effort-agent2".into(),
+                name: None,
+                description: None,
+                prompt: Some("Updated prompt.".into()),
+                model: None,
+                tools: None,
+                disallowed_tools: None,
+                color: None,
+                permission_mode: None,
+                max_turns: None,
+                effort: Some(String::new()), // clear it
+                background: None,
+                required_mcp_servers: None,
+                initial_prompt: None,
+                omit_claude_md: None,
+            },
+        );
+        assert!(out.contains("updated=true"), "got:\n{out}");
+
+        let path = root.join(".claude").join("agents").join("effort-agent2.md");
+        let content = fs::read_to_string(&path).unwrap();
+        assert!(
+            !content.contains("effort:"),
+            "empty effort should be omitted from output:\n{content}"
+        );
+    }
+
+    #[test]
+    fn agents_definition_reference_fields_roundtrip_parse_and_render() {
+        let root = unique_test_dir("def-roundtrip-reference");
+        let agents_dir = root.join(".claude").join("agents");
+        fs::create_dir_all(&agents_dir).unwrap();
+
+        // Write a definition with all reference fields.
+        let md = "---\n\
+            name: Full Agent\n\
+            description: Has all reference fields\n\
+            effort: high\n\
+            background: true\n\
+            requiredMcpServers:\n  - server-a\n  - server-b\n\
+            initialPrompt: Greetings!\n\
+            omitClaudeMd: true\n\
+            ---\n\nFull system prompt.";
+        fs::write(agents_dir.join("full-agent.md"), md).unwrap();
+
+        // Load via catalog and verify all fields.
+        let loader = wonder_of_u_core::agent_loader::AgentDefinitionLoader::new(&root);
+        let (catalog, warnings) = loader.build_catalog().unwrap();
+        assert!(warnings.is_empty(), "unexpected warnings: {warnings:?}");
+
+        let def = catalog.get("full-agent").expect("full-agent in catalog");
+        assert_eq!(def.effort.as_deref(), Some("high"));
+        assert!(def.background);
+        assert_eq!(def.required_mcp_servers, vec!["server-a", "server-b"]);
+        assert_eq!(def.initial_prompt.as_deref(), Some("Greetings!"));
+        assert!(def.omit_claude_md);
+
+        // Re-render and verify the output contains all fields.
+        let rendered = wonder_of_u_core::render_definition_md(def).unwrap();
+        assert!(rendered.contains("effort: high"), "rendered:\n{rendered}");
+        assert!(
+            rendered.contains("background: true"),
+            "rendered:\n{rendered}"
+        );
+        assert!(
+            rendered.contains("requiredMcpServers"),
+            "rendered:\n{rendered}"
+        );
+        assert!(
+            rendered.contains("initialPrompt: Greetings!"),
+            "rendered:\n{rendered}"
+        );
+        assert!(
+            rendered.contains("omitClaudeMd: true"),
+            "rendered:\n{rendered}"
         );
     }
 }

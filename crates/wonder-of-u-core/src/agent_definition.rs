@@ -120,6 +120,21 @@ pub struct AgentDefinitionSnapshot {
     /// Maximum conversation turns captured at queue time.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_turns: Option<u32>,
+    /// Thinking-effort hint captured at queue time (e.g. `"low"`, `"medium"`, `"high"`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effort: Option<String>,
+    /// Whether the agent should run in the background.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub background: bool,
+    /// MCP server names required by this agent (informational — never executed).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub required_mcp_servers: Vec<String>,
+    /// Initial prompt pre-seeded into the agent's conversation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub initial_prompt: Option<String>,
+    /// When `true`, CLAUDE.md is not injected into the agent's context.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub omit_claude_md: bool,
 }
 
 // ── Raw frontmatter / JSON DTO ────────────────────────────────────────────────
@@ -174,6 +189,28 @@ pub struct RawDefinitionFields {
     /// UI color hint (stored for completeness, not executed).
     #[serde(default)]
     pub color: Option<String>,
+    /// Thinking-effort hint (e.g. `"low"`, `"medium"`, `"high"`).
+    ///
+    /// Stored as a free-form string so unknown upstream values are preserved
+    /// without a parse failure.
+    #[serde(default)]
+    pub effort: Option<String>,
+    /// Run this agent in the background (`true`) or foreground (`false`).
+    #[serde(default)]
+    pub background: Option<bool>,
+    /// MCP server names required by this agent.
+    ///
+    /// Accepted during parse for completeness; stored as metadata only and
+    /// **never executed** — callers that need to warn about this field should
+    /// inspect it directly.
+    #[serde(rename = "requiredMcpServers", default)]
+    pub required_mcp_servers: Option<Vec<String>>,
+    /// Initial prompt pre-seeded into the agent's conversation before its task.
+    #[serde(rename = "initialPrompt", default)]
+    pub initial_prompt: Option<String>,
+    /// When `true`, CLAUDE.md is not injected into the agent's context.
+    #[serde(rename = "omitClaudeMd", default)]
+    pub omit_claude_md: Option<bool>,
     // Dangerous fields: accepted during parse, rejected during build.
     /// Hooks configuration — accepted but never executed.
     #[serde(default)]
@@ -218,6 +255,27 @@ pub struct AgentDefinition {
     /// UI color hint (informational only).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub color: Option<String>,
+    /// Thinking-effort hint (e.g. `"low"`, `"medium"`, `"high"`).
+    ///
+    /// Passed through to the dispatcher for model configuration; never
+    /// validated against a closed set so future upstream values are preserved.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effort: Option<String>,
+    /// Run this agent in the background rather than occupying the foreground.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub background: bool,
+    /// MCP server names this agent declares it needs (informational, not executed).
+    ///
+    /// The dispatcher may use this list to pre-flight capability checks, but
+    /// **no MCP server is started or contacted** based on this field alone.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub required_mcp_servers: Vec<String>,
+    /// Initial prompt pre-seeded into the agent's conversation before the task.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub initial_prompt: Option<String>,
+    /// When `true`, CLAUDE.md is not injected into the agent's context.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub omit_claude_md: bool,
     /// Where this definition originated.
     pub source: AgentDefinitionSource,
     /// SHA-256 hex digest of the raw file content (absent for built-ins).
@@ -316,6 +374,11 @@ impl AgentDefinition {
             max_turns: raw.max_turns,
             permission_mode: raw.permission_mode,
             color: raw.color,
+            effort: raw.effort,
+            background: raw.background.unwrap_or(false),
+            required_mcp_servers: raw.required_mcp_servers.unwrap_or_default(),
+            initial_prompt: raw.initial_prompt,
+            omit_claude_md: raw.omit_claude_md.unwrap_or(false),
             source,
             content_hash,
             source_path: None,
@@ -339,6 +402,11 @@ impl AgentDefinition {
             max_turns: None,
             permission_mode: None,
             color: None,
+            effort: None,
+            background: false,
+            required_mcp_servers: Vec::new(),
+            initial_prompt: None,
+            omit_claude_md: false,
             source: AgentDefinitionSource::Builtin,
             content_hash: None,
             source_path: None,
@@ -361,6 +429,11 @@ impl AgentDefinition {
             disallowed_tools: self.disallowed_tools.clone(),
             permission_mode: self.permission_mode.clone(),
             max_turns: self.max_turns,
+            effort: self.effort.clone(),
+            background: self.background,
+            required_mcp_servers: self.required_mcp_servers.clone(),
+            initial_prompt: self.initial_prompt.clone(),
+            omit_claude_md: self.omit_claude_md,
         }
     }
 }
@@ -544,6 +617,11 @@ fn extra_builtin_definitions() -> Vec<AgentDefinition> {
             max_turns: None,
             permission_mode: None,
             color: None,
+            effort: None,
+            background: false,
+            required_mcp_servers: Vec::new(),
+            initial_prompt: None,
+            omit_claude_md: false,
             source: AgentDefinitionSource::Builtin,
             content_hash: None,
             source_path: None,
@@ -571,6 +649,11 @@ fn extra_builtin_definitions() -> Vec<AgentDefinition> {
             max_turns: None,
             permission_mode: Some("default".into()),
             color: None,
+            effort: None,
+            background: false,
+            required_mcp_servers: Vec::new(),
+            initial_prompt: None,
+            omit_claude_md: false,
             source: AgentDefinitionSource::Builtin,
             content_hash: None,
             source_path: None,
@@ -601,6 +684,21 @@ struct DefinitionFrontmatter {
     permission_mode: Option<String>,
     #[serde(rename = "maxTurns", skip_serializing_if = "Option::is_none")]
     max_turns: Option<u32>,
+    /// Thinking-effort hint — omitted when absent.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    effort: Option<String>,
+    /// Background flag — omitted when `false` to keep output minimal.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    background: bool,
+    /// Required MCP server names — omitted when empty.
+    #[serde(rename = "requiredMcpServers", skip_serializing_if = "Vec::is_empty")]
+    required_mcp_servers: Vec<String>,
+    /// Initial prompt — omitted when absent.
+    #[serde(rename = "initialPrompt", skip_serializing_if = "Option::is_none")]
+    initial_prompt: Option<String>,
+    /// Omit CLAUDE.md flag — omitted when `false`.
+    #[serde(rename = "omitClaudeMd", skip_serializing_if = "std::ops::Not::not")]
+    omit_claude_md: bool,
 }
 
 /// Renders an [`AgentDefinition`] as a Markdown file with YAML frontmatter.
@@ -629,6 +727,11 @@ struct DefinitionFrontmatter {
 ///     max_turns: None,
 ///     permission_mode: None,
 ///     color: None,
+///     effort: None,
+///     background: false,
+///     required_mcp_servers: vec![],
+///     initial_prompt: None,
+///     omit_claude_md: false,
 ///     source: AgentDefinitionSource::Project,
 ///     content_hash: None,
 ///     source_path: None,
@@ -654,6 +757,11 @@ pub fn render_definition_md(def: &AgentDefinition) -> Result<String> {
         color: def.color.clone(),
         permission_mode: def.permission_mode.clone(),
         max_turns: def.max_turns,
+        effort: def.effort.clone(),
+        background: def.background,
+        required_mcp_servers: def.required_mcp_servers.clone(),
+        initial_prompt: def.initial_prompt.clone(),
+        omit_claude_md: def.omit_claude_md,
     };
     let yaml = serde_yaml::to_string(&fm).map_err(|e| {
         WonderError::validation(format!("failed to serialise definition frontmatter: {e}"))
@@ -932,6 +1040,11 @@ mod tests {
             max_turns: None,
             permission_mode: None,
             color: None,
+            effort: None,
+            background: false,
+            required_mcp_servers: vec![],
+            initial_prompt: None,
+            omit_claude_md: false,
             source: AgentDefinitionSource::Project,
             content_hash: Some("abc123".into()),
             source_path: None,
@@ -958,6 +1071,11 @@ mod tests {
             max_turns: None,
             permission_mode: None,
             color: None,
+            effort: None,
+            background: false,
+            required_mcp_servers: vec![],
+            initial_prompt: None,
+            omit_claude_md: false,
             source: AgentDefinitionSource::Project,
             content_hash: None,
             source_path: None,
@@ -974,6 +1092,11 @@ mod tests {
             max_turns: None,
             permission_mode: None,
             color: None,
+            effort: None,
+            background: false,
+            required_mcp_servers: vec![],
+            initial_prompt: None,
+            omit_claude_md: false,
             source: AgentDefinitionSource::Builtin,
             content_hash: None,
             source_path: None,
@@ -999,6 +1122,11 @@ mod tests {
             max_turns: None,
             permission_mode: None,
             color: None,
+            effort: None,
+            background: false,
+            required_mcp_servers: vec![],
+            initial_prompt: None,
+            omit_claude_md: false,
             source: AgentDefinitionSource::ProjectDotClaude,
             content_hash: None,
             source_path: None,
@@ -1014,6 +1142,11 @@ mod tests {
             max_turns: None,
             permission_mode: None,
             color: None,
+            effort: None,
+            background: false,
+            required_mcp_servers: vec![],
+            initial_prompt: None,
+            omit_claude_md: false,
             source: AgentDefinitionSource::ProjectDotClaude,
             content_hash: None,
             source_path: None,
@@ -1179,6 +1312,11 @@ mod tests {
             max_turns: Some(10),
             permission_mode: Some("default".into()),
             color: None,
+            effort: Some("high".into()),
+            background: true,
+            required_mcp_servers: vec!["my-mcp".into()],
+            initial_prompt: Some("Hello agent.".into()),
+            omit_claude_md: true,
             source: AgentDefinitionSource::Project,
             content_hash: Some("deadbeef".into()),
             source_path: None,
@@ -1191,6 +1329,11 @@ mod tests {
         assert_eq!(snap.max_turns, Some(10));
         assert_eq!(snap.allowed_tools, vec!["bash"]);
         assert_eq!(snap.disallowed_tools, vec!["file_write"]);
+        assert_eq!(snap.effort.as_deref(), Some("high"));
+        assert!(snap.background);
+        assert_eq!(snap.required_mcp_servers, vec!["my-mcp"]);
+        assert_eq!(snap.initial_prompt.as_deref(), Some("Hello agent."));
+        assert!(snap.omit_claude_md);
     }
 
     // ── name_to_id ────────────────────────────────────────────────────────────
@@ -1224,5 +1367,238 @@ mod tests {
         assert!(validate_agent_id("trailing-").is_err());
         assert!(validate_agent_id("double--dash").is_err());
         assert!(validate_agent_id("has space").is_err());
+    }
+
+    // ── reference frontmatter fields (effort / background / requiredMcpServers /
+    // initialPrompt / omitClaudeMd) ───────────────────────────────────────────
+
+    #[test]
+    fn from_raw_parses_effort_field() {
+        let raw = RawDefinitionFields {
+            name: Some("Thinker".into()),
+            description: Some("Thinks hard".into()),
+            prompt: Some("Think deeply.".into()),
+            effort: Some("high".into()),
+            ..Default::default()
+        };
+        let def = AgentDefinition::from_raw(raw, AgentDefinitionSource::Project, "c").unwrap();
+        assert_eq!(def.effort.as_deref(), Some("high"));
+    }
+
+    #[test]
+    fn from_raw_parses_background_field() {
+        let raw = RawDefinitionFields {
+            name: Some("Background Agent".into()),
+            description: Some("Runs quietly".into()),
+            prompt: Some("Do stuff quietly.".into()),
+            background: Some(true),
+            ..Default::default()
+        };
+        let def = AgentDefinition::from_raw(raw, AgentDefinitionSource::Project, "c").unwrap();
+        assert!(def.background);
+    }
+
+    #[test]
+    fn from_raw_background_defaults_to_false() {
+        let raw = RawDefinitionFields {
+            name: Some("Foreground Agent".into()),
+            description: Some("Runs in foreground".into()),
+            prompt: Some("Do stuff.".into()),
+            ..Default::default()
+        };
+        let def = AgentDefinition::from_raw(raw, AgentDefinitionSource::Project, "c").unwrap();
+        assert!(!def.background);
+    }
+
+    #[test]
+    fn from_raw_parses_required_mcp_servers() {
+        let raw = RawDefinitionFields {
+            name: Some("MCP Agent".into()),
+            description: Some("Needs MCP".into()),
+            prompt: Some("Use MCP.".into()),
+            required_mcp_servers: Some(vec!["github".into(), "linear".into()]),
+            ..Default::default()
+        };
+        let def = AgentDefinition::from_raw(raw, AgentDefinitionSource::Project, "c").unwrap();
+        assert_eq!(def.required_mcp_servers, vec!["github", "linear"]);
+    }
+
+    #[test]
+    fn from_raw_parses_initial_prompt() {
+        let raw = RawDefinitionFields {
+            name: Some("Seeded Agent".into()),
+            description: Some("Has initial prompt".into()),
+            prompt: Some("Main prompt.".into()),
+            initial_prompt: Some("Hello, I will help you.".into()),
+            ..Default::default()
+        };
+        let def = AgentDefinition::from_raw(raw, AgentDefinitionSource::Project, "c").unwrap();
+        assert_eq!(
+            def.initial_prompt.as_deref(),
+            Some("Hello, I will help you.")
+        );
+    }
+
+    #[test]
+    fn from_raw_parses_omit_claude_md() {
+        let raw = RawDefinitionFields {
+            name: Some("Slim Agent".into()),
+            description: Some("No CLAUDE.md".into()),
+            prompt: Some("Lean prompt.".into()),
+            omit_claude_md: Some(true),
+            ..Default::default()
+        };
+        let def = AgentDefinition::from_raw(raw, AgentDefinitionSource::Project, "c").unwrap();
+        assert!(def.omit_claude_md);
+    }
+
+    #[test]
+    fn parse_markdown_frontmatter_parses_reference_fields() {
+        let md = "---\n\
+            name: Smart Agent\n\
+            description: Uses thinking\n\
+            effort: medium\n\
+            background: true\n\
+            requiredMcpServers:\n  - github\n  - slack\n\
+            initialPrompt: Let's get started.\n\
+            omitClaudeMd: true\n\
+            ---\n\nYou are a smart agent.";
+        let fields = parse_markdown_frontmatter(md).expect("parse");
+        assert_eq!(fields.effort.as_deref(), Some("medium"));
+        assert_eq!(fields.background, Some(true));
+        assert_eq!(
+            fields.required_mcp_servers.as_deref(),
+            Some(&["github".to_owned(), "slack".to_owned()][..])
+        );
+        assert_eq!(fields.initial_prompt.as_deref(), Some("Let's get started."));
+        assert_eq!(fields.omit_claude_md, Some(true));
+    }
+
+    #[test]
+    fn render_definition_md_includes_reference_fields() {
+        let raw = RawDefinitionFields {
+            name: Some("Full Agent".into()),
+            description: Some("Has all fields".into()),
+            prompt: Some("Work hard.".into()),
+            effort: Some("low".into()),
+            background: Some(true),
+            required_mcp_servers: Some(vec!["github".into()]),
+            initial_prompt: Some("Greetings.".into()),
+            omit_claude_md: Some(true),
+            ..Default::default()
+        };
+        let def = AgentDefinition::from_raw(raw, AgentDefinitionSource::Project, "c").unwrap();
+        let md = render_definition_md(&def).unwrap();
+        assert!(md.contains("effort: low"), "effort missing:\n{md}");
+        assert!(md.contains("background: true"), "background missing:\n{md}");
+        assert!(
+            md.contains("requiredMcpServers"),
+            "requiredMcpServers missing:\n{md}"
+        );
+        assert!(
+            md.contains("initialPrompt: Greetings."),
+            "initialPrompt missing:\n{md}"
+        );
+        assert!(
+            md.contains("omitClaudeMd: true"),
+            "omitClaudeMd missing:\n{md}"
+        );
+    }
+
+    #[test]
+    fn render_definition_md_omits_false_bool_fields() {
+        let raw = RawDefinitionFields {
+            name: Some("Minimal Agent".into()),
+            description: Some("Minimal".into()),
+            prompt: Some("Do less.".into()),
+            background: Some(false),
+            omit_claude_md: Some(false),
+            ..Default::default()
+        };
+        let def = AgentDefinition::from_raw(raw, AgentDefinitionSource::Project, "c").unwrap();
+        let md = render_definition_md(&def).unwrap();
+        // false bools must be omitted to keep output minimal.
+        assert!(
+            !md.contains("background:"),
+            "false background must be omitted:\n{md}"
+        );
+        assert!(
+            !md.contains("omitClaudeMd:"),
+            "false omitClaudeMd must be omitted:\n{md}"
+        );
+    }
+
+    #[test]
+    fn parse_json_definition_parses_reference_fields() {
+        let json = r#"{
+            "name": "JSON Agent",
+            "description": "Parsed from JSON",
+            "prompt": "JSON prompt.",
+            "effort": "high",
+            "background": true,
+            "requiredMcpServers": ["toolbox"],
+            "initialPrompt": "Start here.",
+            "omitClaudeMd": true
+        }"#;
+        let fields = parse_json_definition(json).expect("parse");
+        assert_eq!(fields.effort.as_deref(), Some("high"));
+        assert_eq!(fields.background, Some(true));
+        assert_eq!(
+            fields.required_mcp_servers.as_deref(),
+            Some(&["toolbox".to_owned()][..])
+        );
+        assert_eq!(fields.initial_prompt.as_deref(), Some("Start here."));
+        assert_eq!(fields.omit_claude_md, Some(true));
+    }
+
+    #[test]
+    fn snapshot_includes_reference_fields() {
+        let raw = RawDefinitionFields {
+            name: Some("Snapshot Agent".into()),
+            description: Some("Full snapshot".into()),
+            prompt: Some("Snap.".into()),
+            effort: Some("medium".into()),
+            background: Some(true),
+            required_mcp_servers: Some(vec!["mcp-a".into()]),
+            initial_prompt: Some("Init.".into()),
+            omit_claude_md: Some(true),
+            ..Default::default()
+        };
+        let def = AgentDefinition::from_raw(raw, AgentDefinitionSource::Project, "c").unwrap();
+        let snap = def.snapshot();
+        assert_eq!(snap.effort.as_deref(), Some("medium"));
+        assert!(snap.background);
+        assert_eq!(snap.required_mcp_servers, vec!["mcp-a"]);
+        assert_eq!(snap.initial_prompt.as_deref(), Some("Init."));
+        assert!(snap.omit_claude_md);
+    }
+
+    #[test]
+    fn reference_fields_roundtrip_through_parse_and_render() {
+        let md = "---\n\
+            name: Round Trip\n\
+            description: Roundtrips cleanly\n\
+            effort: high\n\
+            background: true\n\
+            requiredMcpServers:\n  - my-server\n\
+            initialPrompt: Go!\n\
+            omitClaudeMd: true\n\
+            ---\n\nSystem prompt here.";
+
+        let fields = parse_markdown_frontmatter(md).expect("parse");
+        let def = AgentDefinition::from_raw(fields, AgentDefinitionSource::Project, md).unwrap();
+        let rendered = render_definition_md(&def).unwrap();
+
+        // Re-parse the rendered output and validate the round-trip.
+        let fields2 = parse_markdown_frontmatter(&rendered).expect("re-parse");
+        let def2 =
+            AgentDefinition::from_raw(fields2, AgentDefinitionSource::Project, &rendered).unwrap();
+
+        assert_eq!(def2.effort.as_deref(), Some("high"));
+        assert!(def2.background);
+        assert_eq!(def2.required_mcp_servers, vec!["my-server"]);
+        assert_eq!(def2.initial_prompt.as_deref(), Some("Go!"));
+        assert!(def2.omit_claude_md);
+        assert_eq!(def2.system_prompt, "System prompt here.");
     }
 }
