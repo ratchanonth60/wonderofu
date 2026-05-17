@@ -2251,6 +2251,8 @@ mod fleet_inspector_tests {
             remote: None,
             output_log: None,
             worktree_branch: None,
+            worktree_path: None,
+            worktree_head_commit: None,
             started_at: OffsetDateTime::now_utc(),
             finished_at: if status.is_terminal() {
                 Some(OffsetDateTime::now_utc())

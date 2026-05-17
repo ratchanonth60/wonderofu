@@ -457,6 +457,170 @@ pub fn fleet_agent_worktree_slug(fleet_id_str: &str, request_id: &str) -> String
     format!("fleet-{fleet_prefix}-{req_prefix}")
 }
 
+/// Full metadata returned when creating or resuming an agent git worktree.
+///
+/// Callers that need to persist worktree state for later cleanup (e.g. the
+/// task runtime) should use [`create_agent_worktree_info`] rather than the
+/// simpler `(path, branch)` overload.
+#[derive(Clone, Debug)]
+pub struct AgentWorktreeInfo {
+    /// Absolute filesystem path to the worktree.
+    pub worktree_path: PathBuf,
+    /// Git branch checked out inside the worktree.
+    pub branch: String,
+    /// HEAD commit hash in the main repository at worktree creation/resume
+    /// time.  Used during post-task cleanup to detect new commits made by the
+    /// agent.  `None` only if `git rev-parse HEAD` fails.
+    pub head_commit: Option<String>,
+}
+
+/// Creates or resumes a git worktree and returns full metadata for task
+/// tracking and post-task cleanup.
+///
+/// Unlike [`create_fleet_agent_worktree_with_branch`] this function surfaces
+/// the `head_commit` captured at creation time so the caller can later
+/// determine whether the agent made any new commits.
+///
+/// # Errors
+///
+/// Propagates validation, git, or filesystem errors.
+pub fn create_agent_worktree_info(
+    original_cwd: &Path,
+    repository_root: &Path,
+    slug: &str,
+    branch: Option<&str>,
+) -> wonder_of_u_core::Result<AgentWorktreeInfo> {
+    if let Some(b) = branch {
+        validate_worktree_branch_name(b)?;
+    }
+    let (state, _resumed) =
+        create_or_resume_worktree_with_branch(original_cwd, repository_root, slug, branch)?;
+    let branch = state
+        .worktree_branch
+        .clone()
+        .unwrap_or_else(|| branch.map_or_else(|| worktree_branch_name(slug), str::to_string));
+    Ok(AgentWorktreeInfo {
+        worktree_path: state.worktree_path,
+        branch,
+        head_commit: state.original_head_commit,
+    })
+}
+
+/// Outcome of attempting to clean up an agent worktree after task completion.
+#[derive(Clone, Debug, PartialEq)]
+pub enum AgentWorktreeCleanup {
+    /// Worktree was clean (no uncommitted files, no new commits) and has been
+    /// removed along with its branch.
+    Removed,
+    /// Worktree had uncommitted files or new commits and has been retained.
+    Retained {
+        /// Number of uncommitted files detected by `git status --porcelain`.
+        changed_files: usize,
+        /// Number of new commits on the worktree branch relative to
+        /// `head_commit`.  Zero when no reference commit was supplied.
+        commits: usize,
+    },
+    /// Worktree path no longer exists on disk; nothing to clean up.
+    AlreadyGone,
+}
+
+/// Attempts to remove an agent worktree after the associated task completes.
+///
+/// A worktree is considered "clean" when `git status --porcelain` reports no
+/// files **and** there are no new commits relative to `head_commit`.  Clean
+/// worktrees are removed (worktree + branch); dirty ones are retained so the
+/// agent's work is not lost.
+///
+/// When `head_commit` is `None` only uncommitted files are checked; the commit
+/// count is reported as zero regardless of what is on the branch.
+///
+/// Returns [`AgentWorktreeCleanup::AlreadyGone`] without touching git when
+/// the path does not exist on disk.
+pub fn try_cleanup_agent_worktree(
+    worktree_path: &Path,
+    head_commit: Option<&str>,
+) -> AgentWorktreeCleanup {
+    if !worktree_path.exists() {
+        return AgentWorktreeCleanup::AlreadyGone;
+    }
+
+    let repository_root = match get_git_root(worktree_path) {
+        Ok(root) => root,
+        // Path exists but isn't in a git repo — treat as gone.
+        Err(_) => return AgentWorktreeCleanup::AlreadyGone,
+    };
+
+    // Count uncommitted files via git status --porcelain.
+    let changed_files = match git_output(worktree_path, ["status", "--porcelain"]) {
+        Ok(out) if out.status.success() => String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .filter(|l| !l.trim().is_empty())
+            .count(),
+        // git failed — retain to be safe.
+        _ => {
+            return AgentWorktreeCleanup::Retained {
+                changed_files: 0,
+                commits: 0,
+            };
+        }
+    };
+
+    // Count new commits relative to the captured head (only when available).
+    let commits = if let Some(ref_commit) = head_commit {
+        let range = format!("{ref_commit}..HEAD");
+        match git_output(worktree_path, ["rev-list", "--count", range.as_str()]) {
+            Ok(out) if out.status.success() => String::from_utf8(out.stdout)
+                .unwrap_or_default()
+                .trim()
+                .parse::<usize>()
+                .unwrap_or(0),
+            _ => {
+                return AgentWorktreeCleanup::Retained {
+                    changed_files,
+                    commits: 0,
+                };
+            }
+        }
+    } else {
+        0
+    };
+
+    if changed_files > 0 || commits > 0 {
+        return AgentWorktreeCleanup::Retained {
+            changed_files,
+            commits,
+        };
+    }
+
+    // Worktree is clean — record the branch name before removing.
+    let branch = get_current_branch(worktree_path).ok();
+
+    // Remove the worktree directory.
+    if git_ok(
+        &repository_root,
+        [
+            "worktree",
+            "remove",
+            worktree_path.to_str().unwrap_or_default(),
+        ],
+    )
+    .is_err()
+    {
+        return AgentWorktreeCleanup::Retained {
+            changed_files: 0,
+            commits: 0,
+        };
+    }
+
+    // Delete the branch; failure is non-fatal (branch may have been merged or
+    // deleted already).
+    if let Some(b) = branch {
+        let _ = git_ok(&repository_root, ["branch", "-d", b.as_str()]);
+    }
+
+    AgentWorktreeCleanup::Removed
+}
+
 /// Creates or resumes a git worktree for a fleet agent member.
 ///
 /// Delegates to the shared [`create_or_resume_worktree`] logic and returns
@@ -1358,5 +1522,151 @@ mod tests {
                 .expect("resume explicit branch worktree");
         assert_eq!(resumed_path, path);
         assert_eq!(resumed_branch, explicit_branch);
+    }
+
+    // ── create_agent_worktree_info ────────────────────────────────────────────
+
+    #[test]
+    fn create_agent_worktree_info_returns_head_commit() {
+        let repo = init_git_repo("wt-info-head-commit");
+        let info =
+            create_agent_worktree_info(&repo, &repo, "test-agent", None).expect("create info");
+
+        assert!(info.worktree_path.exists(), "worktree path should exist");
+        assert!(!info.branch.is_empty(), "branch should not be empty");
+        assert!(
+            info.head_commit.is_some(),
+            "head_commit must be captured at creation time"
+        );
+        // head_commit should be a valid git SHA (≥7 hex chars).
+        let sha = info.head_commit.as_deref().unwrap();
+        assert!(
+            sha.len() >= 7 && sha.chars().all(|c| c.is_ascii_hexdigit()),
+            "head_commit should look like a git SHA; got: {sha}"
+        );
+    }
+
+    #[test]
+    fn create_agent_worktree_info_branch_matches_worktree() {
+        let repo = init_git_repo("wt-info-branch-match");
+        let info =
+            create_agent_worktree_info(&repo, &repo, "test-agent-b", None).expect("create info");
+
+        // The branch checked out in the worktree must match what the struct reports.
+        let actual_branch = run_git(&info.worktree_path, ["branch", "--show-current"]);
+        assert_eq!(
+            actual_branch.trim(),
+            info.branch,
+            "reported branch must match the git worktree branch"
+        );
+    }
+
+    // ── try_cleanup_agent_worktree ─────────────────────────────────────────────
+
+    #[test]
+    fn try_cleanup_removes_clean_worktree() {
+        let repo = init_git_repo("wt-cleanup-clean");
+        let info = create_agent_worktree_info(&repo, &repo, "cleanup-clean", None).expect("create");
+
+        // Worktree is clean — no files, no commits.
+        let result = try_cleanup_agent_worktree(&info.worktree_path, info.head_commit.as_deref());
+
+        assert_eq!(
+            result,
+            AgentWorktreeCleanup::Removed,
+            "clean worktree should be removed"
+        );
+        assert!(
+            !info.worktree_path.exists(),
+            "worktree directory should be gone after removal"
+        );
+    }
+
+    #[test]
+    fn try_cleanup_retains_dirty_worktree_with_uncommitted_file() {
+        let repo = init_git_repo("wt-cleanup-dirty-file");
+        let info =
+            create_agent_worktree_info(&repo, &repo, "cleanup-dirty-file", None).expect("create");
+
+        // Leave an uncommitted file in the worktree.
+        std::fs::write(info.worktree_path.join("new_file.txt"), "hello\n")
+            .expect("write dirty file");
+
+        let result = try_cleanup_agent_worktree(&info.worktree_path, info.head_commit.as_deref());
+
+        assert!(
+            matches!(
+                result,
+                AgentWorktreeCleanup::Retained { changed_files, .. } if changed_files > 0
+            ),
+            "dirty worktree with uncommitted file should be retained; got: {result:?}"
+        );
+        assert!(
+            info.worktree_path.exists(),
+            "dirty worktree directory should still exist"
+        );
+    }
+
+    #[test]
+    fn try_cleanup_retains_worktree_with_new_commit() {
+        let repo = init_git_repo("wt-cleanup-new-commit");
+        let info =
+            create_agent_worktree_info(&repo, &repo, "cleanup-new-commit", None).expect("create");
+
+        // Make a commit inside the worktree.
+        std::fs::write(info.worktree_path.join("agent_work.txt"), "result\n")
+            .expect("write agent output");
+        run_git(&info.worktree_path, ["add", "agent_work.txt"]);
+        run_git(&info.worktree_path, ["commit", "-m", "agent made a commit"]);
+
+        let result = try_cleanup_agent_worktree(&info.worktree_path, info.head_commit.as_deref());
+
+        assert!(
+            matches!(
+                result,
+                AgentWorktreeCleanup::Retained { commits, .. } if commits > 0
+            ),
+            "worktree with new commits should be retained; got: {result:?}"
+        );
+        assert!(
+            info.worktree_path.exists(),
+            "worktree with new commits should still exist"
+        );
+    }
+
+    #[test]
+    fn try_cleanup_returns_already_gone_for_missing_path() {
+        let dir = unique_test_dir("wt-cleanup-already-gone");
+        let nonexistent = dir.join("does-not-exist");
+
+        let result = try_cleanup_agent_worktree(&nonexistent, Some("abc1234"));
+
+        assert_eq!(
+            result,
+            AgentWorktreeCleanup::AlreadyGone,
+            "non-existent path should return AlreadyGone"
+        );
+    }
+
+    #[test]
+    fn try_cleanup_retains_when_no_head_commit_and_uncommitted_files() {
+        let repo = init_git_repo("wt-cleanup-no-ref");
+        let info = create_agent_worktree_info(&repo, &repo, "cleanup-no-ref", None)
+            .expect("create worktree");
+
+        // Write a file but don't stage/commit it.
+        std::fs::write(info.worktree_path.join("pending.txt"), "pending\n")
+            .expect("write pending file");
+
+        // Pass None for head_commit — only uncommitted files are checked.
+        let result = try_cleanup_agent_worktree(&info.worktree_path, None);
+
+        assert!(
+            matches!(
+                result,
+                AgentWorktreeCleanup::Retained { changed_files, .. } if changed_files > 0
+            ),
+            "dirty worktree should be retained even without head_commit; got: {result:?}"
+        );
     }
 }

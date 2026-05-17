@@ -990,6 +990,8 @@ fn tasks_remove_output_has_action_removed_field() {
         remote: None,
         output_log: None,
         worktree_branch: None,
+        worktree_path: None,
+        worktree_head_commit: None,
         started_at: OffsetDateTime::now_utc(),
         finished_at: Some(OffsetDateTime::now_utc()),
     };
@@ -1074,6 +1076,8 @@ fn tasks_prune_output_has_required_fields() {
                 remote: None,
                 output_log: None,
                 worktree_branch: None,
+                worktree_path: None,
+                worktree_head_commit: None,
                 started_at: OffsetDateTime::now_utc(),
                 finished_at: finished.then(OffsetDateTime::now_utc),
             })

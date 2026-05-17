@@ -285,6 +285,8 @@ impl AgentsCommand {
                     parent_task_id: None,
                     allowed_tools: None,
                     worktree_branch: None,
+                    worktree_path: None,
+                    worktree_head_commit: None,
                     system_prompt: None,
                     fork_depth: None,
                     reserved_task_id: None,
@@ -714,6 +716,12 @@ pub(super) fn render_task_detail(
     }
     if let Some(ref branch) = task.worktree_branch {
         lines.push(format!("worktree_branch={}", sanitize_single_line(branch)));
+    }
+    if let Some(ref path) = task.worktree_path {
+        lines.push(format!(
+            "worktree_path={}",
+            sanitize_single_line(&path.display().to_string())
+        ));
     }
     lines.push(format!("log_tail_lines={}", log_tail.len()));
     for (index, line) in log_tail.iter().enumerate() {
