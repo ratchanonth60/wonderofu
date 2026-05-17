@@ -15,6 +15,7 @@ use wonder_of_u_core::{
 use wonder_of_u_tools::parse_worktree_runtime_action;
 
 mod advanced;
+pub(crate) mod agent_definitions;
 pub(crate) mod auth;
 pub(crate) mod copy;
 pub(crate) mod cost;
