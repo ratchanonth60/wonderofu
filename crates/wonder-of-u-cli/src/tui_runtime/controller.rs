@@ -218,7 +218,7 @@ impl<'a> TuiController<'a> {
             state,
             persistence,
             prompt: TextBuffer::new(true),
-            keymap: crate::commands::preferences::load_keybinding_resolver(storage_dir)?,
+            keymap: crate::commands::keybinding_commands::load_keybinding_resolver(storage_dir)?,
             vim: VimState::default(),
             vim_enabled: true,
             history_search: None,

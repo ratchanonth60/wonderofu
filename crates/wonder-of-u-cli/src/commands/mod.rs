@@ -29,12 +29,14 @@ mod help;
 pub(crate) mod hooks;
 pub(crate) mod import;
 pub(crate) mod keybindings;
+pub(crate) mod keybinding_commands;
 mod mcp;
 pub mod memory;
 pub(crate) mod output_style;
 mod plan_command;
 mod plugin;
 pub(crate) mod preferences;
+pub(crate) mod privacy_settings;
 pub(crate) mod project;
 pub(crate) mod prompt;
 pub(crate) mod review_workflow;
@@ -48,10 +50,12 @@ mod summary;
 pub mod tag;
 mod task_commands;
 mod task_runtime;
+pub(crate) mod terminal_setup;
 pub(crate) mod theme;
 mod tui;
 pub mod vim;
 pub(crate) mod workflow;
+pub(crate) mod hook_commands;
 
 use advanced::{BridgeCommand, DebugCommand, DiagnosticsCommand, VoiceCommand};
 use auth::{ConfigCommand, LoginCommand, LogoutCommand, ModelCommand};
@@ -76,9 +80,13 @@ use mcp::McpCommand;
 use plan_command::PlanCommand;
 use plugin::{PluginCommand, ReloadPluginsCommand};
 use preferences::{
-    BriefCommand, ColorCommand, EffortCommand, FastCommand, HooksCommand, KeybindingsCommand,
-    OptimizeTonkenCommand, PrivacySettingsCommand, TerminalSetupCommand, ThemeCommand, VimCommand,
+    BriefCommand, ColorCommand, EffortCommand, FastCommand, OptimizeTonkenCommand, ThemeCommand,
+    VimCommand,
 };
+use keybinding_commands::KeybindingsCommand;
+use terminal_setup::TerminalSetupCommand;
+use hook_commands::HooksCommand;
+use privacy_settings::PrivacySettingsCommand;
 use project::{
     AddDirCommand, BranchCommand, ContextCommand, CopyCommand, DiffCommand, FilesCommand,
     InitCommand, MemoryCommand,
