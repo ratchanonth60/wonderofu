@@ -63,6 +63,8 @@ pub mod sequential;
 pub mod set;
 /// Provides shell session support
 pub mod shell_session;
+/// Logical todo-v2 task list models (source-compatible task board).
+pub mod todo_task;
 /// Provides tool support
 pub mod tool;
 /// Provides treeify support
@@ -161,6 +163,10 @@ pub use sequential::run_sequential;
 pub use set::{difference, intersection, intersects, union};
 /// Re-exports items from `shell_session`
 pub use shell_session::{ShellOutput, ShellSession, ShellSessionStore};
+/// Re-exports items from `todo_task`
+pub use todo_task::{
+    TODO_TASK_LIST_SCHEMA_VERSION, TodoTaskEntry, TodoTaskList, TodoTaskStatus, new_todo_task_id,
+};
 /// Re-exports items from `tool`
 pub use tool::{
     AgentLaunchSpec, AgentMessageSpec, Tool, ToolContext, ToolEffect, ToolKind, ToolProgress,

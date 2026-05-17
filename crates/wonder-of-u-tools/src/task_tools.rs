@@ -12,25 +12,17 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 use wonder_of_u_core::{
-    FeatureFlag, RemoteTaskState, Result, TaskId, TaskState, TaskStatus, Tool, ToolContext,
-    ToolKind, ToolResult, ToolSchema, ToolSpec, ToolUseId, WonderError,
+    FeatureFlag, RemoteTaskState, Result, TaskId, TaskState, TaskStatus, TodoTaskEntry,
+    TodoTaskStatus, Tool, ToolContext, ToolKind, ToolResult, ToolSchema, ToolSpec, ToolUseId,
+    WonderError, new_todo_task_id,
 };
-use wonder_of_u_storage::TaskStore;
+use wonder_of_u_storage::{TaskStore, TodoTaskStore};
 
 use crate::{app_root, base_spec, parse_input, require_non_empty_text};
 
 const DEFAULT_TASK_OUTPUT_LINES: u32 = 50;
 const DEFAULT_TASK_OUTPUT_TIMEOUT_MS: u64 = 30_000;
 const TASK_OUTPUT_POLL_INTERVAL: Duration = Duration::from_millis(100);
-const SOURCE_TASK_RUNTIME_UNAVAILABLE: &str = concat!(
-    "todo-v2 task tools are blocked in the Rust port: ToolContext does not expose a logical ",
-    "task-list state, and TaskStore persists background runtime tasks rather than source-compatible ",
-    "TaskCreate/TaskUpdate entries"
-);
-const SOURCE_TASK_RUNTIME_BLOCKERS: [&str; 2] = [
-    "ToolContext does not expose a logical task-list state for todo-v2 tools",
-    "TaskStore persists background runtime tasks rather than source-compatible task-list entries",
-];
 /// Represents task create input
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -113,6 +105,12 @@ pub struct TaskUpdateInput {
     /// Stores the add blocked by
     #[serde(default, rename = "addBlockedBy", alias = "add_blocked_by")]
     pub add_blocked_by: Option<Vec<String>>,
+    /// Task ids to remove from this task's `blocks` list (bidirectional).
+    #[serde(default, rename = "removeBlocks", alias = "remove_blocks")]
+    pub remove_blocks: Option<Vec<String>>,
+    /// Task ids to remove from this task's `blocked_by` list (bidirectional).
+    #[serde(default, rename = "removeBlockedBy", alias = "remove_blocked_by")]
+    pub remove_blocked_by: Option<Vec<String>>,
     /// Stores the owner
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub owner: Option<String>,
@@ -143,10 +141,20 @@ impl TaskUpdateInput {
         }
         if let Some(add_blocks) = &self.add_blocks {
             require_non_empty_string_list("task_update", "addBlocks", add_blocks)?;
+            reject_self_dependency("addBlocks", &self.task_id, add_blocks)?;
             updated = true;
         }
         if let Some(add_blocked_by) = &self.add_blocked_by {
             require_non_empty_string_list("task_update", "addBlockedBy", add_blocked_by)?;
+            reject_self_dependency("addBlockedBy", &self.task_id, add_blocked_by)?;
+            updated = true;
+        }
+        if let Some(remove_blocks) = &self.remove_blocks {
+            require_non_empty_string_list("task_update", "removeBlocks", remove_blocks)?;
+            updated = true;
+        }
+        if let Some(remove_blocked_by) = &self.remove_blocked_by {
+            require_non_empty_string_list("task_update", "removeBlockedBy", remove_blocked_by)?;
             updated = true;
         }
         if let Some(owner) = &self.owner {
@@ -313,7 +321,7 @@ impl Tool for TaskCreateTool {
                 .required("description"),
         );
         spec.aliases.push("TaskCreate".into());
-        spec.concurrency_safe = true;
+        // Not concurrency_safe: writes to per-session file without a lock.
         spec.required_features.insert(FeatureFlag::TodoV2);
         spec
     }
@@ -324,13 +332,40 @@ impl Tool for TaskCreateTool {
 
     async fn execute(
         &self,
-        _context: ToolContext,
+        context: ToolContext,
         use_id: ToolUseId,
         input: Value,
     ) -> Result<ToolResult> {
         let input = parse_input::<TaskCreateInput>("task_create", &input)?;
         input.validate()?;
-        Ok(unsupported_task_list_result(use_id, "task_create"))
+
+        let app_root = app_root()?;
+        let store = TodoTaskStore::new(&app_root);
+        let mut list = store.read_or_default(context.session_id)?;
+
+        let task_id = new_todo_task_id();
+        let mut entry = TodoTaskEntry::new(&task_id, &input.subject, &input.description);
+        if let Some(active_form) = input.active_form {
+            entry.active_form = Some(active_form);
+        }
+        if let Some(metadata) = input.metadata {
+            entry.metadata = metadata;
+        }
+
+        list.tasks.insert(task_id.clone(), entry.clone());
+        list.touch();
+        store.write(&list)?;
+
+        let content = serde_json::to_string_pretty(&entry).unwrap_or_default();
+        let mut result = ToolResult::success(use_id, content);
+        result.metadata = json!({
+            "supported": true,
+            "tool": "task_create",
+            "tool_family": "todo_v2_task_list",
+            "task_id": task_id,
+            "session_id": context.session_id.to_string(),
+        });
+        Ok(result)
     }
 }
 
@@ -360,13 +395,32 @@ impl Tool for TaskGetTool {
 
     async fn execute(
         &self,
-        _context: ToolContext,
+        context: ToolContext,
         use_id: ToolUseId,
         input: Value,
     ) -> Result<ToolResult> {
         let input = parse_input::<TaskGetInput>("task_get", &input)?;
         input.validate()?;
-        Ok(unsupported_task_list_result(use_id, "task_get"))
+
+        let app_root = app_root()?;
+        let store = TodoTaskStore::new(&app_root);
+        let list = store.read_or_default(context.session_id)?;
+
+        let entry = list
+            .tasks
+            .get(&input.task_id)
+            .ok_or_else(|| WonderError::not_found("todo task", &input.task_id))?;
+
+        let content = serde_json::to_string_pretty(entry).unwrap_or_default();
+        let mut result = ToolResult::success(use_id, content);
+        result.metadata = json!({
+            "supported": true,
+            "tool": "task_get",
+            "tool_family": "todo_v2_task_list",
+            "task_id": input.task_id,
+            "session_id": context.session_id.to_string(),
+        });
+        Ok(result)
     }
 }
 
@@ -392,12 +446,33 @@ impl Tool for TaskListTool {
 
     async fn execute(
         &self,
-        _context: ToolContext,
+        context: ToolContext,
         use_id: ToolUseId,
         input: Value,
     ) -> Result<ToolResult> {
         parse_input::<TaskListInput>("task_list", &input)?;
-        Ok(unsupported_task_list_result(use_id, "task_list"))
+
+        let app_root = app_root()?;
+        let store = TodoTaskStore::new(&app_root);
+        let list = store.read_or_default(context.session_id)?;
+
+        // Deleted tasks are hidden from model-facing output; they stay on disk for audit.
+        let visible: Vec<&TodoTaskEntry> = list
+            .tasks
+            .values()
+            .filter(|e| e.status != TodoTaskStatus::Deleted)
+            .collect();
+
+        let content = serde_json::to_string_pretty(&visible).unwrap_or_default();
+        let mut result = ToolResult::success(use_id, content);
+        result.metadata = json!({
+            "supported": true,
+            "tool": "task_list",
+            "tool_family": "todo_v2_task_list",
+            "count": visible.len(),
+            "session_id": context.session_id.to_string(),
+        });
+        Ok(result)
     }
 }
 
@@ -438,6 +513,14 @@ impl Tool for TaskUpdateTool {
                     "addBlockedBy",
                     string_array_schema("task ids that must complete before this one starts"),
                 )
+                .property(
+                    "removeBlocks",
+                    string_array_schema("task ids to remove from this task's blocks list"),
+                )
+                .property(
+                    "removeBlockedBy",
+                    string_array_schema("task ids to remove from this task's blocked_by list"),
+                )
                 .property("owner", ToolSchema::string("new owner for the task"))
                 .property(
                     "metadata",
@@ -448,7 +531,7 @@ impl Tool for TaskUpdateTool {
                 .required("taskId"),
         );
         spec.aliases.push("TaskUpdate".into());
-        spec.concurrency_safe = true;
+        // Not concurrency_safe: writes to per-session file without a lock.
         spec.destructive = true;
         spec.required_features.insert(FeatureFlag::TodoV2);
         spec
@@ -460,13 +543,143 @@ impl Tool for TaskUpdateTool {
 
     async fn execute(
         &self,
-        _context: ToolContext,
+        context: ToolContext,
         use_id: ToolUseId,
         input: Value,
     ) -> Result<ToolResult> {
         let input = parse_input::<TaskUpdateInput>("task_update", &input)?;
         input.validate()?;
-        Ok(unsupported_task_list_result(use_id, "task_update"))
+
+        let app_root = app_root()?;
+        let store = TodoTaskStore::new(&app_root);
+        let mut list = store.read_or_default(context.session_id)?;
+
+        // Validate that the target task exists.
+        if !list.tasks.contains_key(&input.task_id) {
+            return Err(WonderError::not_found("todo task", &input.task_id));
+        }
+
+        // Collect all dependency ids that must already exist in the list.
+        let dep_ids_to_check: Vec<&str> = [
+            input.add_blocks.as_deref().unwrap_or(&[]),
+            input.add_blocked_by.as_deref().unwrap_or(&[]),
+            input.remove_blocks.as_deref().unwrap_or(&[]),
+            input.remove_blocked_by.as_deref().unwrap_or(&[]),
+        ]
+        .into_iter()
+        .flatten()
+        .map(String::as_str)
+        .collect();
+
+        for dep_id in &dep_ids_to_check {
+            if !list.tasks.contains_key(*dep_id) {
+                return Err(WonderError::not_found("todo task (dependency)", *dep_id));
+            }
+        }
+
+        // Apply scalar field updates to the target task.
+        {
+            let entry = list.tasks.get_mut(&input.task_id).expect("checked above");
+
+            if let Some(subject) = input.subject {
+                entry.subject = subject;
+            }
+            if let Some(description) = input.description {
+                entry.description = description;
+            }
+            if let Some(active_form) = input.active_form {
+                entry.active_form = Some(active_form);
+            }
+            if let Some(status) = input.status {
+                entry.status = match status {
+                    TaskUpdateStatus::Pending => TodoTaskStatus::Pending,
+                    TaskUpdateStatus::InProgress => TodoTaskStatus::InProgress,
+                    TaskUpdateStatus::Completed => TodoTaskStatus::Completed,
+                    TaskUpdateStatus::Deleted => TodoTaskStatus::Deleted,
+                };
+            }
+            if let Some(owner) = input.owner {
+                entry.owner = Some(owner);
+            }
+            // Merge metadata; null values remove keys.
+            if let Some(new_meta) = input.metadata {
+                for (key, value) in new_meta {
+                    if value.is_null() {
+                        entry.metadata.remove(&key);
+                    } else {
+                        entry.metadata.insert(key, value);
+                    }
+                }
+            }
+            entry.touch();
+        }
+
+        // Bidirectional addBlocks: A.blocks += B, B.blocked_by += A.
+        if let Some(add_blocks) = &input.add_blocks {
+            for other_id in add_blocks {
+                let entry = list.tasks.get_mut(&input.task_id).expect("checked above");
+                if !entry.blocks.contains(other_id) {
+                    entry.blocks.push(other_id.clone());
+                }
+                let other = list.tasks.get_mut(other_id).expect("checked above");
+                if !other.blocked_by.contains(&input.task_id) {
+                    other.blocked_by.push(input.task_id.clone());
+                    other.touch();
+                }
+            }
+        }
+
+        // Bidirectional addBlockedBy: A.blocked_by += B, B.blocks += A.
+        if let Some(add_blocked_by) = &input.add_blocked_by {
+            for other_id in add_blocked_by {
+                let entry = list.tasks.get_mut(&input.task_id).expect("checked above");
+                if !entry.blocked_by.contains(other_id) {
+                    entry.blocked_by.push(other_id.clone());
+                }
+                let other = list.tasks.get_mut(other_id).expect("checked above");
+                if !other.blocks.contains(&input.task_id) {
+                    other.blocks.push(input.task_id.clone());
+                    other.touch();
+                }
+            }
+        }
+
+        // Bidirectional removeBlocks: A.blocks -= B, B.blocked_by -= A.
+        if let Some(remove_blocks) = &input.remove_blocks {
+            for other_id in remove_blocks {
+                let entry = list.tasks.get_mut(&input.task_id).expect("checked above");
+                entry.blocks.retain(|id| id != other_id);
+                let other = list.tasks.get_mut(other_id).expect("checked above");
+                other.blocked_by.retain(|id| id != &input.task_id);
+                other.touch();
+            }
+        }
+
+        // Bidirectional removeBlockedBy: A.blocked_by -= B, B.blocks -= A.
+        if let Some(remove_blocked_by) = &input.remove_blocked_by {
+            for other_id in remove_blocked_by {
+                let entry = list.tasks.get_mut(&input.task_id).expect("checked above");
+                entry.blocked_by.retain(|id| id != other_id);
+                let other = list.tasks.get_mut(other_id).expect("checked above");
+                other.blocks.retain(|id| id != &input.task_id);
+                other.touch();
+            }
+        }
+
+        list.touch();
+        store.write(&list)?;
+
+        let updated_entry = list.tasks.get(&input.task_id).expect("entry still present");
+        let content = serde_json::to_string_pretty(updated_entry).unwrap_or_default();
+        let mut result = ToolResult::success(use_id, content);
+        result.metadata = json!({
+            "supported": true,
+            "tool": "task_update",
+            "tool_family": "todo_v2_task_list",
+            "task_id": input.task_id,
+            "session_id": context.session_id.to_string(),
+        });
+        Ok(result)
     }
 }
 
@@ -595,19 +808,13 @@ fn require_non_empty_string_list(tool_name: &str, field: &str, values: &[String]
     Ok(())
 }
 
-fn unsupported_task_list_result(use_id: ToolUseId, tool_name: &str) -> ToolResult {
-    let mut result = ToolResult::failure(
-        use_id,
-        format!("{tool_name} is unavailable: {SOURCE_TASK_RUNTIME_UNAVAILABLE}"),
-    );
-    result.metadata = json!({
-        "supported": false,
-        "tool": tool_name,
-        "tool_family": "todo_v2_task_list",
-        "reason": SOURCE_TASK_RUNTIME_UNAVAILABLE,
-        "blocked_by": SOURCE_TASK_RUNTIME_BLOCKERS,
-    });
-    result
+fn reject_self_dependency(field: &str, task_id: &str, values: &[String]) -> Result<()> {
+    if values.iter().any(|value| value == task_id) {
+        return Err(WonderError::validation(format!(
+            "task_update {field} cannot reference the task itself"
+        )));
+    }
+    Ok(())
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -861,31 +1068,16 @@ const fn task_status_label(status: TaskStatus) -> &'static str {
 
 #[cfg(test)]
 mod tests {
-    use std::{fs, path::PathBuf};
+    use std::fs;
 
     use futures::executor::block_on;
     use serde_json::json;
-    use wonder_of_u_core::{FeatureSet, PermissionMode, SessionId, TaskState};
+    use wonder_of_u_core::{FeatureSet, PermissionMode, SessionId, TaskState, TodoTaskStatus};
     use wonder_of_u_core::{RemoteTaskState, RemoteTaskType};
-    use wonder_of_u_test_support::unique_test_dir;
+    use wonder_of_u_storage::TodoTaskStore;
+    use wonder_of_u_test_support::{EnvVarGuard, unique_test_dir};
 
     use super::*;
-
-    fn tool_context(cwd: PathBuf) -> ToolContext {
-        ToolContext {
-            session_id: SessionId::new(),
-            cwd,
-            session_worktree: None,
-            permission_mode: PermissionMode::Default,
-            additional_working_directories: Vec::new(),
-            provider: None,
-            model: None,
-            permission_rules: Vec::new(),
-            features: FeatureSet::first_release(),
-            bash_session_store: None,
-            fork_context: None,
-        }
-    }
 
     #[test]
     fn task_create_validation_rejects_blank_subject() {
@@ -944,10 +1136,69 @@ mod tests {
     }
 
     #[test]
-    fn task_create_execute_returns_explicit_unsupported_failure() {
-        let tool = TaskCreateTool;
-        let result = block_on(tool.execute(
-            tool_context(unique_test_dir("tools-task-create-unsupported")),
+    fn task_update_validation_rejects_self_dependencies() {
+        let tool = TaskUpdateTool;
+        let add_blocks_error = tool
+            .validate_input(&json!({
+                "taskId": "task-1",
+                "addBlocks": ["task-1"],
+            }))
+            .expect_err("self block should be rejected");
+        assert!(add_blocks_error.to_string().contains("task itself"));
+
+        let add_blocked_by_error = tool
+            .validate_input(&json!({
+                "taskId": "task-1",
+                "addBlockedBy": ["task-1"],
+            }))
+            .expect_err("self blocked-by should be rejected");
+        assert!(add_blocked_by_error.to_string().contains("task itself"));
+    }
+
+    #[test]
+    fn task_update_validation_rejects_blank_remove_dependency_ids() {
+        let tool = TaskUpdateTool;
+        let error = tool
+            .validate_input(&json!({
+                "taskId": "task-1",
+                "removeBlocks": [" "],
+            }))
+            .expect_err("blank remove dependency");
+
+        assert!(error.to_string().contains("removeBlocks"));
+    }
+
+    // ── Happy-path execute tests (require WONDER_OF_U_STORAGE_DIR) ─────────
+
+    fn tool_context_with_dir(dir: &std::path::Path) -> ToolContext {
+        ToolContext {
+            session_id: SessionId::new(),
+            cwd: dir.to_path_buf(),
+            session_worktree: None,
+            permission_mode: PermissionMode::Default,
+            additional_working_directories: Vec::new(),
+            provider: None,
+            model: None,
+            permission_rules: Vec::new(),
+            features: FeatureSet::first_release(),
+            bash_session_store: None,
+            fork_context: None,
+        }
+    }
+
+    fn set_storage_dir(dir: &std::path::Path) -> EnvVarGuard {
+        EnvVarGuard::set("WONDER_OF_U_STORAGE_DIR", dir.as_os_str())
+    }
+
+    #[test]
+    fn task_create_execute_persists_task_and_returns_success() {
+        let dir = unique_test_dir("tools-task-create-happy");
+        let _storage_guard = set_storage_dir(&dir);
+        let ctx = tool_context_with_dir(&dir);
+        let session_id = ctx.session_id;
+
+        let result = block_on(TaskCreateTool.execute(
+            ctx,
             ToolUseId::new(),
             json!({
                 "subject": "Ship release",
@@ -956,17 +1207,298 @@ mod tests {
         ))
         .expect("execute");
 
-        assert!(!result.success);
-        assert!(result.content.contains("task_create is unavailable"));
-        assert_eq!(result.metadata["supported"], false);
+        assert!(result.success, "expected success, got: {}", result.content);
+        assert_eq!(result.metadata["supported"], true);
         assert_eq!(result.metadata["tool"], "task_create");
         assert_eq!(result.metadata["tool_family"], "todo_v2_task_list");
-        assert_eq!(
-            result.metadata["blocked_by"],
-            json!([
-                "ToolContext does not expose a logical task-list state for todo-v2 tools",
-                "TaskStore persists background runtime tasks rather than source-compatible task-list entries",
-            ])
+
+        let task_id = result.metadata["task_id"]
+            .as_str()
+            .expect("task_id in metadata");
+        assert!(task_id.starts_with("todo-"), "id should have todo- prefix");
+
+        // Verify it was persisted.
+        let store = TodoTaskStore::new(&dir);
+        let list = store.read_or_default(session_id).expect("read list");
+        assert!(
+            list.tasks.contains_key(task_id),
+            "task not found in persisted list"
+        );
+        let entry = &list.tasks[task_id];
+        assert_eq!(entry.subject, "Ship release");
+        assert_eq!(entry.description, "Run the release workflow");
+        assert_eq!(entry.status, TodoTaskStatus::Pending);
+    }
+
+    #[test]
+    fn task_list_execute_returns_visible_tasks_and_hides_deleted() {
+        let dir = unique_test_dir("tools-task-list-filter");
+        let _storage_guard = set_storage_dir(&dir);
+        let ctx = tool_context_with_dir(&dir);
+        let session_id = ctx.session_id;
+
+        // Seed two tasks: one normal, one deleted.
+        let store = TodoTaskStore::new(&dir);
+        let mut list = wonder_of_u_core::TodoTaskList::empty(session_id);
+        let e1 = wonder_of_u_core::TodoTaskEntry::new("todo-aaaa", "Task A", "desc A");
+        let mut e2 = wonder_of_u_core::TodoTaskEntry::new("todo-bbbb", "Task B", "desc B");
+        e2.status = TodoTaskStatus::Deleted;
+        list.tasks.insert("todo-aaaa".into(), e1.clone());
+        list.tasks.insert("todo-bbbb".into(), e2.clone());
+        store.write(&list).expect("seed list");
+
+        let result =
+            block_on(TaskListTool.execute(ctx, ToolUseId::new(), json!({}))).expect("execute");
+
+        assert!(result.success);
+        assert_eq!(result.metadata["count"], 1);
+        assert!(
+            result.content.contains("Task A"),
+            "visible task should appear"
+        );
+        assert!(
+            !result.content.contains("Task B"),
+            "deleted task should be hidden"
+        );
+    }
+
+    #[test]
+    fn task_get_execute_returns_task_or_not_found() {
+        let dir = unique_test_dir("tools-task-get");
+        let _storage_guard = set_storage_dir(&dir);
+        let ctx = tool_context_with_dir(&dir);
+        let session_id = ctx.session_id;
+
+        let store = TodoTaskStore::new(&dir);
+        let mut list = wonder_of_u_core::TodoTaskList::empty(session_id);
+        list.tasks.insert(
+            "todo-get-1".into(),
+            wonder_of_u_core::TodoTaskEntry::new("todo-get-1", "Get me", "by id"),
+        );
+        store.write(&list).expect("seed");
+
+        // Happy path.
+        let ctx2 = ToolContext {
+            session_id,
+            ..tool_context_with_dir(&dir)
+        };
+        let result = block_on(TaskGetTool.execute(
+            ctx2,
+            ToolUseId::new(),
+            json!({ "taskId": "todo-get-1" }),
+        ))
+        .expect("execute get");
+        assert!(result.success);
+        assert!(result.content.contains("Get me"));
+
+        // Not found.
+        let ctx3 = ToolContext {
+            session_id,
+            ..tool_context_with_dir(&dir)
+        };
+        let err = block_on(TaskGetTool.execute(
+            ctx3,
+            ToolUseId::new(),
+            json!({ "taskId": "todo-missing" }),
+        ))
+        .expect_err("not found");
+        assert!(err.to_string().contains("not found"));
+    }
+
+    #[test]
+    fn task_update_execute_applies_scalar_changes() {
+        let dir = unique_test_dir("tools-task-update-scalar");
+        let _storage_guard = set_storage_dir(&dir);
+        let store = TodoTaskStore::new(&dir);
+        let session_id = SessionId::new();
+        let mut list = wonder_of_u_core::TodoTaskList::empty(session_id);
+        list.tasks.insert(
+            "todo-u1".into(),
+            wonder_of_u_core::TodoTaskEntry::new("todo-u1", "Old subject", "Old desc"),
+        );
+        store.write(&list).expect("seed");
+
+        let ctx = ToolContext {
+            session_id,
+            ..tool_context_with_dir(&dir)
+        };
+        let result = block_on(TaskUpdateTool.execute(
+            ctx,
+            ToolUseId::new(),
+            json!({
+                "taskId": "todo-u1",
+                "subject": "New subject",
+                "status": "in_progress",
+            }),
+        ))
+        .expect("execute update");
+
+        assert!(result.success);
+        let updated = store.read_or_default(session_id).expect("read");
+        let entry = &updated.tasks["todo-u1"];
+        assert_eq!(entry.subject, "New subject");
+        assert_eq!(entry.status, TodoTaskStatus::InProgress);
+    }
+
+    #[test]
+    fn task_update_execute_null_metadata_removes_keys() {
+        let dir = unique_test_dir("tools-task-update-meta-null");
+        let _storage_guard = set_storage_dir(&dir);
+        let store = TodoTaskStore::new(&dir);
+        let session_id = SessionId::new();
+        let mut list = wonder_of_u_core::TodoTaskList::empty(session_id);
+        let mut entry = wonder_of_u_core::TodoTaskEntry::new("todo-mn1", "S", "D");
+        entry
+            .metadata
+            .insert("keep".into(), serde_json::json!("yes"));
+        entry
+            .metadata
+            .insert("drop".into(), serde_json::json!("no"));
+        list.tasks.insert("todo-mn1".into(), entry);
+        store.write(&list).expect("seed");
+
+        let ctx = ToolContext {
+            session_id,
+            ..tool_context_with_dir(&dir)
+        };
+        block_on(TaskUpdateTool.execute(
+            ctx,
+            ToolUseId::new(),
+            json!({
+                "taskId": "todo-mn1",
+                "metadata": { "drop": null, "added": "value" },
+            }),
+        ))
+        .expect("execute");
+
+        let updated = store.read_or_default(session_id).expect("read");
+        let meta = &updated.tasks["todo-mn1"].metadata;
+        assert!(meta.contains_key("keep"), "keep should remain");
+        assert!(!meta.contains_key("drop"), "drop should be removed");
+        assert_eq!(meta["added"], serde_json::json!("value"));
+    }
+
+    #[test]
+    fn task_update_execute_bidirectional_add_blocks() {
+        let dir = unique_test_dir("tools-task-update-add-blocks");
+        let _storage_guard = set_storage_dir(&dir);
+        let store = TodoTaskStore::new(&dir);
+        let session_id = SessionId::new();
+        let mut list = wonder_of_u_core::TodoTaskList::empty(session_id);
+        list.tasks.insert(
+            "todo-a".into(),
+            wonder_of_u_core::TodoTaskEntry::new("todo-a", "A", "task A"),
+        );
+        list.tasks.insert(
+            "todo-b".into(),
+            wonder_of_u_core::TodoTaskEntry::new("todo-b", "B", "task B"),
+        );
+        store.write(&list).expect("seed");
+
+        let ctx = ToolContext {
+            session_id,
+            ..tool_context_with_dir(&dir)
+        };
+        block_on(TaskUpdateTool.execute(
+            ctx,
+            ToolUseId::new(),
+            json!({ "taskId": "todo-a", "addBlocks": ["todo-b"] }),
+        ))
+        .expect("execute");
+
+        let updated = store.read_or_default(session_id).expect("read");
+        assert!(
+            updated.tasks["todo-a"]
+                .blocks
+                .contains(&"todo-b".to_string())
+        );
+        assert!(
+            updated.tasks["todo-b"]
+                .blocked_by
+                .contains(&"todo-a".to_string())
+        );
+    }
+
+    #[test]
+    fn task_update_execute_bidirectional_remove_blocks_deduplicates() {
+        let dir = unique_test_dir("tools-task-update-remove-blocks");
+        let _storage_guard = set_storage_dir(&dir);
+        let store = TodoTaskStore::new(&dir);
+        let session_id = SessionId::new();
+        let mut list = wonder_of_u_core::TodoTaskList::empty(session_id);
+        let mut a = wonder_of_u_core::TodoTaskEntry::new("todo-c", "C", "task C");
+        let mut b = wonder_of_u_core::TodoTaskEntry::new("todo-d", "D", "task D");
+        a.blocks.push("todo-d".into());
+        b.blocked_by.push("todo-c".into());
+        list.tasks.insert("todo-c".into(), a);
+        list.tasks.insert("todo-d".into(), b);
+        store.write(&list).expect("seed");
+
+        let ctx = ToolContext {
+            session_id,
+            ..tool_context_with_dir(&dir)
+        };
+        block_on(TaskUpdateTool.execute(
+            ctx,
+            ToolUseId::new(),
+            json!({ "taskId": "todo-c", "removeBlocks": ["todo-d"] }),
+        ))
+        .expect("execute");
+
+        let updated = store.read_or_default(session_id).expect("read");
+        assert!(
+            !updated.tasks["todo-c"]
+                .blocks
+                .contains(&"todo-d".to_string())
+        );
+        assert!(
+            !updated.tasks["todo-d"]
+                .blocked_by
+                .contains(&"todo-c".to_string())
+        );
+    }
+
+    #[test]
+    fn task_update_execute_errors_on_missing_dependency_id() {
+        let dir = unique_test_dir("tools-task-update-missing-dep");
+        let _storage_guard = set_storage_dir(&dir);
+        let store = TodoTaskStore::new(&dir);
+        let session_id = SessionId::new();
+        let mut list = wonder_of_u_core::TodoTaskList::empty(session_id);
+        list.tasks.insert(
+            "todo-e".into(),
+            wonder_of_u_core::TodoTaskEntry::new("todo-e", "E", "task E"),
+        );
+        store.write(&list).expect("seed");
+
+        let ctx = ToolContext {
+            session_id,
+            ..tool_context_with_dir(&dir)
+        };
+        let err = block_on(TaskUpdateTool.execute(
+            ctx,
+            ToolUseId::new(),
+            json!({ "taskId": "todo-e", "addBlocks": ["todo-nonexistent"] }),
+        ))
+        .expect_err("should error on missing dep");
+        assert!(err.to_string().contains("not found"));
+    }
+
+    #[test]
+    fn task_create_is_not_concurrency_safe() {
+        let spec = TaskCreateTool.spec();
+        assert!(
+            !spec.concurrency_safe,
+            "task_create must not be concurrency_safe"
+        );
+    }
+
+    #[test]
+    fn task_update_is_not_concurrency_safe() {
+        let spec = TaskUpdateTool.spec();
+        assert!(
+            !spec.concurrency_safe,
+            "task_update must not be concurrency_safe"
         );
     }
 
