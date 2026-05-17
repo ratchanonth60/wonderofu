@@ -6,8 +6,8 @@ use serde_json::{Value, json};
 use wonder_of_u_core::{
     AgentCatalog, AgentDefinitionSource, AgentLaunchSpec, FeatureFlag, FleetMemberRequest,
     RemoteTaskState, RemoteTaskType, Result, TaskId, Tool, ToolContext, ToolEffect, ToolKind,
-    ToolResult, ToolSchema, ToolSpec, ToolUseId, WonderError, agent_loader::AgentDefinitionLoader,
-    get_git_root,
+    ToolResult, ToolSchema, ToolSpec, ToolUseId, WONDER_OF_U_FORK_DEPTH_ENV, WonderError,
+    agent_loader::AgentDefinitionLoader, get_git_root,
 };
 use wonder_of_u_storage::FleetStore;
 
@@ -80,17 +80,37 @@ impl AgentInput {
             ));
         }
 
-        // team_name, mode, and non-remote isolation are still unsupported.
-        for (field, is_present) in [
-            ("team_name", self.team_name.is_some()),
-            ("mode", self.mode.is_some()),
-            ("isolation", self.isolation.is_some()),
-        ] {
-            if is_present {
+        // Validate mode: only "fork" is accepted; other values are rejected.
+        match self.mode.as_deref() {
+            None | Some("fork") => {}
+            Some(other) => {
                 return Err(WonderError::validation(format!(
-                    "agent source-compatible `{field}` is not supported in the Rust runtime"
+                    "agent `mode` value `{other}` is not supported in the Rust runtime; \
+                     accepted values: \"fork\""
                 )));
             }
+        }
+
+        // fork + isolation is explicitly unsupported for now.
+        if self.mode.as_deref() == Some("fork") && self.isolation.is_some() {
+            return Err(WonderError::validation(
+                "agent `mode=fork` combined with `isolation` is not currently supported; \
+                 remove `isolation` to use fork mode"
+            ));
+        }
+
+        // Non-fork isolation (worktree) remains unsupported in the base validate path.
+        if self.isolation.is_some() {
+            return Err(WonderError::validation(
+                "agent source-compatible `isolation` is not supported in the Rust runtime"
+            ));
+        }
+
+        // team_name is still unsupported.
+        if self.team_name.is_some() {
+            return Err(WonderError::validation(
+                "agent source-compatible `team_name` is not supported in the Rust runtime"
+            ));
         }
 
         Ok(())
@@ -140,8 +160,9 @@ impl Tool for AgentTool {
                     .property(
                         "mode",
                         ToolSchema::enumeration(
-                            "source-compatible permission mode; currently unsupported",
+                            "fork-lite mode: `\"fork\"` inherits parent session context for the child subprocess; other values are rejected",
                             [
+                                "fork",
                                 "default",
                                 "acceptEdits",
                                 "bypassPermissions",
@@ -191,6 +212,29 @@ impl Tool for AgentTool {
         let input = parse_input::<AgentInput>("agent", &input)?;
         input.validate()?;
 
+        // Fork-mode guards: check depth and context before building the request.
+        let is_fork = input.mode.as_deref() == Some("fork");
+        if is_fork {
+            // Recursive fork guard: reject if already inside a fork subprocess.
+            let parent_depth: u32 = std::env::var(WONDER_OF_U_FORK_DEPTH_ENV)
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(0);
+            if parent_depth > 0 {
+                return Err(WonderError::validation(format!(
+                    "recursive fork rejected: {WONDER_OF_U_FORK_DEPTH_ENV}={parent_depth}; \
+                     nested fork subagents are not supported"
+                )));
+            }
+            // Fork context must be populated by the runtime in ToolContext.
+            if context.fork_context.is_none() {
+                return Err(WonderError::validation(
+                    "mode=fork requires an active session with fork context; \
+                     fork context was not populated in this runtime (no active prompt or TUI session)"
+                ));
+            }
+        }
+
         // Build the full catalog from the project root when available so a tool
         // call from a nested cwd can still see repo-level `.claude/agents/`.
         let definition_root = get_git_root(&context.cwd).unwrap_or_else(|_| context.cwd.clone());
@@ -202,17 +246,26 @@ impl Tool for AgentTool {
         // ToolEffect::LaunchAgentTask and decides whether to:
         //   a) directly call TaskManager::start_agent_task (preferred), or
         //   b) write a pending FleetMemberRequest file as fallback.
-        let request = build_fleet_member_request_with_catalog(&input, &catalog)?;
+        let mut request = build_fleet_member_request_with_catalog(&input, &catalog)?;
+
+        // Embed fork context into the request so the dispatcher can compose the
+        // child system prompt and propagate WONDER_OF_U_FORK_DEPTH.
+        if is_fork {
+            request.fork_context = context.fork_context.clone();
+        }
+
         let request_id = request.id.clone();
 
         let effect = ToolEffect::LaunchAgentTask(AgentLaunchSpec { request });
 
         let mut result =
             ToolResult::success(use_id, format!("agent task launch requested: {request_id}"));
-        result.metadata = json!({
+        result.metadata = serde_json::json!({
             "request_id": request_id,
             "status": "launch_requested",
             "run_in_background": true,
+            "mode": input.mode,
+            "fork_mode": is_fork,
             "description": input.description,
             "dispatch_hint": "runtime will launch directly or fall back to `fleet dispatch`",
             "supports_send_message": false,
@@ -777,6 +830,7 @@ mod tests {
             permission_rules: vec![],
             features: FeatureSet::first_release(),
             bash_session_store: None,
+            fork_context: None,
         };
         let use_id = wonder_of_u_core::ToolUseId::new();
         let input = json!({ "prompt": "review this code" });
@@ -891,6 +945,7 @@ mod tests {
             permission_rules: vec![],
             features: FeatureSet::first_release(),
             bash_session_store: None,
+            fork_context: None,
         };
         let tool = AgentTool;
         let error = futures::executor::block_on(tool.execute(
@@ -906,5 +961,233 @@ mod tests {
         let message = error.to_string();
         assert!(message.contains("does-not-exist"), "got: {message}");
         assert!(message.contains("known definitions"), "got: {message}");
+    }
+
+    // ── Fork mode validation and execute tests ────────────────────────────────
+
+    /// validate() accepts mode=fork.
+    #[test]
+    fn agent_validation_accepts_fork_mode() {
+        let tool = AgentTool;
+        tool.validate_input(&json!({
+            "prompt": "do something as a fork",
+            "mode": "fork",
+        }))
+        .expect("mode=fork should be accepted by validate_input");
+    }
+
+    /// validate() rejects unknown mode values.
+    #[test]
+    fn agent_validation_rejects_unknown_mode() {
+        let tool = AgentTool;
+        let error = tool
+            .validate_input(&json!({
+                "prompt": "review",
+                "mode": "acceptEdits",
+            }))
+            .expect_err("unsupported mode should be rejected");
+
+        let msg = error.to_string();
+        assert!(msg.contains("acceptEdits"), "error should mention mode value; got: {msg}");
+        assert!(msg.contains("fork"), "error should hint at accepted values; got: {msg}");
+    }
+
+    /// validate() rejects mode=fork combined with isolation.
+    #[test]
+    fn agent_validation_rejects_fork_plus_isolation() {
+        let tool = AgentTool;
+        let error = tool
+            .validate_input(&json!({
+                "prompt": "review",
+                "mode": "fork",
+                "isolation": "worktree",
+            }))
+            .expect_err("fork+isolation should be rejected");
+
+        let msg = error.to_string();
+        assert!(
+            msg.contains("isolation"),
+            "error should mention isolation; got: {msg}"
+        );
+    }
+
+    /// execute() rejects mode=fork when ToolContext has no fork_context.
+    #[test]
+    fn agent_execute_rejects_fork_without_context() {
+        use wonder_of_u_core::{FeatureSet, PermissionMode, SessionId};
+
+        let dir = unique_test_dir("tools-agent-fork-no-ctx");
+        let context = wonder_of_u_core::ToolContext {
+            session_id: SessionId::new(),
+            cwd: dir,
+            session_worktree: None,
+            permission_mode: PermissionMode::Default,
+            additional_working_directories: vec![],
+            provider: None,
+            model: None,
+            permission_rules: vec![],
+            features: FeatureSet::first_release(),
+            bash_session_store: None,
+            fork_context: None, // no fork context provided
+        };
+        let tool = AgentTool;
+        let error = futures::executor::block_on(tool.execute(
+            context,
+            wonder_of_u_core::ToolUseId::new(),
+            json!({ "prompt": "fork task", "mode": "fork" }),
+        ))
+        .expect_err("fork without context should fail");
+
+        let msg = error.to_string();
+        assert!(
+            msg.contains("fork context was not populated"),
+            "error should mention missing fork context; got: {msg}"
+        );
+    }
+
+    /// execute() with mode=fork and a populated fork_context embeds it in the
+    /// LaunchAgentTask effect's request.
+    #[test]
+    fn agent_execute_fork_mode_embeds_fork_context() {
+        use wonder_of_u_core::{FeatureSet, ForkContextSnapshot, PermissionMode, SessionId, ToolEffect};
+
+        let dir = unique_test_dir("tools-agent-fork-embeds-ctx");
+        let fork_ctx = ForkContextSnapshot {
+            parent_session_id: "test-session-123".into(),
+            fork_depth: 0,
+            parent_system_prompt: Some("You are a helpful assistant.".into()),
+            conversation_summary: Some("User asked to refactor the auth module.".into()),
+            parent_entrypoint: Some("prompt".into()),
+        };
+        let context = wonder_of_u_core::ToolContext {
+            session_id: SessionId::new(),
+            cwd: dir,
+            session_worktree: None,
+            permission_mode: PermissionMode::Default,
+            additional_working_directories: vec![],
+            provider: None,
+            model: None,
+            permission_rules: vec![],
+            features: FeatureSet::first_release(),
+            bash_session_store: None,
+            fork_context: Some(fork_ctx.clone()),
+        };
+        let tool = AgentTool;
+        let result = futures::executor::block_on(tool.execute(
+            context,
+            wonder_of_u_core::ToolUseId::new(),
+            json!({ "prompt": "continue the refactor as a fork", "mode": "fork" }),
+        ))
+        .expect("fork with context should succeed");
+
+        assert!(result.success, "should succeed; content: {}", result.content);
+        assert_eq!(result.effects.len(), 1, "should have exactly one effect");
+        let ToolEffect::LaunchAgentTask(ref spec) = result.effects[0] else {
+            panic!("expected LaunchAgentTask effect");
+        };
+        // fork_context must be embedded in the request.
+        let embedded = spec
+            .request
+            .fork_context
+            .as_ref()
+            .expect("fork_context must be set in the request");
+        assert_eq!(embedded.parent_session_id, fork_ctx.parent_session_id);
+        assert_eq!(embedded.parent_system_prompt, fork_ctx.parent_system_prompt);
+        assert_eq!(embedded.conversation_summary, fork_ctx.conversation_summary);
+
+        // metadata should reflect fork mode.
+        assert_eq!(result.metadata["fork_mode"], true);
+    }
+
+    /// execute() with mode=fork rejects recursive forks via env var.
+    #[test]
+    fn agent_execute_rejects_recursive_fork_via_env_depth() {
+        use wonder_of_u_core::{FeatureSet, ForkContextSnapshot, PermissionMode, SessionId};
+        use wonder_of_u_test_support::EnvVarGuard;
+
+        let dir = unique_test_dir("tools-agent-fork-recursive");
+        let fork_ctx = ForkContextSnapshot {
+            parent_session_id: "nested-session".into(),
+            fork_depth: 1,
+            parent_system_prompt: None,
+            conversation_summary: None,
+            parent_entrypoint: None,
+        };
+        let context = wonder_of_u_core::ToolContext {
+            session_id: SessionId::new(),
+            cwd: dir,
+            session_worktree: None,
+            permission_mode: PermissionMode::Default,
+            additional_working_directories: vec![],
+            provider: None,
+            model: None,
+            permission_rules: vec![],
+            features: FeatureSet::first_release(),
+            bash_session_store: None,
+            fork_context: Some(fork_ctx),
+        };
+
+        // Simulate being inside a fork subprocess: depth=1.
+        let _guard = EnvVarGuard::set("WONDER_OF_U_FORK_DEPTH", "1");
+
+        let tool = AgentTool;
+        let error = futures::executor::block_on(tool.execute(
+            context,
+            wonder_of_u_core::ToolUseId::new(),
+            json!({ "prompt": "nested fork attempt", "mode": "fork" }),
+        ))
+        .expect_err("recursive fork should be rejected");
+
+        let msg = error.to_string();
+        assert!(
+            msg.contains("recursive fork rejected"),
+            "error should mention recursive fork; got: {msg}"
+        );
+    }
+
+    /// Non-fork agent calls (no mode field) do NOT embed fork_context even
+    /// when one is present in the ToolContext.
+    #[test]
+    fn agent_execute_without_fork_mode_does_not_embed_fork_context() {
+        use wonder_of_u_core::{FeatureSet, ForkContextSnapshot, PermissionMode, SessionId, ToolEffect};
+
+        let dir = unique_test_dir("tools-agent-no-fork-mode");
+        let fork_ctx = ForkContextSnapshot {
+            parent_session_id: "session-abc".into(),
+            fork_depth: 0,
+            parent_system_prompt: None,
+            conversation_summary: None,
+            parent_entrypoint: None,
+        };
+        let context = wonder_of_u_core::ToolContext {
+            session_id: SessionId::new(),
+            cwd: dir,
+            session_worktree: None,
+            permission_mode: PermissionMode::Default,
+            additional_working_directories: vec![],
+            provider: None,
+            model: None,
+            permission_rules: vec![],
+            features: FeatureSet::first_release(),
+            bash_session_store: None,
+            fork_context: Some(fork_ctx), // context present but mode is not fork
+        };
+        let tool = AgentTool;
+        let result = futures::executor::block_on(tool.execute(
+            context,
+            wonder_of_u_core::ToolUseId::new(),
+            json!({ "prompt": "general task without fork mode" }),
+        ))
+        .expect("non-fork agent call should succeed");
+
+        let ToolEffect::LaunchAgentTask(ref spec) = result.effects[0] else {
+            panic!("expected LaunchAgentTask effect");
+        };
+        // fork_context must NOT be embedded for non-fork calls.
+        assert!(
+            spec.request.fork_context.is_none(),
+            "non-fork mode must not embed fork_context in the request"
+        );
+        assert_eq!(result.metadata["fork_mode"], false);
     }
 }

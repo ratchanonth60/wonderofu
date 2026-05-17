@@ -14,9 +14,10 @@ use wonder_of_u_agent::{
 use wonder_of_u_core::{
     AGENT_TASK_RESULT_SCHEMA_VERSION, AgentTaskResult, AppState, Command, CommandContext,
     CommandInvocation, CommandKind, CommandOutput, CommandSpec, CoordinatorState, FeatureFlag,
-    FleetId, FleetSteeringMessage, MessageEnvelope, MessagePayload, PermissionDecision,
-    PermissionMode, PromptSuggestion, QueryState, Result, TaskId, TaskStatus, ToolContext,
-    ToolEffect, ToolQuery, ToolResult, ToolUseId, WonderError, best_prompt_suggestion,
+    FleetId, FleetSteeringMessage, ForkContextSnapshot, MessageEnvelope, MessagePayload,
+    PermissionDecision, PermissionMode, PromptSuggestion, QueryState, Result, TaskId, TaskStatus,
+    ToolContext, ToolEffect, ToolQuery, ToolResult, ToolUseId, WONDER_OF_U_FORK_DEPTH_ENV,
+    WonderError, best_prompt_suggestion,
 };
 use wonder_of_u_storage::{
     AgentTaskResultStore, CostStore, FleetStore, SessionCostLedger, SessionMemoryIndexStore,
@@ -702,7 +703,7 @@ fn execute_prompt_tool_loop(
 
     for _ in 0..MAX_TOOL_LOOP_ITERATIONS {
         let provider_tools =
-            provider_tool_specs(&registry, &tool_context(state), allowed_tools.as_ref())
+            provider_tool_specs(&registry, &tool_context(state, system_prompt.as_deref()), allowed_tools.as_ref())
                 .into_iter()
                 .map(tool_spec_to_provider_tool)
                 .collect::<Vec<_>>();
@@ -793,7 +794,7 @@ fn execute_prompt_tool_loop(
                         storage_dir,
                         persistence,
                         &registry,
-                        &tool_context(state),
+                        &tool_context(state, system_prompt.as_deref()),
                         &call,
                     )?;
                     round.results.push(result);
@@ -823,7 +824,7 @@ struct LocalToolCall {
     use_id: ToolUseId,
 }
 
-fn tool_context(state: &AppState) -> ToolContext {
+fn tool_context(state: &AppState, system_prompt: Option<&str>) -> ToolContext {
     ToolContext {
         session_id: state.session.id,
         cwd: state.session.cwd.clone(),
@@ -835,7 +836,85 @@ fn tool_context(state: &AppState) -> ToolContext {
         permission_rules: Vec::new(),
         features: state.features.clone(),
         bash_session_store: None,
+        fork_context: build_fork_context_snapshot(state, system_prompt),
     }
+}
+
+/// Builds a [`ForkContextSnapshot`] representing the current session's context
+/// for propagation to a fork-mode subagent child subprocess.
+///
+/// Reads the current fork depth from [`WONDER_OF_U_FORK_DEPTH_ENV`] (defaulting
+/// to 0 if absent), captures the parent session identity, truncates the system
+/// prompt to [`FORK_SYSTEM_PROMPT_CAP_BYTES`], and derives a compact conversation
+/// summary from the last 6 user+assistant text exchange pairs.
+///
+/// # Examples
+///
+/// ```ignore
+/// let snapshot = build_fork_context_snapshot(&state, Some("You are helpful."));
+/// assert!(snapshot.is_some());
+/// ```
+pub(crate) fn build_fork_context_snapshot(
+    state: &AppState,
+    system_prompt: Option<&str>,
+) -> Option<ForkContextSnapshot> {
+    use wonder_of_u_core::FORK_SYSTEM_PROMPT_CAP_BYTES;
+
+    let fork_depth: u32 = std::env::var(WONDER_OF_U_FORK_DEPTH_ENV)
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(0);
+
+    let parent_session_id = state.session.id.to_string();
+    let parent_entrypoint = state.session.entrypoint.clone();
+
+    // Truncate system prompt on a UTF-8 boundary.
+    let parent_system_prompt = system_prompt.map(|sp| {
+        if sp.len() <= FORK_SYSTEM_PROMPT_CAP_BYTES {
+            sp.to_owned()
+        } else {
+            let mut end = FORK_SYSTEM_PROMPT_CAP_BYTES;
+            while !sp.is_char_boundary(end) {
+                end -= 1;
+            }
+            sp[..end].to_owned()
+        }
+    });
+
+    // Derive a compact summary from the last 6 user+assistant text pairs.
+    let conversation_summary = {
+        let pairs: Vec<String> = state
+            .messages
+            .iter()
+            .filter_map(|msg| match &msg.payload {
+                MessagePayload::UserText { content } => {
+                    Some(format!("User: {}", content.trim()))
+                }
+                MessagePayload::AssistantText { content } => {
+                    Some(format!("Assistant: {}", content.trim()))
+                }
+                _ => None,
+            })
+            .rev()
+            .take(12) // last 6 pairs = 12 messages
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .collect();
+        if pairs.is_empty() {
+            None
+        } else {
+            Some(pairs.join("\n"))
+        }
+    };
+
+    Some(ForkContextSnapshot {
+        parent_session_id,
+        fork_depth,
+        parent_system_prompt,
+        conversation_summary,
+        parent_entrypoint,
+    })
 }
 
 /// Processes any [`ToolEffect`]s carried in `result` and returns an updated

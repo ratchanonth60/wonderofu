@@ -424,6 +424,7 @@ mod tests {
             permission_rules: Vec::new(),
             features: FeatureSet::first_release(),
             bash_session_store: None,
+            fork_context: None,
         }
     }
 

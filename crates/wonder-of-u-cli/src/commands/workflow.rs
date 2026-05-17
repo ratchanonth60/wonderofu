@@ -1216,6 +1216,8 @@ impl AgentsCommand {
                     parent_task_id: None,
                     allowed_tools: None,
                     worktree_branch: None,
+                    system_prompt: None,
+                    fork_depth: None,
                 })?
             }
         };

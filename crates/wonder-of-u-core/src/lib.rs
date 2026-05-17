@@ -115,8 +115,9 @@ pub use fingerprint::{fingerprint_json, fingerprint_str};
 /// Re-exports items from `fleet`
 pub use fleet::{
     AGENT_TASK_RESULT_SCHEMA_VERSION, AgentTaskResult, FLEET_SCHEMA_VERSION,
-    FLEET_STEERING_SCHEMA_VERSION, FleetMemberRequest, FleetRunState, FleetRunStatus,
-    FleetSteeringMessage, SteeringSource, WorktreeIsolation, WorktreeIsolationMode,
+    FLEET_STEERING_SCHEMA_VERSION, FORK_SYSTEM_PROMPT_CAP_BYTES, FleetMemberRequest,
+    FleetRunState, FleetRunStatus, FleetSteeringMessage, ForkContextSnapshot, SteeringSource,
+    WONDER_OF_U_FORK_DEPTH_ENV, WorktreeIsolation, WorktreeIsolationMode,
 };
 /// Re-exports items from `fleet_roles`
 pub use fleet_roles::{FleetAgentRole, FleetRoleCatalog};

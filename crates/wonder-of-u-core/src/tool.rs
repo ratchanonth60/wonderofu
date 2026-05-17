@@ -9,9 +9,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 
 use crate::{
-    AdditionalWorkingDirectory, FeatureFlag, FeatureSet, FleetMemberRequest, PermissionDecision,
-    PermissionMode, PermissionRequest, PermissionRule, Result, RuntimeWorktreeState, SessionId,
-    ShellSessionStore, ToolPermissionContext, ToolUseId, WonderError, evaluate_permission,
+    AdditionalWorkingDirectory, FeatureFlag, FeatureSet, FleetMemberRequest, ForkContextSnapshot,
+    PermissionDecision, PermissionMode, PermissionRequest, PermissionRule, Result,
+    RuntimeWorktreeState, SessionId, ShellSessionStore, ToolPermissionContext, ToolUseId,
+    WonderError, evaluate_permission,
 };
 /// Enumerates tool kind
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -306,6 +307,16 @@ pub struct ToolContext {
     /// preserving `$PWD`, environment variables, and shell functions.
     /// When `None` the tool falls back to the one-shot subprocess behaviour.
     pub bash_session_store: Option<Arc<Mutex<ShellSessionStore>>>,
+    /// Fork-lite context snapshot from the parent session.
+    ///
+    /// Populated by the CLI runtime when the current process is running inside
+    /// a prompt or TUI loop.  `None` for all other callers (tests, headless
+    /// tool calls without a session, etc.).
+    ///
+    /// The `agent` tool reads this field when `mode = "fork"` to embed the
+    /// snapshot in the [`FleetMemberRequest`] before launching the child
+    /// subprocess.  All other tools ignore it.
+    pub fork_context: Option<ForkContextSnapshot>,
 }
 
 impl ToolContext {
@@ -760,6 +771,7 @@ mod tests {
             permission_rules: Vec::new(),
             features: FeatureSet::first_release(),
             bash_session_store: None,
+            fork_context: None,
         }
     }
 
