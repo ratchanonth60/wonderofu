@@ -8373,3 +8373,204 @@ fn non_immediate_command_drains_queued_empty_prompt() {
         "non-immediate command (/model) must drain queued commands"
     );
 }
+
+// ── task-notification XML injection ─────────────────────────────────────────
+
+/// Helper: build a controller, drive a task from Running → terminal, and
+/// return the controller so callers can inspect state.
+fn make_controller_with_terminal_task(
+    dir: &std::path::Path,
+    final_status: TaskStatus,
+) -> TuiController<'static> {
+    // Static registry leak is fine in tests – the registry is tiny and tests
+    // are short-lived processes.
+    let registry = commands::registry(Some(dir.to_path_buf())).expect("registry");
+    let registry: &'static _ = Box::leak(Box::new(registry));
+
+    let mut controller = TuiController::new(
+        test_context(dir),
+        registry,
+        Some(dir),
+        TuiLaunchOptions { session_id: None },
+    )
+    .expect("controller");
+
+    let store = TaskStore::new(dir);
+    let mut task = TaskState::pending("build workspace");
+    task.status = TaskStatus::Running;
+    store.write_task(&task).expect("write running task");
+    controller
+        .refresh_runtime_state()
+        .expect("first refresh (running)");
+
+    task.mark_finished(final_status, Some(0), Some("done".into()));
+    store.write_task(&task).expect("write terminal task");
+    controller
+        .refresh_runtime_state()
+        .expect("second refresh (terminal)");
+
+    controller
+}
+
+#[test]
+fn task_completion_injects_xml_notification_into_transcript() {
+    let dir = unique_test_dir("tui-inject-notif-completed");
+    let controller = make_controller_with_terminal_task(&dir, TaskStatus::Completed);
+
+    let notif_count = controller
+        .state
+        .messages
+        .iter()
+        .filter(|m| matches!(&m.payload, MessagePayload::TaskNotification { .. }))
+        .count();
+    assert_eq!(
+        notif_count, 1,
+        "expected exactly one TaskNotification message"
+    );
+
+    let xml = controller
+        .state
+        .messages
+        .iter()
+        .find_map(|m| {
+            if let MessagePayload::TaskNotification { xml_payload, .. } = &m.payload {
+                Some(xml_payload.clone())
+            } else {
+                None
+            }
+        })
+        .expect("TaskNotification payload");
+
+    assert!(
+        xml.starts_with("<task-notification>"),
+        "XML must start with <task-notification>: {xml}"
+    );
+    assert!(
+        xml.contains("<status>completed</status>"),
+        "XML must contain completed status: {xml}"
+    );
+    assert!(xml.contains("<summary>"), "XML must contain summary: {xml}");
+}
+
+#[test]
+fn task_failure_injects_xml_notification_into_transcript() {
+    let dir = unique_test_dir("tui-inject-notif-failed");
+    let controller = make_controller_with_terminal_task(&dir, TaskStatus::Failed);
+
+    let xml = controller
+        .state
+        .messages
+        .iter()
+        .find_map(|m| {
+            if let MessagePayload::TaskNotification { xml_payload, .. } = &m.payload {
+                Some(xml_payload.clone())
+            } else {
+                None
+            }
+        })
+        .expect("TaskNotification payload for failed task");
+
+    assert!(
+        xml.contains("<status>failed</status>"),
+        "failed task must have failed status in XML: {xml}"
+    );
+}
+
+#[test]
+fn tui_notification_overlay_preserved_alongside_xml_injection() {
+    let dir = unique_test_dir("tui-inject-notif-overlay-preserved");
+    let controller = make_controller_with_terminal_task(&dir, TaskStatus::Completed);
+
+    let notifications = controller.view().notifications;
+    assert_eq!(
+        notifications.len(),
+        1,
+        "human TUI notification must still exist"
+    );
+    assert_eq!(notifications[0].title, "Task update");
+    assert_eq!(notifications[0].severity, NotificationSeverity::Success);
+
+    assert!(
+        controller
+            .state
+            .messages
+            .iter()
+            .any(|m| matches!(&m.payload, MessagePayload::TaskNotification { .. })),
+        "XML injection must also be present"
+    );
+}
+
+#[test]
+fn repeated_polling_does_not_duplicate_xml_notification() {
+    let dir = unique_test_dir("tui-inject-notif-idempotent");
+    let registry = commands::registry(Some(dir.clone())).expect("registry");
+    let registry: &'static _ = Box::leak(Box::new(registry));
+
+    let mut controller = TuiController::new(
+        test_context(&dir),
+        registry,
+        Some(dir.as_path()),
+        TuiLaunchOptions { session_id: None },
+    )
+    .expect("controller");
+
+    let store = TaskStore::new(&dir);
+    let mut task = TaskState::pending("long running job");
+    task.status = TaskStatus::Running;
+    store.write_task(&task).expect("write running");
+    controller.refresh_runtime_state().expect("refresh 1");
+
+    task.mark_finished(TaskStatus::Completed, Some(0), Some("job done".into()));
+    store.write_task(&task).expect("write completed");
+    controller
+        .refresh_runtime_state()
+        .expect("refresh 2 – fires injection");
+
+    controller
+        .refresh_runtime_state()
+        .expect("refresh 3 – no change");
+    controller
+        .refresh_runtime_state()
+        .expect("refresh 4 – no change");
+    controller
+        .refresh_runtime_state()
+        .expect("refresh 5 – no change");
+
+    let notif_count = controller
+        .state
+        .messages
+        .iter()
+        .filter(|m| matches!(&m.payload, MessagePayload::TaskNotification { .. }))
+        .count();
+
+    assert_eq!(
+        notif_count, 1,
+        "repeated polling must not produce duplicate TaskNotification messages"
+    );
+}
+
+#[test]
+fn injected_task_id_tracked_in_state_set() {
+    let dir = unique_test_dir("tui-inject-notif-state-set");
+    let controller = make_controller_with_terminal_task(&dir, TaskStatus::Completed);
+
+    let msg = controller
+        .state
+        .messages
+        .iter()
+        .find(|m| matches!(&m.payload, MessagePayload::TaskNotification { .. }))
+        .expect("TaskNotification message");
+
+    let task_id = match &msg.payload {
+        MessagePayload::TaskNotification { task_id, .. } => *task_id,
+        _ => unreachable!(),
+    };
+
+    assert!(
+        controller
+            .state
+            .injected_task_notifications
+            .contains(&task_id),
+        "task id {task_id} must be in injected_task_notifications set"
+    );
+}

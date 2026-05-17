@@ -507,6 +507,7 @@ impl FleetCommand {
                 worktree_branch,
                 system_prompt: None,
                 fork_depth: None,
+                reserved_task_id: None,
             })?;
             run.member_task_ids.push(task.id);
             run.status = FleetRunStatus::Running;
@@ -1555,14 +1556,23 @@ fn request_to_agent_launch(
         worktree_branch,
         system_prompt: fork_system_prompt,
         fork_depth,
+        // Filled in by the caller when a reserved id is available.
+        reserved_task_id: None,
     })
 }
 
-/// Launches an agent task directly from a [`FleetMemberRequest`] **without**
+/// Launches an agent task directly from an [`AgentLaunchSpec`] **without**
 /// writing or deleting any pending file.
 ///
 /// This is the preferred path when the effect is produced by `AgentTool::execute`
 /// and a [`TaskManager`] is immediately available in the same runtime.
+///
+/// # Reserved task id
+///
+/// When `spec.reserved_task_id` is `Some`, it is forwarded to
+/// [`TaskManager::start_agent_task`] so the resulting task record uses the id
+/// that was already published in the `ToolResult` metadata, keeping output
+/// paths stable.
 ///
 /// # Fallback
 ///
@@ -1574,16 +1584,17 @@ fn request_to_agent_launch(
 ///
 /// - `storage_dir` — the wonder-of-u storage root; a [`TaskManager`] and
 ///   [`ProviderStatusReport`] are derived from this.
-/// - `req` — the request to launch.
-/// - `default_cwd` — fallback working directory if `req.cwd` is `None`.
+/// - `spec` — the fully-populated launch spec (request + optional reserved task id).
+/// - `default_cwd` — fallback working directory if `spec.request.cwd` is `None`.
 pub(crate) fn direct_launch_fleet_request(
     storage_dir: &std::path::Path,
-    req: &FleetMemberRequest,
+    spec: &wonder_of_u_core::AgentLaunchSpec,
     default_cwd: &std::path::Path,
 ) -> Result<TaskId> {
     let manager = TaskManager::new(storage_dir);
     let report = ProviderResolver::builtin().load_report(Some(storage_dir))?;
-    let launch = request_to_agent_launch(req, default_cwd, &report)?;
+    let mut launch = request_to_agent_launch(&spec.request, default_cwd, &report)?;
+    launch.reserved_task_id = spec.reserved_task_id;
     let task = manager.start_agent_task(launch)?;
     Ok(task.id)
 }

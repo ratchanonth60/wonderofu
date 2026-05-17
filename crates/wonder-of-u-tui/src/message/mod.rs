@@ -429,6 +429,12 @@ fn render_message(message: &MessageEnvelope, output: &mut Vec<MessageLineView>) 
                 MessageRole::Error,
             );
         }
+        // Render the XML payload verbatim so the model transcript shows the
+        // full structured notification.  The `task>` prefix keeps it visually
+        // consistent with the existing Task variant.
+        MessagePayload::TaskNotification { xml_payload, .. } => {
+            push_prefixed_lines(output, "task> ", xml_payload, MessageRole::Progress);
+        }
     }
 }
 

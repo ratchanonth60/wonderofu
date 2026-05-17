@@ -103,6 +103,37 @@ impl MessageEnvelope {
         )
     }
 
+    /// Creates a task-notification transcript entry.
+    ///
+    /// Embeds the rendered `<task-notification>` XML as a structured
+    /// model-facing message.  Use this when a background task reaches a
+    /// terminal state so the model can observe the outcome.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use wonder_of_u_core::{MessageEnvelope, SessionId, TaskId};
+    ///
+    /// let session_id = SessionId::new();
+    /// let task_id = TaskId::new();
+    /// let xml = "<task-notification><task-id>x</task-id><status>completed</status></task-notification>";
+    /// let envelope = MessageEnvelope::task_notification(session_id, task_id, xml);
+    /// ```
+    #[must_use]
+    pub fn task_notification(
+        session_id: SessionId,
+        task_id: TaskId,
+        xml_payload: impl Into<String>,
+    ) -> Self {
+        Self::new(
+            session_id,
+            MessagePayload::TaskNotification {
+                task_id,
+                xml_payload: xml_payload.into(),
+            },
+        )
+    }
+
     /// Creates a hook progress transcript entry.
     #[must_use]
     pub fn hook_progress(
@@ -269,6 +300,20 @@ pub enum MessagePayload {
         kind: String,
         /// Sanitized, display-safe error message.
         message: String,
+    },
+    /// Structured `<task-notification>` XML payload injected into the
+    /// model-facing session transcript when a background task reaches a
+    /// terminal state (completed / failed / killed / cancelled).
+    ///
+    /// `task_id` is a stable cross-reference key; `xml_payload` is the
+    /// full rendered XML produced by [`wonder_of_u_core::task_notification`].
+    /// Renderers that don't understand this variant should display the
+    /// `xml_payload` verbatim so the model still sees the notification.
+    TaskNotification {
+        /// Opaque identifier of the task that reached terminal state.
+        task_id: TaskId,
+        /// Full rendered `<task-notification>…</task-notification>` XML.
+        xml_payload: String,
     },
 }
 

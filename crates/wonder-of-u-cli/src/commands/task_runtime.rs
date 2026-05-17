@@ -59,6 +59,12 @@ pub(crate) struct AgentTaskLaunch {
     /// Depth of this fork (parent depth + 1), injected as `WONDER_OF_U_FORK_DEPTH`
     /// env var in the child subprocess so recursive forks can be detected.
     pub fork_depth: Option<u32>,
+    /// Pre-allocated task id from the tool layer.
+    ///
+    /// When `Some`, `start_agent_task` uses this id instead of generating a
+    /// fresh one.  This keeps output-path metadata emitted by `AgentTool`
+    /// consistent with the task record written to storage.
+    pub reserved_task_id: Option<TaskId>,
 }
 
 #[cfg_attr(not(test), allow(dead_code))]
@@ -287,6 +293,12 @@ impl TaskManager {
                 launch.model.clone(),
             ),
         );
+        // Use the pre-allocated task id when the tool layer provided one so
+        // that the output paths published in the ToolResult metadata stay
+        // stable and match the files written by the task subprocess.
+        if let Some(reserved_id) = launch.reserved_task_id {
+            task.id = reserved_id;
+        }
         task.fleet_id = launch.fleet_id;
         task.fleet_request_id = launch.fleet_request_id.clone();
         task.parent_id = launch.parent_task_id;
@@ -1241,6 +1253,7 @@ mod tests {
                 worktree_branch: None,
                 system_prompt: None,
                 fork_depth: None,
+                reserved_task_id: None,
             })
             .expect("start agent task");
 
@@ -1317,6 +1330,7 @@ mod tests {
                 worktree_branch: None,
                 system_prompt: None,
                 fork_depth: None,
+                reserved_task_id: None,
             })
             .expect("start agent task");
 
@@ -1481,6 +1495,54 @@ mod tests {
             fs::set_permissions(&path, permissions).expect("set agent script permissions");
         }
         path
+    }
+
+    /// When `AgentTaskLaunch.reserved_task_id` is set, `start_agent_task`
+    /// must create the task record using that id so output paths published in
+    /// the tool result metadata remain stable.
+    #[test]
+    fn start_agent_task_uses_reserved_task_id_when_provided() {
+        let dir = unique_test_dir("task-manager-reserved-id");
+        let script = write_agent_script(
+            &dir,
+            "agent-reserved.sh",
+            "printf 'stub ok\\n'\nsleep 0.1\n",
+        );
+        let _env = EnvVarGuard::set(CLI_BIN_OVERRIDE_ENV, script.into_os_string());
+
+        let reserved = TaskId::new();
+        let manager = TaskManager::new(&dir);
+        let task = manager
+            .start_agent_task(AgentTaskLaunch {
+                name: "reserved-id-task".into(),
+                description: Some("verifying reserved id".into()),
+                prompt: "test reserved task id".into(),
+                provider: None,
+                model: None,
+                cwd: dir.clone(),
+                fleet_id: None,
+                fleet_request_id: None,
+                parent_task_id: None,
+                allowed_tools: None,
+                worktree_branch: None,
+                system_prompt: None,
+                fork_depth: None,
+                reserved_task_id: Some(reserved),
+            })
+            .expect("start agent task with reserved id");
+
+        assert_eq!(
+            task.id, reserved,
+            "task.id must equal the pre-allocated reserved_task_id"
+        );
+        // The log path must also reference the reserved id.
+        let log = task.output_log.expect("output_log must be set");
+        assert!(
+            log.to_string_lossy().contains(&reserved.to_string()),
+            "output_log path must contain the reserved task id; log={}, id={}",
+            log.display(),
+            reserved
+        );
     }
 
     // ── remove_task / prune_tasks tests ──────────────────────────────────────

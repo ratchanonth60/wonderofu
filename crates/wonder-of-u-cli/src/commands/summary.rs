@@ -167,7 +167,8 @@ fn summarize_session(
             | MessagePayload::Task { .. }
             | MessagePayload::Permission { .. }
             | MessagePayload::PlanApproval { .. }
-            | MessagePayload::ProviderError { .. } => {
+            | MessagePayload::ProviderError { .. }
+            | MessagePayload::TaskNotification { .. } => {
                 assistant_messages += 1;
             }
             MessagePayload::AssistantToolUse { tool, .. } => {
