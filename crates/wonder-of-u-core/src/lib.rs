@@ -39,6 +39,8 @@ pub mod git;
 pub mod ids;
 /// Provides lockfile support
 pub mod lockfile;
+/// Local-first team/agent inbox mailbox types.
+pub mod mailbox;
 /// Provides memoize support
 pub mod memoize;
 /// Provides message support
@@ -129,9 +131,14 @@ pub use generators::{enumerate, take, zip};
 /// Re-exports items from `git`
 pub use git::{GitError, get_current_branch, get_diff, get_git_root, is_git_repo, read_gitignore};
 /// Re-exports items from `ids`
-pub use ids::{CommandId, FleetId, MessageId, SessionId, TaskId, ToolUseId};
+pub use ids::{CommandId, FleetId, MailboxMessageId, MessageId, SessionId, TaskId, ToolUseId};
 /// Re-exports items from `lockfile`
 pub use lockfile::LockFile;
+/// Re-exports items from `mailbox`
+pub use mailbox::{
+    MAILBOX_MESSAGE_SCHEMA_VERSION, MAILBOX_READ_INDEX_SCHEMA_VERSION, MailboxKind, MailboxMessage,
+    MailboxReadIndex, sanitize_mailbox_name,
+};
 /// Re-exports items from `memoize`
 pub use memoize::MemoCache;
 /// Re-exports items from `message`
