@@ -162,8 +162,8 @@ pub use set::{difference, intersection, intersects, union};
 pub use shell_session::{ShellOutput, ShellSession, ShellSessionStore};
 /// Re-exports items from `tool`
 pub use tool::{
-    Tool, ToolContext, ToolKind, ToolProgress, ToolQuery, ToolRegistry, ToolResult, ToolSchema,
-    ToolSource, ToolSpec,
+    AgentLaunchSpec, Tool, ToolContext, ToolEffect, ToolKind, ToolProgress, ToolQuery,
+    ToolRegistry, ToolResult, ToolSchema, ToolSource, ToolSpec,
 };
 /// Re-exports items from `treeify`
 pub use treeify::render_path_tree;

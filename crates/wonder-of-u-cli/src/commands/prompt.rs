@@ -15,17 +15,18 @@ use wonder_of_u_core::{
     AGENT_TASK_RESULT_SCHEMA_VERSION, AgentTaskResult, AppState, Command, CommandContext,
     CommandInvocation, CommandKind, CommandOutput, CommandSpec, CoordinatorState, FeatureFlag,
     FleetId, MessageEnvelope, MessagePayload, PermissionDecision, PermissionMode, PromptSuggestion,
-    QueryState, Result, TaskId, TaskStatus, ToolContext, ToolQuery, ToolResult, ToolUseId,
-    WonderError, best_prompt_suggestion,
+    QueryState, Result, TaskId, TaskStatus, ToolContext, ToolEffect, ToolQuery, ToolResult,
+    ToolUseId, WonderError, best_prompt_suggestion,
 };
 use wonder_of_u_storage::{
-    AgentTaskResultStore, CostStore, SessionCostLedger, SessionMemoryIndexStore, SessionMetadata,
-    SessionSnapshot, TranscriptStore,
+    AgentTaskResultStore, CostStore, FleetStore, SessionCostLedger, SessionMemoryIndexStore,
+    SessionMetadata, SessionSnapshot, TranscriptStore,
 };
 use wonder_of_u_tools::{builtin_registry_with_mcp_catalog, provider_tool_specs};
 
 use super::{
     apply_worktree_tool_result, detect_git_branch,
+    fleet::direct_launch_fleet_request,
     hooks::{HookOutcome, POST_TOOL_USE, POST_TOOL_USE_FAILURE, PRE_TOOL_USE, run_hooks},
     parse_command_args, parse_session_id,
 };
@@ -837,6 +838,145 @@ fn tool_context(state: &AppState) -> ToolContext {
     }
 }
 
+/// Processes any [`ToolEffect`]s carried in `result` and returns an updated
+/// [`ToolResult`] with the effects drained.
+///
+/// For each [`ToolEffect::LaunchAgentTask`]:
+///
+/// * If `storage_dir` is `Some` and `direct_launch_fleet_request` succeeds, the
+///   result content and metadata are updated to reflect the live task id.
+/// * Otherwise the request is queued as a pending file (fallback) so `fleet
+///   dispatch` can recover it later.
+///
+/// Effects are always drained before this function returns so they are never
+/// persisted to the transcript.
+fn process_tool_effects(
+    mut result: ToolResult,
+    storage_dir: Option<&Path>,
+    cwd: &Path,
+) -> ToolResult {
+    if result.effects.is_empty() {
+        return result;
+    }
+
+    // Drain effects — process each one, updating result in place.
+    let effects = std::mem::take(&mut result.effects);
+    for effect in effects {
+        match effect {
+            ToolEffect::LaunchAgentTask(spec) => {
+                if let Some(dir) = storage_dir {
+                    match direct_launch_fleet_request(dir, &spec.request, cwd) {
+                        Ok(task_id) => {
+                            result.content = format!("agent task launched: {task_id}");
+                            let meta = ensure_meta(&mut result);
+                            meta.insert(
+                                "status".into(),
+                                serde_json::Value::String("launched".into()),
+                            );
+                            meta.insert(
+                                "task_id".into(),
+                                serde_json::Value::String(task_id.to_string()),
+                            );
+                            meta.remove("dispatch_hint");
+                        }
+                        Err(launch_err) => {
+                            // Direct launch failed — fall back to pending queue.
+                            let store = FleetStore::new(dir);
+                            match store.queue_member_request(&spec.request) {
+                                Ok(()) => {
+                                    let request_id = spec.request.id.clone();
+                                    result.content = format!(
+                                        "agent task queued for dispatch (launch failed: {launch_err})"
+                                    );
+                                    let meta = ensure_meta(&mut result);
+                                    meta.insert(
+                                        "status".into(),
+                                        serde_json::Value::String("pending_dispatch".into()),
+                                    );
+                                    meta.insert(
+                                        "request_id".into(),
+                                        serde_json::Value::String(request_id),
+                                    );
+                                    meta.insert(
+                                        "dispatch_hint".into(),
+                                        serde_json::Value::String(
+                                            "run `fleet dispatch` to launch".into(),
+                                        ),
+                                    );
+                                }
+                                Err(queue_err) => {
+                                    // Both paths failed — surface combined error in content.
+                                    result.success = false;
+                                    result.content = format!(
+                                        "agent task could not be launched ({launch_err}) \
+                                         and could not be queued ({queue_err})"
+                                    );
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    // No storage_dir — try to resolve one from environment variables
+                    // using the same priority chain as the tools crate's `app_root`.
+                    let fallback_dir = std::env::var_os("WONDER_OF_U_STORAGE_DIR")
+                        .map(PathBuf::from)
+                        .or_else(|| {
+                            std::env::var_os("XDG_CONFIG_HOME")
+                                .map(|d| PathBuf::from(d).join("wonder-of-u"))
+                        })
+                        .or_else(|| {
+                            std::env::var_os("HOME")
+                                .map(|d| PathBuf::from(d).join(".config").join("wonder-of-u"))
+                        });
+
+                    if let Some(dir) = fallback_dir {
+                        let store = FleetStore::new(&dir);
+                        match store.queue_member_request(&spec.request) {
+                            Ok(()) => {
+                                let request_id = spec.request.id.clone();
+                                result.content =
+                                    "agent task queued for dispatch (no session storage)".into();
+                                let meta = ensure_meta(&mut result);
+                                meta.insert(
+                                    "status".into(),
+                                    serde_json::Value::String("pending_dispatch".into()),
+                                );
+                                meta.insert(
+                                    "request_id".into(),
+                                    serde_json::Value::String(request_id),
+                                );
+                            }
+                            Err(e) => {
+                                result.success = false;
+                                result.content =
+                                    format!("agent task could not be queued (no storage dir): {e}");
+                            }
+                        }
+                    } else {
+                        result.success = false;
+                        result.content =
+                            "agent task could not be queued: no storage directory configured"
+                                .into();
+                    }
+                }
+            }
+        }
+    }
+    result
+}
+
+/// Ensures `result.metadata` is a JSON object and returns a mutable reference
+/// to the underlying map.  Converts `null` or non-object values in-place.
+fn ensure_meta(result: &mut ToolResult) -> &mut serde_json::Map<String, serde_json::Value> {
+    if !result.metadata.is_object() {
+        result.metadata = serde_json::Value::Object(serde_json::Map::new());
+    }
+    result
+        .metadata
+        .as_object_mut()
+        .expect("just initialized as object")
+}
+
 fn execute_tool_call(
     state: &mut AppState,
     storage_dir: Option<&Path>,
@@ -972,6 +1112,7 @@ fn execute_tool_call(
         )
     };
 
+    let result = process_tool_effects(result, storage_dir, &context.cwd);
     let _ = apply_worktree_tool_result(state, &result)?;
     messages.push(append_contextual_message(
         state,
@@ -1010,5 +1151,111 @@ fn permission_decision_label(decision: &PermissionDecision) -> &'static str {
         PermissionDecision::Allow { .. } => "allow",
         PermissionDecision::Ask { .. } => "ask",
         PermissionDecision::Deny { .. } => "deny",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use wonder_of_u_core::{AgentCatalog, AgentLaunchSpec, ToolEffect, ToolResult, ToolUseId};
+    use wonder_of_u_storage::FleetStore;
+    use wonder_of_u_test_support::{EnvVarGuard, unique_test_dir};
+    use wonder_of_u_tools::build_fleet_member_request_with_catalog;
+
+    use super::*;
+
+    // Helper: build a minimal ToolResult with a LaunchAgentTask effect.
+    fn launch_effect_result(prompt: &str, catalog: &AgentCatalog) -> ToolResult {
+        let input = wonder_of_u_tools::AgentInput {
+            prompt: prompt.into(),
+            description: None,
+            subagent_type: None,
+            model: None,
+            run_in_background: None,
+            name: None,
+            team_name: None,
+            mode: None,
+            isolation: None,
+            cwd: None,
+            tools: None,
+            depends_on: None,
+        };
+        let request = build_fleet_member_request_with_catalog(&input, catalog);
+        let use_id = ToolUseId::new();
+        ToolResult::success(use_id, "launch_requested").with_effects(vec![
+            ToolEffect::LaunchAgentTask(AgentLaunchSpec { request }),
+        ])
+    }
+
+    /// An empty-effects result passes through process_tool_effects unchanged.
+    #[test]
+    fn process_effects_passthrough_when_no_effects() {
+        let use_id = ToolUseId::new();
+        let result = ToolResult::success(use_id, "hello");
+        let dir = unique_test_dir("prompt-effects-passthrough");
+        let processed = process_tool_effects(result, Some(&dir), &dir);
+        assert!(processed.success);
+        assert_eq!(processed.content, "hello");
+        assert!(processed.effects.is_empty());
+    }
+
+    /// When direct launch fails (no wonder-of-u binary in test), the effect
+    /// handler falls back to writing a pending queue file.
+    ///
+    /// We test this via the `storage_dir=None` path, which resolves the storage
+    /// dir from `WONDER_OF_U_STORAGE_DIR` and always writes to queue (no
+    /// direct-launch attempt), making the test deterministic.
+    #[test]
+    fn process_effects_falls_back_to_pending_queue_when_launch_fails() {
+        let dir = unique_test_dir("prompt-effects-fallback");
+        let catalog = AgentCatalog::builtin();
+        let result = launch_effect_result("build the crate", &catalog);
+
+        // Pin the storage dir via env var so the None-storage-dir fallback path
+        // writes to our controlled directory.
+        let _guard = EnvVarGuard::set("WONDER_OF_U_STORAGE_DIR", dir.as_os_str());
+
+        // Pass storage_dir=None to trigger the env-var-based fallback path.
+        let processed = process_tool_effects(result, None, &dir);
+
+        // The result should still be a success (fallback queue succeeded).
+        assert!(
+            processed.success,
+            "fallback queue should produce a success result; content: {}",
+            processed.content
+        );
+        assert!(processed.effects.is_empty(), "effects should be drained");
+
+        // A pending file should now exist.
+        let store = FleetStore::new(&dir);
+        let pending = store.list_pending_requests().unwrap();
+        assert_eq!(
+            pending.len(),
+            1,
+            "one pending request should have been written"
+        );
+        assert_eq!(pending[0].prompt, "build the crate");
+
+        // Metadata should reflect pending_dispatch.
+        let status = processed.metadata["status"].as_str().unwrap_or("");
+        assert_eq!(
+            status, "pending_dispatch",
+            "status should be pending_dispatch after fallback"
+        );
+    }
+
+    /// With no storage_dir at all, the handler resolves a default dir via env
+    /// vars (or marks the result as a failure when none are set).
+    #[test]
+    fn process_effects_without_storage_dir_does_not_panic() {
+        let catalog = AgentCatalog::builtin();
+        let result = launch_effect_result("no storage", &catalog);
+        let cwd = std::env::current_dir().unwrap();
+        // HOME is always set in CI; this tests the env-based fallback path.
+        // We only verify no panic and that effects are drained.
+        let processed = process_tool_effects(result, None, &cwd);
+        assert!(
+            processed.effects.is_empty(),
+            "effects should always be drained"
+        );
     }
 }

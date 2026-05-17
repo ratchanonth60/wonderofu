@@ -1424,6 +1424,24 @@ fn dispatch_one(
     report: &ProviderStatusReport,
 ) -> Result<TaskId> {
     let cwd = req.cwd.clone().unwrap_or_else(|| context.cwd.clone());
+    let launch = request_to_agent_launch(req, &cwd, report)?;
+    let task = manager.start_agent_task(launch)?;
+    store.delete_pending_request_for(req)?;
+    Ok(task.id)
+}
+
+/// Converts a [`FleetMemberRequest`] into an [`AgentTaskLaunch`] that is ready
+/// to pass to [`TaskManager::start_agent_task`].
+///
+/// This is the shared conversion step used by both [`dispatch_one`] (which
+/// also deletes the pending file) and [`direct_launch_fleet_request`] (which
+/// has no file to delete).
+fn request_to_agent_launch(
+    req: &FleetMemberRequest,
+    default_cwd: &std::path::Path,
+    report: &ProviderStatusReport,
+) -> Result<AgentTaskLaunch> {
+    let cwd = req.cwd.clone().unwrap_or_else(|| default_cwd.to_path_buf());
 
     // Prefer the captured definition snapshot so custom agent definitions can
     // dispatch even if the source file is later edited or deleted.
@@ -1475,7 +1493,7 @@ fn dispatch_one(
         (cwd, None)
     };
 
-    let task = manager.start_agent_task(AgentTaskLaunch {
+    Ok(AgentTaskLaunch {
         name: req
             .name
             .clone()
@@ -1490,9 +1508,36 @@ fn dispatch_one(
         parent_task_id: req.parent_task_id,
         allowed_tools,
         worktree_branch,
-    })?;
+    })
+}
 
-    store.delete_pending_request_for(req)?;
+/// Launches an agent task directly from a [`FleetMemberRequest`] **without**
+/// writing or deleting any pending file.
+///
+/// This is the preferred path when the effect is produced by `AgentTool::execute`
+/// and a [`TaskManager`] is immediately available in the same runtime.
+///
+/// # Fallback
+///
+/// When `TaskManager::start_agent_task` fails the caller must write the request
+/// as a pending file (via `FleetStore::queue_member_request`) so it can be
+/// recovered via `fleet dispatch`.
+///
+/// # Parameters
+///
+/// - `storage_dir` — the wonder-of-u storage root; a [`TaskManager`] and
+///   [`ProviderStatusReport`] are derived from this.
+/// - `req` — the request to launch.
+/// - `default_cwd` — fallback working directory if `req.cwd` is `None`.
+pub(crate) fn direct_launch_fleet_request(
+    storage_dir: &std::path::Path,
+    req: &FleetMemberRequest,
+    default_cwd: &std::path::Path,
+) -> Result<TaskId> {
+    let manager = TaskManager::new(storage_dir);
+    let report = ProviderResolver::builtin().load_report(Some(storage_dir))?;
+    let launch = request_to_agent_launch(req, default_cwd, &report)?;
+    let task = manager.start_agent_task(launch)?;
     Ok(task.id)
 }
 
