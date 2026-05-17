@@ -32,9 +32,12 @@ pub(crate) mod keybindings;
 mod mcp;
 pub mod memory;
 pub(crate) mod output_style;
+mod plan_command;
 mod plugin;
+pub(crate) mod preferences;
 pub(crate) mod project;
 pub(crate) mod prompt;
+pub(crate) mod review_workflow;
 pub mod rewind;
 pub(crate) mod search;
 mod session;
@@ -43,6 +46,7 @@ mod skills;
 mod status;
 mod summary;
 pub mod tag;
+mod task_commands;
 mod task_runtime;
 pub(crate) mod theme;
 mod tui;
@@ -69,12 +73,20 @@ use features::FeaturesCommand;
 use fleet::FleetCommand;
 use help::HelpCommand;
 use mcp::McpCommand;
+use plan_command::PlanCommand;
 use plugin::{PluginCommand, ReloadPluginsCommand};
+use preferences::{
+    BriefCommand, ColorCommand, EffortCommand, FastCommand, HooksCommand, KeybindingsCommand,
+    OptimizeTonkenCommand, PrivacySettingsCommand, TerminalSetupCommand, ThemeCommand, VimCommand,
+};
 use project::{
     AddDirCommand, BranchCommand, ContextCommand, CopyCommand, DiffCommand, FilesCommand,
     InitCommand, MemoryCommand,
 };
 use prompt::PromptCommand;
+use review_workflow::{
+    CommitCommand, CommitPushPrCommand, ReviewCommand, SecurityReviewCommand, StatuslineCommand,
+};
 use rewind::RewindCommand;
 use session::{
     ClearCommand, CompactCommand, ExportCommand, RenameCommand, ResumeCommand, SessionCommand,
@@ -88,13 +100,9 @@ use status::{
 };
 use summary::SummaryCommand;
 use tag::TagCommand;
+use task_commands::{AgentsCommand, TasksCommand};
 use tui::TuiCommand;
-use workflow::{
-    AgentsCommand, BriefCommand, ColorCommand, CommitCommand, CommitPushPrCommand, EffortCommand,
-    ExitCommand, FastCommand, HooksCommand, KeybindingsCommand, OptimizeTonkenCommand,
-    PermissionsCommand, PlanCommand, PrivacySettingsCommand, ReviewCommand, SecurityReviewCommand,
-    StatuslineCommand, TasksCommand, TerminalSetupCommand, ThemeCommand, VimCommand,
-};
+use workflow::{ExitCommand, PermissionsCommand};
 
 /// Builds the registry
 pub fn registry(storage_dir: Option<PathBuf>) -> Result<CommandRegistry> {

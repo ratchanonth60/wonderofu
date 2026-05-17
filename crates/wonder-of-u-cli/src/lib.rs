@@ -3452,11 +3452,13 @@ mod tests {
     fn registry_includes_commit_and_commit_push_pr_commands() {
         let mut registry = wonder_of_u_core::CommandRegistry::new();
         registry
-            .register(std::sync::Arc::new(commands::workflow::CommitCommand::new()))
+            .register(std::sync::Arc::new(
+                commands::review_workflow::CommitCommand::new(),
+            ))
             .expect("register commit");
         registry
             .register(std::sync::Arc::new(
-                commands::workflow::CommitPushPrCommand::new(),
+                commands::review_workflow::CommitPushPrCommand::new(),
             ))
             .expect("register commit-push-pr");
 
