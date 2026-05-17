@@ -39,7 +39,7 @@
 //! **stripped and noted** — never executed.  File-size and file-count caps
 //! live in [`crate::agent_loader`]; this module is pure in-memory logic.
 
-use std::fmt;
+use std::{fmt, path::PathBuf};
 
 use serde::{Deserialize, Serialize};
 
@@ -223,6 +223,13 @@ pub struct AgentDefinition {
     /// SHA-256 hex digest of the raw file content (absent for built-ins).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub content_hash: Option<String>,
+    /// Filesystem path of the source file (absent for built-ins and definitions
+    /// loaded from pre-serialised data).
+    ///
+    /// Populated in-memory by [`crate::agent_loader::AgentDefinitionLoader`]
+    /// when scanning project directories; never serialised or deserialised.
+    #[serde(skip)]
+    pub source_path: Option<PathBuf>,
 }
 
 impl AgentDefinition {
@@ -311,6 +318,7 @@ impl AgentDefinition {
             color: raw.color,
             source,
             content_hash,
+            source_path: None,
         })
     }
 
@@ -333,6 +341,7 @@ impl AgentDefinition {
             color: None,
             source: AgentDefinitionSource::Builtin,
             content_hash: None,
+            source_path: None,
         }
     }
 
@@ -537,6 +546,7 @@ fn extra_builtin_definitions() -> Vec<AgentDefinition> {
             color: None,
             source: AgentDefinitionSource::Builtin,
             content_hash: None,
+            source_path: None,
         },
         AgentDefinition {
             id: "explore".into(),
@@ -563,8 +573,95 @@ fn extra_builtin_definitions() -> Vec<AgentDefinition> {
             color: None,
             source: AgentDefinitionSource::Builtin,
             content_hash: None,
+            source_path: None,
         },
     ]
+}
+
+// ── Rendering ─────────────────────────────────────────────────────────────────
+
+/// Frontmatter-only view used for safe YAML serialisation of a definition.
+///
+/// All optional / empty fields are omitted via `skip_serializing_if` so the
+/// output is minimal and round-trips cleanly through [`parse_markdown_frontmatter`].
+#[derive(Serialize)]
+struct DefinitionFrontmatter {
+    id: String,
+    name: String,
+    description: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    model: Option<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    tools: Vec<String>,
+    #[serde(rename = "disallowedTools", skip_serializing_if = "Vec::is_empty")]
+    disallowed_tools: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    color: Option<String>,
+    #[serde(rename = "permissionMode", skip_serializing_if = "Option::is_none")]
+    permission_mode: Option<String>,
+    #[serde(rename = "maxTurns", skip_serializing_if = "Option::is_none")]
+    max_turns: Option<u32>,
+}
+
+/// Renders an [`AgentDefinition`] as a Markdown file with YAML frontmatter.
+///
+/// Metadata fields are serialised into the frontmatter via `serde_yaml` for
+/// safe escaping of special characters.  The system prompt is placed verbatim
+/// after the closing `---` fence as the document body.  Dangerous fields
+/// (`hooks`, `mcpServers`) are never included.
+///
+/// The result round-trips correctly through [`parse_markdown_frontmatter`] +
+/// [`AgentDefinition::from_raw`].
+///
+/// # Examples
+///
+/// ```
+/// use wonder_of_u_core::{AgentDefinition, AgentDefinitionSource, render_definition_md};
+///
+/// let def = AgentDefinition {
+///     id: "my-agent".into(),
+///     name: "My Agent".into(),
+///     description: "Does something useful".into(),
+///     system_prompt: "You are a helpful agent.".into(),
+///     tools: vec![],
+///     disallowed_tools: vec![],
+///     model: None,
+///     max_turns: None,
+///     permission_mode: None,
+///     color: None,
+///     source: AgentDefinitionSource::Project,
+///     content_hash: None,
+///     source_path: None,
+/// };
+/// let md = render_definition_md(&def).unwrap();
+/// assert!(md.starts_with("---\n"));
+/// assert!(md.contains("name: My Agent"));
+/// assert!(md.contains("You are a helpful agent."));
+/// ```
+///
+/// # Errors
+///
+/// Returns [`WonderError::Validation`] when YAML serialisation fails (should
+/// not occur in practice for valid definitions).
+pub fn render_definition_md(def: &AgentDefinition) -> Result<String> {
+    let fm = DefinitionFrontmatter {
+        id: def.id.clone(),
+        name: def.name.clone(),
+        description: def.description.clone(),
+        model: def.model.clone(),
+        tools: def.tools.clone(),
+        disallowed_tools: def.disallowed_tools.clone(),
+        color: def.color.clone(),
+        permission_mode: def.permission_mode.clone(),
+        max_turns: def.max_turns,
+    };
+    let yaml = serde_yaml::to_string(&fm).map_err(|e| {
+        WonderError::validation(format!("failed to serialise definition frontmatter: {e}"))
+    })?;
+    Ok(format!(
+        "---\n{yaml}---\n\n{}\n",
+        def.system_prompt.trim_end()
+    ))
 }
 
 // ── Parsing helpers ───────────────────────────────────────────────────────────
@@ -837,6 +934,7 @@ mod tests {
             color: None,
             source: AgentDefinitionSource::Project,
             content_hash: Some("abc123".into()),
+            source_path: None,
         };
         catalog.insert(custom);
         assert_eq!(
@@ -862,6 +960,7 @@ mod tests {
             color: None,
             source: AgentDefinitionSource::Project,
             content_hash: None,
+            source_path: None,
         });
         // Attempt to insert a builtin with the same id.
         catalog.insert(AgentDefinition {
@@ -877,6 +976,7 @@ mod tests {
             color: None,
             source: AgentDefinitionSource::Builtin,
             content_hash: None,
+            source_path: None,
         });
         // Project source wins; builtin insertion should have been ignored.
         assert_eq!(
@@ -901,6 +1001,7 @@ mod tests {
             color: None,
             source: AgentDefinitionSource::ProjectDotClaude,
             content_hash: None,
+            source_path: None,
         });
         catalog.insert(AgentDefinition {
             id: "dup".into(),
@@ -915,6 +1016,7 @@ mod tests {
             color: None,
             source: AgentDefinitionSource::ProjectDotClaude,
             content_hash: None,
+            source_path: None,
         });
         assert_eq!(catalog.get("dup").map(|d| d.name.as_str()), Some("First"));
     }
@@ -1079,6 +1181,7 @@ mod tests {
             color: None,
             source: AgentDefinitionSource::Project,
             content_hash: Some("deadbeef".into()),
+            source_path: None,
         };
         let snap = def.snapshot();
         assert_eq!(snap.definition_id, "test");
