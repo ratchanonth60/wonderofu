@@ -513,6 +513,16 @@ pub struct FleetMemberRequest {
     /// or leaves the subprocess unrestricted.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub allowed_tools: Option<Vec<String>>,
+    /// Explicitly denied tool names for the spawned agent subprocess.
+    ///
+    /// Computed from the agent definition's `disallowed_tools` plus
+    /// background-restricted tools (see [`crate::BACKGROUND_RESTRICTED_TOOLS`]).
+    /// Stored here so the dispatcher doesn't need to re-resolve the definition.
+    ///
+    /// `#[serde(default)]` keeps older queue files compatible — they simply
+    /// read an empty deny-list, which is safe.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub disallowed_tools: Vec<String>,
     /// Optional worktree isolation configuration for this member.
     ///
     /// When set, `fleet dispatch` / `fleet reconcile` creates (or resumes) a
@@ -569,6 +579,7 @@ impl FleetMemberRequest {
             depends_on: Vec::new(),
             parent_task_id: None,
             allowed_tools: None,
+            disallowed_tools: Vec::new(),
             isolation: None,
             definition_snapshot: None,
             fork_context: None,

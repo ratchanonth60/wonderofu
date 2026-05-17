@@ -53,6 +53,143 @@ pub const MAX_AGENT_ID_LEN: usize = 64;
 /// Maximum byte length for a system prompt.
 pub const MAX_SYSTEM_PROMPT_LEN: usize = 64 * 1024;
 
+/// Tools that must never be available to background (non-interactive) sub-agents.
+///
+/// All agents dispatched by the Rust runtime are background tasks; interactive
+/// tools that block waiting for a human response are therefore always denied.
+pub const BACKGROUND_RESTRICTED_TOOLS: &[&str] = &["ask_user"];
+
+// ── AgentToolFilter ───────────────────────────────────────────────────────────
+
+/// Computed effective tool filter for a sub-agent request.
+///
+/// Built by [`AgentToolFilter::compute`] from an [`AgentDefinition`] and an
+/// optional caller-specified tool list. The result is applied to the
+/// [`crate::FleetMemberRequest`] fields before the request is enqueued.
+///
+/// # Filtering semantics
+///
+/// 1. **Definition baseline** — the definition's `tools` (allow-list) and
+///    `disallowed_tools` (deny-list) are the authoritative starting point.
+/// 2. **Caller restriction** — if the caller supplies an explicit `tools` list
+///    it is *intersected* with the definition's allow-list (callers can only
+///    further restrict, not expand).  When the definition is unrestricted
+///    (`tools` is empty) the caller's list becomes the allow-list as-is.
+/// 3. **Background deny-list** — [`BACKGROUND_RESTRICTED_TOOLS`] are always
+///    appended to the deny-list because all Rust-runtime agents are background
+///    tasks.
+/// 4. **Deny-list exclusion** — any tool in the final deny-list is removed
+///    from the effective allow-list even if it appears there explicitly.
+///
+/// # Examples
+///
+/// ```
+/// use wonder_of_u_core::agent_definition::{AgentDefinition, AgentDefinitionSource, AgentToolFilter};
+///
+/// let def = AgentDefinition {
+///     id: "example".into(),
+///     name: "Example".into(),
+///     description: "desc".into(),
+///     system_prompt: "You are helpful.".into(),
+///     tools: vec!["bash".into(), "file_read".into()],
+///     disallowed_tools: vec![],
+///     model: None,
+///     max_turns: None,
+///     permission_mode: None,
+///     color: None,
+///     source: AgentDefinitionSource::Builtin,
+///     content_hash: None,
+///     source_path: None,
+/// };
+///
+/// // Caller provides a broader list — only the intersection is allowed.
+/// let filter = AgentToolFilter::compute(&def, Some(&["bash".to_owned(), "glob".to_owned()]));
+/// assert_eq!(filter.allowed, Some(vec!["bash".to_owned()]));
+/// ```
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct AgentToolFilter {
+    /// Effective allowed-tools list, or `None` when unrestricted.
+    ///
+    /// `None` means *all tools are allowed* (minus the deny-list).
+    /// `Some([])` means *no tools are allowed*.
+    pub allowed: Option<Vec<String>>,
+    /// Tools that are explicitly denied for this agent.
+    ///
+    /// Always includes [`BACKGROUND_RESTRICTED_TOOLS`] and the definition's
+    /// own `disallowed_tools`.
+    pub disallowed: Vec<String>,
+}
+
+impl AgentToolFilter {
+    /// Computes the effective tool filter from a definition and optional caller override.
+    ///
+    /// `caller_tools` — the explicit `tools` list supplied in the agent tool
+    /// input, if any.  Pass `None` when the caller did not specify tools.
+    #[must_use]
+    pub fn compute(definition: &AgentDefinition, caller_tools: Option<&[String]>) -> Self {
+        // Collect the effective deny-list: definition's own list + background
+        // restrictions that are not already present.
+        let mut disallowed: Vec<String> = definition.disallowed_tools.clone();
+        for &restricted in BACKGROUND_RESTRICTED_TOOLS {
+            let name = restricted.to_owned();
+            if !disallowed.contains(&name) {
+                disallowed.push(name);
+            }
+        }
+
+        let def_tools = &definition.tools;
+
+        let allowed = match (def_tools.is_empty(), caller_tools) {
+            // Neither side restricts — fully unrestricted (minus deny-list).
+            (true, None | Some(&[])) => None,
+
+            // Caller restricts; definition is unrestricted.
+            (true, Some(caller)) => {
+                let filtered = caller
+                    .iter()
+                    .filter(|t| !disallowed.contains(t))
+                    .cloned()
+                    .collect::<Vec<_>>();
+                // Preserve `None` semantics when caller effectively passes everything
+                // after filtering (we can't know the full universe, so keep Some).
+                Some(filtered)
+            }
+
+            // Definition restricts; caller does not override.
+            (false, None | Some(&[])) => {
+                let filtered = def_tools
+                    .iter()
+                    .filter(|t| !disallowed.contains(t))
+                    .cloned()
+                    .collect();
+                Some(filtered)
+            }
+
+            // Both restrict — use the intersection.
+            (false, Some(caller)) => {
+                let filtered = def_tools
+                    .iter()
+                    .filter(|t| caller.contains(t))
+                    .filter(|t| !disallowed.contains(t))
+                    .cloned()
+                    .collect();
+                Some(filtered)
+            }
+        };
+
+        Self {
+            allowed,
+            disallowed,
+        }
+    }
+
+    /// Returns `true` when this filter imposes no allow-list restriction.
+    #[must_use]
+    pub fn is_unrestricted(&self) -> bool {
+        self.allowed.is_none()
+    }
+}
+
 // ── Source enum ───────────────────────────────────────────────────────────────
 
 /// Where an [`AgentDefinition`] originated.
@@ -1600,5 +1737,197 @@ mod tests {
         assert_eq!(def2.initial_prompt.as_deref(), Some("Go!"));
         assert!(def2.omit_claude_md);
         assert_eq!(def2.system_prompt, "System prompt here.");
+    }
+
+    // ── AgentToolFilter ───────────────────────────────────────────────────────
+
+    fn make_def(tools: Vec<&str>, disallowed_tools: Vec<&str>) -> AgentDefinition {
+        AgentDefinition {
+            id: "test-agent".into(),
+            name: "Test Agent".into(),
+            description: "For testing".into(),
+            system_prompt: "You are a test agent.".into(),
+            tools: tools.into_iter().map(String::from).collect(),
+            disallowed_tools: disallowed_tools.into_iter().map(String::from).collect(),
+            model: None,
+            max_turns: None,
+            permission_mode: None,
+            color: None,
+            source: AgentDefinitionSource::Builtin,
+            content_hash: None,
+            source_path: None,
+        }
+    }
+
+    // ── builtin / default filtering ───────────────────────────────────────────
+
+    #[test]
+    fn filter_unrestricted_def_no_caller_tools_is_none() {
+        // A definition with no allowed-tools list and no caller override is
+        // fully unrestricted (minus background denials).
+        let def = make_def(vec![], vec![]);
+        let filter = AgentToolFilter::compute(&def, None);
+        assert_eq!(filter.allowed, None, "should be unrestricted");
+        assert!(
+            filter.disallowed.contains(&"ask_user".to_owned()),
+            "ask_user must always be denied"
+        );
+    }
+
+    #[test]
+    fn filter_builtin_allowed_tools_applied_when_no_caller() {
+        // Definition restricts to bash+file_read; caller provides nothing →
+        // effective allowed = [bash, file_read].
+        let def = make_def(vec!["bash", "file_read"], vec![]);
+        let filter = AgentToolFilter::compute(&def, None);
+        let allowed = filter.allowed.expect("should have an allow-list");
+        assert_eq!(allowed, vec!["bash", "file_read"]);
+    }
+
+    #[test]
+    fn filter_definition_disallowed_always_excluded() {
+        // A definition that allows bash but disallows file_write.
+        let def = make_def(vec!["bash", "file_write"], vec!["file_write"]);
+        let filter = AgentToolFilter::compute(&def, None);
+        let allowed = filter.allowed.expect("allow-list present");
+        assert!(
+            !allowed.contains(&"file_write".to_owned()),
+            "file_write must be excluded"
+        );
+        assert!(allowed.contains(&"bash".to_owned()));
+        assert!(filter.disallowed.contains(&"file_write".to_owned()));
+    }
+
+    // ── caller-specified tools ─────────────────────────────────────────────────
+
+    #[test]
+    fn filter_caller_restricts_unrestricted_def() {
+        // Caller passes ["bash"] on an unrestricted definition → allow only bash.
+        let def = make_def(vec![], vec![]);
+        let caller = vec!["bash".to_owned()];
+        let filter = AgentToolFilter::compute(&def, Some(&caller));
+        let allowed = filter.allowed.expect("allow-list must be set");
+        assert_eq!(allowed, vec!["bash"]);
+    }
+
+    #[test]
+    fn filter_caller_intersection_with_definition() {
+        // Definition allows [bash, file_read, glob].
+        // Caller wants   [bash, file_write, glob].
+        // Intersection = [bash, glob].
+        let def = make_def(vec!["bash", "file_read", "glob"], vec![]);
+        let caller = vec![
+            "bash".to_owned(),
+            "file_write".to_owned(),
+            "glob".to_owned(),
+        ];
+        let filter = AgentToolFilter::compute(&def, Some(&caller));
+        let mut allowed = filter.allowed.expect("allow-list present");
+        allowed.sort();
+        assert_eq!(allowed, vec!["bash", "glob"]);
+    }
+
+    #[test]
+    fn filter_caller_cannot_expand_definition_allowlist() {
+        // Caller includes extra tools not in the definition — they must be stripped.
+        let def = make_def(vec!["bash"], vec![]);
+        let caller = vec![
+            "bash".to_owned(),
+            "file_write".to_owned(),
+            "glob".to_owned(),
+        ];
+        let filter = AgentToolFilter::compute(&def, Some(&caller));
+        let allowed = filter.allowed.expect("allow-list present");
+        assert_eq!(allowed, vec!["bash"]);
+    }
+
+    #[test]
+    fn filter_empty_caller_slice_treated_as_unspecified() {
+        // Passing an empty caller list should fall back to the definition's own list.
+        let def = make_def(vec!["bash", "file_read"], vec![]);
+        let filter = AgentToolFilter::compute(&def, Some(&[]));
+        let allowed = filter.allowed.expect("allow-list present");
+        assert_eq!(allowed, vec!["bash", "file_read"]);
+    }
+
+    // ── background/async restrictions ─────────────────────────────────────────
+
+    #[test]
+    fn filter_always_denies_ask_user_for_background_agents() {
+        // ask_user is an interactive tool — it must always be denied for background agents.
+        let def = make_def(vec!["bash", "ask_user"], vec![]);
+        let filter = AgentToolFilter::compute(&def, None);
+        // ask_user must not appear in the effective allowed list.
+        if let Some(ref allowed) = filter.allowed {
+            assert!(
+                !allowed.contains(&"ask_user".to_owned()),
+                "ask_user must not appear in allowed: {allowed:?}"
+            );
+        }
+        assert!(
+            filter.disallowed.contains(&"ask_user".to_owned()),
+            "ask_user must be in disallowed: {:?}",
+            filter.disallowed
+        );
+    }
+
+    #[test]
+    fn filter_ask_user_stripped_from_caller_tools() {
+        // Even if the caller explicitly requests ask_user it must be denied.
+        let def = make_def(vec![], vec![]);
+        let caller = vec!["bash".to_owned(), "ask_user".to_owned()];
+        let filter = AgentToolFilter::compute(&def, Some(&caller));
+        let allowed = filter.allowed.expect("allow-list present");
+        assert!(!allowed.contains(&"ask_user".to_owned()));
+        assert!(filter.disallowed.contains(&"ask_user".to_owned()));
+    }
+
+    #[test]
+    fn background_restricted_constant_is_non_empty() {
+        // Verify the constant lists ask_user — this is the primary guard against
+        // accidentally removing the interactive-tool restriction.
+        assert!(
+            BACKGROUND_RESTRICTED_TOOLS.contains(&"ask_user"),
+            "ask_user must be in BACKGROUND_RESTRICTED_TOOLS"
+        );
+    }
+
+    // ── is_unrestricted helper ────────────────────────────────────────────────
+
+    #[test]
+    fn filter_is_unrestricted_when_no_allowlist() {
+        let def = make_def(vec![], vec![]);
+        let filter = AgentToolFilter::compute(&def, None);
+        assert!(filter.is_unrestricted());
+    }
+
+    #[test]
+    fn filter_is_not_unrestricted_when_allowlist_set() {
+        let def = make_def(vec!["bash"], vec![]);
+        let filter = AgentToolFilter::compute(&def, None);
+        assert!(!filter.is_unrestricted());
+    }
+
+    // ── explore built-in uses disallowed_tools ─────────────────────────────────
+
+    #[test]
+    fn filter_explore_builtin_disallows_write_tools() {
+        // The "explore" builtin definition disallows file_write and file_edit.
+        let catalog = AgentCatalog::builtin();
+        let explore = catalog.get("explore").expect("explore must be in catalog");
+        let filter = AgentToolFilter::compute(explore, None);
+        assert!(
+            filter.disallowed.contains(&"file_write".to_owned()),
+            "explore must deny file_write"
+        );
+        assert!(
+            filter.disallowed.contains(&"file_edit".to_owned()),
+            "explore must deny file_edit"
+        );
+        // The allowed list must not include the disallowed tools.
+        if let Some(ref allowed) = filter.allowed {
+            assert!(!allowed.contains(&"file_write".to_owned()));
+            assert!(!allowed.contains(&"file_edit".to_owned()));
+        }
     }
 }
