@@ -60,8 +60,8 @@ use wonder_of_u_agent::{ProviderResolver, ProviderStatusReport};
 use wonder_of_u_core::{
     AgentDefinitionSnapshot, Command, CommandContext, CommandInvocation, CommandKind,
     CommandOutput, CommandSpec, FeatureFlag, FleetAgentRole, FleetId, FleetMemberRequest,
-    FleetRoleCatalog, FleetRunState, FleetRunStatus, FleetSteeringMessage, Result, TaskId,
-    TaskStatus, WonderError, WorktreeIsolation, WorktreeIsolationMode, get_git_root,
+    FleetRoleCatalog, FleetRunState, FleetRunStatus, FleetSteeringMessage, Result, SteeringSource,
+    TaskId, TaskStatus, WonderError, WorktreeIsolation, WorktreeIsolationMode, get_git_root,
 };
 use wonder_of_u_storage::{FleetInspector, FleetStore, MemberObservationClass};
 use wonder_of_u_tools::{
@@ -757,7 +757,17 @@ impl FleetCommand {
         // Load steering messages for visibility; never fails the show command if
         // the steering dir is absent (e.g. no messages queued yet).
         let steering = store.list_steering_messages(fleet_id).unwrap_or_default();
+        let operator_count = steering
+            .iter()
+            .filter(|m| m.source == SteeringSource::Operator)
+            .count();
+        let agent_count = steering
+            .iter()
+            .filter(|m| m.source == SteeringSource::Agent)
+            .count();
         lines.push(format!("steering_count={}", steering.len()));
+        lines.push(format!("steering_operator_count={operator_count}"));
+        lines.push(format!("steering_agent_count={agent_count}"));
         if let Some(latest) = steering.last() {
             lines.push(format!(
                 "steering_latest={}",
@@ -1884,7 +1894,7 @@ mod tests {
         FeatureSet, FleetId, FleetMemberRequest, FleetRunState, FleetRunStatus, PermissionMode,
         SessionId, WorktreeIsolationMode,
     };
-    use wonder_of_u_test_support::unique_test_dir;
+    use wonder_of_u_test_support::{EnvVarGuard, unique_test_dir};
 
     use super::*;
 
@@ -2440,8 +2450,7 @@ mod tests {
         let fleet_id = run.id.to_string();
 
         // Set the CLI bin override so agent tasks spawn our no-op script.
-        // SAFETY: test-only env mutation; single-threaded via --test-threads=1.
-        unsafe { std::env::set_var("WONDER_OF_U_CLI_BIN", &fake_bin) };
+        let _cli_bin = EnvVarGuard::set("WONDER_OF_U_CLI_BIN", &fake_bin);
 
         let cmd = make_fleet_command(&dir);
         let output = futures::executor::block_on(cmd.execute(
@@ -2449,9 +2458,6 @@ mod tests {
             invocation(&format!("reconcile {fleet_id}")),
         ))
         .expect("execute");
-
-        // SAFETY: test-only env mutation; single-threaded via --test-threads=1.
-        unsafe { std::env::remove_var("WONDER_OF_U_CLI_BIN") };
 
         let text = match output {
             CommandOutput::Text(t) => t,
@@ -2567,8 +2573,7 @@ mod tests {
             task_store.write_task(&task).expect("write task");
         }
 
-        // SAFETY: test-only env mutation; single-threaded via --test-threads=1.
-        unsafe { std::env::set_var("WONDER_OF_U_CLI_BIN", &fake_bin) };
+        let _cli_bin = EnvVarGuard::set("WONDER_OF_U_CLI_BIN", &fake_bin);
 
         let cmd = make_fleet_command(&dir);
         let output = futures::executor::block_on(cmd.execute(
@@ -2576,9 +2581,6 @@ mod tests {
             invocation(&format!("reconcile {}", run.id)),
         ))
         .expect("execute");
-
-        // SAFETY: test-only env mutation; single-threaded via --test-threads=1.
-        unsafe { std::env::remove_var("WONDER_OF_U_CLI_BIN") };
 
         let text = match output {
             CommandOutput::Text(t) => t,
@@ -2659,7 +2661,7 @@ mod tests {
         );
 
         // SAFETY: test-only env mutation; single-threaded via --test-threads=1.
-        unsafe { std::env::set_var("WONDER_OF_U_CLI_BIN", &fake_bin) };
+        let _cli_bin = EnvVarGuard::set("WONDER_OF_U_CLI_BIN", &fake_bin);
 
         let cmd = make_fleet_command(&dir);
         let output = futures::executor::block_on(cmd.execute(
@@ -2667,9 +2669,6 @@ mod tests {
             invocation(&format!("reconcile {}", run.id)),
         ))
         .expect("execute");
-
-        // SAFETY: test-only env mutation; single-threaded via --test-threads=1.
-        unsafe { std::env::remove_var("WONDER_OF_U_CLI_BIN") };
 
         let text = match output {
             CommandOutput::Text(t) => t,
@@ -2781,14 +2780,13 @@ mod tests {
             std::fs::set_permissions(&fake_bin, std::fs::Permissions::from_mode(0o755))
                 .expect("chmod");
         }
-        unsafe { std::env::set_var("WONDER_OF_U_CLI_BIN", &fake_bin) };
+        let _cli_bin = EnvVarGuard::set("WONDER_OF_U_CLI_BIN", &fake_bin);
 
         let cmd = make_fleet_command(&dir);
         let output = futures::executor::block_on(
             cmd.execute(stub_context(dir.clone()), invocation("dispatch")),
         )
         .expect("execute");
-        unsafe { std::env::remove_var("WONDER_OF_U_CLI_BIN") };
 
         let text = match output {
             CommandOutput::Text(t) => t,
@@ -2851,14 +2849,13 @@ mod tests {
             std::fs::set_permissions(&fake_bin, std::fs::Permissions::from_mode(0o755))
                 .expect("chmod");
         }
-        unsafe { std::env::set_var("WONDER_OF_U_CLI_BIN", &fake_bin) };
+        let _cli_bin = EnvVarGuard::set("WONDER_OF_U_CLI_BIN", &fake_bin);
 
         let cmd = make_fleet_command(&storage_dir);
         let output = futures::executor::block_on(
             cmd.execute(stub_context(git_repo.clone()), invocation("dispatch")),
         )
         .expect("execute");
-        unsafe { std::env::remove_var("WONDER_OF_U_CLI_BIN") };
 
         let text = match output {
             CommandOutput::Text(t) => t,
@@ -2915,14 +2912,13 @@ mod tests {
             std::fs::set_permissions(&fake_bin, std::fs::Permissions::from_mode(0o755))
                 .expect("chmod");
         }
-        unsafe { std::env::set_var("WONDER_OF_U_CLI_BIN", &fake_bin) };
+        let _cli_bin = EnvVarGuard::set("WONDER_OF_U_CLI_BIN", &fake_bin);
 
         let cmd = make_fleet_command(&storage_dir);
         let output = futures::executor::block_on(
             cmd.execute(stub_context(git_repo.clone()), invocation("dispatch")),
         )
         .expect("execute");
-        unsafe { std::env::remove_var("WONDER_OF_U_CLI_BIN") };
 
         let text = match output {
             CommandOutput::Text(t) => t,
@@ -2954,6 +2950,12 @@ mod tests {
         });
         let req_id = req.id.clone();
         store.queue_member_request(&req).expect("queue");
+
+        // Ensure WONDER_OF_U_CLI_BIN is absent so resolve_cli_executable cannot
+        // locate a binary and the dispatch must fail (non-git dir + no binary).
+        // Without the guard, a concurrent test holding WONDER_OF_U_CLI_BIN could
+        // let the dispatch succeed, making this assertion flaky.
+        let _no_cli_bin = EnvVarGuard::remove("WONDER_OF_U_CLI_BIN");
 
         let cmd = make_fleet_command(&storage_dir);
         let output = futures::executor::block_on(
@@ -3850,5 +3852,87 @@ mod tests {
 
         assert!(text.contains("steering_count=2"), "got: {text}");
         assert!(text.contains("steering_latest="), "got: {text}");
+        // Both messages were written by new() which sets source=Operator.
+        assert!(text.contains("steering_operator_count=2"), "got: {text}");
+        assert!(text.contains("steering_agent_count=0"), "got: {text}");
+    }
+
+    #[test]
+    fn fleet_steer_operator_writes_source_operator_message() {
+        let dir = unique_test_dir("fleet-steer-source-operator");
+        let cmd = make_fleet_command(&dir);
+        let fleet_id = create_pending_fleet(&dir);
+
+        futures::executor::block_on(cmd.execute(
+            stub_context(dir.clone()),
+            invocation(&format!("steer {fleet_id} do the thing")),
+        ))
+        .expect("execute");
+
+        let store = FleetStore::new(&dir);
+        let messages = store.list_steering_messages(fleet_id).expect("list");
+        assert_eq!(messages.len(), 1);
+        assert_eq!(
+            messages[0].source,
+            SteeringSource::Operator,
+            "/fleet steer must produce source=operator messages"
+        );
+        assert!(
+            messages[0].recipient.is_none(),
+            "operator messages have no recipient"
+        );
+        assert!(messages[0].sender_task_id.is_none());
+    }
+
+    #[test]
+    fn fleet_show_counts_operator_and_agent_messages_separately() {
+        let dir = unique_test_dir("fleet-show-source-counts");
+        let store = FleetStore::new(&dir);
+        let run = FleetRunState::new("counts test", PermissionMode::Default, None);
+        let fleet_id = run.id;
+        store.write_run(&run).expect("write run");
+
+        // One operator message via new().
+        store
+            .write_steering_message(&FleetSteeringMessage::new(fleet_id, "operator instruction"))
+            .expect("write operator msg");
+
+        // Two agent messages via new_agent().
+        store
+            .write_steering_message(&FleetSteeringMessage::new_agent(
+                fleet_id,
+                "agent message 1",
+                "reviewer",
+                Some("msg 1".into()),
+                Some(TaskId::new()),
+                "text",
+            ))
+            .expect("write agent msg 1");
+        store
+            .write_steering_message(&FleetSteeringMessage::new_agent(
+                fleet_id,
+                "agent message 2",
+                "*",
+                None,
+                None,
+                "text",
+            ))
+            .expect("write agent msg 2");
+
+        let cmd = make_fleet_command(&dir);
+        let output = futures::executor::block_on(cmd.execute(
+            stub_context(dir.clone()),
+            invocation(&format!("show {fleet_id}")),
+        ))
+        .expect("execute");
+
+        let text = match output {
+            CommandOutput::Text(t) => t,
+            other => panic!("unexpected: {other:?}"),
+        };
+
+        assert!(text.contains("steering_count=3"), "got: {text}");
+        assert!(text.contains("steering_operator_count=1"), "got: {text}");
+        assert!(text.contains("steering_agent_count=2"), "got: {text}");
     }
 }

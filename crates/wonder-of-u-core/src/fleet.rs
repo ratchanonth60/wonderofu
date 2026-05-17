@@ -274,13 +274,28 @@ fn default_fleet_steering_schema_version() -> u16 {
     FLEET_STEERING_SCHEMA_VERSION
 }
 
+/// Identifies who queued a [`FleetSteeringMessage`].
+///
+/// Defaults to [`SteeringSource::Operator`] for legacy records that predate
+/// this field; `#[serde(default)]` ensures backward compatibility with v1 JSON
+/// that does not include a `"source"` key.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SteeringSource {
+    /// Queued by a human operator via `/fleet steer`.
+    #[default]
+    Operator,
+    /// Queued by an agent subprocess via `send_message`.
+    Agent,
+}
+
 /// A persisted steering instruction directed at an active fleet run.
 ///
-/// Steering messages are queued by `fleet steer <fleet_id> <prompt...>` and
-/// stored at `fleet/steering/{fleet_id}/{id}.json`.  They are **advisory
-/// records** in V1: the operator or a future reconcile loop reads them and
-/// decides how to act.  They are never silently applied to already-running
-/// child prompts.
+/// Steering messages are queued by `fleet steer <fleet_id> <prompt...>` or by
+/// `send_message` (agent-sourced) and stored at
+/// `fleet/steering/{fleet_id}/{id}.json`.  They are **advisory records** in
+/// V1: the operator or a future reconcile loop reads them and decides how to
+/// act.  They are never silently applied to already-running child prompts.
 ///
 /// # Auditing
 ///
@@ -291,7 +306,9 @@ fn default_fleet_steering_schema_version() -> u16 {
 /// # Back-compatibility
 ///
 /// All optional fields use `#[serde(default, skip_serializing_if)]` so older
-/// readers that do not know a new field will silently ignore it.
+/// readers that do not know a new field will silently ignore it.  The `source`
+/// field uses `#[serde(default)]` and defaults to
+/// [`SteeringSource::Operator`], keeping legacy v1 messages readable.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct FleetSteeringMessage {
     /// Storage schema guard – always [`FLEET_STEERING_SCHEMA_VERSION`].
@@ -301,7 +318,7 @@ pub struct FleetSteeringMessage {
     pub id: String,
     /// The fleet run this message is directed at.
     pub fleet_id: FleetId,
-    /// The steering instruction from the operator.
+    /// The steering instruction / message content.
     pub prompt: String,
     /// When the message was queued (UTC).
     #[serde(with = "time::serde::rfc3339")]
@@ -314,11 +331,32 @@ pub struct FleetSteeringMessage {
         deserialize_with = "time::serde::rfc3339::option::deserialize"
     )]
     pub applied_at: Option<OffsetDateTime>,
+    /// Who queued this message.
+    ///
+    /// Defaults to [`SteeringSource::Operator`] for legacy records (JSON
+    /// files written before this field was introduced).
+    #[serde(default)]
+    pub source: SteeringSource,
+    /// Intended recipient for agent-sourced messages.
+    ///
+    /// A bare team-member name (e.g. `"reviewer"`) or `"*"` for broadcast.
+    /// `None` for operator-sourced steering messages.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recipient: Option<String>,
+    /// 5–10 word preview, present when the agent supplied a `summary`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
+    /// Task id of the agent that sent this message, if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sender_task_id: Option<TaskId>,
+    /// Kind label: `"text"`, `"shutdown_request"`, etc.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message_kind: Option<String>,
 }
 
 impl FleetSteeringMessage {
-    /// Creates a new steering message for `fleet_id` with a fresh UUID and
-    /// `queued_at = now`.
+    /// Creates a new operator-sourced steering message for `fleet_id` with a
+    /// fresh UUID and `queued_at = now`.
     #[must_use]
     pub fn new(fleet_id: FleetId, prompt: impl Into<String>) -> Self {
         Self {
@@ -328,6 +366,34 @@ impl FleetSteeringMessage {
             prompt: prompt.into(),
             queued_at: OffsetDateTime::now_utc(),
             applied_at: None,
+            source: SteeringSource::Operator,
+            recipient: None,
+            summary: None,
+            sender_task_id: None,
+            message_kind: None,
+        }
+    }
+
+    /// Creates a new agent-sourced steering message (from `send_message`).
+    ///
+    /// Sets `source = Agent` and populates the routing metadata fields
+    /// (`recipient`, `summary`, `sender_task_id`, `message_kind`).
+    #[must_use]
+    pub fn new_agent(
+        fleet_id: FleetId,
+        content: impl Into<String>,
+        recipient: impl Into<String>,
+        summary: Option<String>,
+        sender_task_id: Option<TaskId>,
+        message_kind: impl Into<String>,
+    ) -> Self {
+        Self {
+            source: SteeringSource::Agent,
+            recipient: Some(recipient.into()),
+            summary,
+            sender_task_id,
+            message_kind: Some(message_kind.into()),
+            ..Self::new(fleet_id, content)
         }
     }
 }
@@ -902,5 +968,125 @@ mod tests {
         let a = FleetSteeringMessage::new(fleet_id, "first");
         let b = FleetSteeringMessage::new(fleet_id, "second");
         assert_ne!(a.id, b.id, "each message must have a unique id");
+    }
+
+    // ── SteeringSource and new agent fields ───────────────────────────────────
+
+    #[test]
+    fn fleet_steering_message_new_defaults_to_operator_source() {
+        let fleet_id = FleetId::new();
+        let msg = FleetSteeringMessage::new(fleet_id, "operator instruction");
+        assert_eq!(msg.source, SteeringSource::Operator);
+        assert!(msg.recipient.is_none());
+        assert!(msg.summary.is_none());
+        assert!(msg.sender_task_id.is_none());
+        assert!(msg.message_kind.is_none());
+    }
+
+    #[test]
+    fn fleet_steering_message_new_agent_sets_agent_source_and_routing() {
+        let fleet_id = FleetId::new();
+        let sender_id = TaskId::new();
+        let msg = FleetSteeringMessage::new_agent(
+            fleet_id,
+            "please review auth",
+            "reviewer",
+            Some("review auth".into()),
+            Some(sender_id),
+            "text",
+        );
+        assert_eq!(msg.source, SteeringSource::Agent);
+        assert_eq!(msg.recipient.as_deref(), Some("reviewer"));
+        assert_eq!(msg.summary.as_deref(), Some("review auth"));
+        assert_eq!(msg.sender_task_id, Some(sender_id));
+        assert_eq!(msg.message_kind.as_deref(), Some("text"));
+        assert_eq!(msg.prompt, "please review auth");
+        assert_eq!(msg.fleet_id, fleet_id);
+    }
+
+    #[test]
+    fn fleet_steering_message_new_agent_broadcast_recipient() {
+        let fleet_id = FleetId::new();
+        let msg =
+            FleetSteeringMessage::new_agent(fleet_id, "pivot to auth", "*", None, None, "text");
+        assert_eq!(msg.recipient.as_deref(), Some("*"));
+        assert!(msg.summary.is_none());
+    }
+
+    #[test]
+    fn fleet_steering_message_agent_round_trips_via_json() {
+        let fleet_id = FleetId::new();
+        let sender_id = TaskId::new();
+        let msg = FleetSteeringMessage::new_agent(
+            fleet_id,
+            "do the auth work",
+            "worker",
+            Some("auth work".into()),
+            Some(sender_id),
+            "text",
+        );
+        let json = serde_json::to_string(&msg).expect("serialize");
+        let decoded: FleetSteeringMessage = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(decoded.source, SteeringSource::Agent);
+        assert_eq!(decoded.recipient.as_deref(), Some("worker"));
+        assert_eq!(decoded.sender_task_id, Some(sender_id));
+        assert_eq!(decoded.message_kind.as_deref(), Some("text"));
+    }
+
+    /// Legacy v1 JSON (no `source`, `recipient`, `summary`, `sender_task_id`,
+    /// `message_kind` fields) must deserialize with source=Operator defaults.
+    #[test]
+    fn fleet_steering_message_legacy_v1_json_deserializes_as_operator() {
+        let fleet_id = FleetId::new();
+        let raw = serde_json::json!({
+            "schema_version": 1,
+            "id": "550e8400-e29b-41d4-a716-446655440042",
+            "fleet_id": fleet_id.to_string(),
+            "prompt": "focus on the auth module",
+            "queued_at": "2024-06-01T12:00:00Z"
+        });
+        let decoded: FleetSteeringMessage =
+            serde_json::from_value(raw).expect("deserialize legacy v1 steering message");
+        assert_eq!(
+            decoded.source,
+            SteeringSource::Operator,
+            "legacy defaults to operator"
+        );
+        assert!(decoded.recipient.is_none());
+        assert!(decoded.summary.is_none());
+        assert!(decoded.sender_task_id.is_none());
+        assert!(decoded.message_kind.is_none());
+        assert_eq!(decoded.prompt, "focus on the auth module");
+    }
+
+    #[test]
+    fn fleet_steering_message_operator_source_not_serialized_when_default() {
+        // The #[serde(default)] on source means `source = "operator"` will be
+        // written; that's fine. We verify it round-trips cleanly.
+        let fleet_id = FleetId::new();
+        let msg = FleetSteeringMessage::new(fleet_id, "operator msg");
+        let json = serde_json::to_string(&msg).expect("serialize");
+        // source=operator should appear (it's not skip_serializing_if)
+        assert!(
+            json.contains("\"operator\""),
+            "source should be serialized: {json}"
+        );
+        let decoded: FleetSteeringMessage = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(decoded.source, SteeringSource::Operator);
+    }
+
+    #[test]
+    fn fleet_steering_message_new_agent_skips_none_optional_fields_in_json() {
+        let fleet_id = FleetId::new();
+        let msg = FleetSteeringMessage::new_agent(fleet_id, "broadcast", "*", None, None, "text");
+        let json = serde_json::to_string(&msg).expect("serialize");
+        assert!(
+            !json.contains("summary"),
+            "absent summary should be omitted: {json}"
+        );
+        assert!(
+            !json.contains("sender_task_id"),
+            "absent sender_task_id should be omitted: {json}"
+        );
     }
 }

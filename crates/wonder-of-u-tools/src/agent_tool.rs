@@ -788,7 +788,12 @@ mod tests {
         // Must succeed and carry exactly one LaunchAgentTask effect.
         assert!(result.success, "result should be success");
         assert_eq!(result.effects.len(), 1, "expected exactly one effect");
-        let ToolEffect::LaunchAgentTask(ref spec) = result.effects[0];
+        let ToolEffect::LaunchAgentTask(ref spec) = result.effects[0] else {
+            panic!(
+                "expected LaunchAgentTask effect, got: {:?}",
+                result.effects[0]
+            );
+        };
         assert_eq!(spec.request.prompt, "review this code");
 
         // Metadata status must be "launch_requested", not "pending_dispatch".

@@ -332,6 +332,28 @@ pub struct AgentLaunchSpec {
     pub request: FleetMemberRequest,
 }
 
+/// Plain-data spec carried by [`ToolEffect::SendAgentMessage`].
+///
+/// Produced by `SendMessageTool` for team-recipient calls.  The CLI runtime
+/// reads `WONDER_OF_U_FLEET_ID` and persists this as a
+/// [`FleetSteeringMessage`](crate::FleetSteeringMessage) with
+/// `source = SteeringSource::Agent`.
+///
+/// The tool layer never reads environment variables; all env access happens
+/// in the CLI effect processor.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct AgentMessageSpec {
+    /// Recipient: a bare team-member name or `"*"` for broadcast.
+    pub to: String,
+    /// 5–10 word preview supplied with plain-text messages.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
+    /// Full message text / prompt to persist as the steering instruction.
+    pub content: String,
+    /// Kind label (e.g. `"text"`, `"shutdown_request"`).
+    pub message_kind: String,
+}
+
 /// Typed side-effects that a tool may request from the calling runtime.
 ///
 /// Effects are returned inside [`ToolResult::effects`] and processed **after**
@@ -342,6 +364,11 @@ pub struct AgentLaunchSpec {
 ///
 /// [`ToolResult::effects`] defaults to an empty `Vec` and is omitted from JSON
 /// when empty, so older readers silently ignore it.
+// `LaunchAgentTask` carries a ~504-byte `AgentLaunchSpec`; boxing it would
+// add a heap allocation for every tool dispatch.  `ToolEffect` values are
+// short-lived (drained immediately in `process_tool_effects`) so the size
+// difference is acceptable.
+#[allow(clippy::large_enum_variant)]
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", content = "data", rename_all = "snake_case")]
 pub enum ToolEffect {
@@ -355,6 +382,21 @@ pub enum ToolEffect {
     /// These two paths are mutually exclusive for a single invocation to prevent
     /// duplicate tasks.
     LaunchAgentTask(AgentLaunchSpec),
+
+    /// Request the runtime to persist a `send_message` call as an advisory
+    /// fleet steering message with `source = SteeringSource::Agent`.
+    ///
+    /// The runtime:
+    /// 1. Reads `WONDER_OF_U_FLEET_ID` from the environment.
+    /// 2. Validates the fleet exists and is not terminal.
+    /// 3. Writes a `FleetSteeringMessage` with `source = Agent`.
+    /// 4. Updates the result with `status = queued_advisory` and the steering id.
+    ///
+    /// If `WONDER_OF_U_FLEET_ID` is absent, the storage dir is not configured,
+    /// or the fleet is terminal/missing, the result is marked failed and
+    /// nothing is written.  This is **advisory routing only** — no live
+    /// delivery to any running subprocess is attempted.
+    SendAgentMessage(AgentMessageSpec),
 }
 
 /// Represents tool result
@@ -964,5 +1006,64 @@ mod tests {
             roundtripped,
             ToolEffect::LaunchAgentTask(AgentLaunchSpec { request: req })
         );
+    }
+
+    /// `ToolEffect::SendAgentMessage` round-trips with the expected discriminant
+    /// shape `{type: "send_agent_message", data: {...}}`.
+    #[test]
+    fn tool_effect_send_agent_message_serde_round_trip() {
+        let spec = AgentMessageSpec {
+            to: "reviewer".into(),
+            summary: Some("review auth".into()),
+            content: "please review the auth module".into(),
+            message_kind: "text".into(),
+        };
+        let effect = ToolEffect::SendAgentMessage(spec.clone());
+        let json = serde_json::to_value(&effect).expect("serialize effect");
+
+        assert_eq!(json["type"], "send_agent_message");
+        assert!(json["data"].is_object());
+        assert_eq!(json["data"]["to"], "reviewer");
+        assert_eq!(json["data"]["message_kind"], "text");
+
+        let roundtripped: ToolEffect = serde_json::from_value(json).expect("deserialize effect");
+        assert_eq!(roundtripped, ToolEffect::SendAgentMessage(spec));
+    }
+
+    /// `AgentMessageSpec` with no summary omits the `summary` field from JSON.
+    #[test]
+    fn agent_message_spec_absent_summary_omitted_from_json() {
+        let spec = AgentMessageSpec {
+            to: "*".into(),
+            summary: None,
+            content: "broadcast update".into(),
+            message_kind: "text".into(),
+        };
+        let json = serde_json::to_string(&spec).expect("serialize");
+        assert!(
+            !json.contains("summary"),
+            "absent summary should be omitted: {json}"
+        );
+    }
+
+    /// Legacy `ToolResult` JSON (no `effects`) deserializes with empty effects,
+    /// and a result carrying `SendAgentMessage` round-trips correctly.
+    #[test]
+    fn tool_result_with_send_agent_message_effect_round_trips() {
+        let id = ToolUseId::new();
+        let spec = AgentMessageSpec {
+            to: "team-lead".into(),
+            summary: Some("status update".into()),
+            content: "milestone reached".into(),
+            message_kind: "text".into(),
+        };
+        let result = ToolResult::success(id, "queued")
+            .with_effects(vec![ToolEffect::SendAgentMessage(spec.clone())]);
+
+        let json = serde_json::to_value(&result).expect("serialize");
+        let decoded: ToolResult = serde_json::from_value(json).expect("deserialize");
+
+        assert_eq!(decoded.effects.len(), 1);
+        assert_eq!(decoded.effects[0], ToolEffect::SendAgentMessage(spec));
     }
 }

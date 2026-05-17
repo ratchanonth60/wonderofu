@@ -116,7 +116,7 @@ pub use fingerprint::{fingerprint_json, fingerprint_str};
 pub use fleet::{
     AGENT_TASK_RESULT_SCHEMA_VERSION, AgentTaskResult, FLEET_SCHEMA_VERSION,
     FLEET_STEERING_SCHEMA_VERSION, FleetMemberRequest, FleetRunState, FleetRunStatus,
-    FleetSteeringMessage, WorktreeIsolation, WorktreeIsolationMode,
+    FleetSteeringMessage, SteeringSource, WorktreeIsolation, WorktreeIsolationMode,
 };
 /// Re-exports items from `fleet_roles`
 pub use fleet_roles::{FleetAgentRole, FleetRoleCatalog};
@@ -162,8 +162,8 @@ pub use set::{difference, intersection, intersects, union};
 pub use shell_session::{ShellOutput, ShellSession, ShellSessionStore};
 /// Re-exports items from `tool`
 pub use tool::{
-    AgentLaunchSpec, Tool, ToolContext, ToolEffect, ToolKind, ToolProgress, ToolQuery,
-    ToolRegistry, ToolResult, ToolSchema, ToolSource, ToolSpec,
+    AgentLaunchSpec, AgentMessageSpec, Tool, ToolContext, ToolEffect, ToolKind, ToolProgress,
+    ToolQuery, ToolRegistry, ToolResult, ToolSchema, ToolSource, ToolSpec,
 };
 /// Re-exports items from `treeify`
 pub use treeify::render_path_tree;

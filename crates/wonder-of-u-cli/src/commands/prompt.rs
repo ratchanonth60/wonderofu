@@ -14,9 +14,9 @@ use wonder_of_u_agent::{
 use wonder_of_u_core::{
     AGENT_TASK_RESULT_SCHEMA_VERSION, AgentTaskResult, AppState, Command, CommandContext,
     CommandInvocation, CommandKind, CommandOutput, CommandSpec, CoordinatorState, FeatureFlag,
-    FleetId, MessageEnvelope, MessagePayload, PermissionDecision, PermissionMode, PromptSuggestion,
-    QueryState, Result, TaskId, TaskStatus, ToolContext, ToolEffect, ToolQuery, ToolResult,
-    ToolUseId, WonderError, best_prompt_suggestion,
+    FleetId, FleetSteeringMessage, MessageEnvelope, MessagePayload, PermissionDecision,
+    PermissionMode, PromptSuggestion, QueryState, Result, TaskId, TaskStatus, ToolContext,
+    ToolEffect, ToolQuery, ToolResult, ToolUseId, WonderError, best_prompt_suggestion,
 };
 use wonder_of_u_storage::{
     AgentTaskResultStore, CostStore, FleetStore, SessionCostLedger, SessionMemoryIndexStore,
@@ -960,6 +960,127 @@ pub(crate) fn process_tool_effects(
                     }
                 }
             }
+            ToolEffect::SendAgentMessage(spec) => {
+                // Read fleet context injected by the task runtime at launch.
+                let fleet_id_str = std::env::var("WONDER_OF_U_FLEET_ID").ok();
+                let sender_task_id_str = std::env::var("WONDER_OF_U_TASK_ID").ok();
+
+                let (fleet_id_str, dir) = match (fleet_id_str, storage_dir) {
+                    (None, _) => {
+                        result.success = false;
+                        result.content = "send_message: WONDER_OF_U_FLEET_ID is not set; \
+                             message not written"
+                            .into();
+                        let meta = ensure_meta(&mut result);
+                        meta.insert(
+                            "status".into(),
+                            serde_json::Value::String("failed_no_fleet_context".into()),
+                        );
+                        meta.insert("live_delivery".into(), serde_json::Value::Bool(false));
+                        continue;
+                    }
+                    (_, None) => {
+                        result.success = false;
+                        result.content = "send_message: no storage directory configured; \
+                             message not written"
+                            .into();
+                        let meta = ensure_meta(&mut result);
+                        meta.insert(
+                            "status".into(),
+                            serde_json::Value::String("failed_no_storage".into()),
+                        );
+                        meta.insert("live_delivery".into(), serde_json::Value::Bool(false));
+                        continue;
+                    }
+                    (Some(fid), Some(d)) => (fid, d),
+                };
+
+                let fleet_id = match fleet_id_str.parse::<FleetId>() {
+                    Ok(id) => id,
+                    Err(_) => {
+                        result.success = false;
+                        result.content = format!(
+                            "send_message: invalid WONDER_OF_U_FLEET_ID={fleet_id_str}; \
+                             message not written"
+                        );
+                        continue;
+                    }
+                };
+
+                let store = FleetStore::new(dir);
+                match store.read_run(fleet_id) {
+                    Err(e) => {
+                        result.success = false;
+                        result.content = format!(
+                            "send_message: fleet {fleet_id} not found: {e}; \
+                             message not written"
+                        );
+                        set_send_message_failure_metadata(
+                            &mut result,
+                            "failed_fleet_not_found",
+                            "fleet not found; message not written",
+                        );
+                    }
+                    Ok(run) if run.status.is_terminal() => {
+                        result.success = false;
+                        result.content = format!(
+                            "send_message: fleet {fleet_id} is {} (terminal); \
+                             message not written",
+                            run.status.label(),
+                        );
+                        set_send_message_failure_metadata(
+                            &mut result,
+                            "failed_fleet_terminal",
+                            "fleet is terminal; message not written",
+                        );
+                    }
+                    Ok(_) => {
+                        let sender_task_id = sender_task_id_str
+                            .as_deref()
+                            .and_then(|s| s.parse::<TaskId>().ok());
+                        let msg = FleetSteeringMessage::new_agent(
+                            fleet_id,
+                            &spec.content,
+                            spec.to.clone(),
+                            spec.summary.clone(),
+                            sender_task_id,
+                            &spec.message_kind,
+                        );
+                        let steering_id = msg.id.clone();
+                        match store.write_steering_message(&msg) {
+                            Ok(()) => {
+                                result.content = "message queued as advisory fleet steering; \
+                                     not live-delivered to any running task"
+                                    .into();
+                                let meta = ensure_meta(&mut result);
+                                meta.insert(
+                                    "status".into(),
+                                    serde_json::Value::String("queued_advisory".into()),
+                                );
+                                meta.insert(
+                                    "fleet_id".into(),
+                                    serde_json::Value::String(fleet_id.to_string()),
+                                );
+                                meta.insert(
+                                    "steering_id".into(),
+                                    serde_json::Value::String(steering_id),
+                                );
+                                meta.insert("live_delivery".into(), serde_json::Value::Bool(false));
+                            }
+                            Err(e) => {
+                                result.success = false;
+                                result.content =
+                                    format!("send_message: could not write steering message: {e}");
+                                set_send_message_failure_metadata(
+                                    &mut result,
+                                    "failed_write",
+                                    "could not write steering message",
+                                );
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
     result
@@ -975,6 +1096,20 @@ fn ensure_meta(result: &mut ToolResult) -> &mut serde_json::Map<String, serde_js
         .metadata
         .as_object_mut()
         .expect("just initialized as object")
+}
+
+fn set_send_message_failure_metadata(result: &mut ToolResult, status: &str, delivery_note: &str) {
+    let meta = ensure_meta(result);
+    meta.insert(
+        "status".into(),
+        serde_json::Value::String(status.to_owned()),
+    );
+    meta.insert("live_delivery".into(), serde_json::Value::Bool(false));
+    meta.insert("delivery_attempted".into(), serde_json::Value::Bool(false));
+    meta.insert(
+        "delivery_note".into(),
+        serde_json::Value::String(delivery_note.to_owned()),
+    );
 }
 
 fn execute_tool_call(
@@ -1156,7 +1291,10 @@ fn permission_decision_label(decision: &PermissionDecision) -> &'static str {
 
 #[cfg(test)]
 mod tests {
-    use wonder_of_u_core::{AgentCatalog, AgentLaunchSpec, ToolEffect, ToolResult, ToolUseId};
+    use wonder_of_u_core::{
+        AgentCatalog, AgentLaunchSpec, AgentMessageSpec, FleetRunState, FleetRunStatus,
+        PermissionMode, SteeringSource, ToolEffect, ToolResult, ToolUseId,
+    };
     use wonder_of_u_storage::FleetStore;
     use wonder_of_u_test_support::{EnvVarGuard, unique_test_dir};
     use wonder_of_u_tools::build_fleet_member_request_with_catalog;
@@ -1185,6 +1323,19 @@ mod tests {
         ToolResult::success(use_id, "launch_requested").with_effects(vec![
             ToolEffect::LaunchAgentTask(AgentLaunchSpec { request }),
         ])
+    }
+
+    /// Helper: ToolResult with a SendAgentMessage effect.
+    fn send_message_effect_result(to: &str, content: &str, summary: Option<&str>) -> ToolResult {
+        let use_id = ToolUseId::new();
+        let spec = AgentMessageSpec {
+            to: to.into(),
+            summary: summary.map(Into::into),
+            content: content.into(),
+            message_kind: "text".into(),
+        };
+        ToolResult::success(use_id, "queued_advisory")
+            .with_effects(vec![ToolEffect::SendAgentMessage(spec)])
     }
 
     /// An empty-effects result passes through process_tool_effects unchanged.
@@ -1257,5 +1408,168 @@ mod tests {
             processed.effects.is_empty(),
             "effects should always be drained"
         );
+    }
+
+    // ── SendAgentMessage effect tests ─────────────────────────────────────────
+
+    /// SendAgentMessage with a valid fleet context writes a steering message
+    /// with source=Agent and the recipient/summary fields populated.
+    #[test]
+    fn process_send_agent_message_writes_agent_steering_message() {
+        let dir = unique_test_dir("prompt-send-msg-writes");
+
+        // Create a non-terminal fleet run in storage.
+        let store = FleetStore::new(&dir);
+        let run = FleetRunState::new("test fleet", PermissionMode::Default, None);
+        let fleet_id = run.id;
+        store.write_run(&run).expect("write run");
+
+        // Set fleet/task env context.
+        let _fid = EnvVarGuard::set("WONDER_OF_U_FLEET_ID", fleet_id.to_string().as_str());
+        let fake_task_id = wonder_of_u_core::TaskId::new();
+        let _tid = EnvVarGuard::set("WONDER_OF_U_TASK_ID", fake_task_id.to_string().as_str());
+
+        let result = send_message_effect_result(
+            "reviewer",
+            "please review the auth module",
+            Some("review auth"),
+        );
+        let processed = process_tool_effects(result, Some(&dir), &dir);
+
+        assert!(
+            processed.success,
+            "should succeed; content: {}",
+            processed.content
+        );
+        assert!(processed.effects.is_empty(), "effects should be drained");
+        assert_eq!(
+            processed.metadata["status"].as_str(),
+            Some("queued_advisory")
+        );
+        assert_eq!(processed.metadata["live_delivery"], false);
+        assert!(
+            processed.metadata["steering_id"].is_string(),
+            "steering_id should be set"
+        );
+
+        // Verify the persisted message has source=Agent with correct fields.
+        let messages = store
+            .list_steering_messages(fleet_id)
+            .expect("list steering");
+        assert_eq!(messages.len(), 1, "one steering message written");
+        let msg = &messages[0];
+        assert_eq!(msg.source, SteeringSource::Agent);
+        assert_eq!(msg.recipient.as_deref(), Some("reviewer"));
+        assert_eq!(msg.summary.as_deref(), Some("review auth"));
+        assert_eq!(msg.message_kind.as_deref(), Some("text"));
+        assert_eq!(msg.sender_task_id, Some(fake_task_id));
+        assert_eq!(msg.prompt, "please review the auth module");
+    }
+
+    /// Without WONDER_OF_U_FLEET_ID the processor returns a failed result and
+    /// writes nothing to storage.
+    #[test]
+    fn process_send_agent_message_fails_without_fleet_id() {
+        let dir = unique_test_dir("prompt-send-msg-no-fleet");
+        FleetStore::new(&dir).ensure_layout().expect("layout");
+
+        // Ensure the env var is absent.
+        let _fid = EnvVarGuard::remove("WONDER_OF_U_FLEET_ID");
+
+        let result = send_message_effect_result("reviewer", "hi", Some("hi"));
+        let processed = process_tool_effects(result, Some(&dir), &dir);
+
+        assert!(!processed.success, "should fail without fleet id");
+        assert!(
+            processed.content.contains("WONDER_OF_U_FLEET_ID"),
+            "error should mention env var; got: {}",
+            processed.content
+        );
+        assert!(processed.effects.is_empty(), "effects should be drained");
+
+        // Nothing should be written.
+        let msgs = FleetStore::new(&dir)
+            .list_steering_messages(wonder_of_u_core::FleetId::new())
+            .unwrap_or_default();
+        assert!(msgs.is_empty());
+    }
+
+    /// Without a storage_dir the processor returns a failed result and writes
+    /// nothing.
+    #[test]
+    fn process_send_agent_message_fails_without_storage_dir() {
+        let dir = unique_test_dir("prompt-send-msg-no-storage");
+        let fleet_id = wonder_of_u_core::FleetId::new();
+        let _fid = EnvVarGuard::set("WONDER_OF_U_FLEET_ID", fleet_id.to_string().as_str());
+
+        let result = send_message_effect_result("reviewer", "hi", Some("hi"));
+        // Pass storage_dir=None (and don't set WONDER_OF_U_STORAGE_DIR).
+        let _no_storage = EnvVarGuard::remove("WONDER_OF_U_STORAGE_DIR");
+        let _no_xdg = EnvVarGuard::remove("XDG_CONFIG_HOME");
+        // Keep HOME set so env resolution still fails due to missing fleet.
+        // Actually we pass None directly and check error.
+        let processed = process_tool_effects(result, None, &dir);
+
+        assert!(!processed.success, "should fail without storage dir");
+        assert!(processed.effects.is_empty());
+    }
+
+    /// A terminal fleet rejects the message and nothing is written.
+    #[test]
+    fn process_send_agent_message_fails_for_terminal_fleet() {
+        let dir = unique_test_dir("prompt-send-msg-terminal-fleet");
+
+        let store = FleetStore::new(&dir);
+        let mut run = FleetRunState::new("done fleet", PermissionMode::Default, None);
+        run.status = FleetRunStatus::Completed;
+        let fleet_id = run.id;
+        store.write_run(&run).expect("write run");
+
+        let _fid = EnvVarGuard::set("WONDER_OF_U_FLEET_ID", fleet_id.to_string().as_str());
+
+        let result = send_message_effect_result("reviewer", "more work", Some("more work"));
+        let processed = process_tool_effects(result, Some(&dir), &dir);
+
+        assert!(!processed.success, "should fail for terminal fleet");
+        assert!(
+            processed.content.contains("terminal"),
+            "error should mention terminal; got: {}",
+            processed.content
+        );
+        assert_eq!(
+            processed.metadata["status"].as_str(),
+            Some("failed_fleet_terminal")
+        );
+        assert_eq!(
+            processed.metadata["delivery_note"].as_str(),
+            Some("fleet is terminal; message not written")
+        );
+        assert!(processed.effects.is_empty());
+
+        // Nothing written.
+        let msgs = store.list_steering_messages(fleet_id).unwrap_or_default();
+        assert!(msgs.is_empty());
+    }
+
+    /// A broadcast message (to="*") is persisted with recipient="*".
+    #[test]
+    fn process_send_agent_message_broadcast_recipient() {
+        let dir = unique_test_dir("prompt-send-msg-broadcast");
+
+        let store = FleetStore::new(&dir);
+        let run = FleetRunState::new("broadcast fleet", PermissionMode::Default, None);
+        let fleet_id = run.id;
+        store.write_run(&run).expect("write run");
+
+        let _fid = EnvVarGuard::set("WONDER_OF_U_FLEET_ID", fleet_id.to_string().as_str());
+
+        let result = send_message_effect_result("*", "focus on auth", Some("focus auth"));
+        let processed = process_tool_effects(result, Some(&dir), &dir);
+
+        assert!(processed.success, "broadcast should succeed");
+        let msgs = store.list_steering_messages(fleet_id).expect("list");
+        assert_eq!(msgs.len(), 1);
+        assert_eq!(msgs[0].recipient.as_deref(), Some("*"));
+        assert_eq!(msgs[0].source, SteeringSource::Agent);
     }
 }
