@@ -440,12 +440,14 @@ impl TeleportCommand {
 /// Config values are preserved for forward compatibility with a future release
 /// gated on `FeatureFlag::RemoteTriggers`; they do not drive any live
 /// connection today.
-pub struct RemoteEnvCommand;
+pub struct RemoteEnvCommand {
+    storage_dir: Option<PathBuf>,
+}
 
 impl RemoteEnvCommand {
-    /// Constant fn
-    pub const fn new() -> Self {
-        Self
+    /// Creates a command backed by the configured storage directory.
+    pub fn new(storage_dir: Option<PathBuf>) -> Self {
+        Self { storage_dir }
     }
 
     /// Handles command spec
@@ -463,12 +465,14 @@ impl RemoteEnvCommand {
 /// Config is persisted so it survives a future upgrade that enables
 /// `FeatureFlag::RemoteTriggers`, but it does not activate any remote
 /// session today.
-pub struct RemoteSetupCommand;
+pub struct RemoteSetupCommand {
+    storage_dir: Option<PathBuf>,
+}
 
 impl RemoteSetupCommand {
-    /// Constant fn
-    pub const fn new() -> Self {
-        Self
+    /// Creates a command backed by the configured storage directory.
+    pub fn new(storage_dir: Option<PathBuf>) -> Self {
+        Self { storage_dir }
     }
 
     /// Handles command spec
@@ -508,12 +512,14 @@ impl BridgeKickCommand {
 }
 
 /// Represents sandbox toggle command
-pub struct SandboxToggleCommand;
+pub struct SandboxToggleCommand {
+    storage_dir: Option<PathBuf>,
+}
 
 impl SandboxToggleCommand {
-    /// Constant fn
-    pub const fn new() -> Self {
-        Self
+    /// Creates a command backed by the configured storage directory.
+    pub fn new(storage_dir: Option<PathBuf>) -> Self {
+        Self { storage_dir }
     }
 
     /// Handles command spec
@@ -536,12 +542,14 @@ impl SandboxToggleCommand {
 /// not activate any remote agent today.
 ///
 /// Full cloud multi-agent support is gated on `FeatureFlag::RemoteTriggers`.
-pub struct UltraplanCommand;
+pub struct UltraplanCommand {
+    storage_dir: Option<PathBuf>,
+}
 
 impl UltraplanCommand {
-    /// Constant fn
-    pub const fn new() -> Self {
-        Self
+    /// Creates a command backed by the configured storage directory.
+    pub fn new(storage_dir: Option<PathBuf>) -> Self {
+        Self { storage_dir }
     }
 
     /// Handles command spec
@@ -1205,8 +1213,9 @@ impl Command for RemoteEnvCommand {
         _context: CommandContext,
         _invocation: CommandInvocation,
     ) -> Result<CommandOutput> {
+        let storage_dir = self.storage_dir.clone().or_else(|| storage_root(None));
         Ok(CommandOutput::Text(render_remote_env(
-            storage_root(None).as_deref(),
+            storage_dir.as_deref(),
         )?))
     }
 }
@@ -1222,8 +1231,9 @@ impl Command for RemoteSetupCommand {
         _context: CommandContext,
         invocation: CommandInvocation,
     ) -> Result<CommandOutput> {
+        let storage_dir = self.storage_dir.clone().or_else(|| storage_root(None));
         Ok(CommandOutput::Text(remote_setup(
-            storage_root(None).as_deref(),
+            storage_dir.as_deref(),
             invocation.args.trim(),
         )?))
     }
@@ -1257,8 +1267,9 @@ impl Command for SandboxToggleCommand {
         _context: CommandContext,
         invocation: CommandInvocation,
     ) -> Result<CommandOutput> {
+        let storage_dir = self.storage_dir.clone().or_else(|| storage_root(None));
         Ok(CommandOutput::Text(toggle_sandbox(
-            storage_root(None).as_deref(),
+            storage_dir.as_deref(),
             invocation.args.trim(),
         )?))
     }
@@ -1275,8 +1286,9 @@ impl Command for UltraplanCommand {
         _context: CommandContext,
         _invocation: CommandInvocation,
     ) -> Result<CommandOutput> {
+        let storage_dir = self.storage_dir.clone().or_else(|| storage_root(None));
         Ok(CommandOutput::Text(enable_ultraplan(
-            storage_root(None).as_deref(),
+            storage_dir.as_deref(),
         )?))
     }
 }
