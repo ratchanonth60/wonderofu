@@ -58,10 +58,10 @@ use time::OffsetDateTime;
 use unicode_segmentation::UnicodeSegmentation;
 use wonder_of_u_agent::{ProviderResolver, ProviderStatusReport};
 use wonder_of_u_core::{
-    Command, CommandContext, CommandInvocation, CommandKind, CommandOutput, CommandSpec,
-    FeatureFlag, FleetAgentRole, FleetId, FleetMemberRequest, FleetRoleCatalog, FleetRunState,
-    FleetRunStatus, FleetSteeringMessage, Result, TaskId, TaskStatus, WonderError,
-    WorktreeIsolation, WorktreeIsolationMode, get_git_root,
+    AgentDefinitionSnapshot, Command, CommandContext, CommandInvocation, CommandKind,
+    CommandOutput, CommandSpec, FeatureFlag, FleetAgentRole, FleetId, FleetMemberRequest,
+    FleetRoleCatalog, FleetRunState, FleetRunStatus, FleetSteeringMessage, Result, TaskId,
+    TaskStatus, WonderError, WorktreeIsolation, WorktreeIsolationMode, get_git_root,
 };
 use wonder_of_u_storage::{FleetInspector, FleetStore, MemberObservationClass};
 use wonder_of_u_tools::{
@@ -1409,8 +1409,9 @@ impl FleetCommand {
 ///
 /// On success the pending file is deleted and the new [`TaskId`] is returned.
 ///
-/// If the request carries a `role` id, the role's preamble is prepended to the
-/// request prompt before the agent is launched.
+/// If the request carries an agent definition snapshot, that stable snapshot
+/// is used for the prompt/model/tool configuration. Legacy role ids fall back
+/// to [`FleetRoleCatalog`].
 ///
 /// If the request carries an `isolation` field with mode `Worktree`, a git
 /// worktree is created (or resumed) before launching the agent.  A failure to
@@ -1424,8 +1425,19 @@ fn dispatch_one(
 ) -> Result<TaskId> {
     let cwd = req.cwd.clone().unwrap_or_else(|| context.cwd.clone());
 
-    // Apply role preamble when a role id is stored on the request.
-    let (prompt, allowed_tools) = if let Some(ref role_id) = req.role {
+    // Prefer the captured definition snapshot so custom agent definitions can
+    // dispatch even if the source file is later edited or deleted.
+    let (prompt, allowed_tools, model) = if let Some(snapshot) = &req.definition_snapshot {
+        (
+            compose_definition_prompt(snapshot, &req.prompt),
+            combine_allowed_tools(
+                req.allowed_tools.clone(),
+                non_empty_vec(snapshot.allowed_tools.clone()),
+                &snapshot.definition_id,
+            )?,
+            req.model.clone().or_else(|| snapshot.model.clone()),
+        )
+    } else if let Some(ref role_id) = req.role {
         let catalog = FleetRoleCatalog::builtin();
         let role = catalog
             .get(role_id)
@@ -1440,11 +1452,16 @@ fn dispatch_one(
         (
             role.compose_prompt(&req.prompt),
             role_allowed_tools_for_launch(role),
+            req.model.clone(),
         )
     } else {
         // Fall back to per-request allowed_tools (set by the `agent` tool when
         // the caller passes an explicit `tools` list).
-        (req.prompt.clone(), req.allowed_tools.clone())
+        (
+            req.prompt.clone(),
+            req.allowed_tools.clone(),
+            req.model.clone(),
+        )
     };
 
     // Apply worktree isolation if requested.
@@ -1466,7 +1483,7 @@ fn dispatch_one(
         description: req.description.clone(),
         prompt,
         provider: req.provider.clone().or_else(|| report.provider.clone()),
-        model: req.model.clone().or_else(|| report.model.clone()),
+        model: model.or_else(|| report.model.clone()),
         cwd: effective_cwd,
         fleet_id: req.fleet_id,
         fleet_request_id: Some(req.id.clone()),
@@ -1581,6 +1598,53 @@ fn request_name_fallback(request_id: &str) -> String {
 
 fn role_allowed_tools_for_launch(role: &FleetAgentRole) -> Option<Vec<String>> {
     (!role.allowed_tools.is_empty()).then(|| role.allowed_tools.clone())
+}
+
+fn non_empty_vec(values: Vec<String>) -> Option<Vec<String>> {
+    (!values.is_empty()).then_some(values)
+}
+
+fn compose_definition_prompt(snapshot: &AgentDefinitionSnapshot, task_prompt: &str) -> String {
+    let mut prompt = match snapshot.system_prompt.as_deref().map(str::trim) {
+        Some(system_prompt) if !system_prompt.is_empty() => format!(
+            "[Agent: {}]\n{}\n\nTask:\n{}",
+            snapshot.definition_id, system_prompt, task_prompt
+        ),
+        _ => task_prompt.to_owned(),
+    };
+
+    if !snapshot.disallowed_tools.is_empty() {
+        prompt.push_str("\n\nDo not use these tools: ");
+        prompt.push_str(&snapshot.disallowed_tools.join(", "));
+        prompt.push('.');
+    }
+
+    prompt
+}
+
+fn combine_allowed_tools(
+    requested: Option<Vec<String>>,
+    definition: Option<Vec<String>>,
+    definition_id: &str,
+) -> Result<Option<Vec<String>>> {
+    match (requested, definition) {
+        (Some(requested), Some(definition)) if !requested.is_empty() && !definition.is_empty() => {
+            let definition_set: std::collections::BTreeSet<_> = definition.iter().collect();
+            let intersection: Vec<String> = requested
+                .into_iter()
+                .filter(|tool| definition_set.contains(tool))
+                .collect();
+            if intersection.is_empty() {
+                return Err(WonderError::validation(format!(
+                    "agent definition `{definition_id}` and requested tool list have no overlap"
+                )));
+            }
+            Ok(Some(intersection))
+        }
+        (Some(requested), _) if !requested.is_empty() => Ok(Some(requested)),
+        (_, Some(definition)) if !definition.is_empty() => Ok(Some(definition)),
+        _ => Ok(None),
+    }
 }
 
 fn sanitize_line(value: &str) -> String {
@@ -1950,6 +2014,56 @@ mod tests {
         assert!(tools.contains(&"glob".to_string()));
         assert!(tools.contains(&"grep".to_string()));
         assert!(!tools.contains(&"file_write".to_string()));
+    }
+
+    #[test]
+    fn compose_definition_prompt_uses_snapshot_system_prompt() {
+        let snapshot = AgentDefinitionSnapshot {
+            definition_id: "project-scout".into(),
+            system_prompt: Some("Inspect the repository carefully.".into()),
+            disallowed_tools: vec!["file_write".into()],
+            ..AgentDefinitionSnapshot::default()
+        };
+
+        let prompt = compose_definition_prompt(&snapshot, "Find the risky areas.");
+
+        assert!(prompt.contains("[Agent: project-scout]"), "got: {prompt}");
+        assert!(
+            prompt.contains("Inspect the repository carefully."),
+            "got: {prompt}"
+        );
+        assert!(
+            prompt.contains("Task:\nFind the risky areas."),
+            "got: {prompt}"
+        );
+        assert!(
+            prompt.contains("Do not use these tools: file_write."),
+            "got: {prompt}"
+        );
+    }
+
+    #[test]
+    fn combine_allowed_tools_intersects_request_and_definition_limits() {
+        let combined = combine_allowed_tools(
+            Some(vec!["bash".into(), "file_write".into()]),
+            Some(vec!["bash".into(), "file_read".into()]),
+            "project-scout",
+        )
+        .expect("combine");
+
+        assert_eq!(combined, Some(vec!["bash".into()]));
+    }
+
+    #[test]
+    fn combine_allowed_tools_rejects_empty_intersection() {
+        let error = combine_allowed_tools(
+            Some(vec!["file_write".into()]),
+            Some(vec!["bash".into(), "file_read".into()]),
+            "project-scout",
+        )
+        .expect_err("empty intersection");
+
+        assert!(error.to_string().contains("no overlap"));
     }
 
     // ── Role catalog CLI tests ────────────────────────────────────────────────

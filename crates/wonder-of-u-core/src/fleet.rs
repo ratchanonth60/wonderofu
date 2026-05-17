@@ -10,7 +10,9 @@ use std::{collections::BTreeMap, path::PathBuf};
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
 
-use crate::{FleetId, PermissionMode, TaskId, TaskStatus, agent_definition::AgentDefinitionSnapshot};
+use crate::{
+    FleetId, PermissionMode, TaskId, TaskStatus, agent_definition::AgentDefinitionSnapshot,
+};
 
 // ── Agent task result ────────────────────────────────────────────────────────
 

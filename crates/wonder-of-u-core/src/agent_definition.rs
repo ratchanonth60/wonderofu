@@ -524,10 +524,11 @@ fn extra_builtin_definitions() -> Vec<AgentDefinition> {
             description: "A general-purpose sub-agent for tasks that do not require a specific \
                           specialised role."
                 .into(),
-            system_prompt: "You are a capable, general-purpose AI assistant. Complete the assigned \
+            system_prompt:
+                "You are a capable, general-purpose AI assistant. Complete the assigned \
                             task accurately and concisely. When in doubt, prefer safety and \
                             correctness over speed."
-                .into(),
+                    .into(),
             tools: Vec::new(), // unrestricted
             disallowed_tools: Vec::new(),
             model: None,
@@ -549,7 +550,12 @@ fn extra_builtin_definitions() -> Vec<AgentDefinition> {
                             your findings including relevant file paths, function names, and \
                             dependencies."
                 .into(),
-            tools: vec!["bash".into(), "file_read".into(), "glob".into(), "grep".into()],
+            tools: vec![
+                "bash".into(),
+                "file_read".into(),
+                "glob".into(),
+                "grep".into(),
+            ],
             disallowed_tools: vec!["file_write".into(), "file_edit".into()],
             model: None,
             max_turns: None,
@@ -634,9 +640,8 @@ pub fn parse_markdown_frontmatter(
     // Skip the optional newline immediately after the closing fence.
     let body = after_first[body_start..].trim_start_matches('\n').trim();
 
-    let mut fields: RawDefinitionFields = serde_yaml::from_str(yaml_block).map_err(|e| {
-        DefinitionParseError::YamlFrontmatter(e.to_string())
-    })?;
+    let mut fields: RawDefinitionFields = serde_yaml::from_str(yaml_block)
+        .map_err(|e| DefinitionParseError::YamlFrontmatter(e.to_string()))?;
 
     // Body text is the system prompt if no explicit prompt field was set.
     if fields.prompt.is_none() && fields.system_prompt.is_none() && !body.is_empty() {
@@ -662,7 +667,9 @@ pub fn parse_json_definition(
 /// Validates a kebab-case agent id: `[a-z0-9][a-z0-9-]*`, no leading/trailing/consecutive dashes.
 fn validate_agent_id(id: &str) -> Result<()> {
     if id.is_empty() {
-        return Err(WonderError::validation("agent definition id must not be empty"));
+        return Err(WonderError::validation(
+            "agent definition id must not be empty",
+        ));
     }
     if id.len() > MAX_AGENT_ID_LEN {
         return Err(WonderError::validation(format!(
@@ -670,15 +677,11 @@ fn validate_agent_id(id: &str) -> Result<()> {
         )));
     }
 
-    let valid = id
-        .chars()
-        .enumerate()
-        .all(|(i, c)| match c {
-            'a'..='z' | '0'..='9' => true,
-            '-' if i > 0 => true,
-            _ => false,
-        })
-        && !id.ends_with('-')
+    let valid = id.chars().enumerate().all(|(i, c)| match c {
+        'a'..='z' | '0'..='9' => true,
+        '-' if i > 0 => true,
+        _ => false,
+    }) && !id.ends_with('-')
         && !id.contains("--");
 
     if valid {
@@ -769,7 +772,9 @@ mod tests {
     fn resolve_alias_exact_id() {
         let catalog = AgentCatalog::builtin();
         assert_eq!(
-            catalog.resolve_alias("rust-engineer").map(|d| d.id.as_str()),
+            catalog
+                .resolve_alias("rust-engineer")
+                .map(|d| d.id.as_str()),
             Some("rust-engineer")
         );
     }
@@ -778,11 +783,15 @@ mod tests {
     fn resolve_alias_display_name_case_insensitive() {
         let catalog = AgentCatalog::builtin();
         assert_eq!(
-            catalog.resolve_alias("Rust Engineer").map(|d| d.id.as_str()),
+            catalog
+                .resolve_alias("Rust Engineer")
+                .map(|d| d.id.as_str()),
             Some("rust-engineer")
         );
         assert_eq!(
-            catalog.resolve_alias("RUST ENGINEER").map(|d| d.id.as_str()),
+            catalog
+                .resolve_alias("RUST ENGINEER")
+                .map(|d| d.id.as_str()),
             Some("rust-engineer")
         );
     }
@@ -964,8 +973,7 @@ mod tests {
 
     #[test]
     fn parse_json_definition_basic() {
-        let json =
-            r#"{"name":"My Agent","description":"Does stuff","prompt":"You are a helper."}"#;
+        let json = r#"{"name":"My Agent","description":"Does stuff","prompt":"You are a helper."}"#;
         let fields = parse_json_definition(json).expect("parse");
         assert_eq!(fields.name.as_deref(), Some("My Agent"));
         assert_eq!(fields.description.as_deref(), Some("Does stuff"));
@@ -985,7 +993,10 @@ mod tests {
         let json = r#"{"name":"X","description":"Y","prompt":"P","hooks":{"postStart":"echo hi"},"mcpServers":{}}"#;
         let fields = parse_json_definition(json).expect("parse");
         assert!(fields.hooks.is_some(), "hooks accepted during parse");
-        assert!(fields.mcp_servers.is_some(), "mcpServers accepted during parse");
+        assert!(
+            fields.mcp_servers.is_some(),
+            "mcpServers accepted during parse"
+        );
     }
 
     // ── AgentDefinition::from_raw ─────────────────────────────────────────────

@@ -27,8 +27,8 @@
 //! aborts the entire scan.
 
 use std::{
-    path::{Path, PathBuf},
     fs,
+    path::{Path, PathBuf},
 };
 
 use crate::{
@@ -178,7 +178,8 @@ impl AgentDefinitionLoader {
         // .claude/agents/ (lower precedence among project sources).
         let dot_claude_dir = self.root.join(".claude").join("agents");
         if dot_claude_dir.is_dir() {
-            let result = self.load_from_dir(&dot_claude_dir, AgentDefinitionSource::ProjectDotClaude)?;
+            let result =
+                self.load_from_dir(&dot_claude_dir, AgentDefinitionSource::ProjectDotClaude)?;
             for def in result.definitions {
                 catalog.insert(def);
             }
@@ -246,17 +247,17 @@ impl AgentDefinitionLoader {
             match path.canonicalize() {
                 Ok(canonical_path) => {
                     if !canonical_path.starts_with(&canonical_root) {
-                        result.warnings.push(LoadWarning::SymlinkEscape {
-                            path: path.clone(),
-                        });
+                        result
+                            .warnings
+                            .push(LoadWarning::SymlinkEscape { path: path.clone() });
                         continue;
                     }
                 }
                 Err(_) => {
                     // If canonicalization fails (e.g. broken symlink), skip.
-                    result.warnings.push(LoadWarning::SymlinkEscape {
-                        path: path.clone(),
-                    });
+                    result
+                        .warnings
+                        .push(LoadWarning::SymlinkEscape { path: path.clone() });
                     continue;
                 }
             }
@@ -293,10 +294,7 @@ impl AgentDefinitionLoader {
             };
 
             // Parse.
-            let ext = path
-                .extension()
-                .and_then(|e| e.to_str())
-                .unwrap_or("");
+            let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
 
             let parse_result: std::result::Result<RawDefinitionFields, String> = match ext {
                 "md" => parse_markdown_frontmatter(&content).map_err(|e| e.to_string()),
@@ -630,7 +628,10 @@ mod tests {
         let (catalog, warnings) = loader.build_catalog().unwrap();
 
         assert!(catalog.get("good").is_some(), "valid file should load");
-        assert!(catalog.get("bad").is_none(), "invalid file should be skipped");
+        assert!(
+            catalog.get("bad").is_none(),
+            "invalid file should be skipped"
+        );
         let has_parse_warning = warnings
             .iter()
             .any(|w| matches!(w, LoadWarning::ParseError { .. }));

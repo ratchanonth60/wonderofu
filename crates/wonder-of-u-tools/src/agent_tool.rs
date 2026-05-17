@@ -4,10 +4,9 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use wonder_of_u_core::{
-    AgentCatalog, AgentDefinitionSource, FeatureFlag, FleetMemberRequest,
-    RemoteTaskState, RemoteTaskType, Result, TaskId, Tool, ToolContext, ToolKind, ToolResult,
-    ToolSchema, ToolSpec, ToolUseId, WonderError,
-    agent_loader::AgentDefinitionLoader,
+    AgentCatalog, AgentDefinitionSource, FeatureFlag, FleetMemberRequest, RemoteTaskState,
+    RemoteTaskType, Result, TaskId, Tool, ToolContext, ToolKind, ToolResult, ToolSchema, ToolSpec,
+    ToolUseId, WonderError, agent_loader::AgentDefinitionLoader, get_git_root,
 };
 use wonder_of_u_storage::FleetStore;
 
@@ -191,9 +190,11 @@ impl Tool for AgentTool {
         let input = parse_input::<AgentInput>("agent", &input)?;
         input.validate()?;
 
-        // Build the full catalog: built-ins + project definitions from cwd.
-        let loader = AgentDefinitionLoader::new(&context.cwd);
-        let (catalog, _warnings) = loader.build_catalog()?;
+        // Build the full catalog from the project root when available so a tool
+        // call from a nested cwd can still see repo-level `.claude/agents/`.
+        let definition_root = get_git_root(&context.cwd).unwrap_or_else(|_| context.cwd.clone());
+        let loader = AgentDefinitionLoader::new(&definition_root);
+        let (catalog, warnings) = loader.build_catalog()?;
 
         let request_id = queue_fleet_member_request_with_catalog(&app_root()?, &input, &catalog)?;
         let mut result = ToolResult::success(
@@ -208,6 +209,8 @@ impl Tool for AgentTool {
             "dispatch_hint": "run `fleet dispatch` to launch this agent",
             "supports_send_message": false,
             "supports_team_name": false,
+            "definition_root": definition_root,
+            "agent_definition_warnings": warnings.iter().map(|w| w.message()).collect::<Vec<_>>(),
         });
         Ok(result)
     }
@@ -237,9 +240,7 @@ fn queue_fleet_member_request(app_root: &std::path::Path, input: &AgentInput) ->
 /// copy of the configuration even if the source file is later edited or deleted.
 ///
 /// If no `subagent_type` is provided, the `general-purpose` built-in is used
-/// as the default definition for the snapshot's `definition_id`, but its
-/// system prompt is **not** prepended automatically — the caller-supplied
-/// prompt is used verbatim.
+/// as the default definition and is snapshotted for dispatch.
 ///
 /// Returns the request UUID string so callers can include it in tool metadata.
 pub fn queue_fleet_member_request_with_catalog(
@@ -284,8 +285,7 @@ pub fn queue_fleet_member_request_with_catalog(
     //
     // When subagent_type is explicitly provided, it must resolve to a known
     // definition; unknown types are rejected with a helpful catalog listing.
-    // When omitted, `general-purpose` is used for the snapshot metadata only
-    // (the caller's prompt is used verbatim — no preamble is prepended).
+    // When omitted, `general-purpose` is used as the default definition.
     let resolved_def = if let Some(ref subagent_type) = input.subagent_type {
         match catalog.resolve_alias(subagent_type) {
             Some(def) => Some(def),
@@ -588,7 +588,10 @@ mod tests {
             snap.source,
             Some(wonder_of_u_core::AgentDefinitionSource::Project)
         );
-        assert!(snap.content_hash.is_some(), "project defs should have a content hash");
+        assert!(
+            snap.content_hash.is_some(),
+            "project defs should have a content hash"
+        );
     }
 
     #[test]
@@ -628,11 +631,17 @@ mod tests {
             Some(wonder_of_u_core::AgentDefinitionSource::Builtin)
         );
         assert!(
-            snap.system_prompt.as_ref().map(|p| !p.is_empty()).unwrap_or(false),
+            snap.system_prompt
+                .as_ref()
+                .map(|p| !p.is_empty())
+                .unwrap_or(false),
             "system_prompt should be non-empty"
         );
         // rust-engineer allows bash, file_read, etc.
-        assert!(!snap.allowed_tools.is_empty(), "allowed_tools should be populated");
+        assert!(
+            !snap.allowed_tools.is_empty(),
+            "allowed_tools should be populated"
+        );
     }
 
     #[test]
@@ -726,4 +735,3 @@ mod tests {
         assert!(error.to_string().contains("run_in_background"));
     }
 }
-

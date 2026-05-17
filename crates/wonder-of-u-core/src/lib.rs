@@ -74,6 +74,11 @@ pub mod xml;
 /// Provides yaml support
 pub mod yaml;
 
+/// Re-exports items from `agent_definition`
+pub use agent_definition::{
+    AgentCatalog, AgentDefinition, AgentDefinitionSnapshot, AgentDefinitionSource,
+    DefinitionParseError, RawDefinitionFields, parse_json_definition, parse_markdown_frontmatter,
+};
 /// Re-exports items from `app`
 pub use app::{
     AgentRuntime, AgentTaskState, AppState, CostState, InputMode, PendingLocalToolCall,
@@ -107,11 +112,6 @@ pub use error::{Result, WonderError};
 pub use feature::{FeatureFlag, FeatureSet};
 /// Re-exports items from `fingerprint`
 pub use fingerprint::{fingerprint_json, fingerprint_str};
-/// Re-exports items from `agent_definition`
-pub use agent_definition::{
-    AgentCatalog, AgentDefinition, AgentDefinitionSnapshot, AgentDefinitionSource,
-    DefinitionParseError, RawDefinitionFields, parse_json_definition, parse_markdown_frontmatter,
-};
 /// Re-exports items from `fleet`
 pub use fleet::{
     AGENT_TASK_RESULT_SCHEMA_VERSION, AgentTaskResult, FLEET_SCHEMA_VERSION,
