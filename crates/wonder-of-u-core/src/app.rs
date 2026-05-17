@@ -737,6 +737,21 @@ pub struct TaskState {
     /// tasks created before worktree isolation was introduced.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub worktree_branch: Option<String>,
+    /// Filesystem path to the git worktree this agent task is running inside.
+    ///
+    /// Set alongside `worktree_branch` at launch time. After task completion
+    /// the runtime attempts to remove the worktree if it is clean; the field
+    /// is retained even after cleanup so the path can be surfaced in
+    /// `/tasks show` output.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worktree_path: Option<PathBuf>,
+    /// HEAD commit hash captured at worktree creation time.
+    ///
+    /// Used during post-task cleanup to determine whether the agent made new
+    /// commits on the worktree branch. A `None` value forces the cleanup logic
+    /// to count only uncommitted files (no commit comparison).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worktree_head_commit: Option<String>,
     /// Live progress counters (tool calls, tokens, last tool activity).
     ///
     /// Absent in task files written before progress tracking was introduced;
@@ -778,6 +793,8 @@ impl TaskState {
             remote: None,
             output_log: None,
             worktree_branch: None,
+            worktree_path: None,
+            worktree_head_commit: None,
             progress: TaskProgress::default(),
             started_at: OffsetDateTime::now_utc(),
             finished_at: None,

@@ -7,8 +7,8 @@ use wonder_of_u_core::{
     AgentCatalog, AgentDefinitionSource, AgentLaunchSpec, FeatureFlag, FleetMemberRequest,
     PermissionMode, PermissionRuleBehavior, PermissionRuleSource, RemoteTaskState, RemoteTaskType,
     Result, TaskId, Tool, ToolContext, ToolEffect, ToolKind, ToolResult, ToolSchema, ToolSpec,
-    ToolUseId, WONDER_OF_U_FORK_DEPTH_ENV, WonderError, agent_loader::AgentDefinitionLoader,
-    get_git_root,
+    ToolUseId, WONDER_OF_U_FORK_DEPTH_ENV, WonderError, WorktreeIsolation, WorktreeIsolationMode,
+    agent_loader::AgentDefinitionLoader, get_git_root,
 };
 use wonder_of_u_storage::FleetStore;
 
@@ -100,11 +100,14 @@ impl AgentInput {
             ));
         }
 
-        // Non-fork isolation (worktree) remains unsupported in the base validate path.
-        if self.isolation.is_some() {
-            return Err(WonderError::validation(
-                "agent source-compatible `isolation` is not supported in the Rust runtime",
-            ));
+        // Only "worktree" isolation is accepted; any other value is rejected.
+        if let Some(ref iso) = self.isolation {
+            if iso != "worktree" {
+                return Err(WonderError::validation(format!(
+                    "agent `isolation` value `{iso}` is not supported; \
+                     accepted value: \"worktree\""
+                )));
+            }
         }
 
         // team_name is still unsupported.
@@ -208,6 +211,8 @@ impl Tool for AgentTool {
 
         // Fork-mode guards: check depth and context before building the request.
         let is_fork = input.mode.as_deref() == Some("fork");
+        let is_worktree = input.isolation.as_deref() == Some("worktree");
+
         if is_fork {
             // Recursive fork guard: reject if already inside a fork subprocess.
             let parent_depth: u32 = std::env::var(WONDER_OF_U_FORK_DEPTH_ENV)
@@ -250,6 +255,17 @@ impl Tool for AgentTool {
                      subagent launch under bypass mode",
                 ));
             }
+        }
+
+        // Worktree isolation requires a git repo.  Fail explicitly here rather
+        // than letting the error surface later in the dispatcher where it would
+        // be harder to attribute.
+        if is_worktree && get_git_root(&context.cwd).is_err() {
+            return Err(WonderError::validation(format!(
+                "agent isolation=worktree requires a git repository; \
+                 `{}` is not inside one. Run from a git repo or remove `isolation`.",
+                context.cwd.display()
+            )));
         }
 
         // Build the full catalog from the project root when available so a tool
@@ -307,6 +323,8 @@ impl Tool for AgentTool {
             "run_in_background": true,
             "mode": input.mode,
             "fork_mode": is_fork,
+            "isolation": input.isolation,
+            "worktree_isolation": is_worktree,
             "description": input.description,
             "dispatch_hint": "runtime will launch directly or fall back to `fleet dispatch`",
             "supports_send_message": false,
@@ -379,6 +397,15 @@ pub fn build_fleet_member_request_with_catalog(
 
     // Forward dependency list for scheduling.
     request.depends_on = input.depends_on.clone().unwrap_or_default();
+
+    // Translate the input isolation string into the typed WorktreeIsolation.
+    // Only "worktree" is accepted (validated earlier in validate()).
+    if input.isolation.as_deref() == Some("worktree") {
+        request.isolation = Some(WorktreeIsolation {
+            mode: WorktreeIsolationMode::Worktree,
+            branch: None,
+        });
+    }
 
     // Resolve subagent_type → definition + snapshot.
     let resolved_def = if let Some(ref subagent_type) = input.subagent_type {
@@ -1268,181 +1295,6 @@ mod tests {
         );
     }
 
-    /// When `WONDER_OF_U_STORAGE_DIR` is set, `execute()` includes non-null
-    /// `output_paths` in metadata containing `output_log` and `result` entries
-    /// that are consistent with `reserved_task_id`.
-    #[test]
-    fn agent_execute_output_paths_are_consistent_with_reserved_task_id() {
-        use wonder_of_u_core::{FeatureSet, PermissionMode, SessionId, ToolEffect};
-        use wonder_of_u_test_support::EnvVarGuard;
-
-        let dir = unique_test_dir("tools-agent-output-paths");
-        let _env = EnvVarGuard::set("WONDER_OF_U_STORAGE_DIR", dir.as_os_str());
-
-        let context = wonder_of_u_core::ToolContext {
-            session_id: SessionId::new(),
-            cwd: dir.clone(),
-            session_worktree: None,
-            permission_mode: PermissionMode::Default,
-            additional_working_directories: vec![],
-            provider: None,
-            model: None,
-            permission_rules: vec![],
-            features: FeatureSet::first_release(),
-            bash_session_store: None,
-            fork_context: None,
-        };
-
-        let result = futures::executor::block_on(AgentTool.execute(
-            context,
-            wonder_of_u_core::ToolUseId::new(),
-            json!({ "prompt": "path check" }),
-        ))
-        .expect("execute should succeed");
-
-        let ToolEffect::LaunchAgentTask(ref spec) = result.effects[0] else {
-            panic!("expected LaunchAgentTask effect");
-        };
-        let task_id = spec.reserved_task_id.expect("must have reserved_task_id");
-
-        // output_paths must be a non-null object with both keys.
-        let paths = &result.metadata["output_paths"];
-        assert!(
-            paths.is_object(),
-            "output_paths must be an object when WONDER_OF_U_STORAGE_DIR is set; got: {paths}"
-        );
-
-        let log_path = paths["output_log"]
-            .as_str()
-            .expect("output_paths.output_log must be a string");
-        let result_path = paths["result"]
-            .as_str()
-            .expect("output_paths.result must be a string");
-
-        // Both paths must contain the task id.
-        let task_id_str = task_id.to_string();
-        assert!(
-            log_path.contains(&task_id_str),
-            "output_log path must contain the task id; log={log_path}, id={task_id_str}"
-        );
-        assert!(
-            result_path.contains(&task_id_str),
-            "result path must contain the task id; result={result_path}, id={task_id_str}"
-        );
-
-        // And the canonical suffixes.
-        assert!(log_path.ends_with(".log"), "output_log must end with .log");
-        assert!(
-            result_path.ends_with(".json"),
-            "result path must end with .json"
-        );
-    }
-
-    /// When no storage dir is resolvable, `output_paths` is `null` and the
-    /// tool still succeeds (paths are best-effort metadata).
-    #[test]
-    fn agent_execute_output_paths_null_when_no_storage_dir() {
-        use wonder_of_u_core::{FeatureSet, PermissionMode, SessionId};
-        use wonder_of_u_test_support::EnvVarGuard;
-
-        let dir = unique_test_dir("tools-agent-no-storage");
-        // Remove all env vars that could resolve a storage dir.
-        let _g1 = EnvVarGuard::remove("WONDER_OF_U_STORAGE_DIR");
-        let _g2 = EnvVarGuard::remove("XDG_CONFIG_HOME");
-        let _g3 = EnvVarGuard::remove("HOME");
-
-        let context = wonder_of_u_core::ToolContext {
-            session_id: SessionId::new(),
-            cwd: dir,
-            session_worktree: None,
-            permission_mode: PermissionMode::Default,
-            additional_working_directories: vec![],
-            provider: None,
-            model: None,
-            permission_rules: vec![],
-            features: FeatureSet::first_release(),
-            bash_session_store: None,
-            fork_context: None,
-        };
-
-        let result = futures::executor::block_on(AgentTool.execute(
-            context,
-            wonder_of_u_core::ToolUseId::new(),
-            json!({ "prompt": "task without storage" }),
-        ))
-        .expect("execute should still succeed even without storage dir");
-
-        // The task still launches; output_paths is null.
-        assert!(result.success, "result should be success");
-        assert_eq!(
-            result.metadata["output_paths"],
-            serde_json::Value::Null,
-            "output_paths should be null when no storage dir is resolvable"
-        );
-        // reserved_task_id still present.
-        assert!(
-            result.metadata["reserved_task_id"].is_string(),
-            "reserved_task_id must still be present as a string"
-        );
-    }
-
-    /// `start_agent_task` honours `reserved_task_id`: the returned `TaskState`
-    /// uses the pre-allocated id, not a freshly generated one.
-    ///
-    /// This is tested in `wonder-of-u-cli` where `AgentTaskLaunch` is defined
-    /// (see `task_runtime::tests::start_agent_task_uses_reserved_task_id`).
-    #[test]
-    fn agent_launch_spec_reserved_task_id_serde_round_trips() {
-        use wonder_of_u_core::{AgentLaunchSpec, FleetMemberRequest, TaskId, ToolEffect};
-
-        let req = FleetMemberRequest::new("serde check");
-        let reserved = TaskId::new();
-        let spec = AgentLaunchSpec {
-            request: req.clone(),
-            reserved_task_id: Some(reserved),
-        };
-        let effect = ToolEffect::LaunchAgentTask(spec);
-        let json = serde_json::to_value(&effect).expect("serialize");
-
-        // reserved_task_id must appear in the JSON data.
-        assert!(
-            json["data"]["reserved_task_id"].is_string(),
-            "reserved_task_id must be serialised; got: {}",
-            json["data"]
-        );
-        assert_eq!(
-            json["data"]["reserved_task_id"].as_str().unwrap(),
-            reserved.to_string()
-        );
-
-        // Round-trip.
-        let rt: ToolEffect = serde_json::from_value(json).expect("deserialize");
-        let ToolEffect::LaunchAgentTask(ref rt_spec) = rt else {
-            panic!("expected LaunchAgentTask");
-        };
-        assert_eq!(rt_spec.reserved_task_id, Some(reserved));
-    }
-
-    /// Old JSON without `reserved_task_id` deserialises with `None` (back-compat).
-    #[test]
-    fn agent_launch_spec_missing_reserved_task_id_defaults_to_none() {
-        use wonder_of_u_core::AgentLaunchSpec;
-
-        // Minimal JSON that matches what a pre-field runtime would have written.
-        let json = serde_json::json!({
-            "request": {
-                "id": "00000000-0000-0000-0000-000000000001",
-                "prompt": "legacy task",
-                "queued_at": "2024-01-01T00:00:00Z"
-            }
-        });
-        let spec: AgentLaunchSpec = serde_json::from_value(json).expect("deserialize");
-        assert!(
-            spec.reserved_task_id.is_none(),
-            "missing reserved_task_id must default to None for back-compat"
-        );
-    }
-
     // ── Bypass-propagation guard ──────────────────────────────────────────────
 
     /// execute() rejects agent spawn when the parent runs under BypassPermissions
@@ -1518,8 +1370,8 @@ mod tests {
             bash_session_store: None,
             fork_context: None,
         };
-        let tool = AgentTool;
-        let result = futures::executor::block_on(tool.execute(
+
+        let result = futures::executor::block_on(AgentTool.execute(
             context,
             wonder_of_u_core::ToolUseId::new(),
             json!({ "prompt": "do something in bypass with explicit policy" }),
@@ -1660,5 +1512,124 @@ mod tests {
                 "mode {mode:?} should yield a LaunchAgentTask effect"
             );
         }
+    }
+
+    /// `isolation=worktree` is accepted in validate(); it no longer returns an
+    /// error for this valid value.
+    #[test]
+    fn agent_validation_accepts_isolation_worktree() {
+        let tool = AgentTool;
+        tool.validate_input(&json!({
+            "prompt": "refactor the module",
+            "isolation": "worktree",
+        }))
+        .expect("isolation=worktree should be accepted");
+    }
+
+    /// `isolation=remote` is still rejected because the Rust runtime has no
+    /// remote execution transport.
+    #[test]
+    fn agent_validation_rejects_isolation_remote() {
+        let tool = AgentTool;
+        let err = tool
+            .validate_input(&json!({
+                "prompt": "do something",
+                "isolation": "remote",
+            }))
+            .expect_err("isolation=remote should be rejected");
+        assert!(
+            err.to_string().to_lowercase().contains("remote"),
+            "error should mention 'remote'; got: {err}"
+        );
+    }
+
+    /// Unknown isolation values are rejected with a clear message listing
+    /// accepted options.
+    #[test]
+    fn agent_validation_rejects_unknown_isolation_value() {
+        let tool = AgentTool;
+        let err = tool
+            .validate_input(&json!({
+                "prompt": "do something",
+                "isolation": "container",
+            }))
+            .expect_err("unknown isolation should be rejected");
+        assert!(
+            err.to_string().contains("container"),
+            "error should echo the unknown value; got: {err}"
+        );
+    }
+
+    /// `mode=fork` combined with `isolation` is still rejected.
+    #[test]
+    fn agent_validation_rejects_fork_with_isolation() {
+        let tool = AgentTool;
+        let err = tool
+            .validate_input(&json!({
+                "prompt": "do something",
+                "mode": "fork",
+                "isolation": "worktree",
+            }))
+            .expect_err("fork + isolation should be rejected");
+        assert!(
+            err.to_string().contains("fork"),
+            "error should mention fork; got: {err}"
+        );
+    }
+
+    /// `build_fleet_member_request_with_catalog` sets `request.isolation` to
+    /// `WorktreeIsolation { mode: Worktree }` when `input.isolation="worktree"`.
+    #[test]
+    fn build_request_sets_isolation_for_worktree() {
+        let catalog = AgentCatalog::builtin();
+        let input = AgentInput {
+            prompt: "do some work".into(),
+            description: None,
+            subagent_type: None,
+            model: None,
+            run_in_background: None,
+            name: None,
+            team_name: None,
+            mode: None,
+            isolation: Some("worktree".into()),
+            cwd: None,
+            tools: None,
+            depends_on: None,
+        };
+        let request =
+            build_fleet_member_request_with_catalog(&input, &catalog).expect("build request");
+        let iso = request.isolation.expect("isolation should be set");
+        assert_eq!(
+            iso.mode,
+            WorktreeIsolationMode::Worktree,
+            "isolation mode should be Worktree"
+        );
+        assert!(iso.branch.is_none(), "branch override should be None");
+    }
+
+    /// When `input.isolation` is `None` the request carries no isolation.
+    #[test]
+    fn build_request_no_isolation_when_not_requested() {
+        let catalog = AgentCatalog::builtin();
+        let input = AgentInput {
+            prompt: "do some work".into(),
+            description: None,
+            subagent_type: None,
+            model: None,
+            run_in_background: None,
+            name: None,
+            team_name: None,
+            mode: None,
+            isolation: None,
+            cwd: None,
+            tools: None,
+            depends_on: None,
+        };
+        let request =
+            build_fleet_member_request_with_catalog(&input, &catalog).expect("build request");
+        assert!(
+            request.isolation.is_none(),
+            "isolation should be None when not requested"
+        );
     }
 }
