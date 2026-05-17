@@ -63,6 +63,8 @@ pub mod sequential;
 pub mod set;
 /// Provides shell session support
 pub mod shell_session;
+/// SDK-style `<task-notification>` XML payload builder.
+pub mod task_notification;
 /// Logical todo-v2 task list models (source-compatible task board).
 pub mod todo_task;
 /// Provides tool support
@@ -164,6 +166,10 @@ pub use sequential::run_sequential;
 pub use set::{difference, intersection, intersects, union};
 /// Re-exports items from `shell_session`
 pub use shell_session::{ShellOutput, ShellSession, ShellSessionStore};
+/// Re-exports items from `task_notification`
+pub use task_notification::{
+    TaskNotificationPayload, payload_from_task_state, task_notification_both,
+};
 /// Re-exports items from `todo_task`
 pub use todo_task::{
     TODO_TASK_LIST_SCHEMA_VERSION, TodoTaskEntry, TodoTaskList, TodoTaskStatus, new_todo_task_id,
