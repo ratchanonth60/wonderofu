@@ -1458,7 +1458,10 @@ impl AgentsCommand {
             "description={}",
             sanitize_single_line(&def.description)
         ));
-        lines.push(format!("model={}", def.model.as_deref().unwrap_or("")));
+        lines.push(format!(
+            "model={}",
+            def.model.as_deref().unwrap_or("<none>")
+        ));
         lines.push(format!("tools={}", def.tools.join(",")));
         lines.push(format!(
             "disallowed_tools={}",
@@ -1643,7 +1646,11 @@ impl AgentsCommand {
             name: Some(args.name.unwrap_or_else(|| def.name.clone())),
             description: Some(args.description.unwrap_or_else(|| def.description.clone())),
             prompt: Some(args.prompt.unwrap_or_else(|| def.system_prompt.clone())),
-            model: args.model.or_else(|| def.model.clone()),
+            model: match args.model {
+                Some(model) if model.trim().is_empty() => None,
+                Some(model) => Some(model),
+                None => def.model.clone(),
+            },
             tools: Some(
                 args.tools
                     .map(split_and_dedupe)
@@ -1674,6 +1681,9 @@ impl AgentsCommand {
             source_path.clone()
         };
         atomic_write(&write_path, &content)?;
+        if source_was_json && write_path != source_path {
+            fs::remove_file(&source_path)?;
+        }
 
         let mut lines = Vec::new();
         lines.push("updated=true".into());
@@ -1684,6 +1694,7 @@ impl AgentsCommand {
         }
         if source_was_json {
             lines.push("format_changed=json->md".to_string());
+            lines.push(format!("removed_old_path={}", source_path.display()));
         }
         Ok(CommandOutput::Text(lines.join("\n")))
     }
@@ -5489,6 +5500,60 @@ mod tests {
         assert!(
             !content.contains("hooks"),
             "hooks must be stripped from output"
+        );
+        assert!(
+            !agents_dir.join("risky.json").exists(),
+            "old JSON source must be removed so it cannot win future loads"
+        );
+        let shown = def_show(&root, "risky");
+        assert!(
+            shown.contains("system_prompt_preview=Safe prompt."),
+            "catalog should load edited markdown definition; got:\n{shown}"
+        );
+        assert!(
+            shown.contains("source_path=") && shown.contains("risky.md"),
+            "catalog should point at replacement markdown; got:\n{shown}"
+        );
+    }
+
+    #[test]
+    fn agents_definition_edit_empty_model_clears_existing_model() {
+        let root = unique_test_dir("def-edit-clear-model");
+        def_create(
+            &root,
+            super::DefinitionsCreateArgs {
+                model: Some("claude-opus".into()),
+                ..create_args_minimal("Model Agent", "Has model", "Original prompt.")
+            },
+        );
+
+        let out = def_edit(
+            &root,
+            super::DefinitionsEditArgs {
+                id: "model-agent".into(),
+                name: None,
+                description: None,
+                prompt: Some("Updated prompt.".into()),
+                model: Some(String::new()),
+                tools: None,
+                disallowed_tools: None,
+                color: None,
+                permission_mode: None,
+                max_turns: None,
+            },
+        );
+        assert!(out.contains("updated=true"), "got:\n{out}");
+
+        let path = root.join(".claude").join("agents").join("model-agent.md");
+        let content = fs::read_to_string(&path).unwrap();
+        assert!(
+            !content.contains("model:"),
+            "empty model should clear the field, got:\n{content}"
+        );
+        let shown = def_show(&root, "model-agent");
+        assert!(
+            shown.contains("model=<none>"),
+            "catalog should reload without model; got:\n{shown}"
         );
     }
 
