@@ -82,6 +82,12 @@ pub struct HookRunReport {
     pub hook_count: u32,
     /// Whether every executed hook passed.
     pub success: bool,
+    /// Replacement tool input emitted by a successful hook via
+    /// `{"updatedInput": {...}}` in its stdout.  When `Some`, callers must
+    /// use this value instead of the original tool input for both permission
+    /// evaluation and actual execution so that the approval flow operates on
+    /// what the hook actually approved.
+    pub updated_input: Option<Value>,
 }
 
 impl HookRunReport {
@@ -90,6 +96,7 @@ impl HookRunReport {
             outcome: HookOutcome::Allow,
             hook_count: 0,
             success: true,
+            updated_input: None,
         }
     }
 }
@@ -107,6 +114,11 @@ pub const POST_TOOL_USE_FAILURE: &str = "PostToolUseFailure";
 /// Returns [`HookOutcome::Allow`] when no hook blocks execution.
 /// Returns [`HookOutcome::Block`] when a hook exits with code 2 and a
 /// `{"continue": false, "stopReason": "..."}` JSON payload.
+///
+/// A successful hook (exit 0) may print `{"updatedInput": {...}}` to stdout.
+/// When present, [`HookRunReport::updated_input`] is set to that value and
+/// callers **must** use it as the effective tool input for both permission
+/// checks and execution.  The last hook to emit `updatedInput` wins.
 ///
 /// `tool_input` is always serialised into `CLAUDE_HOOK_INPUT`.
 /// `tool_response` is included for `PostToolUse`/`PostToolUseFailure` events
@@ -153,7 +165,12 @@ pub fn run_hooks(
             if let HookActionConfig::Command { command, .. } = action {
                 report.hook_count = report.hook_count.saturating_add(1);
                 match exec_command_hook(command, &hook_input_str, cwd) {
-                    CommandHookOutcome::Passed => {}
+                    CommandHookOutcome::Passed { updated_input } => {
+                        // Last hook to emit updatedInput wins.
+                        if updated_input.is_some() {
+                            report.updated_input = updated_input;
+                        }
+                    }
                     CommandHookOutcome::Failed => report.success = false,
                     CommandHookOutcome::Block { reason } => {
                         report.success = false;
@@ -254,11 +271,19 @@ fn glob_match(name: &str, pattern: &str) -> bool {
 /// Execute a single command-type hook.
 ///
 /// The subprocess is given at most 60 seconds.  Exit code 2 with valid JSON
-/// `{"continue": false}` in stdout is the only blocking path.
+/// `{"continue": false}` in stdout is the only blocking path.  Exit code 0
+/// with `{"updatedInput": {...}}` in stdout signals that the hook approved
+/// execution with a mutated tool input.
 enum CommandHookOutcome {
-    Passed,
+    /// Hook passed.  `updated_input` carries the hook's replacement tool
+    /// input when the hook emitted `{"updatedInput": {...}}` to stdout.
+    Passed {
+        updated_input: Option<Value>,
+    },
     Failed,
-    Block { reason: String },
+    Block {
+        reason: String,
+    },
 }
 
 fn exec_command_hook(command: &str, hook_input_json: &str, cwd: &Path) -> CommandHookOutcome {
@@ -279,17 +304,21 @@ fn exec_command_hook(command: &str, hook_input_json: &str, cwd: &Path) -> Comman
     loop {
         match child.try_wait() {
             Ok(Some(status)) => {
+                // Read stdout once the process has exited so we can inspect
+                // both updatedInput (exit 0) and block payloads (exit 2).
+                use std::io::Read;
+                let mut out = String::new();
+                if let Some(mut stdout) = child.stdout.take() {
+                    let _ = stdout.read_to_string(&mut out);
+                }
+
                 let code = status.code().unwrap_or(0);
                 if code == 0 {
-                    return CommandHookOutcome::Passed;
+                    return CommandHookOutcome::Passed {
+                        updated_input: parse_updated_input(&out),
+                    };
                 }
                 if code == 2 {
-                    // Read stdout and check for explicit block.
-                    use std::io::Read;
-                    let mut out = String::new();
-                    if let Some(mut stdout) = child.stdout.take() {
-                        let _ = stdout.read_to_string(&mut out);
-                    }
                     if let Some(reason) = parse_block_reason(&out) {
                         return CommandHookOutcome::Block { reason };
                     }
@@ -320,6 +349,19 @@ fn parse_block_reason(output: &str) -> Option<String> {
         .unwrap_or("hook blocked tool execution")
         .to_owned();
     Some(reason)
+}
+
+/// Parse `{"updatedInput": {...}}` from a successful hook's stdout.
+///
+/// Returns `None` when the output is absent, non-JSON, or does not contain
+/// the `updatedInput` key.
+fn parse_updated_input(output: &str) -> Option<Value> {
+    let trimmed = output.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let v: Value = serde_json::from_str(trimmed).ok()?;
+    v.get("updatedInput").cloned()
 }
 
 // ── Tests ────────────────────────────────────────────────────────────────────
@@ -577,5 +619,165 @@ mod tests {
         );
         assert_eq!(parse_block_reason(r#"{"continue": true}"#), None,);
         assert_eq!(parse_block_reason("not json"), None);
+    }
+
+    // ── updatedInput tests ───────────────────────────────────────────────────
+
+    #[test]
+    fn parse_updated_input_returns_none_for_empty_output() {
+        assert_eq!(parse_updated_input(""), None);
+        assert_eq!(parse_updated_input("   "), None);
+    }
+
+    #[test]
+    fn parse_updated_input_returns_none_when_key_absent() {
+        assert_eq!(parse_updated_input(r#"{"continue": true}"#), None);
+        assert_eq!(parse_updated_input("not json"), None);
+    }
+
+    #[test]
+    fn parse_updated_input_extracts_value_from_json() {
+        let out = r#"{"updatedInput": {"command": "echo safe"}}"#;
+        let got = parse_updated_input(out).expect("should parse updatedInput");
+        assert_eq!(got, json!({"command": "echo safe"}));
+    }
+
+    #[test]
+    fn parse_updated_input_ignores_non_object_value() {
+        // updatedInput present but other sibling keys don't matter.
+        let out = r#"{"updatedInput": [1, 2, 3], "extra": "ignored"}"#;
+        let got = parse_updated_input(out).expect("should parse");
+        assert_eq!(got, json!([1, 2, 3]));
+    }
+
+    #[test]
+    fn hook_exit_zero_with_updated_input_populates_report() {
+        let dir = TempDir::new().unwrap();
+        // Hook exits 0 and prints updatedInput JSON to stdout.
+        let hooks_config = json!({
+            "hooks": {
+                "PreToolUse": [{
+                    "hooks": [{
+                        "type": "command",
+                        "command": r#"printf '{"updatedInput":{"command":"echo safe"}}'"#
+                    }]
+                }]
+            }
+        });
+        write_hooks(dir.path(), &hooks_config.to_string());
+
+        let report = run_hooks(
+            PRE_TOOL_USE,
+            "bash",
+            &json!({"command": "echo original"}),
+            None,
+            dir.path(),
+            Some(dir.path()),
+        );
+
+        assert_eq!(report.outcome, HookOutcome::Allow);
+        assert_eq!(report.hook_count, 1);
+        assert!(report.success);
+        let updated = report.updated_input.expect("updatedInput should be set");
+        assert_eq!(updated, json!({"command": "echo safe"}));
+    }
+
+    #[test]
+    fn hook_exit_zero_without_updated_input_leaves_report_none() {
+        let dir = TempDir::new().unwrap();
+        // Hook just exits 0 with no output.
+        let hooks_config = json!({
+            "hooks": {
+                "PreToolUse": [{"hooks": [{"type": "command", "command": "true"}]}]
+            }
+        });
+        write_hooks(dir.path(), &hooks_config.to_string());
+
+        let report = run_hooks(
+            PRE_TOOL_USE,
+            "bash",
+            &json!({"command": "echo hi"}),
+            None,
+            dir.path(),
+            Some(dir.path()),
+        );
+
+        assert_eq!(report.outcome, HookOutcome::Allow);
+        assert_eq!(report.hook_count, 1);
+        assert!(report.success);
+        assert!(report.updated_input.is_none(), "no updatedInput expected");
+    }
+
+    #[test]
+    fn last_hook_updated_input_wins_when_multiple_hooks_emit_it() {
+        let dir = TempDir::new().unwrap();
+        // Two hooks, both emit updatedInput; the second one should win.
+        let hooks_config = json!({
+            "hooks": {
+                "PreToolUse": [{
+                    "hooks": [
+                        {
+                            "type": "command",
+                            "command": r#"printf '{"updatedInput":{"command":"first"}}'"#
+                        },
+                        {
+                            "type": "command",
+                            "command": r#"printf '{"updatedInput":{"command":"second"}}'"#
+                        }
+                    ]
+                }]
+            }
+        });
+        write_hooks(dir.path(), &hooks_config.to_string());
+
+        let report = run_hooks(
+            PRE_TOOL_USE,
+            "bash",
+            &json!({"command": "echo original"}),
+            None,
+            dir.path(),
+            Some(dir.path()),
+        );
+
+        assert_eq!(report.outcome, HookOutcome::Allow);
+        assert_eq!(report.hook_count, 2);
+        let updated = report.updated_input.expect("updatedInput should be set");
+        assert_eq!(updated["command"], "second");
+    }
+
+    #[test]
+    fn hook_block_does_not_propagate_updated_input() {
+        let dir = TempDir::new().unwrap();
+        let hooks_config = json!({
+            "hooks": {
+                "PreToolUse": [{
+                    "hooks": [{
+                        "type": "command",
+                        "command": r#"printf '{"continue":false,"stopReason":"blocked"}'; exit 2"#
+                    }]
+                }]
+            }
+        });
+        write_hooks(dir.path(), &hooks_config.to_string());
+
+        let report = run_hooks(
+            PRE_TOOL_USE,
+            "bash",
+            &json!({"command": "echo hi"}),
+            None,
+            dir.path(),
+            Some(dir.path()),
+        );
+
+        assert_eq!(
+            report.outcome,
+            HookOutcome::Block {
+                reason: "blocked".into()
+            }
+        );
+        assert!(
+            report.updated_input.is_none(),
+            "blocked hooks must not set updatedInput"
+        );
     }
 }
