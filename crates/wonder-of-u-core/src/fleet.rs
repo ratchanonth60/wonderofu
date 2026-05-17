@@ -419,9 +419,10 @@ pub const FORK_SYSTEM_PROMPT_CAP_BYTES: usize = 8192;
 ///
 /// # Size cap
 ///
-/// [`parent_system_prompt`][Self::parent_system_prompt] is truncated to
+/// [`parent_system_prompt`][Self::parent_system_prompt] and
+/// [`conversation_summary`][Self::conversation_summary] are truncated to
 /// [`FORK_SYSTEM_PROMPT_CAP_BYTES`] at capture time.  The child subprocess
-/// composes its own `--system` argument from this field plus a short fork
+/// composes its own `--system` argument from those fields plus a short fork
 /// directive; total child system prompt length is independently capped by the
 /// dispatcher.
 ///
@@ -448,8 +449,8 @@ pub struct ForkContextSnapshot {
     pub parent_system_prompt: Option<String>,
     /// Compact text summary derived from the parent's recent messages.
     ///
-    /// Contains at most a handful of user/assistant text pairs formatted as
-    /// plain text.  Never contains raw multi-turn message objects or tool
+    /// Contains at most a capped handful of user/assistant text pairs formatted
+    /// as plain text.  Never contains raw multi-turn message objects or tool
     /// call/result payloads.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub conversation_summary: Option<String>,

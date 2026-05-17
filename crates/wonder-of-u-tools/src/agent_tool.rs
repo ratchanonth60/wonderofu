@@ -95,21 +95,21 @@ impl AgentInput {
         if self.mode.as_deref() == Some("fork") && self.isolation.is_some() {
             return Err(WonderError::validation(
                 "agent `mode=fork` combined with `isolation` is not currently supported; \
-                 remove `isolation` to use fork mode"
+                 remove `isolation` to use fork mode",
             ));
         }
 
         // Non-fork isolation (worktree) remains unsupported in the base validate path.
         if self.isolation.is_some() {
             return Err(WonderError::validation(
-                "agent source-compatible `isolation` is not supported in the Rust runtime"
+                "agent source-compatible `isolation` is not supported in the Rust runtime",
             ));
         }
 
         // team_name is still unsupported.
         if self.team_name.is_some() {
             return Err(WonderError::validation(
-                "agent source-compatible `team_name` is not supported in the Rust runtime"
+                "agent source-compatible `team_name` is not supported in the Rust runtime",
             ));
         }
 
@@ -160,15 +160,8 @@ impl Tool for AgentTool {
                     .property(
                         "mode",
                         ToolSchema::enumeration(
-                            "fork-lite mode: `\"fork\"` inherits parent session context for the child subprocess; other values are rejected",
-                            [
-                                "fork",
-                                "default",
-                                "acceptEdits",
-                                "bypassPermissions",
-                                "dontAsk",
-                                "plan",
-                            ],
+                            "fork-lite mode: `\"fork\"` inherits parent session context for the child subprocess",
+                            ["fork"],
                         ),
                     )
                     .property(
@@ -230,7 +223,7 @@ impl Tool for AgentTool {
             if context.fork_context.is_none() {
                 return Err(WonderError::validation(
                     "mode=fork requires an active session with fork context; \
-                     fork context was not populated in this runtime (no active prompt or TUI session)"
+                     fork context was not populated in this runtime (no active prompt or TUI session)",
                 ));
             }
         }
@@ -976,6 +969,22 @@ mod tests {
         .expect("mode=fork should be accepted by validate_input");
     }
 
+    /// The machine-readable schema must not advertise source modes that the
+    /// Rust runtime rejects.
+    #[test]
+    fn agent_schema_mode_enum_only_advertises_fork() {
+        let spec = AgentTool.spec();
+        let mode_enum = spec.input_schema["properties"]["mode"]["enum"]
+            .as_array()
+            .expect("mode enum should be an array");
+
+        let values = mode_enum
+            .iter()
+            .map(|value| value.as_str().expect("enum values are strings"))
+            .collect::<Vec<_>>();
+        assert_eq!(values, vec!["fork"]);
+    }
+
     /// validate() rejects unknown mode values.
     #[test]
     fn agent_validation_rejects_unknown_mode() {
@@ -988,8 +997,14 @@ mod tests {
             .expect_err("unsupported mode should be rejected");
 
         let msg = error.to_string();
-        assert!(msg.contains("acceptEdits"), "error should mention mode value; got: {msg}");
-        assert!(msg.contains("fork"), "error should hint at accepted values; got: {msg}");
+        assert!(
+            msg.contains("acceptEdits"),
+            "error should mention mode value; got: {msg}"
+        );
+        assert!(
+            msg.contains("fork"),
+            "error should hint at accepted values; got: {msg}"
+        );
     }
 
     /// validate() rejects mode=fork combined with isolation.
@@ -1049,7 +1064,9 @@ mod tests {
     /// LaunchAgentTask effect's request.
     #[test]
     fn agent_execute_fork_mode_embeds_fork_context() {
-        use wonder_of_u_core::{FeatureSet, ForkContextSnapshot, PermissionMode, SessionId, ToolEffect};
+        use wonder_of_u_core::{
+            FeatureSet, ForkContextSnapshot, PermissionMode, SessionId, ToolEffect,
+        };
 
         let dir = unique_test_dir("tools-agent-fork-embeds-ctx");
         let fork_ctx = ForkContextSnapshot {
@@ -1080,7 +1097,11 @@ mod tests {
         ))
         .expect("fork with context should succeed");
 
-        assert!(result.success, "should succeed; content: {}", result.content);
+        assert!(
+            result.success,
+            "should succeed; content: {}",
+            result.content
+        );
         assert_eq!(result.effects.len(), 1, "should have exactly one effect");
         let ToolEffect::LaunchAgentTask(ref spec) = result.effects[0] else {
             panic!("expected LaunchAgentTask effect");
@@ -1149,7 +1170,9 @@ mod tests {
     /// when one is present in the ToolContext.
     #[test]
     fn agent_execute_without_fork_mode_does_not_embed_fork_context() {
-        use wonder_of_u_core::{FeatureSet, ForkContextSnapshot, PermissionMode, SessionId, ToolEffect};
+        use wonder_of_u_core::{
+            FeatureSet, ForkContextSnapshot, PermissionMode, SessionId, ToolEffect,
+        };
 
         let dir = unique_test_dir("tools-agent-no-fork-mode");
         let fork_ctx = ForkContextSnapshot {

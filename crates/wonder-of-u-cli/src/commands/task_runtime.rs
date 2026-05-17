@@ -317,10 +317,7 @@ impl TaskManager {
         // Propagate fork depth so the child subprocess can enforce the
         // recursive fork guard in AgentTool::execute().
         if let Some(depth) = launch.fork_depth {
-            env_vars.push((
-                "WONDER_OF_U_FORK_DEPTH".into(),
-                depth.to_string(),
-            ));
+            env_vars.push(("WONDER_OF_U_FORK_DEPTH".into(), depth.to_string()));
         }
 
         let pid = spawn_background_task(
