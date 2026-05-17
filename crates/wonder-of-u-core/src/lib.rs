@@ -5,6 +5,10 @@
 //! implementations without changing persisted transcripts or registry shapes.
 #![warn(missing_docs)]
 
+/// Upstream-parity agent definition types and in-memory catalog.
+pub mod agent_definition;
+/// Filesystem loader for project-level agent definitions.
+pub mod agent_loader;
 /// Provides app support
 pub mod app;
 /// Provides command support
@@ -70,6 +74,11 @@ pub mod xml;
 /// Provides yaml support
 pub mod yaml;
 
+/// Re-exports items from `agent_definition`
+pub use agent_definition::{
+    AgentCatalog, AgentDefinition, AgentDefinitionSnapshot, AgentDefinitionSource,
+    DefinitionParseError, RawDefinitionFields, parse_json_definition, parse_markdown_frontmatter,
+};
 /// Re-exports items from `app`
 pub use app::{
     AgentRuntime, AgentTaskState, AppState, CostState, InputMode, PendingLocalToolCall,

@@ -10,7 +10,9 @@ use std::{collections::BTreeMap, path::PathBuf};
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
 
-use crate::{FleetId, PermissionMode, TaskId, TaskStatus};
+use crate::{
+    FleetId, PermissionMode, TaskId, TaskStatus, agent_definition::AgentDefinitionSnapshot,
+};
 
 // ── Agent task result ────────────────────────────────────────────────────────
 
@@ -390,6 +392,17 @@ pub struct FleetMemberRequest {
     /// dedicated git worktree before launching the agent subprocess.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub isolation: Option<WorktreeIsolation>,
+    /// Effective agent definition snapshot captured at queue time.
+    ///
+    /// Contains the resolved system prompt, model, tool lists, and other
+    /// fields from the agent definition at the moment the task was queued.
+    /// This ensures the dispatcher has a stable copy even if the source
+    /// definition file is later edited or deleted.
+    ///
+    /// `None` for requests queued before this field was introduced (schema
+    /// back-compat: serde default = None).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub definition_snapshot: Option<AgentDefinitionSnapshot>,
     /// When the request was queued.
     #[serde(with = "time::serde::rfc3339")]
     pub queued_at: OffsetDateTime,
@@ -413,6 +426,7 @@ impl FleetMemberRequest {
             parent_task_id: None,
             allowed_tools: None,
             isolation: None,
+            definition_snapshot: None,
             queued_at: OffsetDateTime::now_utc(),
         }
     }
