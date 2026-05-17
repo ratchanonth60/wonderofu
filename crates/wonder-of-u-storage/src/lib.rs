@@ -2246,7 +2246,7 @@ mod fleet_inspector_tests {
     use time::OffsetDateTime;
     use wonder_of_u_core::{
         AGENT_TASK_RESULT_SCHEMA_VERSION, AgentRuntime, AgentTaskResult, AgentTaskState, FleetId,
-        FleetRunState, PermissionMode, TaskId, TaskKind, TaskState, TaskStatus,
+        FleetRunState, PermissionMode, TaskId, TaskKind, TaskProgress, TaskState, TaskStatus,
     };
     use wonder_of_u_test_support::unique_test_dir;
 
@@ -2296,6 +2296,7 @@ mod fleet_inspector_tests {
             worktree_branch: None,
             worktree_path: None,
             worktree_head_commit: None,
+            progress: TaskProgress::default(),
             started_at: OffsetDateTime::now_utc(),
             finished_at: if status.is_terminal() {
                 Some(OffsetDateTime::now_utc())
