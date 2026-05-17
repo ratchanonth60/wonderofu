@@ -53,6 +53,12 @@ pub(crate) struct AgentTaskLaunch {
     pub allowed_tools: Option<Vec<String>>,
     /// Git worktree branch the agent will run inside, if any.
     pub worktree_branch: Option<String>,
+    /// Composed child system prompt forwarded from the parent session via fork-lite.
+    /// Passed as `--system <value>` in the child subprocess command when present.
+    pub system_prompt: Option<String>,
+    /// Depth of this fork (parent depth + 1), injected as `WONDER_OF_U_FORK_DEPTH`
+    /// env var in the child subprocess so recursive forks can be detected.
+    pub fork_depth: Option<u32>,
 }
 
 #[cfg_attr(not(test), allow(dead_code))]
@@ -307,6 +313,11 @@ impl TaskManager {
         }
         if let Some(ref req_id) = launch.fleet_request_id {
             env_vars.push(("WONDER_OF_U_FLEET_REQUEST_ID".into(), req_id.clone()));
+        }
+        // Propagate fork depth so the child subprocess can enforce the
+        // recursive fork guard in AgentTool::execute().
+        if let Some(depth) = launch.fork_depth {
+            env_vars.push(("WONDER_OF_U_FORK_DEPTH".into(), depth.to_string()));
         }
 
         let pid = spawn_background_task(
@@ -831,6 +842,11 @@ fn agent_prompt_command(storage_dir: &Path, launch: &AgentTaskLaunch) -> Result<
         tokens.push("--allowed-tools".into());
         tokens.push(allowed_tools.join(","));
     }
+    // Pass the composed fork system prompt to the child subprocess.
+    if let Some(ref system_prompt) = launch.system_prompt {
+        tokens.push("--system".into());
+        tokens.push(system_prompt.clone());
+    }
     tokens.push(launch.prompt.clone());
     Ok(shell_words::join(tokens.iter().map(String::as_str)))
 }
@@ -1223,6 +1239,8 @@ mod tests {
                 parent_task_id: None,
                 allowed_tools: Some(vec!["bash".into(), "file_read".into()]),
                 worktree_branch: None,
+                system_prompt: None,
+                fork_depth: None,
             })
             .expect("start agent task");
 
@@ -1297,6 +1315,8 @@ mod tests {
                 parent_task_id: None,
                 allowed_tools: None,
                 worktree_branch: None,
+                system_prompt: None,
+                fork_depth: None,
             })
             .expect("start agent task");
 

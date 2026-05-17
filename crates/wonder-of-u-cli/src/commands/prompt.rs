@@ -14,9 +14,10 @@ use wonder_of_u_agent::{
 use wonder_of_u_core::{
     AGENT_TASK_RESULT_SCHEMA_VERSION, AgentTaskResult, AppState, Command, CommandContext,
     CommandInvocation, CommandKind, CommandOutput, CommandSpec, CoordinatorState, FeatureFlag,
-    FleetId, FleetSteeringMessage, MessageEnvelope, MessagePayload, PermissionDecision,
-    PermissionMode, PromptSuggestion, QueryState, Result, TaskId, TaskStatus, ToolContext,
-    ToolEffect, ToolQuery, ToolResult, ToolUseId, WonderError, best_prompt_suggestion,
+    FleetId, FleetSteeringMessage, ForkContextSnapshot, MessageEnvelope, MessagePayload,
+    PermissionDecision, PermissionMode, PromptSuggestion, QueryState, Result, TaskId, TaskStatus,
+    ToolContext, ToolEffect, ToolQuery, ToolResult, ToolUseId, WONDER_OF_U_FORK_DEPTH_ENV,
+    WonderError, best_prompt_suggestion,
 };
 use wonder_of_u_storage::{
     AgentTaskResultStore, CostStore, FleetStore, SessionCostLedger, SessionMemoryIndexStore,
@@ -701,11 +702,14 @@ fn execute_prompt_tool_loop(
     let mut tool_calls = 0usize;
 
     for _ in 0..MAX_TOOL_LOOP_ITERATIONS {
-        let provider_tools =
-            provider_tool_specs(&registry, &tool_context(state), allowed_tools.as_ref())
-                .into_iter()
-                .map(tool_spec_to_provider_tool)
-                .collect::<Vec<_>>();
+        let provider_tools = provider_tool_specs(
+            &registry,
+            &tool_context(state, system_prompt.as_deref()),
+            allowed_tools.as_ref(),
+        )
+        .into_iter()
+        .map(tool_spec_to_provider_tool)
+        .collect::<Vec<_>>();
         let response = runtime.complete_with_tool_use(
             resolved,
             &ToolUseRequest {
@@ -793,7 +797,7 @@ fn execute_prompt_tool_loop(
                         storage_dir,
                         persistence,
                         &registry,
-                        &tool_context(state),
+                        &tool_context(state, system_prompt.as_deref()),
                         &call,
                     )?;
                     round.results.push(result);
@@ -823,7 +827,7 @@ struct LocalToolCall {
     use_id: ToolUseId,
 }
 
-fn tool_context(state: &AppState) -> ToolContext {
+fn tool_context(state: &AppState, system_prompt: Option<&str>) -> ToolContext {
     ToolContext {
         session_id: state.session.id,
         cwd: state.session.cwd.clone(),
@@ -835,7 +839,88 @@ fn tool_context(state: &AppState) -> ToolContext {
         permission_rules: Vec::new(),
         features: state.features.clone(),
         bash_session_store: None,
+        fork_context: build_fork_context_snapshot(state, system_prompt),
     }
+}
+
+/// Builds a [`ForkContextSnapshot`] representing the current session's context
+/// for propagation to a fork-mode subagent child subprocess.
+///
+/// Reads the current fork depth from [`WONDER_OF_U_FORK_DEPTH_ENV`] (defaulting
+/// to 0 if absent), captures the parent session identity, truncates the system
+/// prompt to [`FORK_SYSTEM_PROMPT_CAP_BYTES`], and derives a compact conversation
+/// summary from the last 6 user+assistant text exchange pairs.
+///
+/// # Examples
+///
+/// ```ignore
+/// let snapshot = build_fork_context_snapshot(&state, Some("You are helpful."));
+/// assert!(snapshot.is_some());
+/// ```
+pub(crate) fn build_fork_context_snapshot(
+    state: &AppState,
+    system_prompt: Option<&str>,
+) -> Option<ForkContextSnapshot> {
+    use wonder_of_u_core::FORK_SYSTEM_PROMPT_CAP_BYTES;
+
+    let fork_depth: u32 = std::env::var(WONDER_OF_U_FORK_DEPTH_ENV)
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(0);
+
+    let parent_session_id = state.session.id.to_string();
+    let parent_entrypoint = state.session.entrypoint.clone();
+
+    let parent_system_prompt =
+        system_prompt.map(|sp| truncate_utf8_bytes(sp, FORK_SYSTEM_PROMPT_CAP_BYTES));
+
+    // Derive a compact summary from the last 6 user+assistant text pairs.
+    let conversation_summary = {
+        let pairs: Vec<String> = state
+            .messages
+            .iter()
+            .filter_map(|msg| match &msg.payload {
+                MessagePayload::UserText { content } => Some(format!("User: {}", content.trim())),
+                MessagePayload::AssistantText { content } => {
+                    Some(format!("Assistant: {}", content.trim()))
+                }
+                _ => None,
+            })
+            .rev()
+            .take(12) // last 6 pairs = 12 messages
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .collect();
+        if pairs.is_empty() {
+            None
+        } else {
+            Some(truncate_utf8_bytes(
+                &pairs.join("\n"),
+                FORK_SYSTEM_PROMPT_CAP_BYTES,
+            ))
+        }
+    };
+
+    Some(ForkContextSnapshot {
+        parent_session_id,
+        fork_depth,
+        parent_system_prompt,
+        conversation_summary,
+        parent_entrypoint,
+    })
+}
+
+fn truncate_utf8_bytes(value: &str, max_bytes: usize) -> String {
+    if value.len() <= max_bytes {
+        return value.to_owned();
+    }
+
+    let mut end = max_bytes;
+    while end > 0 && !value.is_char_boundary(end) {
+        end -= 1;
+    }
+    value[..end].to_owned()
 }
 
 /// Processes any [`ToolEffect`]s carried in `result` and returns an updated
@@ -1336,6 +1421,27 @@ mod tests {
         };
         ToolResult::success(use_id, "queued_advisory")
             .with_effects(vec![ToolEffect::SendAgentMessage(spec)])
+    }
+
+    #[test]
+    fn fork_context_summary_is_byte_capped() {
+        use wonder_of_u_core::FORK_SYSTEM_PROMPT_CAP_BYTES;
+
+        let dir = unique_test_dir("prompt-fork-summary-cap");
+        let mut state = AppState::new(dir);
+        let long_text = "é".repeat(FORK_SYSTEM_PROMPT_CAP_BYTES);
+        state
+            .push_message(MessageEnvelope::user_text(state.session.id, long_text))
+            .expect("message should belong to session");
+
+        let snapshot =
+            build_fork_context_snapshot(&state, Some("parent system")).expect("snapshot");
+        let summary = snapshot
+            .conversation_summary
+            .expect("summary should be present");
+
+        assert!(summary.len() <= FORK_SYSTEM_PROMPT_CAP_BYTES);
+        assert!(summary.starts_with("User: "));
     }
 
     /// An empty-effects result passes through process_tool_effects unchanged.

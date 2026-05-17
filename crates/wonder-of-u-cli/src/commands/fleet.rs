@@ -59,9 +59,10 @@ use unicode_segmentation::UnicodeSegmentation;
 use wonder_of_u_agent::{ProviderResolver, ProviderStatusReport};
 use wonder_of_u_core::{
     AgentDefinitionSnapshot, Command, CommandContext, CommandInvocation, CommandKind,
-    CommandOutput, CommandSpec, FeatureFlag, FleetAgentRole, FleetId, FleetMemberRequest,
-    FleetRoleCatalog, FleetRunState, FleetRunStatus, FleetSteeringMessage, Result, SteeringSource,
-    TaskId, TaskStatus, WonderError, WorktreeIsolation, WorktreeIsolationMode, get_git_root,
+    CommandOutput, CommandSpec, FORK_SYSTEM_PROMPT_CAP_BYTES, FeatureFlag, FleetAgentRole, FleetId,
+    FleetMemberRequest, FleetRoleCatalog, FleetRunState, FleetRunStatus, FleetSteeringMessage,
+    Result, SteeringSource, TaskId, TaskStatus, WonderError, WorktreeIsolation,
+    WorktreeIsolationMode, get_git_root,
 };
 use wonder_of_u_storage::{FleetInspector, FleetStore, MemberObservationClass};
 use wonder_of_u_tools::{
@@ -504,6 +505,8 @@ impl FleetCommand {
                     .as_ref()
                     .and_then(role_allowed_tools_for_launch),
                 worktree_branch,
+                system_prompt: None,
+                fork_depth: None,
             })?;
             run.member_task_ids.push(task.id);
             run.status = FleetRunStatus::Running;
@@ -1503,6 +1506,38 @@ fn request_to_agent_launch(
         (cwd, None)
     };
 
+    // Compose fork-lite child system prompt when the request carries a fork context.
+    let (fork_system_prompt, fork_depth) = if let Some(ref ctx) = req.fork_context {
+        let mut parts: Vec<String> = Vec::new();
+        if let Some(ref parent_prompt) = ctx.parent_system_prompt {
+            parts.push(parent_prompt.clone());
+        }
+        let header = format!(
+            "---\n[fork-lite] Forked from session {}. Compact context summary:",
+            ctx.parent_session_id
+        );
+        parts.push(header);
+        if let Some(ref summary) = ctx.conversation_summary {
+            parts.push(summary.clone());
+        }
+        let composed = parts.join("\n\n");
+        // Hard-cap the total composed prompt at FORK_SYSTEM_PROMPT_CAP_BYTES.
+        let capped = if composed.len() > FORK_SYSTEM_PROMPT_CAP_BYTES {
+            // Truncate on a UTF-8 boundary.
+            let mut end = FORK_SYSTEM_PROMPT_CAP_BYTES;
+            while !composed.is_char_boundary(end) {
+                end -= 1;
+            }
+            composed[..end].to_owned()
+        } else {
+            composed
+        };
+        let child_depth = ctx.fork_depth.saturating_add(1);
+        (Some(capped), Some(child_depth))
+    } else {
+        (None, None)
+    };
+
     Ok(AgentTaskLaunch {
         name: req
             .name
@@ -1518,6 +1553,8 @@ fn request_to_agent_launch(
         parent_task_id: req.parent_task_id,
         allowed_tools,
         worktree_branch,
+        system_prompt: fork_system_prompt,
+        fork_depth,
     })
 }
 

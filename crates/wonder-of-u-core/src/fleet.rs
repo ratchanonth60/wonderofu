@@ -398,6 +398,67 @@ impl FleetSteeringMessage {
     }
 }
 
+// ── Fork context snapshot ────────────────────────────────────────────────────
+
+/// Maximum byte length for the forwarded parent system prompt inside a
+/// [`ForkContextSnapshot`].
+///
+/// Prompts exceeding this limit are deterministically truncated at the byte
+/// boundary nearest to 8 KiB, with a `…` marker appended.  This prevents the
+/// composed child `--system` argument from growing unboundedly when the parent
+/// has a long custom system prompt.
+pub const FORK_SYSTEM_PROMPT_CAP_BYTES: usize = 8192;
+
+/// Compact snapshot of a parent conversation's context for fork-lite subagents.
+///
+/// Embedded in [`FleetMemberRequest`] when a subagent is launched via
+/// `mode = "fork"` and propagated into [`ToolContext`] at runtime.  Only
+/// compact text fields are stored — **no raw message arrays** — so the child
+/// subprocess can be given an honest, limited context without claiming exact
+/// full-conversation replay.
+///
+/// # Size cap
+///
+/// [`parent_system_prompt`][Self::parent_system_prompt] and
+/// [`conversation_summary`][Self::conversation_summary] are truncated to
+/// [`FORK_SYSTEM_PROMPT_CAP_BYTES`] at capture time.  The child subprocess
+/// composes its own `--system` argument from those fields plus a short fork
+/// directive; total child system prompt length is independently capped by the
+/// dispatcher.
+///
+/// # Back-compatibility
+///
+/// All optional fields carry `#[serde(default, skip_serializing_if)]` so older
+/// readers that do not know the field silently ignore it.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ForkContextSnapshot {
+    /// Session id of the parent agent or interactive session.
+    pub parent_session_id: String,
+    /// How many fork levels deep this request sits.
+    ///
+    /// `0` means the immediate parent is a top-level (non-forked) session.
+    /// The child subprocess propagates `fork_depth + 1` via
+    /// `WONDER_OF_U_FORK_DEPTH` so recursive forks can be detected and
+    /// rejected.
+    #[serde(default)]
+    pub fork_depth: u32,
+    /// Parent effective system prompt, capped to [`FORK_SYSTEM_PROMPT_CAP_BYTES`].
+    ///
+    /// `None` when the parent session has no system prompt.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_system_prompt: Option<String>,
+    /// Compact text summary derived from the parent's recent messages.
+    ///
+    /// Contains at most a capped handful of user/assistant text pairs formatted
+    /// as plain text.  Never contains raw multi-turn message objects or tool
+    /// call/result payloads.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub conversation_summary: Option<String>,
+    /// Entrypoint of the parent session (e.g. `"prompt"`, `"tui"`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_entrypoint: Option<String>,
+}
+
 // ── Pending member request ───────────────────────────────────────────────────
 
 /// A pending agent dispatch request written by the `agent` tool bridge.
@@ -469,10 +530,27 @@ pub struct FleetMemberRequest {
     /// back-compat: serde default = None).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub definition_snapshot: Option<AgentDefinitionSnapshot>,
+    /// Fork-lite context snapshot, present only when the request was queued
+    /// from a `mode: "fork"` `agent` tool call.
+    ///
+    /// The dispatcher uses this to compose a realistic but honest child
+    /// system prompt and to propagate [`WONDER_OF_U_FORK_DEPTH_ENV`] to the
+    /// child subprocess.  `None` for non-fork requests (the vast majority);
+    /// serde default ensures old readers ignore the field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fork_context: Option<ForkContextSnapshot>,
     /// When the request was queued.
     #[serde(with = "time::serde::rfc3339")]
     pub queued_at: OffsetDateTime,
 }
+
+/// Environment variable that carries the fork depth into child subprocesses.
+///
+/// Set by [`TaskManager::start_agent_task`] when launching a fork-mode task.
+/// A value of `"0"` (or absent) means the child is **not** itself a fork.
+/// A value of `"1"` means the current subprocess is a direct fork; higher
+/// values indicate deeper nesting (currently rejected).
+pub const WONDER_OF_U_FORK_DEPTH_ENV: &str = "WONDER_OF_U_FORK_DEPTH";
 
 impl FleetMemberRequest {
     /// Creates a new request with a fresh UUID and `queued_at = now`.
@@ -493,6 +571,7 @@ impl FleetMemberRequest {
             allowed_tools: None,
             isolation: None,
             definition_snapshot: None,
+            fork_context: None,
             queued_at: OffsetDateTime::now_utc(),
         }
     }

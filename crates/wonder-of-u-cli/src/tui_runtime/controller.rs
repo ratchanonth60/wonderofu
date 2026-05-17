@@ -2200,6 +2200,7 @@ impl<'a> TuiController<'a> {
     }
 
     pub(super) fn tool_context(&self) -> ToolContext {
+        let system_prompt = self.state.effective_system_prompt(None);
         ToolContext {
             session_id: self.state.session.id,
             cwd: self.state.session.cwd.clone(),
@@ -2211,6 +2212,7 @@ impl<'a> TuiController<'a> {
             permission_rules: Vec::new(),
             features: self.state.features.clone(),
             bash_session_store: None,
+            fork_context: build_fork_context_snapshot(&self.state, system_prompt.as_deref()),
         }
     }
 

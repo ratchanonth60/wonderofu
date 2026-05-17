@@ -528,6 +528,7 @@ mod tests {
             permission_rules: Vec::new(),
             features: FeatureSet::first_release(),
             bash_session_store: None,
+            fork_context: None,
         }
     }
 
@@ -543,6 +544,7 @@ mod tests {
             permission_rules: Vec::new(),
             features: FeatureSet::first_release(),
             bash_session_store: Some(Arc::new(Mutex::new(ShellSessionStore::new()))),
+            fork_context: None,
         }
     }
 
@@ -739,6 +741,7 @@ mod tests {
             permission_rules: Vec::new(),
             features: FeatureSet::first_release(),
             bash_session_store: Some(Arc::clone(&store)),
+            fork_context: None,
         };
         block_on(tool.execute(
             ctx1,
@@ -759,6 +762,7 @@ mod tests {
             permission_rules: Vec::new(),
             features: FeatureSet::first_release(),
             bash_session_store: Some(Arc::clone(&store)),
+            fork_context: None,
         };
         let result = block_on(tool.execute(
             ctx2,
