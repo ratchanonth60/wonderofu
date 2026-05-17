@@ -5,6 +5,10 @@
 //! implementations without changing persisted transcripts or registry shapes.
 #![warn(missing_docs)]
 
+/// Upstream-parity agent definition types and in-memory catalog.
+pub mod agent_definition;
+/// Filesystem loader for project-level agent definitions.
+pub mod agent_loader;
 /// Provides app support
 pub mod app;
 /// Provides command support
@@ -103,6 +107,11 @@ pub use error::{Result, WonderError};
 pub use feature::{FeatureFlag, FeatureSet};
 /// Re-exports items from `fingerprint`
 pub use fingerprint::{fingerprint_json, fingerprint_str};
+/// Re-exports items from `agent_definition`
+pub use agent_definition::{
+    AgentCatalog, AgentDefinition, AgentDefinitionSnapshot, AgentDefinitionSource,
+    DefinitionParseError, RawDefinitionFields, parse_json_definition, parse_markdown_frontmatter,
+};
 /// Re-exports items from `fleet`
 pub use fleet::{
     AGENT_TASK_RESULT_SCHEMA_VERSION, AgentTaskResult, FLEET_SCHEMA_VERSION,

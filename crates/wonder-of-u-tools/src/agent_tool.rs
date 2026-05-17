@@ -4,8 +4,10 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use wonder_of_u_core::{
-    FeatureFlag, FleetMemberRequest, FleetRoleCatalog, RemoteTaskState, RemoteTaskType, Result,
-    TaskId, Tool, ToolContext, ToolKind, ToolResult, ToolSchema, ToolSpec, ToolUseId, WonderError,
+    AgentCatalog, AgentDefinitionSource, FeatureFlag, FleetMemberRequest,
+    RemoteTaskState, RemoteTaskType, Result, TaskId, Tool, ToolContext, ToolKind, ToolResult,
+    ToolSchema, ToolSpec, ToolUseId, WonderError,
+    agent_loader::AgentDefinitionLoader,
 };
 use wonder_of_u_storage::FleetStore;
 
@@ -53,24 +55,17 @@ pub struct AgentInput {
 }
 
 impl AgentInput {
+    /// Validates structural fields that can be checked without the agent catalog.
+    ///
+    /// `subagent_type` is intentionally **not** checked here because resolving
+    /// it requires the full project-level catalog (including custom definitions
+    /// from `.claude/agents/` and `agents/`), which requires filesystem access.
+    /// Catalog resolution happens in the [`AgentTool::execute`] path via
+    /// [`queue_fleet_member_request_with_catalog`].
     fn validate(&self) -> Result<()> {
         require_non_empty_text("agent", "prompt", &self.prompt)?;
         if let Some(description) = &self.description {
             require_non_empty_text("agent", "description", description)?;
-        }
-
-        // Accept known subagent_type values (mapped to role ids).  Unknown
-        // values are rejected with a helpful list of known roles.
-        if let Some(ref subagent_type) = self.subagent_type {
-            let catalog = FleetRoleCatalog::builtin();
-            if catalog.resolve_alias(subagent_type).is_none() {
-                return Err(WonderError::validation(format!(
-                    "agent `subagent_type` value `{subagent_type}` is not recognised; \
-                     known roles: {}",
-                    catalog.known_ids_display()
-                )));
-            }
-            // Known alias — allowed to pass through; will be resolved at queue time.
         }
 
         if matches!(self.run_in_background, Some(false)) {
@@ -119,7 +114,8 @@ impl Tool for AgentTool {
                     .property(
                         "subagent_type",
                         ToolSchema::string(
-                            "source-compatible specialized agent type; currently unsupported",
+                            "upstream-compatible agent type id or display name; resolved against \
+                             the active agent catalog (built-ins + project definitions)",
                         ),
                     )
                     .property("model", ToolSchema::string("optional model override"))
@@ -188,14 +184,18 @@ impl Tool for AgentTool {
 
     async fn execute(
         &self,
-        _context: ToolContext,
+        context: ToolContext,
         use_id: ToolUseId,
         input: Value,
     ) -> Result<ToolResult> {
         let input = parse_input::<AgentInput>("agent", &input)?;
         input.validate()?;
 
-        let request_id = queue_fleet_member_request(&app_root()?, &input)?;
+        // Build the full catalog: built-ins + project definitions from cwd.
+        let loader = AgentDefinitionLoader::new(&context.cwd);
+        let (catalog, _warnings) = loader.build_catalog()?;
+
+        let request_id = queue_fleet_member_request_with_catalog(&app_root()?, &input, &catalog)?;
         let mut result = ToolResult::success(
             use_id,
             format!("agent task queued for fleet dispatch: {request_id}"),
@@ -213,14 +213,40 @@ impl Tool for AgentTool {
     }
 }
 
+/// Queues an agent request as a [`FleetMemberRequest`] pending file, using
+/// the built-in catalog only.
+///
+/// Used by tests that do not need project-level definition loading.
+#[cfg(test)]
+fn queue_fleet_member_request(app_root: &std::path::Path, input: &AgentInput) -> Result<String> {
+    let catalog = AgentCatalog::builtin();
+    queue_fleet_member_request_with_catalog(app_root, input, &catalog)
+}
+
 /// Queues an agent request as a [`FleetMemberRequest`] pending file.
 ///
-/// Returns the request UUID string so callers can include it in tool metadata.
+/// Accepts an explicit `catalog` so the caller controls which definitions are
+/// available for `subagent_type` resolution (built-ins only, or built-ins +
+/// project).
 ///
-/// If `input.subagent_type` is set and resolves to a known role alias, the
-/// resolved role id is stored on the request so the dispatcher can apply the
-/// role preamble at launch time.
-fn queue_fleet_member_request(app_root: &std::path::Path, input: &AgentInput) -> Result<String> {
+/// # Snapshot
+///
+/// When `input.subagent_type` resolves to a known definition, an
+/// [`AgentDefinitionSnapshot`] capturing the effective fields is stored on the
+/// [`FleetMemberRequest`].  This ensures the dispatcher always has a stable
+/// copy of the configuration even if the source file is later edited or deleted.
+///
+/// If no `subagent_type` is provided, the `general-purpose` built-in is used
+/// as the default definition for the snapshot's `definition_id`, but its
+/// system prompt is **not** prepended automatically — the caller-supplied
+/// prompt is used verbatim.
+///
+/// Returns the request UUID string so callers can include it in tool metadata.
+pub fn queue_fleet_member_request_with_catalog(
+    app_root: &std::path::Path,
+    input: &AgentInput,
+    catalog: &AgentCatalog,
+) -> Result<String> {
     let mut request = FleetMemberRequest::new(input.prompt.clone());
     request.description = input.description.clone();
     request.name = input.name.clone();
@@ -254,14 +280,41 @@ fn queue_fleet_member_request(app_root: &std::path::Path, input: &AgentInput) ->
     // Forward dependency list for scheduling.
     request.depends_on = input.depends_on.clone().unwrap_or_default();
 
-    // Resolve subagent_type alias → role id if provided.
-    if let Some(ref subagent_type) = input.subagent_type {
-        let catalog = FleetRoleCatalog::builtin();
-        if let Some(role) = catalog.resolve_alias(subagent_type) {
-            request.role = Some(role.id.clone());
+    // Resolve subagent_type → definition + snapshot.
+    //
+    // When subagent_type is explicitly provided, it must resolve to a known
+    // definition; unknown types are rejected with a helpful catalog listing.
+    // When omitted, `general-purpose` is used for the snapshot metadata only
+    // (the caller's prompt is used verbatim — no preamble is prepended).
+    let resolved_def = if let Some(ref subagent_type) = input.subagent_type {
+        match catalog.resolve_alias(subagent_type) {
+            Some(def) => Some(def),
+            None => {
+                return Err(WonderError::validation(format!(
+                    "agent `subagent_type` value `{subagent_type}` is not recognised; \
+                     known definitions: {}",
+                    catalog.known_ids_display()
+                )));
+            }
         }
-        // Unknown aliases were already rejected in validate(); this branch is
-        // only reached when the alias is known.
+    } else {
+        // Default to general-purpose for snapshot metadata when no type is given.
+        catalog.get("general-purpose")
+    };
+
+    if let Some(def) = resolved_def {
+        // Store the stable role id on the request for the dispatcher.
+        request.role = Some(def.id.clone());
+
+        // Snapshot the effective definition so the dispatcher never needs to
+        // re-resolve from disk.
+        request.definition_snapshot = Some(def.snapshot());
+
+        // For built-in roles that originated from FleetAgentRole, also honour
+        // the model override from the definition if the caller didn't provide one.
+        if request.model.is_none() && def.source == AgentDefinitionSource::Builtin {
+            request.model = def.model.clone();
+        }
     }
 
     let store = FleetStore::new(app_root);
@@ -371,46 +424,115 @@ mod tests {
     }
 
     #[test]
-    fn agent_validation_accepts_known_subagent_type() {
-        let tool = AgentTool;
+    fn agent_accepts_known_subagent_type_via_catalog() {
+        let dir = unique_test_dir("tools-agent-known-type");
+        let catalog = AgentCatalog::builtin();
+
         // Exact id.
-        tool.validate_input(&json!({
-            "prompt": "implement the feature",
-            "subagent_type": "rust-engineer",
-        }))
+        queue_fleet_member_request_with_catalog(
+            &dir,
+            &AgentInput {
+                prompt: "implement the feature".into(),
+                description: None,
+                subagent_type: Some("rust-engineer".into()),
+                model: None,
+                run_in_background: None,
+                name: None,
+                team_name: None,
+                mode: None,
+                isolation: None,
+                cwd: None,
+                tools: None,
+                depends_on: None,
+            },
+            &catalog,
+        )
         .expect("known subagent_type should be accepted");
+    }
 
-        // Display-name alias.
-        tool.validate_input(&json!({
-            "prompt": "review this diff",
-            "subagent_type": "Code Reviewer",
-        }))
+    #[test]
+    fn agent_accepts_display_name_alias_via_catalog() {
+        let dir = unique_test_dir("tools-agent-display-name");
+        let catalog = AgentCatalog::builtin();
+
+        queue_fleet_member_request_with_catalog(
+            &dir,
+            &AgentInput {
+                prompt: "review this diff".into(),
+                description: None,
+                subagent_type: Some("Code Reviewer".into()),
+                model: None,
+                run_in_background: None,
+                name: None,
+                team_name: None,
+                mode: None,
+                isolation: None,
+                cwd: None,
+                tools: None,
+                depends_on: None,
+            },
+            &catalog,
+        )
         .expect("display-name alias should be accepted");
+    }
 
-        // Short alias.
-        tool.validate_input(&json!({
-            "prompt": "review this diff",
-            "subagent_type": "code-review",
-        }))
+    #[test]
+    fn agent_accepts_short_alias_via_catalog() {
+        let dir = unique_test_dir("tools-agent-short-alias");
+        let catalog = AgentCatalog::builtin();
+
+        queue_fleet_member_request_with_catalog(
+            &dir,
+            &AgentInput {
+                prompt: "review this diff".into(),
+                description: None,
+                subagent_type: Some("code-review".into()),
+                model: None,
+                run_in_background: None,
+                name: None,
+                team_name: None,
+                mode: None,
+                isolation: None,
+                cwd: None,
+                tools: None,
+                depends_on: None,
+            },
+            &catalog,
+        )
         .expect("short alias should be accepted");
     }
 
     #[test]
-    fn agent_validation_rejects_unknown_subagent_type() {
-        let tool = AgentTool;
-        let error = tool
-            .validate_input(&json!({
-                "prompt": "review",
-                "subagent_type": "completely-unknown-agent",
-            }))
-            .expect_err("unknown subagent_type");
+    fn agent_rejects_unknown_subagent_type_via_catalog() {
+        let dir = unique_test_dir("tools-agent-unknown-type");
+        let catalog = AgentCatalog::builtin();
+
+        let error = queue_fleet_member_request_with_catalog(
+            &dir,
+            &AgentInput {
+                prompt: "review".into(),
+                description: None,
+                subagent_type: Some("completely-unknown-agent".into()),
+                model: None,
+                run_in_background: None,
+                name: None,
+                team_name: None,
+                mode: None,
+                isolation: None,
+                cwd: None,
+                tools: None,
+                depends_on: None,
+            },
+            &catalog,
+        )
+        .expect_err("unknown subagent_type should be rejected");
 
         let msg = error.to_string();
         assert!(
             msg.contains("completely-unknown-agent"),
             "error should mention the unknown value; got: {msg}"
         );
-        // The error should list known roles.
+        // The error should list known roles so the caller can fix the input.
         assert!(
             msg.contains("rust-engineer"),
             "error should list known roles; got: {msg}"
@@ -418,9 +540,141 @@ mod tests {
     }
 
     #[test]
+    fn agent_accepts_custom_project_defined_type() {
+        use std::fs;
+        let root = unique_test_dir("tools-agent-custom-type");
+        let agents_dir = root.join("agents");
+        fs::create_dir_all(&agents_dir).unwrap();
+        fs::write(
+            agents_dir.join("my-scout.md"),
+            "---\nname: My Scout\ndescription: Explores the codebase\n---\n\nYou are a scout.",
+        )
+        .unwrap();
+
+        let loader = AgentDefinitionLoader::new(&root);
+        let (catalog, _) = loader.build_catalog().unwrap();
+
+        let dir = unique_test_dir("tools-agent-custom-type-store");
+        queue_fleet_member_request_with_catalog(
+            &dir,
+            &AgentInput {
+                prompt: "explore the repo".into(),
+                description: None,
+                subagent_type: Some("my-scout".into()),
+                model: None,
+                run_in_background: None,
+                name: None,
+                team_name: None,
+                mode: None,
+                isolation: None,
+                cwd: None,
+                tools: None,
+                depends_on: None,
+            },
+            &catalog,
+        )
+        .expect("known custom subagent_type should be accepted");
+
+        let store = FleetStore::new(&dir);
+        let pending = store.list_pending_requests().unwrap();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].role.as_deref(), Some("my-scout"));
+        let snap = pending[0]
+            .definition_snapshot
+            .as_ref()
+            .expect("snapshot should be set for resolved custom type");
+        assert_eq!(snap.definition_id, "my-scout");
+        assert_eq!(
+            snap.source,
+            Some(wonder_of_u_core::AgentDefinitionSource::Project)
+        );
+        assert!(snap.content_hash.is_some(), "project defs should have a content hash");
+    }
+
+    #[test]
+    fn queued_request_snapshot_contains_effective_fields() {
+        let dir = unique_test_dir("tools-agent-snapshot");
+        let catalog = AgentCatalog::builtin();
+
+        let request_id = queue_fleet_member_request_with_catalog(
+            &dir,
+            &AgentInput {
+                prompt: "implement the feature".into(),
+                description: None,
+                subagent_type: Some("rust-engineer".into()),
+                model: None,
+                run_in_background: None,
+                name: None,
+                team_name: None,
+                mode: None,
+                isolation: None,
+                cwd: None,
+                tools: None,
+                depends_on: None,
+            },
+            &catalog,
+        )
+        .expect("queue task");
+
+        let store = FleetStore::new(&dir);
+        let req = store.read_pending_request(&request_id).unwrap();
+        let snap = req
+            .definition_snapshot
+            .as_ref()
+            .expect("snapshot should be present for resolved subagent_type");
+        assert_eq!(snap.definition_id, "rust-engineer");
+        assert_eq!(
+            snap.source,
+            Some(wonder_of_u_core::AgentDefinitionSource::Builtin)
+        );
+        assert!(
+            snap.system_prompt.as_ref().map(|p| !p.is_empty()).unwrap_or(false),
+            "system_prompt should be non-empty"
+        );
+        // rust-engineer allows bash, file_read, etc.
+        assert!(!snap.allowed_tools.is_empty(), "allowed_tools should be populated");
+    }
+
+    #[test]
+    fn no_subagent_type_defaults_to_general_purpose_snapshot() {
+        let dir = unique_test_dir("tools-agent-default-snap");
+        let catalog = AgentCatalog::builtin();
+
+        let request_id = queue_fleet_member_request_with_catalog(
+            &dir,
+            &AgentInput {
+                prompt: "do something".into(),
+                description: None,
+                subagent_type: None,
+                model: None,
+                run_in_background: None,
+                name: None,
+                team_name: None,
+                mode: None,
+                isolation: None,
+                cwd: None,
+                tools: None,
+                depends_on: None,
+            },
+            &catalog,
+        )
+        .expect("queue task");
+
+        let store = FleetStore::new(&dir);
+        let req = store.read_pending_request(&request_id).unwrap();
+        let snap = req
+            .definition_snapshot
+            .as_ref()
+            .expect("snapshot should default to general-purpose");
+        assert_eq!(snap.definition_id, "general-purpose");
+    }
+
+    #[test]
     fn subagent_type_alias_stored_as_role_id() {
         let dir = unique_test_dir("tools-agent-subagent-type");
-        let request_id = queue_fleet_member_request(
+        let catalog = AgentCatalog::builtin();
+
+        let request_id = queue_fleet_member_request_with_catalog(
             &dir,
             &AgentInput {
                 prompt: "review the patch".into(),
@@ -436,6 +690,7 @@ mod tests {
                 tools: None,
                 depends_on: None,
             },
+            &catalog,
         )
         .expect("queue task");
 
@@ -471,3 +726,4 @@ mod tests {
         assert!(error.to_string().contains("run_in_background"));
     }
 }
+
