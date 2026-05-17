@@ -391,6 +391,8 @@ impl ClearCommand {
             CommandKind::Local,
         );
         spec.required_features = BTreeSet::from([FeatureFlag::SessionPersistence]);
+        // immediate=true: /clear must not drain queued prompts after executing.
+        spec.immediate = true;
         spec
     }
 }

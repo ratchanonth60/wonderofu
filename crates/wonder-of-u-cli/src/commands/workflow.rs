@@ -206,7 +206,8 @@ impl ExitCommand {
 
     /// Returns the `CommandSpec` for `/exit`.
     pub fn command_spec() -> CommandSpec {
-        CommandSpec::new("exit", "Request CLI exit", CommandKind::Local)
+        // immediate=true: /exit must not drain queued prompts after executing.
+        CommandSpec::new("exit", "Request CLI exit", CommandKind::Local).with_immediate(true)
     }
 }
 

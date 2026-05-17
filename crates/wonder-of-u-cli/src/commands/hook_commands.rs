@@ -44,11 +44,13 @@ impl HooksCommand {
 
     /// Returns the [`CommandSpec`] for this command.
     pub fn command_spec() -> CommandSpec {
+        // immediate=true: /hooks must not drain queued prompts after executing.
         CommandSpec::new(
             "hooks",
             "View hook configurations for tool events",
             CommandKind::Local,
         )
+        .with_immediate(true)
     }
 }
 
