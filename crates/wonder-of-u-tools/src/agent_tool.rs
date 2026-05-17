@@ -202,7 +202,7 @@ impl Tool for AgentTool {
         // ToolEffect::LaunchAgentTask and decides whether to:
         //   a) directly call TaskManager::start_agent_task (preferred), or
         //   b) write a pending FleetMemberRequest file as fallback.
-        let request = build_fleet_member_request_with_catalog(&input, &catalog);
+        let request = build_fleet_member_request_with_catalog(&input, &catalog)?;
         let request_id = request.id.clone();
 
         let effect = ToolEffect::LaunchAgentTask(AgentLaunchSpec { request });
@@ -250,7 +250,9 @@ fn queue_fleet_member_request(app_root: &std::path::Path, input: &AgentInput) ->
 pub fn build_fleet_member_request_with_catalog(
     input: &AgentInput,
     catalog: &AgentCatalog,
-) -> FleetMemberRequest {
+) -> Result<FleetMemberRequest> {
+    validate_subagent_type(input, catalog)?;
+
     let mut request = FleetMemberRequest::new(input.prompt.clone());
     request.description = input.description.clone();
     request.name = input.name.clone();
@@ -302,7 +304,20 @@ pub fn build_fleet_member_request_with_catalog(
         }
     }
 
-    request
+    Ok(request)
+}
+
+fn validate_subagent_type(input: &AgentInput, catalog: &AgentCatalog) -> Result<()> {
+    if let Some(ref subagent_type) = input.subagent_type {
+        if catalog.resolve_alias(subagent_type).is_none() {
+            return Err(WonderError::validation(format!(
+                "agent `subagent_type` value `{subagent_type}` is not recognised; \
+                 known definitions: {}",
+                catalog.known_ids_display()
+            )));
+        }
+    }
+    Ok(())
 }
 
 /// Queues an agent request as a [`FleetMemberRequest`] pending file.
@@ -321,18 +336,7 @@ pub fn queue_fleet_member_request_with_catalog(
     input: &AgentInput,
     catalog: &AgentCatalog,
 ) -> Result<String> {
-    // Validate that any explicit subagent_type is actually known before writing.
-    if let Some(ref subagent_type) = input.subagent_type {
-        if catalog.resolve_alias(subagent_type).is_none() {
-            return Err(WonderError::validation(format!(
-                "agent `subagent_type` value `{subagent_type}` is not recognised; \
-                 known definitions: {}",
-                catalog.known_ids_display()
-            )));
-        }
-    }
-
-    let request = build_fleet_member_request_with_catalog(input, catalog);
+    let request = build_fleet_member_request_with_catalog(input, catalog)?;
     let store = FleetStore::new(app_root);
     store.queue_member_request(&request)?;
     Ok(request.id)
@@ -823,7 +827,8 @@ mod tests {
             depends_on: None,
         };
 
-        let request = build_fleet_member_request_with_catalog(&input, &catalog);
+        let request =
+            build_fleet_member_request_with_catalog(&input, &catalog).expect("build request");
         assert_eq!(request.prompt, "just build");
 
         // definition_snapshot defaults to general-purpose.
@@ -863,5 +868,38 @@ mod tests {
         let pending = store.list_pending_requests().unwrap();
         assert_eq!(pending.len(), 1);
         assert_eq!(pending[0].id, request_id);
+    }
+
+    #[test]
+    fn agent_execute_rejects_unknown_subagent_type() {
+        use wonder_of_u_core::{FeatureSet, PermissionMode, SessionId};
+
+        let dir = unique_test_dir("tools-agent-execute-unknown-type");
+        let context = wonder_of_u_core::ToolContext {
+            session_id: SessionId::new(),
+            cwd: dir,
+            session_worktree: None,
+            permission_mode: PermissionMode::Default,
+            additional_working_directories: vec![],
+            provider: None,
+            model: None,
+            permission_rules: vec![],
+            features: FeatureSet::first_release(),
+            bash_session_store: None,
+        };
+        let tool = AgentTool;
+        let error = futures::executor::block_on(tool.execute(
+            context,
+            wonder_of_u_core::ToolUseId::new(),
+            json!({
+                "prompt": "review",
+                "subagent_type": "does-not-exist",
+            }),
+        ))
+        .expect_err("unknown subagent_type should be rejected");
+
+        let message = error.to_string();
+        assert!(message.contains("does-not-exist"), "got: {message}");
+        assert!(message.contains("known definitions"), "got: {message}");
     }
 }

@@ -53,7 +53,7 @@ use wonder_of_u_tui::{
 use crate::commands;
 use crate::commands::prompt::{
     SessionPersistenceState, append_contextual_message, load_or_create_state,
-    persist_messages_and_state, persist_prompt_state, truncate_chars,
+    persist_messages_and_state, persist_prompt_state, process_tool_effects, truncate_chars,
 };
 
 pub(crate) struct TuiLaunchOptions {

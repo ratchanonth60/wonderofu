@@ -850,7 +850,7 @@ fn tool_context(state: &AppState) -> ToolContext {
 ///
 /// Effects are always drained before this function returns so they are never
 /// persisted to the transcript.
-fn process_tool_effects(
+pub(crate) fn process_tool_effects(
     mut result: ToolResult,
     storage_dir: Option<&Path>,
     cwd: &Path,
@@ -1179,7 +1179,8 @@ mod tests {
             tools: None,
             depends_on: None,
         };
-        let request = build_fleet_member_request_with_catalog(&input, catalog);
+        let request =
+            build_fleet_member_request_with_catalog(&input, catalog).expect("build request");
         let use_id = ToolUseId::new();
         ToolResult::success(use_id, "launch_requested").with_effects(vec![
             ToolEffect::LaunchAgentTask(AgentLaunchSpec { request }),
@@ -1247,12 +1248,11 @@ mod tests {
     /// vars (or marks the result as a failure when none are set).
     #[test]
     fn process_effects_without_storage_dir_does_not_panic() {
+        let dir = unique_test_dir("prompt-effects-env-fallback");
+        let _guard = EnvVarGuard::set("WONDER_OF_U_STORAGE_DIR", dir.as_os_str());
         let catalog = AgentCatalog::builtin();
         let result = launch_effect_result("no storage", &catalog);
-        let cwd = std::env::current_dir().unwrap();
-        // HOME is always set in CI; this tests the env-based fallback path.
-        // We only verify no panic and that effects are drained.
-        let processed = process_tool_effects(result, None, &cwd);
+        let processed = process_tool_effects(result, None, &dir);
         assert!(
             processed.effects.is_empty(),
             "effects should always be drained"
