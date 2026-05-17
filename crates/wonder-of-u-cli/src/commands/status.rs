@@ -1890,6 +1890,17 @@ mod tests {
     }
 
     #[test]
+    fn output_style_command_spec_is_hidden() {
+        // Claude Code reference behavior: /output-style is hidden so it does
+        // not surface in user-visible autocompletion or help listings.
+        let spec = OutputStyleCommand::command_spec();
+        assert!(
+            spec.hidden,
+            "/output-style CommandSpec must be hidden to match Claude Code reference behavior"
+        );
+    }
+
+    #[test]
     fn output_style_command_returns_deprecation_notice() {
         let output = block_on(OutputStyleCommand::new().execute(
             command_context(Path::new("/workspace"), SessionId::new()),

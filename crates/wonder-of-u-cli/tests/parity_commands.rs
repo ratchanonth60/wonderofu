@@ -370,6 +370,35 @@ fn output_style_command_is_registered() {
     );
 }
 
+/// /output-style: must be hidden so it is excluded from user-visible
+/// autocompletion and help listings, matching Claude Code reference behavior.
+#[test]
+fn output_style_command_spec_hidden_flag_matches_reference() {
+    use wonder_of_u_core::{CommandQuery, FeatureSet};
+
+    let dir = tempfile::tempdir().expect("temp dir");
+    let registry = build_command_registry(Some(dir.path().to_path_buf())).expect("build registry");
+
+    // The spec itself must carry hidden=true.
+    let spec = registry
+        .resolve_spec("output-style")
+        .expect("output-style must be resolvable");
+    assert!(
+        spec.hidden,
+        "/output-style CommandSpec.hidden must be true to match Claude Code reference behavior"
+    );
+
+    // It must NOT appear in visible_specs (the set used for user-facing suggestions).
+    let query = CommandQuery::new(FeatureSet::first_release());
+    let visible_specs = registry.visible_specs(&query);
+    let visible_names: Vec<&str> = visible_specs.iter().map(|s| s.name.as_str()).collect();
+    assert!(
+        !visible_names.contains(&"output-style"),
+        "/output-style must not appear in visible_specs; user-visible names: {:?}",
+        visible_names
+    );
+}
+
 /// /setup and its 'settings' alias must both be registered.
 #[test]
 fn setup_command_and_alias_are_registered() {
