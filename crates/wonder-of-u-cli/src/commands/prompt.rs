@@ -1015,6 +1015,11 @@ pub(crate) fn process_tool_effects(
                             "send_message: fleet {fleet_id} not found: {e}; \
                              message not written"
                         );
+                        set_send_message_failure_metadata(
+                            &mut result,
+                            "failed_fleet_not_found",
+                            "fleet not found; message not written",
+                        );
                     }
                     Ok(run) if run.status.is_terminal() => {
                         result.success = false;
@@ -1022,6 +1027,11 @@ pub(crate) fn process_tool_effects(
                             "send_message: fleet {fleet_id} is {} (terminal); \
                              message not written",
                             run.status.label(),
+                        );
+                        set_send_message_failure_metadata(
+                            &mut result,
+                            "failed_fleet_terminal",
+                            "fleet is terminal; message not written",
                         );
                     }
                     Ok(_) => {
@@ -1061,6 +1071,11 @@ pub(crate) fn process_tool_effects(
                                 result.success = false;
                                 result.content =
                                     format!("send_message: could not write steering message: {e}");
+                                set_send_message_failure_metadata(
+                                    &mut result,
+                                    "failed_write",
+                                    "could not write steering message",
+                                );
                             }
                         }
                     }
@@ -1081,6 +1096,20 @@ fn ensure_meta(result: &mut ToolResult) -> &mut serde_json::Map<String, serde_js
         .metadata
         .as_object_mut()
         .expect("just initialized as object")
+}
+
+fn set_send_message_failure_metadata(result: &mut ToolResult, status: &str, delivery_note: &str) {
+    let meta = ensure_meta(result);
+    meta.insert(
+        "status".into(),
+        serde_json::Value::String(status.to_owned()),
+    );
+    meta.insert("live_delivery".into(), serde_json::Value::Bool(false));
+    meta.insert("delivery_attempted".into(), serde_json::Value::Bool(false));
+    meta.insert(
+        "delivery_note".into(),
+        serde_json::Value::String(delivery_note.to_owned()),
+    );
 }
 
 fn execute_tool_call(
@@ -1506,6 +1535,14 @@ mod tests {
             processed.content.contains("terminal"),
             "error should mention terminal; got: {}",
             processed.content
+        );
+        assert_eq!(
+            processed.metadata["status"].as_str(),
+            Some("failed_fleet_terminal")
+        );
+        assert_eq!(
+            processed.metadata["delivery_note"].as_str(),
+            Some("fleet is terminal; message not written")
         );
         assert!(processed.effects.is_empty());
 

@@ -230,7 +230,7 @@ impl Tool for SendMessageTool {
     fn spec(&self) -> ToolSpec {
         let mut spec = communication_spec(
             "send_message",
-            "Source-compatible SendMessage alias; runtime peer/team messaging transport is unsupported",
+            "Source-compatible SendMessage alias; team messages are persisted as advisory fleet steering records",
         )
         .with_input_schema(ToolSchema::object());
         spec.input_schema = json!({
