@@ -16,7 +16,10 @@ use wonder_of_u_core::{
 };
 use wonder_of_u_storage::TaskStore;
 
-use crate::{base_spec, display_path, parse_input, require_non_empty_path, require_non_empty_text};
+use crate::{
+    base_spec, display_path, parse_input, require_non_empty_path, require_non_empty_text,
+    shell_stall_watchdog::spawn_stall_watchdog,
+};
 
 const DEFAULT_TIMEOUT_SECS: u64 = 30;
 /// Represents bash input
@@ -399,6 +402,11 @@ fn run_in_background(
             let _ = store.write_task(&task);
         }
     });
+
+    // Spawn the stall watchdog: polls output growth and updates status_message
+    // when the process appears stuck or waiting for interactive input.
+    // Self-terminating once the task reaches a terminal state.
+    spawn_stall_watchdog(task_id, log_path, app_root);
 
     let task_id_str = task_id.to_string();
     let content = format!(

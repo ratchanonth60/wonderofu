@@ -32,7 +32,8 @@ impl PlanCommand {
             "plan",
             "Show plan-mode readiness and current permission mode",
             CommandKind::Local,
-        );
+        )
+        .with_argument_hint("[open|<description>]");
         spec.required_features = BTreeSet::from([FeatureFlag::Permissions]);
         spec
     }
@@ -66,11 +67,15 @@ impl Command for PlanCommand {
                 context.permission_mode,
                 &resolve_plan_path(&context.cwd),
             ))),
-            PlanAction::Enter { queued_prompt } => Ok(CommandOutput::Text(render_plan_transition(
-                PermissionMode::Plan,
-                "plan mode enabled",
+            PlanAction::Enter { queued_prompt } => Ok(CommandOutput::Text(render_plan_enter(
+                context.permission_mode,
                 queued_prompt,
             ))),
+            // Emit `permission_mode=default` as a conservative fallback.
+            // The TUI controller tracks the pre-plan mode independently and
+            // restores the correct origin (AcceptEdits, BypassPermissions, …)
+            // when it processes this output; the hardcoded `Default` here is
+            // only ever used by non-TUI consumers that lack that saved state.
             PlanAction::Exit => Ok(CommandOutput::Text(render_plan_transition(
                 PermissionMode::Default,
                 "plan mode disabled",
@@ -132,6 +137,32 @@ pub(super) fn resolve_plan_path(cwd: &Path) -> PathBuf {
 }
 
 // ── Rendering ─────────────────────────────────────────────────────────────────
+
+/// Renders the output for entering plan mode.
+///
+/// Includes a `pre_plan_mode=` key that records the permission mode that was
+/// active *before* plan mode, giving non-TUI consumers a way to know which
+/// mode to restore on exit.  The TUI controller tracks this independently via
+/// [`TuiController::pre_plan_permission_mode`].
+pub(super) fn render_plan_enter(origin: PermissionMode, queued_prompt: Option<String>) -> String {
+    let mut lines = vec![
+        format!(
+            "permission_mode={}",
+            permission_mode_label(PermissionMode::Plan)
+        ),
+        "plan_mode_ready=true".into(),
+        "plan_mode_active=true".into(),
+        format!("pre_plan_mode={}", permission_mode_label(origin)),
+        "status=plan mode enabled".into(),
+    ];
+    if let Some(queued_prompt) = queued_prompt.filter(|p| !p.trim().is_empty()) {
+        lines.push(format!(
+            "enqueue_prompt={}",
+            sanitize_single_line(&queued_prompt)
+        ));
+    }
+    lines.join("\n")
+}
 
 pub(super) fn render_plan_transition(
     mode: PermissionMode,
@@ -283,7 +314,9 @@ mod tests {
     use wonder_of_u_core::PermissionMode;
     use wonder_of_u_test_support::unique_test_dir;
 
-    use super::{PlanAction, parse_plan_action, render_plan_display, resolve_plan_path};
+    use super::{
+        PlanAction, PlanCommand, parse_plan_action, render_plan_display, resolve_plan_path,
+    };
 
     #[test]
     fn plan_defaults_to_enter_outside_plan_mode_and_show_inside() {
@@ -324,5 +357,62 @@ mod tests {
         assert!(rendered.contains("plan_exists=true"));
         assert!(rendered.contains("Current Plan"));
         assert!(rendered.contains("- keep `/plan` parity"));
+    }
+
+    #[test]
+    fn render_plan_enter_includes_pre_plan_mode() {
+        let output = super::render_plan_enter(PermissionMode::AcceptEdits, None);
+        assert!(
+            output.contains("permission_mode=plan"),
+            "should set plan mode"
+        );
+        assert!(output.contains("plan_mode_active=true"));
+        assert!(
+            output.contains("pre_plan_mode=accept-edits"),
+            "should record origin mode"
+        );
+        assert!(output.contains("status=plan mode enabled"));
+    }
+
+    #[test]
+    fn render_plan_enter_records_bypass_origin() {
+        let output = super::render_plan_enter(PermissionMode::BypassPermissions, None);
+        assert!(output.contains("pre_plan_mode=bypass-permissions"));
+    }
+
+    #[test]
+    fn render_plan_enter_records_default_origin() {
+        let output = super::render_plan_enter(PermissionMode::Default, None);
+        assert!(output.contains("pre_plan_mode=default"));
+        assert!(output.contains("permission_mode=plan"));
+    }
+
+    #[test]
+    fn render_plan_enter_includes_queued_prompt() {
+        let output =
+            super::render_plan_enter(PermissionMode::Default, Some("outline the steps".into()));
+        assert!(output.contains("enqueue_prompt=outline the steps"));
+    }
+
+    #[test]
+    fn render_plan_transition_exit_emits_default_fallback() {
+        // The exit arm emits `permission_mode=default` as a conservative fallback.
+        // TUI controller overrides this with the saved pre-plan mode; non-TUI
+        // consumers see `default` and can treat it as a safe starting point.
+        let output =
+            super::render_plan_transition(PermissionMode::Default, "plan mode disabled", None);
+        assert!(output.contains("permission_mode=default"));
+        assert!(output.contains("plan_mode_active=false"));
+        assert!(output.contains("status=plan mode disabled"));
+    }
+
+    #[test]
+    fn plan_command_spec_carries_argument_hint() {
+        let spec = PlanCommand::command_spec();
+        assert_eq!(
+            spec.argument_hint.as_deref(),
+            Some("[open|<description>]"),
+            "/plan spec should carry the argument hint"
+        );
     }
 }

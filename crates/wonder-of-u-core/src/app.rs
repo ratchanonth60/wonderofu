@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeMap, VecDeque},
+    collections::{BTreeMap, BTreeSet, VecDeque},
     path::PathBuf,
     sync::{Arc, RwLock},
 };
@@ -11,6 +11,7 @@ use time::OffsetDateTime;
 use crate::{
     AdditionalWorkingDirectory, AuthState, FeatureSet, FleetId, MessageEnvelope, PermissionMode,
     ProviderReadiness, Result, SessionId, TaskId, ToolUseId, WonderError,
+    agent_name_registry::{AgentNameRegistry, NameConflictError, RegisterOutcome},
 };
 /// Represents token usage
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
@@ -612,6 +613,68 @@ impl AgentTaskState {
         }
     }
 }
+/// Lightweight progress counters written into [`TaskState`] by the agent runtime.
+///
+/// All fields default to zero / `None` so that existing persisted task files
+/// (which have no `progress` key) deserialize correctly without errors.
+///
+/// # Examples
+///
+/// ```
+/// use wonder_of_u_core::TaskProgress;
+///
+/// let mut p = TaskProgress::default();
+/// p.record_tool_use("bash");
+/// assert_eq!(p.tool_use_count, 1);
+/// assert_eq!(p.last_tool_name.as_deref(), Some("bash"));
+/// ```
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct TaskProgress {
+    /// Number of tool calls made by this task so far.
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    pub tool_use_count: u32,
+    /// Cumulative token count (input + output + cache) consumed by this task.
+    #[serde(default, skip_serializing_if = "is_zero_u64")]
+    pub token_count: u64,
+    /// Name of the most-recently invoked tool, if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_tool_name: Option<String>,
+    /// Wall-clock time of the most-recent tool invocation.
+    #[serde(default, with = "time::serde::rfc3339::option")]
+    pub last_tool_at: Option<OffsetDateTime>,
+}
+
+fn is_zero_u32(v: &u32) -> bool {
+    *v == 0
+}
+fn is_zero_u64(v: &u64) -> bool {
+    *v == 0
+}
+
+impl TaskProgress {
+    /// Records a single tool invocation.
+    ///
+    /// Increments [`tool_use_count`](Self::tool_use_count) and updates
+    /// [`last_tool_name`](Self::last_tool_name) and
+    /// [`last_tool_at`](Self::last_tool_at).
+    pub fn record_tool_use(&mut self, tool_name: &str) {
+        self.tool_use_count = self.tool_use_count.saturating_add(1);
+        self.last_tool_name = Some(tool_name.to_owned());
+        self.last_tool_at = Some(OffsetDateTime::now_utc());
+    }
+
+    /// Adds `tokens` to [`token_count`](Self::token_count).
+    pub fn record_tokens(&mut self, tokens: u64) {
+        self.token_count = self.token_count.saturating_add(tokens);
+    }
+
+    /// Returns `true` when at least one metric has been recorded.
+    #[must_use]
+    pub fn has_data(&self) -> bool {
+        self.tool_use_count > 0 || self.token_count > 0
+    }
+}
+
 /// Represents task state
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct TaskState {
@@ -675,12 +738,37 @@ pub struct TaskState {
     /// tasks created before worktree isolation was introduced.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub worktree_branch: Option<String>,
+    /// Filesystem path to the git worktree this agent task is running inside.
+    ///
+    /// Set alongside `worktree_branch` at launch time. After task completion
+    /// the runtime attempts to remove the worktree if it is clean; the field
+    /// is retained even after cleanup so the path can be surfaced in
+    /// `/tasks show` output.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worktree_path: Option<PathBuf>,
+    /// HEAD commit hash captured at worktree creation time.
+    ///
+    /// Used during post-task cleanup to determine whether the agent made new
+    /// commits on the worktree branch. A `None` value forces the cleanup logic
+    /// to count only uncommitted files (no commit comparison).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worktree_head_commit: Option<String>,
+    /// Live progress counters (tool calls, tokens, last tool activity).
+    ///
+    /// Absent in task files written before progress tracking was introduced;
+    /// those files deserialize with all-zero / `None` values via `#[serde(default)]`.
+    #[serde(default, skip_serializing_if = "skip_progress")]
+    pub progress: TaskProgress,
     /// Stores the started at
     #[serde(with = "time::serde::rfc3339")]
     pub started_at: OffsetDateTime,
     /// Stores the finished at
     #[serde(default, with = "time::serde::rfc3339::option")]
     pub finished_at: Option<OffsetDateTime>,
+}
+
+fn skip_progress(p: &TaskProgress) -> bool {
+    !p.has_data()
 }
 
 impl TaskState {
@@ -706,6 +794,9 @@ impl TaskState {
             remote: None,
             output_log: None,
             worktree_branch: None,
+            worktree_path: None,
+            worktree_head_commit: None,
+            progress: TaskProgress::default(),
             started_at: OffsetDateTime::now_utc(),
             finished_at: None,
         }
@@ -782,6 +873,57 @@ impl TaskState {
         self.status_message = status_message;
         self.finished_at = Some(OffsetDateTime::now_utc());
     }
+
+    /// Records a single tool call in this task's progress counters.
+    ///
+    /// Delegates to [`TaskProgress::record_tool_use`]; call site should
+    /// persist the updated `TaskState` to storage afterwards.
+    pub fn record_tool_use(&mut self, tool_name: &str) {
+        self.progress.record_tool_use(tool_name);
+    }
+
+    /// Adds `tokens` to this task's cumulative token counter.
+    ///
+    /// Delegates to [`TaskProgress::record_tokens`]; call site should
+    /// persist the updated `TaskState` to storage afterwards.
+    pub fn record_tokens(&mut self, tokens: u64) {
+        self.progress.record_tokens(tokens);
+    }
+
+    /// Returns a compact one-line progress summary suitable for status displays,
+    /// or `None` when no progress has been recorded yet.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use wonder_of_u_core::TaskState;
+    ///
+    /// let mut task = TaskState::pending("demo");
+    /// assert!(task.progress_summary().is_none());
+    ///
+    /// task.record_tool_use("bash");
+    /// task.record_tokens(512);
+    /// let summary = task.progress_summary().unwrap();
+    /// assert!(summary.contains("tools=1"));
+    /// assert!(summary.contains("tokens=512"));
+    /// ```
+    #[must_use]
+    pub fn progress_summary(&self) -> Option<String> {
+        if !self.progress.has_data() {
+            return None;
+        }
+        let mut parts = Vec::new();
+        if self.progress.tool_use_count > 0 {
+            parts.push(format!("tools={}", self.progress.tool_use_count));
+        }
+        if self.progress.token_count > 0 {
+            parts.push(format!("tokens={}", self.progress.token_count));
+        }
+        if let Some(ref name) = self.progress.last_tool_name {
+            parts.push(format!("last_tool={name}"));
+        }
+        Some(parts.join(" "))
+    }
 }
 /// Represents app state
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -803,6 +945,14 @@ pub struct AppState {
     pub queued_commands: VecDeque<QueuedCommand>,
     /// Stores the background tasks
     pub background_tasks: BTreeMap<TaskId, TaskState>,
+    /// Runtime-only name → task-id registry for local `SendMessage` routing.
+    ///
+    /// Never persisted: populated at task launch time by
+    /// [`register_agent_name`][Self::register_agent_name] and cleared
+    /// automatically when a task reaches a terminal state via
+    /// [`upsert_task`][Self::upsert_task].
+    #[serde(skip)]
+    pub(crate) agent_name_registry: AgentNameRegistry,
     /// Stores the provider
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider: Option<String>,
@@ -849,6 +999,15 @@ pub struct AppState {
     pub context_window_size: Option<u64>,
     /// Stores the costs
     pub costs: CostState,
+    /// Task IDs for which a `<task-notification>` XML message has already been
+    /// injected into this session's model-facing transcript.
+    ///
+    /// Persisted so that re-opening the same session (or a crash-recovery load)
+    /// never re-injects notifications for tasks whose terminal state was already
+    /// recorded.  Serialisation omits the field when empty to keep state files
+    /// compact.
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub injected_task_notifications: BTreeSet<TaskId>,
 }
 
 impl AppState {
@@ -864,6 +1023,7 @@ impl AppState {
             messages: Vec::new(),
             queued_commands: VecDeque::new(),
             background_tasks: BTreeMap::new(),
+            agent_name_registry: AgentNameRegistry::new(),
             provider: None,
             model: None,
             theme: None,
@@ -879,6 +1039,7 @@ impl AppState {
             pending_tool_approval: None,
             context_window_size: None,
             costs: CostState::new(),
+            injected_task_notifications: BTreeSet::new(),
         }
     }
 
@@ -1037,8 +1198,58 @@ impl AppState {
 
     /// Handles upsert task
     pub fn upsert_task(&mut self, task: TaskState) {
+        // Auto-deregister the name when the task reaches a terminal state so
+        // the slot becomes available for a future task with the same name.
+        if task.status.is_terminal() {
+            self.agent_name_registry.deregister_by_task_id(task.id);
+        }
         self.background_tasks.insert(task.id, task);
         self.session.updated_at = OffsetDateTime::now_utc();
+    }
+
+    /// Registers `name` as owned by `task_id` in the runtime name registry.
+    ///
+    /// Call this at agent task launch time (after [`upsert_task`][Self::upsert_task])
+    /// to make the task addressable by name for local `SendMessage` routing.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NameConflictError`] when `name` is already held by a different
+    /// active task.
+    pub fn register_agent_name(
+        &mut self,
+        name: String,
+        task_id: TaskId,
+    ) -> std::result::Result<RegisterOutcome, NameConflictError> {
+        self.agent_name_registry.register(name, task_id)
+    }
+
+    /// Looks up the task id currently registered under `name`, or `None`.
+    ///
+    /// Used by `SendMessage` routing to resolve a bare teammate name to a live
+    /// [`TaskId`].
+    #[must_use]
+    pub fn lookup_agent_by_name(&self, name: &str) -> Option<TaskId> {
+        self.agent_name_registry.lookup(name)
+    }
+
+    /// Removes any name entry associated with `task_id` from the registry.
+    ///
+    /// Returns the name that was removed, or `None` if no entry existed.
+    /// Normally called automatically by [`upsert_task`][Self::upsert_task] when
+    /// a task transitions to a terminal status; this method is provided for
+    /// explicit cleanup (e.g. task prune / force-remove paths).
+    pub fn deregister_agent_task(&mut self, task_id: TaskId) -> Option<String> {
+        self.agent_name_registry.deregister_by_task_id(task_id)
+    }
+
+    /// Returns a read-only reference to the agent name registry.
+    ///
+    /// Useful in tests and diagnostic commands that need to inspect the full
+    /// registry contents without mutating it.
+    #[must_use]
+    pub fn agent_name_registry(&self) -> &AgentNameRegistry {
+        &self.agent_name_registry
     }
     /// Handles provider readiness
     #[must_use]
@@ -1627,6 +1838,141 @@ mod tests {
             !features.contains(FeatureFlag::RemoteTriggers),
             "FeatureFlag::RemoteTriggers must not be in first_release() \
              until CCR transport blockers are cleared (see docs/adr-remote-cloud-transport.md)"
+        );
+    }
+
+    // ── TaskProgress tests ────────────────────────────────────────────────────
+
+    #[test]
+    fn task_progress_default_has_no_data() {
+        let p = TaskProgress::default();
+        assert!(!p.has_data());
+        assert_eq!(p.tool_use_count, 0);
+        assert_eq!(p.token_count, 0);
+        assert!(p.last_tool_name.is_none());
+        assert!(p.last_tool_at.is_none());
+    }
+
+    #[test]
+    fn task_progress_record_tool_use_increments_counter() {
+        let mut p = TaskProgress::default();
+        p.record_tool_use("bash");
+        assert_eq!(p.tool_use_count, 1);
+        assert_eq!(p.last_tool_name.as_deref(), Some("bash"));
+        assert!(p.last_tool_at.is_some());
+        assert!(p.has_data());
+
+        p.record_tool_use("read_file");
+        assert_eq!(p.tool_use_count, 2);
+        assert_eq!(p.last_tool_name.as_deref(), Some("read_file"));
+    }
+
+    #[test]
+    fn task_progress_record_tokens_accumulates() {
+        let mut p = TaskProgress::default();
+        p.record_tokens(100);
+        p.record_tokens(250);
+        assert_eq!(p.token_count, 350);
+        assert!(p.has_data());
+    }
+
+    #[test]
+    fn task_progress_saturates_instead_of_overflowing() {
+        let mut p = TaskProgress {
+            tool_use_count: u32::MAX,
+            ..TaskProgress::default()
+        };
+        p.record_tool_use("x");
+        // saturating_add keeps us at MAX rather than wrapping.
+        assert_eq!(p.tool_use_count, u32::MAX);
+
+        p.token_count = u64::MAX;
+        p.record_tokens(1);
+        assert_eq!(p.token_count, u64::MAX);
+    }
+
+    #[test]
+    fn task_progress_serializes_only_nonzero_fields() {
+        // Default (all-zero) should omit tool_use_count and token_count.
+        let p = TaskProgress::default();
+        let json = serde_json::to_string(&p).unwrap();
+        assert!(
+            !json.contains("tool_use_count"),
+            "zero count omitted: {json}"
+        );
+        assert!(!json.contains("token_count"), "zero count omitted: {json}");
+
+        // After recording, fields appear.
+        let mut p2 = TaskProgress::default();
+        p2.record_tokens(42);
+        let json2 = serde_json::to_string(&p2).unwrap();
+        assert!(
+            json2.contains("token_count"),
+            "token_count present: {json2}"
+        );
+    }
+
+    #[test]
+    fn task_state_deserializes_without_progress_field() {
+        // Simulate a persisted task file from before progress tracking existed.
+        let json = serde_json::json!({
+            "id": crate::TaskId::new(),
+            "kind": "local_shell",
+            "description": "old task",
+            "status": "completed",
+            "started_at": "2024-01-01T00:00:00Z",
+        });
+        let task: TaskState = serde_json::from_value(json).expect("deserialize legacy task");
+        // Must default to zero/None without error.
+        assert!(!task.progress.has_data());
+        assert_eq!(task.progress.tool_use_count, 0);
+        assert_eq!(task.progress.token_count, 0);
+    }
+
+    #[test]
+    fn task_state_progress_roundtrips_via_json() {
+        let mut task = TaskState::pending("progress roundtrip test");
+        task.record_tool_use("bash");
+        task.record_tool_use("read_file");
+        task.record_tokens(1024);
+
+        let json = serde_json::to_string(&task).unwrap();
+        let decoded: TaskState = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(decoded.progress.tool_use_count, 2);
+        assert_eq!(decoded.progress.token_count, 1024);
+        assert_eq!(
+            decoded.progress.last_tool_name.as_deref(),
+            Some("read_file")
+        );
+        assert!(decoded.progress.last_tool_at.is_some());
+    }
+
+    #[test]
+    fn task_state_progress_summary_none_when_no_data() {
+        let task = TaskState::pending("empty progress");
+        assert!(task.progress_summary().is_none());
+    }
+
+    #[test]
+    fn task_state_progress_summary_contains_metrics() {
+        let mut task = TaskState::pending("with progress");
+        task.record_tool_use("bash");
+        task.record_tokens(512);
+        let summary = task.progress_summary().expect("summary present");
+        assert!(summary.contains("tools=1"), "summary: {summary}");
+        assert!(summary.contains("tokens=512"), "summary: {summary}");
+        assert!(summary.contains("last_tool=bash"), "summary: {summary}");
+    }
+
+    #[test]
+    fn task_state_no_progress_field_in_json_when_empty() {
+        // Verify old task files are not polluted with a `progress` key.
+        let task = TaskState::pending("no progress");
+        let json = serde_json::to_string(&task).unwrap();
+        assert!(
+            !json.contains("\"progress\""),
+            "progress key absent when no data: {json}"
         );
     }
 }

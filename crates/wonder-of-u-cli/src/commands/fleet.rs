@@ -66,8 +66,7 @@ use wonder_of_u_core::{
 };
 use wonder_of_u_storage::{FleetInspector, FleetStore, MemberObservationClass};
 use wonder_of_u_tools::{
-    create_fleet_agent_worktree_with_branch, fleet_agent_worktree_slug,
-    validate_worktree_branch_name,
+    create_agent_worktree_info, fleet_agent_worktree_slug, validate_worktree_branch_name,
 };
 
 use super::{
@@ -482,11 +481,14 @@ impl FleetCommand {
             };
 
             // Apply worktree isolation if requested.
-            let (effective_cwd, worktree_branch) = if let Some(ref iso) = isolation {
-                resolve_worktree_cwd(&cwd, iso, &run.id.to_string(), &run.id.to_string())?
-            } else {
-                (cwd, None)
-            };
+            let (effective_cwd, worktree_branch, worktree_head_commit, worktree_path) =
+                if let Some(ref iso) = isolation {
+                    let (wt_path, branch, head_commit) =
+                        resolve_worktree_cwd(&cwd, iso, &run.id.to_string(), &run.id.to_string())?;
+                    (wt_path.clone(), branch, head_commit, Some(wt_path))
+                } else {
+                    (cwd, None, None, None)
+                };
 
             let task = manager.start_agent_task(AgentTaskLaunch {
                 name: args
@@ -504,9 +506,13 @@ impl FleetCommand {
                 allowed_tools: resolved_role
                     .as_ref()
                     .and_then(role_allowed_tools_for_launch),
+                disallowed_tools: vec![],
                 worktree_branch,
+                worktree_path,
+                worktree_head_commit,
                 system_prompt: None,
                 fork_depth: None,
+                reserved_task_id: None,
             })?;
             run.member_task_ids.push(task.id);
             run.status = FleetRunStatus::Running;
@@ -1500,14 +1506,20 @@ fn request_to_agent_launch(
         .fleet_id
         .map(|id| id.to_string())
         .unwrap_or_else(|| req.id.clone());
-    let (effective_cwd, worktree_branch) = if let Some(ref iso) = req.isolation {
-        resolve_worktree_cwd(&cwd, iso, &fleet_id_str, &req.id)?
-    } else {
-        (cwd, None)
-    };
+    let (effective_cwd, worktree_branch, worktree_head_commit, worktree_path) =
+        if let Some(ref iso) = req.isolation {
+            let (wt_path, branch, head_commit) =
+                resolve_worktree_cwd(&cwd, iso, &fleet_id_str, &req.id)?;
+            (wt_path.clone(), branch, head_commit, Some(wt_path))
+        } else {
+            (cwd, None, None, None)
+        };
 
     // Compose fork-lite child system prompt when the request carries a fork context.
     let (fork_system_prompt, fork_depth) = if let Some(ref ctx) = req.fork_context {
+        // Validate fork context before dispatch — reject invalid/phantom forks early.
+        ctx.validate()?;
+
         let mut parts: Vec<String> = Vec::new();
         if let Some(ref parent_prompt) = ctx.parent_system_prompt {
             parts.push(parent_prompt.clone());
@@ -1552,17 +1564,29 @@ fn request_to_agent_launch(
         fleet_request_id: Some(req.id.clone()),
         parent_task_id: req.parent_task_id,
         allowed_tools,
+        disallowed_tools: req.disallowed_tools.clone(),
         worktree_branch,
+        worktree_path,
+        worktree_head_commit,
         system_prompt: fork_system_prompt,
         fork_depth,
+        // Filled in by the caller when a reserved id is available.
+        reserved_task_id: None,
     })
 }
 
-/// Launches an agent task directly from a [`FleetMemberRequest`] **without**
+/// Launches an agent task directly from an [`AgentLaunchSpec`] **without**
 /// writing or deleting any pending file.
 ///
 /// This is the preferred path when the effect is produced by `AgentTool::execute`
 /// and a [`TaskManager`] is immediately available in the same runtime.
+///
+/// # Reserved task id
+///
+/// When `spec.reserved_task_id` is `Some`, it is forwarded to
+/// [`TaskManager::start_agent_task`] so the resulting task record uses the id
+/// that was already published in the `ToolResult` metadata, keeping output
+/// paths stable.
 ///
 /// # Fallback
 ///
@@ -1574,16 +1598,17 @@ fn request_to_agent_launch(
 ///
 /// - `storage_dir` — the wonder-of-u storage root; a [`TaskManager`] and
 ///   [`ProviderStatusReport`] are derived from this.
-/// - `req` — the request to launch.
-/// - `default_cwd` — fallback working directory if `req.cwd` is `None`.
+/// - `spec` — the fully-populated launch spec (request + optional reserved task id).
+/// - `default_cwd` — fallback working directory if `spec.request.cwd` is `None`.
 pub(crate) fn direct_launch_fleet_request(
     storage_dir: &std::path::Path,
-    req: &FleetMemberRequest,
+    spec: &wonder_of_u_core::AgentLaunchSpec,
     default_cwd: &std::path::Path,
 ) -> Result<TaskId> {
     let manager = TaskManager::new(storage_dir);
     let report = ProviderResolver::builtin().load_report(Some(storage_dir))?;
-    let launch = request_to_agent_launch(req, default_cwd, &report)?;
+    let mut launch = request_to_agent_launch(&spec.request, default_cwd, &report)?;
+    launch.reserved_task_id = spec.reserved_task_id;
     let task = manager.start_agent_task(launch)?;
     Ok(task.id)
 }
@@ -1898,12 +1923,15 @@ fn isolation_mode_label(mode: WorktreeIsolationMode) -> &'static str {
 /// Verifies the cwd is inside a git repo, derives a stable member slug for the
 /// worktree path, and delegates worktree creation to the tools crate. Explicit
 /// branch names are passed as branch overrides, not as path slugs.
+///
+/// Returns `(worktree_path, branch, head_commit)`.  `worktree_path` is also
+/// the effective cwd for the agent subprocess.
 fn resolve_worktree_cwd(
     base_cwd: &std::path::Path,
     iso: &WorktreeIsolation,
     fleet_id_str: &str,
     request_id: &str,
-) -> Result<(PathBuf, Option<String>)> {
+) -> Result<(PathBuf, Option<String>, Option<String>)> {
     let repository_root = get_git_root(base_cwd).map_err(|_| {
         WonderError::validation(format!(
             "worktree isolation requires a git repository; `{}` is not inside one",
@@ -1912,13 +1940,9 @@ fn resolve_worktree_cwd(
     })?;
 
     let slug = fleet_agent_worktree_slug(fleet_id_str, request_id);
-    let (worktree_path, branch) = create_fleet_agent_worktree_with_branch(
-        base_cwd,
-        &repository_root,
-        &slug,
-        iso.branch.as_deref(),
-    )?;
-    Ok((worktree_path, Some(branch)))
+    let info =
+        create_agent_worktree_info(base_cwd, &repository_root, &slug, iso.branch.as_deref())?;
+    Ok((info.worktree_path, Some(info.branch), info.head_commit))
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────

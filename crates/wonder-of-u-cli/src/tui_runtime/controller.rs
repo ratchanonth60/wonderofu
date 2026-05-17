@@ -76,6 +76,12 @@ pub(super) struct TuiController<'a> {
     /// Some sections read small config files or scan PATH; cache them outside
     /// `view()` so typing/rendering never performs blocking discovery work.
     pub(super) sidebar_cache: SidebarPanelCache,
+    /// The permission mode that was active immediately before the session
+    /// entered [`PermissionMode::Plan`].  Set when plan mode is entered so that
+    /// [`PlanAction::Exit`] can restore the original mode (e.g. `AcceptEdits`
+    /// or `BypassPermissions`) rather than always falling back to `Default`.
+    /// Cleared whenever the session leaves plan mode.
+    pub(super) pre_plan_permission_mode: Option<PermissionMode>,
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -253,6 +259,7 @@ impl<'a> TuiController<'a> {
             sidebar_visible: true,
             expand_tool_output: false,
             sidebar_cache: SidebarPanelCache::default(),
+            pre_plan_permission_mode: None,
         };
         controller.hydrate_initial_settings()?;
         controller.refresh_runtime_state()?;
@@ -1787,6 +1794,8 @@ impl<'a> TuiController<'a> {
             )?
             .ok_or_else(|| WonderError::not_found("command", invocation.name.clone()))?,
         };
+        // Capture the immediate flag before consuming `command` via execute.
+        let is_immediate = command.spec().immediate;
         let output = block_on(command.execute(context, invocation.clone()))?;
         let (text, exit_requested) = command_output_text(output);
         if self.persistence.persisted {
@@ -1808,7 +1817,12 @@ impl<'a> TuiController<'a> {
             self.record_command_message(input, text.as_deref())?;
         }
         let _ = self.refresh_runtime_state()?;
-        self.drain_queued_commands(before_blocking)?;
+        // Immediate commands (e.g. /exit, /clear, /color, /effort, /fast,
+        // /hooks) must not trigger queued-prompt draining: they act
+        // synchronously and their side-effects should not cascade.
+        if !is_immediate {
+            self.drain_queued_commands(before_blocking)?;
+        }
         self.exit_requested |= exit_requested;
         if exit_requested {
             self.status_note = Some("exit requested".into());
@@ -2089,7 +2103,30 @@ impl<'a> TuiController<'a> {
             .find_map(|line| line.strip_prefix("permission_mode="))
             .and_then(parse_permission_mode_hint)
         {
-            self.state.permission_mode = mode;
+            // Track the pre-plan mode so we can restore it on `/plan exit`.
+            // Entering plan: remember what we're leaving so exit restores
+            // correctly (e.g. AcceptEdits/BypassPermissions, not always Default).
+            // Leaving plan: restore the saved pre-plan mode and clear the slot,
+            // ignoring whatever the command hardcoded (it doesn't know our origin).
+            let apply_mode = if mode == PermissionMode::Plan
+                && self.state.permission_mode != PermissionMode::Plan
+            {
+                // Entering plan mode — save origin.
+                self.pre_plan_permission_mode = Some(self.state.permission_mode);
+                mode
+            } else if mode != PermissionMode::Plan
+                && self.state.permission_mode == PermissionMode::Plan
+            {
+                // Leaving plan mode — restore saved origin, or use the
+                // command-supplied mode as a passthrough fallback.
+                self.pre_plan_permission_mode.take().unwrap_or(mode)
+            } else {
+                // Any other transition (Default→AcceptEdits, etc.) — apply as-is
+                // and clear the stale pre-plan slot if we somehow have one.
+                self.pre_plan_permission_mode = None;
+                mode
+            };
+            self.state.permission_mode = apply_mode;
         }
         let Some(selection) = text
             .lines()
@@ -2347,8 +2384,14 @@ impl<'a> TuiController<'a> {
     where
         F: FnMut(&Self) -> Result<()>,
     {
-        let result =
-            process_tool_effects(result, self.storage_dir.as_deref(), &self.state.session.cwd);
+        // Clone cwd to avoid a simultaneous borrow of self.state.
+        let cwd = self.state.session.cwd.clone();
+        let result = process_tool_effects(
+            result,
+            self.storage_dir.as_deref(),
+            &cwd,
+            Some(&mut self.state),
+        );
         let _ = commands::apply_worktree_tool_result(&mut self.state, &result)?;
         messages.push(append_contextual_message(
             &mut self.state,
@@ -2446,6 +2489,24 @@ impl<'a> TuiController<'a> {
                     Some(SHELL_NOTIFICATION_TTL),
                     true,
                 );
+                // Inject once per task id into the model-facing transcript so
+                // the model can observe task completion without polling.
+                // The idempotence set survives session saves so a crash-recover
+                // reload never double-injects the same task.
+                if !self.state.injected_task_notifications.contains(&task.id) {
+                    let xml = payload_from_task_state(task).render_xml();
+                    let task_id = task.id;
+                    if let Ok(msg) = append_contextual_message(
+                        &mut self.state,
+                        MessagePayload::TaskNotification {
+                            task_id,
+                            xml_payload: xml,
+                        },
+                    ) {
+                        self.state.injected_task_notifications.insert(task_id);
+                        let _ = self.persist_messages(&[msg]);
+                    }
+                }
             }
             self.state.background_tasks = effective_tasks;
             changed = true;
@@ -4944,6 +5005,12 @@ fn chrome_status_text(state: &AppState) -> String {
 ///
 /// Called once at TUI startup; the result is stored on `TuiController` and
 /// re-used (with live filtering) on every keystroke.
+///
+/// When a [`CommandSpec`] carries an `argument_hint` (e.g. `[on|off]`), the
+/// hint is appended to the display text so the autocomplete overlay reads e.g.
+/// `/fast [on|off]`.  The *replacement* text stays as just `/commandname` so
+/// the cursor lands right after the command name, ready for the user to type
+/// their argument.
 pub(super) fn build_slash_suggestions(registry: &CommandRegistry) -> Vec<PromptSuggestion> {
     registry
         .all_specs()
@@ -4951,7 +5018,11 @@ pub(super) fn build_slash_suggestions(registry: &CommandRegistry) -> Vec<PromptS
         .filter(|spec| !spec.hidden)
         .map(|spec| {
             let slash = format!("/{}", spec.name);
-            PromptSuggestion::new(spec.name.clone(), slash.clone(), slash)
+            let display = match &spec.argument_hint {
+                Some(hint) => format!("{slash} {hint}"),
+                None => slash.clone(),
+            };
+            PromptSuggestion::new(spec.name.clone(), display, slash)
                 .with_description(spec.description.clone())
                 .with_keywords(spec.aliases.iter().map(|a| format!("/{a}")))
         })
@@ -5215,4 +5286,97 @@ pub(super) fn binary_on_path(name: &str) -> bool {
         return false;
     };
     std::env::split_paths(&paths).any(|dir| dir.join(name).is_file())
+}
+
+#[cfg(test)]
+mod build_slash_suggestions_tests {
+    use std::sync::Arc;
+
+    use async_trait::async_trait;
+    use wonder_of_u_core::{
+        Command, CommandContext, CommandInvocation, CommandKind, CommandOutput, CommandRegistry,
+        CommandSpec, Result,
+    };
+
+    use super::build_slash_suggestions;
+
+    struct FakeCmd(CommandSpec);
+
+    #[async_trait]
+    impl Command for FakeCmd {
+        fn spec(&self) -> CommandSpec {
+            self.0.clone()
+        }
+
+        async fn execute(&self, _: CommandContext, _: CommandInvocation) -> Result<CommandOutput> {
+            Ok(CommandOutput::Noop)
+        }
+    }
+
+    fn registry_with(specs: impl IntoIterator<Item = CommandSpec>) -> CommandRegistry {
+        let mut reg = CommandRegistry::new();
+        for spec in specs {
+            reg.register(Arc::new(FakeCmd(spec))).expect("register");
+        }
+        reg
+    }
+
+    #[test]
+    fn no_hint_produces_slash_name_display_and_replacement() {
+        let spec = CommandSpec::new("status", "show status", CommandKind::Local);
+        let reg = registry_with([spec]);
+        let suggestions = build_slash_suggestions(&reg);
+        assert_eq!(suggestions.len(), 1);
+        assert_eq!(suggestions[0].display_text, "/status");
+        assert_eq!(suggestions[0].replacement, "/status");
+    }
+
+    #[test]
+    fn hint_appended_to_display_text_but_not_replacement() {
+        let spec = CommandSpec::new("fast", "fast mode", CommandKind::Local)
+            .with_argument_hint("[on|off]");
+        let reg = registry_with([spec]);
+        let suggestions = build_slash_suggestions(&reg);
+        assert_eq!(suggestions.len(), 1);
+        // Display shows the hint so the user knows what to type.
+        assert_eq!(suggestions[0].display_text, "/fast [on|off]");
+        // Replacement stays bare so the cursor lands right after the command
+        // name, ready for the user to type their argument.
+        assert_eq!(suggestions[0].replacement, "/fast");
+    }
+
+    #[test]
+    fn hidden_commands_are_excluded_from_suggestions() {
+        let mut hidden = CommandSpec::new("internal", "internal cmd", CommandKind::Local);
+        hidden.hidden = true;
+        let visible = CommandSpec::new("help", "help", CommandKind::Local);
+        let reg = registry_with([hidden, visible]);
+        let suggestions = build_slash_suggestions(&reg);
+        assert_eq!(suggestions.len(), 1);
+        assert_eq!(suggestions[0].display_text, "/help");
+    }
+
+    #[test]
+    fn aliases_become_keywords_in_suggestion() {
+        let mut spec = CommandSpec::new("resume", "resume", CommandKind::Local);
+        spec.aliases = vec!["continue".into()];
+        let reg = registry_with([spec]);
+        let suggestions = build_slash_suggestions(&reg);
+        assert!(
+            suggestions[0].keywords.contains(&"/continue".to_string()),
+            "expected /continue in keywords"
+        );
+    }
+
+    #[test]
+    fn description_is_passed_through_to_suggestion() {
+        let spec = CommandSpec::new("effort", "set effort level", CommandKind::Local)
+            .with_argument_hint("[low|medium|high|max|auto]");
+        let reg = registry_with([spec]);
+        let suggestions = build_slash_suggestions(&reg);
+        assert_eq!(
+            suggestions[0].description.as_deref(),
+            Some("set effort level")
+        );
+    }
 }

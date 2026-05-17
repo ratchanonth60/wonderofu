@@ -9,6 +9,8 @@
 pub mod agent_definition;
 /// Filesystem loader for project-level agent definitions.
 pub mod agent_loader;
+/// Runtime name → task-id registry for local SendMessage routing.
+pub mod agent_name_registry;
 /// Provides app support
 pub mod app;
 /// Provides command support
@@ -39,6 +41,8 @@ pub mod git;
 pub mod ids;
 /// Provides lockfile support
 pub mod lockfile;
+/// Local-first team/agent inbox mailbox types.
+pub mod mailbox;
 /// Provides memoize support
 pub mod memoize;
 /// Provides message support
@@ -63,6 +67,8 @@ pub mod sequential;
 pub mod set;
 /// Provides shell session support
 pub mod shell_session;
+/// SDK-style `<task-notification>` XML payload builder.
+pub mod task_notification;
 /// Logical todo-v2 task list models (source-compatible task board).
 pub mod todo_task;
 /// Provides tool support
@@ -78,19 +84,21 @@ pub mod yaml;
 
 /// Re-exports items from `agent_definition`
 pub use agent_definition::{
-    AgentCatalog, AgentDefinition, AgentDefinitionSnapshot, AgentDefinitionSource,
-    DefinitionParseError, RawDefinitionFields, parse_json_definition, parse_markdown_frontmatter,
-    render_definition_md,
+    AgentCatalog, AgentDefinition, AgentDefinitionSnapshot, AgentDefinitionSource, AgentToolFilter,
+    BACKGROUND_RESTRICTED_TOOLS, DefinitionParseError, RawDefinitionFields, parse_json_definition,
+    parse_markdown_frontmatter, render_definition_md,
 };
+/// Re-exports items from `agent_name_registry`
+pub use agent_name_registry::{AgentNameRegistry, NameConflictError, RegisterOutcome};
 /// Re-exports items from `app`
 pub use app::{
     AgentRuntime, AgentTaskState, AppState, CostState, InputMode, PendingLocalToolCall,
     PendingProviderToolCall, PendingProviderToolResult, PendingToolApprovalState,
     PendingToolConversationRound, QueuePlacement, QueuedCommand, RemoteTaskMetadata,
     RemoteTaskState, RemoteTaskType, RuntimeWorktreeState, SessionState, StateStore,
-    TaskBackendFlow, TaskBackendState, TaskBackendSupport, TaskKind, TaskState, TaskStatus,
-    ThinkingEffort, TokenUsage, input_mode_label, permission_mode_label, session_footer_text,
-    session_status_text,
+    TaskBackendFlow, TaskBackendState, TaskBackendSupport, TaskKind, TaskProgress, TaskState,
+    TaskStatus, ThinkingEffort, TokenUsage, input_mode_label, permission_mode_label,
+    session_footer_text, session_status_text,
 };
 /// Re-exports items from `command`
 pub use command::{
@@ -119,7 +127,7 @@ pub use fingerprint::{fingerprint_json, fingerprint_str};
 pub use fleet::{
     AGENT_TASK_RESULT_SCHEMA_VERSION, AgentTaskResult, FLEET_SCHEMA_VERSION,
     FLEET_STEERING_SCHEMA_VERSION, FORK_SYSTEM_PROMPT_CAP_BYTES, FleetMemberRequest, FleetRunState,
-    FleetRunStatus, FleetSteeringMessage, ForkContextSnapshot, SteeringSource,
+    FleetRunStatus, FleetSteeringMessage, ForkContextSnapshot, MAX_FORK_DEPTH, SteeringSource,
     WONDER_OF_U_FORK_DEPTH_ENV, WorktreeIsolation, WorktreeIsolationMode,
 };
 /// Re-exports items from `fleet_roles`
@@ -129,9 +137,14 @@ pub use generators::{enumerate, take, zip};
 /// Re-exports items from `git`
 pub use git::{GitError, get_current_branch, get_diff, get_git_root, is_git_repo, read_gitignore};
 /// Re-exports items from `ids`
-pub use ids::{CommandId, FleetId, MessageId, SessionId, TaskId, ToolUseId};
+pub use ids::{CommandId, FleetId, MailboxMessageId, MessageId, SessionId, TaskId, ToolUseId};
 /// Re-exports items from `lockfile`
 pub use lockfile::LockFile;
+/// Re-exports items from `mailbox`
+pub use mailbox::{
+    MAILBOX_MESSAGE_SCHEMA_VERSION, MAILBOX_READ_INDEX_SCHEMA_VERSION, MailboxKind, MailboxMessage,
+    MailboxReadIndex, sanitize_mailbox_name,
+};
 /// Re-exports items from `memoize`
 pub use memoize::MemoCache;
 /// Re-exports items from `message`
@@ -164,6 +177,10 @@ pub use sequential::run_sequential;
 pub use set::{difference, intersection, intersects, union};
 /// Re-exports items from `shell_session`
 pub use shell_session::{ShellOutput, ShellSession, ShellSessionStore};
+/// Re-exports items from `task_notification`
+pub use task_notification::{
+    TaskNotificationPayload, payload_from_task_state, task_notification_both,
+};
 /// Re-exports items from `todo_task`
 pub use todo_task::{
     TODO_TASK_LIST_SCHEMA_VERSION, TodoTaskEntry, TodoTaskList, TodoTaskStatus, new_todo_task_id,

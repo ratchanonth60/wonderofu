@@ -2486,6 +2486,154 @@ fn controller_routes_plan_mode_slash_commands() {
 }
 
 #[test]
+fn controller_plan_exit_restores_accept_edits_origin() {
+    // Entering plan mode from AcceptEdits and exiting should restore AcceptEdits,
+    // not fall back to Default.
+    let dir = unique_test_dir("tui-plan-restore-accept-edits");
+    let registry = commands::registry(Some(dir.clone())).expect("registry");
+    let ctx = CommandContext {
+        permission_mode: PermissionMode::AcceptEdits,
+        ..test_context(&dir)
+    };
+    let mut controller = TuiController::new(
+        ctx,
+        &registry,
+        Some(dir.as_path()),
+        TuiLaunchOptions { session_id: None },
+    )
+    .expect("controller");
+
+    assert_eq!(
+        controller.state.permission_mode,
+        PermissionMode::AcceptEdits
+    );
+
+    controller
+        .execute_slash_command("/plan")
+        .expect("enter plan mode");
+    assert_eq!(controller.state.permission_mode, PermissionMode::Plan);
+    // Controller should have saved the pre-plan origin.
+    assert_eq!(
+        controller.pre_plan_permission_mode,
+        Some(PermissionMode::AcceptEdits)
+    );
+
+    controller
+        .execute_slash_command("/plan exit")
+        .expect("exit plan mode");
+    // Must restore AcceptEdits, not Default.
+    assert_eq!(
+        controller.state.permission_mode,
+        PermissionMode::AcceptEdits,
+        "exiting plan mode should restore the pre-plan AcceptEdits mode"
+    );
+    // Slot must be cleared after restoration.
+    assert_eq!(controller.pre_plan_permission_mode, None);
+}
+
+#[test]
+fn controller_plan_exit_restores_bypass_permissions_origin() {
+    // BypassPermissions is a coordinator/passthrough mode — must survive the
+    // plan-mode round-trip without downgrading to Default.
+    let dir = unique_test_dir("tui-plan-restore-bypass");
+    let registry = commands::registry(Some(dir.clone())).expect("registry");
+    let ctx = CommandContext {
+        permission_mode: PermissionMode::BypassPermissions,
+        ..test_context(&dir)
+    };
+    let mut controller = TuiController::new(
+        ctx,
+        &registry,
+        Some(dir.as_path()),
+        TuiLaunchOptions { session_id: None },
+    )
+    .expect("controller");
+
+    controller
+        .execute_slash_command("/plan")
+        .expect("enter plan mode");
+    assert_eq!(controller.state.permission_mode, PermissionMode::Plan);
+    assert_eq!(
+        controller.pre_plan_permission_mode,
+        Some(PermissionMode::BypassPermissions)
+    );
+
+    controller
+        .execute_slash_command("/plan exit")
+        .expect("exit plan mode");
+    assert_eq!(
+        controller.state.permission_mode,
+        PermissionMode::BypassPermissions,
+        "exiting plan mode should restore BypassPermissions, not Default"
+    );
+    assert_eq!(controller.pre_plan_permission_mode, None);
+}
+
+#[test]
+fn controller_plan_exit_from_default_restores_default() {
+    // Entering plan from Default and exiting must restore Default (the common
+    // case; also validates no regression).
+    let dir = unique_test_dir("tui-plan-restore-default");
+    let registry = commands::registry(Some(dir.clone())).expect("registry");
+    let mut controller = TuiController::new(
+        test_context(&dir),
+        &registry,
+        Some(dir.as_path()),
+        TuiLaunchOptions { session_id: None },
+    )
+    .expect("controller");
+
+    controller
+        .execute_slash_command("/plan")
+        .expect("enter plan mode");
+    assert_eq!(controller.state.permission_mode, PermissionMode::Plan);
+
+    controller
+        .execute_slash_command("/plan exit")
+        .expect("exit plan mode");
+    assert_eq!(
+        controller.state.permission_mode,
+        PermissionMode::Default,
+        "exiting plan mode entered from Default should restore Default"
+    );
+    assert_eq!(controller.pre_plan_permission_mode, None);
+}
+
+#[test]
+fn controller_pre_plan_slot_cleared_on_unrelated_mode_change() {
+    // If the user changes permission mode via a non-plan command while in plan
+    // mode the pre-plan slot should be cleared so we don't carry stale state.
+    let dir = unique_test_dir("tui-plan-slot-clear");
+    let registry = commands::registry(Some(dir.clone())).expect("registry");
+    let mut controller = TuiController::new(
+        test_context(&dir),
+        &registry,
+        Some(dir.as_path()),
+        TuiLaunchOptions { session_id: None },
+    )
+    .expect("controller");
+
+    controller
+        .execute_slash_command("/plan")
+        .expect("enter plan mode");
+    assert_eq!(
+        controller.pre_plan_permission_mode,
+        Some(PermissionMode::Default)
+    );
+
+    // Directly set a non-plan permission mode (simulates `/permissions` command
+    // changing mode outside the plan flow).
+    controller
+        .execute_slash_command("/permissions accept-edits")
+        .expect("change mode mid-session");
+    // AcceptEdits is not Plan, so the pre-plan slot should have been cleared.
+    assert_eq!(
+        controller.pre_plan_permission_mode, None,
+        "pre_plan slot must be cleared when leaving plan mode via an unrelated mode change"
+    );
+}
+
+#[test]
 fn controller_executes_queued_plan_prompt() {
     let dir = unique_test_dir("tui-slash-plan-prompt");
     let (api_base, handle) = spawn_json_sequence_server(
@@ -8121,5 +8269,308 @@ fn provider_form_picker_view_stage2_api_base_shows_plain_url() {
         view.query.contains("localhost:11434"),
         "ApiBase stage-2 query must show URL in plain text; got {:?}",
         view.query
+    );
+}
+
+// ── immediate-flag tests ──────────────────────────────────────────────────────
+
+/// All six commands that must bypass queued-prompt draining carry
+/// `immediate = true` in the registry spec.
+#[test]
+fn immediate_commands_have_immediate_flag_set_in_registry() {
+    let dir = unique_test_dir("tui-immediate-specs");
+    let registry = commands::registry(Some(dir.clone())).expect("registry");
+
+    // /clear requires SessionPersistence but resolve_spec bypasses availability
+    // checking, so all six can be looked up unconditionally.
+    for name in ["exit", "clear", "color", "effort", "fast", "hooks"] {
+        let spec = registry
+            .resolve_spec(name)
+            .unwrap_or_else(|| panic!("/{name} not registered"));
+        assert!(
+            spec.immediate,
+            "/{name} must have immediate=true so queued-prompt draining is skipped"
+        );
+    }
+}
+
+/// `/exit` is an immediate command: executing it must not drain any queued
+/// prompts that were enqueued before the command ran.
+///
+/// We use `storage_dir=None` so that `persistence.persisted` stays `false` and
+/// `restore_current_session` is never called — which would otherwise wipe the
+/// in-memory queue by replacing the entire `AppState` from storage.
+#[test]
+fn exit_command_does_not_drain_queued_prompts() {
+    let dir = unique_test_dir("tui-exit-no-drain");
+    let registry = commands::registry(Some(dir.clone())).expect("registry");
+    // storage_dir=None → persistence.persisted=false → restore_current_session
+    // is never triggered, preserving our manually-seeded queued_commands.
+    let mut controller = TuiController::new(
+        test_context(&dir),
+        &registry,
+        None,
+        TuiLaunchOptions { session_id: None },
+    )
+    .expect("controller");
+
+    // Pre-seed the queue with a prompt that would normally be drained.
+    controller
+        .state
+        .queue_command("hello world", QueuePlacement::Later);
+    assert_eq!(controller.state.queued_commands.len(), 1);
+
+    controller
+        .execute_slash_command("/exit")
+        .expect("execute /exit");
+
+    assert_eq!(
+        controller.state.queued_commands.len(),
+        1,
+        "/exit (immediate) must not drain queued prompts"
+    );
+    // exit_requested must still be honoured.
+    assert!(
+        controller.exit_requested,
+        "/exit must set exit_requested regardless of immediate flag"
+    );
+}
+
+/// A non-immediate command (e.g. `/model`) must drain queued commands after
+/// execution.  We seed the queue with an empty string, which
+/// `drain_queued_commands` will pop and discard, so the queue ends up empty.
+///
+/// `storage_dir=None` is used for the same reason as the exit test: to keep
+/// `persistence.persisted=false` and avoid `restore_current_session` wiping
+/// the queue before drain runs.
+#[test]
+fn non_immediate_command_drains_queued_empty_prompt() {
+    let _api_key = EnvVarGuard::set("ANTHROPIC_API_KEY", "");
+    let _oai_key = EnvVarGuard::set("OPENAI_API_KEY", "");
+    let dir = unique_test_dir("tui-non-immediate-drain");
+    let registry = commands::registry(Some(dir.clone())).expect("registry");
+    let mut controller = TuiController::new(
+        test_context(&dir),
+        &registry,
+        None,
+        TuiLaunchOptions { session_id: None },
+    )
+    .expect("controller");
+
+    // An empty-string queued command is popped and skipped by drain, so it
+    // exercises the drain path without attempting a model call.
+    controller.state.queue_command("", QueuePlacement::Later);
+    assert_eq!(controller.state.queued_commands.len(), 1);
+
+    // /model is not immediate — drain runs after execution.
+    controller
+        .execute_slash_command("/model openai:gpt-4.1")
+        .expect("execute /model");
+
+    assert_eq!(
+        controller.state.queued_commands.len(),
+        0,
+        "non-immediate command (/model) must drain queued commands"
+    );
+}
+
+// ── task-notification XML injection ─────────────────────────────────────────
+
+/// Helper: build a controller, drive a task from Running → terminal, and
+/// return the controller so callers can inspect state.
+fn make_controller_with_terminal_task(
+    dir: &std::path::Path,
+    final_status: TaskStatus,
+) -> TuiController<'static> {
+    // Static registry leak is fine in tests – the registry is tiny and tests
+    // are short-lived processes.
+    let registry = commands::registry(Some(dir.to_path_buf())).expect("registry");
+    let registry: &'static _ = Box::leak(Box::new(registry));
+
+    let mut controller = TuiController::new(
+        test_context(dir),
+        registry,
+        Some(dir),
+        TuiLaunchOptions { session_id: None },
+    )
+    .expect("controller");
+
+    let store = TaskStore::new(dir);
+    let mut task = TaskState::pending("build workspace");
+    task.status = TaskStatus::Running;
+    store.write_task(&task).expect("write running task");
+    controller
+        .refresh_runtime_state()
+        .expect("first refresh (running)");
+
+    task.mark_finished(final_status, Some(0), Some("done".into()));
+    store.write_task(&task).expect("write terminal task");
+    controller
+        .refresh_runtime_state()
+        .expect("second refresh (terminal)");
+
+    controller
+}
+
+#[test]
+fn task_completion_injects_xml_notification_into_transcript() {
+    let dir = unique_test_dir("tui-inject-notif-completed");
+    let controller = make_controller_with_terminal_task(&dir, TaskStatus::Completed);
+
+    let notif_count = controller
+        .state
+        .messages
+        .iter()
+        .filter(|m| matches!(&m.payload, MessagePayload::TaskNotification { .. }))
+        .count();
+    assert_eq!(
+        notif_count, 1,
+        "expected exactly one TaskNotification message"
+    );
+
+    let xml = controller
+        .state
+        .messages
+        .iter()
+        .find_map(|m| {
+            if let MessagePayload::TaskNotification { xml_payload, .. } = &m.payload {
+                Some(xml_payload.clone())
+            } else {
+                None
+            }
+        })
+        .expect("TaskNotification payload");
+
+    assert!(
+        xml.starts_with("<task-notification>"),
+        "XML must start with <task-notification>: {xml}"
+    );
+    assert!(
+        xml.contains("<status>completed</status>"),
+        "XML must contain completed status: {xml}"
+    );
+    assert!(xml.contains("<summary>"), "XML must contain summary: {xml}");
+}
+
+#[test]
+fn task_failure_injects_xml_notification_into_transcript() {
+    let dir = unique_test_dir("tui-inject-notif-failed");
+    let controller = make_controller_with_terminal_task(&dir, TaskStatus::Failed);
+
+    let xml = controller
+        .state
+        .messages
+        .iter()
+        .find_map(|m| {
+            if let MessagePayload::TaskNotification { xml_payload, .. } = &m.payload {
+                Some(xml_payload.clone())
+            } else {
+                None
+            }
+        })
+        .expect("TaskNotification payload for failed task");
+
+    assert!(
+        xml.contains("<status>failed</status>"),
+        "failed task must have failed status in XML: {xml}"
+    );
+}
+
+#[test]
+fn tui_notification_overlay_preserved_alongside_xml_injection() {
+    let dir = unique_test_dir("tui-inject-notif-overlay-preserved");
+    let controller = make_controller_with_terminal_task(&dir, TaskStatus::Completed);
+
+    let notifications = controller.view().notifications;
+    assert_eq!(
+        notifications.len(),
+        1,
+        "human TUI notification must still exist"
+    );
+    assert_eq!(notifications[0].title, "Task update");
+    assert_eq!(notifications[0].severity, NotificationSeverity::Success);
+
+    assert!(
+        controller
+            .state
+            .messages
+            .iter()
+            .any(|m| matches!(&m.payload, MessagePayload::TaskNotification { .. })),
+        "XML injection must also be present"
+    );
+}
+
+#[test]
+fn repeated_polling_does_not_duplicate_xml_notification() {
+    let dir = unique_test_dir("tui-inject-notif-idempotent");
+    let registry = commands::registry(Some(dir.clone())).expect("registry");
+    let registry: &'static _ = Box::leak(Box::new(registry));
+
+    let mut controller = TuiController::new(
+        test_context(&dir),
+        registry,
+        Some(dir.as_path()),
+        TuiLaunchOptions { session_id: None },
+    )
+    .expect("controller");
+
+    let store = TaskStore::new(&dir);
+    let mut task = TaskState::pending("long running job");
+    task.status = TaskStatus::Running;
+    store.write_task(&task).expect("write running");
+    controller.refresh_runtime_state().expect("refresh 1");
+
+    task.mark_finished(TaskStatus::Completed, Some(0), Some("job done".into()));
+    store.write_task(&task).expect("write completed");
+    controller
+        .refresh_runtime_state()
+        .expect("refresh 2 – fires injection");
+
+    controller
+        .refresh_runtime_state()
+        .expect("refresh 3 – no change");
+    controller
+        .refresh_runtime_state()
+        .expect("refresh 4 – no change");
+    controller
+        .refresh_runtime_state()
+        .expect("refresh 5 – no change");
+
+    let notif_count = controller
+        .state
+        .messages
+        .iter()
+        .filter(|m| matches!(&m.payload, MessagePayload::TaskNotification { .. }))
+        .count();
+
+    assert_eq!(
+        notif_count, 1,
+        "repeated polling must not produce duplicate TaskNotification messages"
+    );
+}
+
+#[test]
+fn injected_task_id_tracked_in_state_set() {
+    let dir = unique_test_dir("tui-inject-notif-state-set");
+    let controller = make_controller_with_terminal_task(&dir, TaskStatus::Completed);
+
+    let msg = controller
+        .state
+        .messages
+        .iter()
+        .find(|m| matches!(&m.payload, MessagePayload::TaskNotification { .. }))
+        .expect("TaskNotification message");
+
+    let task_id = match &msg.payload {
+        MessagePayload::TaskNotification { task_id, .. } => *task_id,
+        _ => unreachable!(),
+    };
+
+    assert!(
+        controller
+            .state
+            .injected_task_notifications
+            .contains(&task_id),
+        "task id {task_id} must be in injected_task_notifications set"
     );
 }

@@ -4144,20 +4144,27 @@ mod tests {
         assert!(started.contains("status=running"));
         assert!(started.contains("pid="));
 
-        let mut shown = Vec::new();
-        run_from(
-            vec![
-                "wonder-of-u".to_string(),
-                "--storage-dir".to_string(),
-                storage_dir.clone(),
-                "agents".to_string(),
-                "show".to_string(),
-                agent_id.clone(),
-            ],
-            &mut shown,
-        )
-        .expect("show agent");
-        let shown = String::from_utf8(shown).expect("utf8");
+        let mut shown = String::new();
+        for _ in 0..20 {
+            let mut output = Vec::new();
+            run_from(
+                vec![
+                    "wonder-of-u".to_string(),
+                    "--storage-dir".to_string(),
+                    storage_dir.clone(),
+                    "agents".to_string(),
+                    "show".to_string(),
+                    agent_id.clone(),
+                ],
+                &mut output,
+            )
+            .expect("show agent");
+            shown = String::from_utf8(output).expect("utf8");
+            if shown.contains("agent cli args:") {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
         assert!(shown.contains("agent.runtime=prompt_subprocess"));
         assert!(shown.contains("agent.provider=openai"));
         assert!(shown.contains("status=running"));

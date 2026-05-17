@@ -325,11 +325,11 @@ pub fn registry(storage_dir: Option<PathBuf>) -> Result<CommandRegistry> {
     registry.register(Arc::new(ResetLimitsCommand::new()))?;
     registry.register(Arc::new(OnboardingCommand::new()))?;
     registry.register(Arc::new(TeleportCommand::new()))?;
-    registry.register(Arc::new(RemoteEnvCommand::new()))?;
-    registry.register(Arc::new(RemoteSetupCommand::new()))?;
+    registry.register(Arc::new(RemoteEnvCommand::new(storage_dir.clone())))?;
+    registry.register(Arc::new(RemoteSetupCommand::new(storage_dir.clone())))?;
     registry.register(Arc::new(BridgeKickCommand::new()))?;
-    registry.register(Arc::new(SandboxToggleCommand::new()))?;
-    registry.register(Arc::new(UltraplanCommand::new()))?;
+    registry.register(Arc::new(SandboxToggleCommand::new(storage_dir.clone())))?;
+    registry.register(Arc::new(UltraplanCommand::new(storage_dir.clone())))?;
     registry.register(Arc::new(ThinkbackCommand::new()))?;
     registry.register(Arc::new(ThinkbackPlayCommand::new()))?;
     registry.register(Arc::new(AutofixPrCommand::new()))?;

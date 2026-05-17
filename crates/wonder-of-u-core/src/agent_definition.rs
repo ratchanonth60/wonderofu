@@ -53,6 +53,148 @@ pub const MAX_AGENT_ID_LEN: usize = 64;
 /// Maximum byte length for a system prompt.
 pub const MAX_SYSTEM_PROMPT_LEN: usize = 64 * 1024;
 
+/// Tools that must never be available to background (non-interactive) sub-agents.
+///
+/// All agents dispatched by the Rust runtime are background tasks; interactive
+/// tools that block waiting for a human response are therefore always denied.
+pub const BACKGROUND_RESTRICTED_TOOLS: &[&str] = &["ask_user"];
+
+// ── AgentToolFilter ───────────────────────────────────────────────────────────
+
+/// Computed effective tool filter for a sub-agent request.
+///
+/// Built by [`AgentToolFilter::compute`] from an [`AgentDefinition`] and an
+/// optional caller-specified tool list. The result is applied to the
+/// [`crate::FleetMemberRequest`] fields before the request is enqueued.
+///
+/// # Filtering semantics
+///
+/// 1. **Definition baseline** — the definition's `tools` (allow-list) and
+///    `disallowed_tools` (deny-list) are the authoritative starting point.
+/// 2. **Caller restriction** — if the caller supplies an explicit `tools` list
+///    it is *intersected* with the definition's allow-list (callers can only
+///    further restrict, not expand).  When the definition is unrestricted
+///    (`tools` is empty) the caller's list becomes the allow-list as-is.
+/// 3. **Background deny-list** — [`BACKGROUND_RESTRICTED_TOOLS`] are always
+///    appended to the deny-list because all Rust-runtime agents are background
+///    tasks.
+/// 4. **Deny-list exclusion** — any tool in the final deny-list is removed
+///    from the effective allow-list even if it appears there explicitly.
+///
+/// # Examples
+///
+/// ```
+/// use wonder_of_u_core::agent_definition::{AgentDefinition, AgentDefinitionSource, AgentToolFilter};
+///
+/// let def = AgentDefinition {
+///     id: "example".into(),
+///     name: "Example".into(),
+///     description: "desc".into(),
+///     system_prompt: "You are helpful.".into(),
+///     tools: vec!["bash".into(), "file_read".into()],
+///     disallowed_tools: vec![],
+///     model: None,
+///     max_turns: None,
+///     permission_mode: None,
+///     color: None,
+///     source: AgentDefinitionSource::Builtin,
+///     content_hash: None,
+///     source_path: None,
+///     effort: None,
+///     background: false,
+///     required_mcp_servers: vec![],
+///     initial_prompt: None,
+///     omit_claude_md: false,
+/// };
+///
+/// // Caller provides a broader list — only the intersection is allowed.
+/// let filter = AgentToolFilter::compute(&def, Some(&["bash".to_owned(), "glob".to_owned()]));
+/// assert_eq!(filter.allowed, Some(vec!["bash".to_owned()]));
+/// ```
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct AgentToolFilter {
+    /// Effective allowed-tools list, or `None` when unrestricted.
+    ///
+    /// `None` means *all tools are allowed* (minus the deny-list).
+    /// `Some([])` means *no tools are allowed*.
+    pub allowed: Option<Vec<String>>,
+    /// Tools that are explicitly denied for this agent.
+    ///
+    /// Always includes [`BACKGROUND_RESTRICTED_TOOLS`] and the definition's
+    /// own `disallowed_tools`.
+    pub disallowed: Vec<String>,
+}
+
+impl AgentToolFilter {
+    /// Computes the effective tool filter from a definition and optional caller override.
+    ///
+    /// `caller_tools` — the explicit `tools` list supplied in the agent tool
+    /// input, if any.  Pass `None` when the caller did not specify tools.
+    #[must_use]
+    pub fn compute(definition: &AgentDefinition, caller_tools: Option<&[String]>) -> Self {
+        // Collect the effective deny-list: definition's own list + background
+        // restrictions that are not already present.
+        let mut disallowed: Vec<String> = definition.disallowed_tools.clone();
+        for &restricted in BACKGROUND_RESTRICTED_TOOLS {
+            let name = restricted.to_owned();
+            if !disallowed.contains(&name) {
+                disallowed.push(name);
+            }
+        }
+
+        let def_tools = &definition.tools;
+
+        let allowed = match (def_tools.is_empty(), caller_tools) {
+            // Neither side restricts — fully unrestricted (minus deny-list).
+            (true, None | Some(&[])) => None,
+
+            // Caller restricts; definition is unrestricted.
+            (true, Some(caller)) => {
+                let filtered = caller
+                    .iter()
+                    .filter(|t| !disallowed.contains(t))
+                    .cloned()
+                    .collect::<Vec<_>>();
+                // Preserve `None` semantics when caller effectively passes everything
+                // after filtering (we can't know the full universe, so keep Some).
+                Some(filtered)
+            }
+
+            // Definition restricts; caller does not override.
+            (false, None | Some(&[])) => {
+                let filtered = def_tools
+                    .iter()
+                    .filter(|t| !disallowed.contains(t))
+                    .cloned()
+                    .collect();
+                Some(filtered)
+            }
+
+            // Both restrict — use the intersection.
+            (false, Some(caller)) => {
+                let filtered = def_tools
+                    .iter()
+                    .filter(|t| caller.contains(t))
+                    .filter(|t| !disallowed.contains(t))
+                    .cloned()
+                    .collect();
+                Some(filtered)
+            }
+        };
+
+        Self {
+            allowed,
+            disallowed,
+        }
+    }
+
+    /// Returns `true` when this filter imposes no allow-list restriction.
+    #[must_use]
+    pub fn is_unrestricted(&self) -> bool {
+        self.allowed.is_none()
+    }
+}
+
 // ── Source enum ───────────────────────────────────────────────────────────────
 
 /// Where an [`AgentDefinition`] originated.
@@ -120,6 +262,21 @@ pub struct AgentDefinitionSnapshot {
     /// Maximum conversation turns captured at queue time.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_turns: Option<u32>,
+    /// Thinking-effort hint captured at queue time (e.g. `"low"`, `"medium"`, `"high"`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effort: Option<String>,
+    /// Whether the agent should run in the background.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub background: bool,
+    /// MCP server names required by this agent (informational — never executed).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub required_mcp_servers: Vec<String>,
+    /// Initial prompt pre-seeded into the agent's conversation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub initial_prompt: Option<String>,
+    /// When `true`, CLAUDE.md is not injected into the agent's context.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub omit_claude_md: bool,
 }
 
 // ── Raw frontmatter / JSON DTO ────────────────────────────────────────────────
@@ -174,6 +331,28 @@ pub struct RawDefinitionFields {
     /// UI color hint (stored for completeness, not executed).
     #[serde(default)]
     pub color: Option<String>,
+    /// Thinking-effort hint (e.g. `"low"`, `"medium"`, `"high"`).
+    ///
+    /// Stored as a free-form string so unknown upstream values are preserved
+    /// without a parse failure.
+    #[serde(default)]
+    pub effort: Option<String>,
+    /// Run this agent in the background (`true`) or foreground (`false`).
+    #[serde(default)]
+    pub background: Option<bool>,
+    /// MCP server names required by this agent.
+    ///
+    /// Accepted during parse for completeness; stored as metadata only and
+    /// **never executed** — callers that need to warn about this field should
+    /// inspect it directly.
+    #[serde(rename = "requiredMcpServers", default)]
+    pub required_mcp_servers: Option<Vec<String>>,
+    /// Initial prompt pre-seeded into the agent's conversation before its task.
+    #[serde(rename = "initialPrompt", default)]
+    pub initial_prompt: Option<String>,
+    /// When `true`, CLAUDE.md is not injected into the agent's context.
+    #[serde(rename = "omitClaudeMd", default)]
+    pub omit_claude_md: Option<bool>,
     // Dangerous fields: accepted during parse, rejected during build.
     /// Hooks configuration — accepted but never executed.
     #[serde(default)]
@@ -218,6 +397,27 @@ pub struct AgentDefinition {
     /// UI color hint (informational only).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub color: Option<String>,
+    /// Thinking-effort hint (e.g. `"low"`, `"medium"`, `"high"`).
+    ///
+    /// Passed through to the dispatcher for model configuration; never
+    /// validated against a closed set so future upstream values are preserved.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effort: Option<String>,
+    /// Run this agent in the background rather than occupying the foreground.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub background: bool,
+    /// MCP server names this agent declares it needs (informational, not executed).
+    ///
+    /// The dispatcher may use this list to pre-flight capability checks, but
+    /// **no MCP server is started or contacted** based on this field alone.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub required_mcp_servers: Vec<String>,
+    /// Initial prompt pre-seeded into the agent's conversation before the task.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub initial_prompt: Option<String>,
+    /// When `true`, CLAUDE.md is not injected into the agent's context.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub omit_claude_md: bool,
     /// Where this definition originated.
     pub source: AgentDefinitionSource,
     /// SHA-256 hex digest of the raw file content (absent for built-ins).
@@ -316,6 +516,11 @@ impl AgentDefinition {
             max_turns: raw.max_turns,
             permission_mode: raw.permission_mode,
             color: raw.color,
+            effort: raw.effort,
+            background: raw.background.unwrap_or(false),
+            required_mcp_servers: raw.required_mcp_servers.unwrap_or_default(),
+            initial_prompt: raw.initial_prompt,
+            omit_claude_md: raw.omit_claude_md.unwrap_or(false),
             source,
             content_hash,
             source_path: None,
@@ -339,6 +544,11 @@ impl AgentDefinition {
             max_turns: None,
             permission_mode: None,
             color: None,
+            effort: None,
+            background: false,
+            required_mcp_servers: Vec::new(),
+            initial_prompt: None,
+            omit_claude_md: false,
             source: AgentDefinitionSource::Builtin,
             content_hash: None,
             source_path: None,
@@ -361,6 +571,11 @@ impl AgentDefinition {
             disallowed_tools: self.disallowed_tools.clone(),
             permission_mode: self.permission_mode.clone(),
             max_turns: self.max_turns,
+            effort: self.effort.clone(),
+            background: self.background,
+            required_mcp_servers: self.required_mcp_servers.clone(),
+            initial_prompt: self.initial_prompt.clone(),
+            omit_claude_md: self.omit_claude_md,
         }
     }
 }
@@ -544,6 +759,11 @@ fn extra_builtin_definitions() -> Vec<AgentDefinition> {
             max_turns: None,
             permission_mode: None,
             color: None,
+            effort: None,
+            background: false,
+            required_mcp_servers: Vec::new(),
+            initial_prompt: None,
+            omit_claude_md: false,
             source: AgentDefinitionSource::Builtin,
             content_hash: None,
             source_path: None,
@@ -571,6 +791,11 @@ fn extra_builtin_definitions() -> Vec<AgentDefinition> {
             max_turns: None,
             permission_mode: Some("default".into()),
             color: None,
+            effort: None,
+            background: false,
+            required_mcp_servers: Vec::new(),
+            initial_prompt: None,
+            omit_claude_md: false,
             source: AgentDefinitionSource::Builtin,
             content_hash: None,
             source_path: None,
@@ -601,6 +826,21 @@ struct DefinitionFrontmatter {
     permission_mode: Option<String>,
     #[serde(rename = "maxTurns", skip_serializing_if = "Option::is_none")]
     max_turns: Option<u32>,
+    /// Thinking-effort hint — omitted when absent.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    effort: Option<String>,
+    /// Background flag — omitted when `false` to keep output minimal.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    background: bool,
+    /// Required MCP server names — omitted when empty.
+    #[serde(rename = "requiredMcpServers", skip_serializing_if = "Vec::is_empty")]
+    required_mcp_servers: Vec<String>,
+    /// Initial prompt — omitted when absent.
+    #[serde(rename = "initialPrompt", skip_serializing_if = "Option::is_none")]
+    initial_prompt: Option<String>,
+    /// Omit CLAUDE.md flag — omitted when `false`.
+    #[serde(rename = "omitClaudeMd", skip_serializing_if = "std::ops::Not::not")]
+    omit_claude_md: bool,
 }
 
 /// Renders an [`AgentDefinition`] as a Markdown file with YAML frontmatter.
@@ -629,6 +869,11 @@ struct DefinitionFrontmatter {
 ///     max_turns: None,
 ///     permission_mode: None,
 ///     color: None,
+///     effort: None,
+///     background: false,
+///     required_mcp_servers: vec![],
+///     initial_prompt: None,
+///     omit_claude_md: false,
 ///     source: AgentDefinitionSource::Project,
 ///     content_hash: None,
 ///     source_path: None,
@@ -654,6 +899,11 @@ pub fn render_definition_md(def: &AgentDefinition) -> Result<String> {
         color: def.color.clone(),
         permission_mode: def.permission_mode.clone(),
         max_turns: def.max_turns,
+        effort: def.effort.clone(),
+        background: def.background,
+        required_mcp_servers: def.required_mcp_servers.clone(),
+        initial_prompt: def.initial_prompt.clone(),
+        omit_claude_md: def.omit_claude_md,
     };
     let yaml = serde_yaml::to_string(&fm).map_err(|e| {
         WonderError::validation(format!("failed to serialise definition frontmatter: {e}"))
@@ -932,6 +1182,11 @@ mod tests {
             max_turns: None,
             permission_mode: None,
             color: None,
+            effort: None,
+            background: false,
+            required_mcp_servers: vec![],
+            initial_prompt: None,
+            omit_claude_md: false,
             source: AgentDefinitionSource::Project,
             content_hash: Some("abc123".into()),
             source_path: None,
@@ -958,6 +1213,11 @@ mod tests {
             max_turns: None,
             permission_mode: None,
             color: None,
+            effort: None,
+            background: false,
+            required_mcp_servers: vec![],
+            initial_prompt: None,
+            omit_claude_md: false,
             source: AgentDefinitionSource::Project,
             content_hash: None,
             source_path: None,
@@ -974,6 +1234,11 @@ mod tests {
             max_turns: None,
             permission_mode: None,
             color: None,
+            effort: None,
+            background: false,
+            required_mcp_servers: vec![],
+            initial_prompt: None,
+            omit_claude_md: false,
             source: AgentDefinitionSource::Builtin,
             content_hash: None,
             source_path: None,
@@ -999,6 +1264,11 @@ mod tests {
             max_turns: None,
             permission_mode: None,
             color: None,
+            effort: None,
+            background: false,
+            required_mcp_servers: vec![],
+            initial_prompt: None,
+            omit_claude_md: false,
             source: AgentDefinitionSource::ProjectDotClaude,
             content_hash: None,
             source_path: None,
@@ -1014,6 +1284,11 @@ mod tests {
             max_turns: None,
             permission_mode: None,
             color: None,
+            effort: None,
+            background: false,
+            required_mcp_servers: vec![],
+            initial_prompt: None,
+            omit_claude_md: false,
             source: AgentDefinitionSource::ProjectDotClaude,
             content_hash: None,
             source_path: None,
@@ -1179,6 +1454,11 @@ mod tests {
             max_turns: Some(10),
             permission_mode: Some("default".into()),
             color: None,
+            effort: Some("high".into()),
+            background: true,
+            required_mcp_servers: vec!["my-mcp".into()],
+            initial_prompt: Some("Hello agent.".into()),
+            omit_claude_md: true,
             source: AgentDefinitionSource::Project,
             content_hash: Some("deadbeef".into()),
             source_path: None,
@@ -1191,6 +1471,11 @@ mod tests {
         assert_eq!(snap.max_turns, Some(10));
         assert_eq!(snap.allowed_tools, vec!["bash"]);
         assert_eq!(snap.disallowed_tools, vec!["file_write"]);
+        assert_eq!(snap.effort.as_deref(), Some("high"));
+        assert!(snap.background);
+        assert_eq!(snap.required_mcp_servers, vec!["my-mcp"]);
+        assert_eq!(snap.initial_prompt.as_deref(), Some("Hello agent."));
+        assert!(snap.omit_claude_md);
     }
 
     // ── name_to_id ────────────────────────────────────────────────────────────
@@ -1224,5 +1509,435 @@ mod tests {
         assert!(validate_agent_id("trailing-").is_err());
         assert!(validate_agent_id("double--dash").is_err());
         assert!(validate_agent_id("has space").is_err());
+    }
+
+    // ── reference frontmatter fields (effort / background / requiredMcpServers /
+    // initialPrompt / omitClaudeMd) ───────────────────────────────────────────
+
+    #[test]
+    fn from_raw_parses_effort_field() {
+        let raw = RawDefinitionFields {
+            name: Some("Thinker".into()),
+            description: Some("Thinks hard".into()),
+            prompt: Some("Think deeply.".into()),
+            effort: Some("high".into()),
+            ..Default::default()
+        };
+        let def = AgentDefinition::from_raw(raw, AgentDefinitionSource::Project, "c").unwrap();
+        assert_eq!(def.effort.as_deref(), Some("high"));
+    }
+
+    #[test]
+    fn from_raw_parses_background_field() {
+        let raw = RawDefinitionFields {
+            name: Some("Background Agent".into()),
+            description: Some("Runs quietly".into()),
+            prompt: Some("Do stuff quietly.".into()),
+            background: Some(true),
+            ..Default::default()
+        };
+        let def = AgentDefinition::from_raw(raw, AgentDefinitionSource::Project, "c").unwrap();
+        assert!(def.background);
+    }
+
+    #[test]
+    fn from_raw_background_defaults_to_false() {
+        let raw = RawDefinitionFields {
+            name: Some("Foreground Agent".into()),
+            description: Some("Runs in foreground".into()),
+            prompt: Some("Do stuff.".into()),
+            ..Default::default()
+        };
+        let def = AgentDefinition::from_raw(raw, AgentDefinitionSource::Project, "c").unwrap();
+        assert!(!def.background);
+    }
+
+    #[test]
+    fn from_raw_parses_required_mcp_servers() {
+        let raw = RawDefinitionFields {
+            name: Some("MCP Agent".into()),
+            description: Some("Needs MCP".into()),
+            prompt: Some("Use MCP.".into()),
+            required_mcp_servers: Some(vec!["github".into(), "linear".into()]),
+            ..Default::default()
+        };
+        let def = AgentDefinition::from_raw(raw, AgentDefinitionSource::Project, "c").unwrap();
+        assert_eq!(def.required_mcp_servers, vec!["github", "linear"]);
+    }
+
+    #[test]
+    fn from_raw_parses_initial_prompt() {
+        let raw = RawDefinitionFields {
+            name: Some("Seeded Agent".into()),
+            description: Some("Has initial prompt".into()),
+            prompt: Some("Main prompt.".into()),
+            initial_prompt: Some("Hello, I will help you.".into()),
+            ..Default::default()
+        };
+        let def = AgentDefinition::from_raw(raw, AgentDefinitionSource::Project, "c").unwrap();
+        assert_eq!(
+            def.initial_prompt.as_deref(),
+            Some("Hello, I will help you.")
+        );
+    }
+
+    #[test]
+    fn from_raw_parses_omit_claude_md() {
+        let raw = RawDefinitionFields {
+            name: Some("Slim Agent".into()),
+            description: Some("No CLAUDE.md".into()),
+            prompt: Some("Lean prompt.".into()),
+            omit_claude_md: Some(true),
+            ..Default::default()
+        };
+        let def = AgentDefinition::from_raw(raw, AgentDefinitionSource::Project, "c").unwrap();
+        assert!(def.omit_claude_md);
+    }
+
+    #[test]
+    fn parse_markdown_frontmatter_parses_reference_fields() {
+        let md = "---\n\
+            name: Smart Agent\n\
+            description: Uses thinking\n\
+            effort: medium\n\
+            background: true\n\
+            requiredMcpServers:\n  - github\n  - slack\n\
+            initialPrompt: Let's get started.\n\
+            omitClaudeMd: true\n\
+            ---\n\nYou are a smart agent.";
+        let fields = parse_markdown_frontmatter(md).expect("parse");
+        assert_eq!(fields.effort.as_deref(), Some("medium"));
+        assert_eq!(fields.background, Some(true));
+        assert_eq!(
+            fields.required_mcp_servers.as_deref(),
+            Some(&["github".to_owned(), "slack".to_owned()][..])
+        );
+        assert_eq!(fields.initial_prompt.as_deref(), Some("Let's get started."));
+        assert_eq!(fields.omit_claude_md, Some(true));
+    }
+
+    #[test]
+    fn render_definition_md_includes_reference_fields() {
+        let raw = RawDefinitionFields {
+            name: Some("Full Agent".into()),
+            description: Some("Has all fields".into()),
+            prompt: Some("Work hard.".into()),
+            effort: Some("low".into()),
+            background: Some(true),
+            required_mcp_servers: Some(vec!["github".into()]),
+            initial_prompt: Some("Greetings.".into()),
+            omit_claude_md: Some(true),
+            ..Default::default()
+        };
+        let def = AgentDefinition::from_raw(raw, AgentDefinitionSource::Project, "c").unwrap();
+        let md = render_definition_md(&def).unwrap();
+        assert!(md.contains("effort: low"), "effort missing:\n{md}");
+        assert!(md.contains("background: true"), "background missing:\n{md}");
+        assert!(
+            md.contains("requiredMcpServers"),
+            "requiredMcpServers missing:\n{md}"
+        );
+        assert!(
+            md.contains("initialPrompt: Greetings."),
+            "initialPrompt missing:\n{md}"
+        );
+        assert!(
+            md.contains("omitClaudeMd: true"),
+            "omitClaudeMd missing:\n{md}"
+        );
+    }
+
+    #[test]
+    fn render_definition_md_omits_false_bool_fields() {
+        let raw = RawDefinitionFields {
+            name: Some("Minimal Agent".into()),
+            description: Some("Minimal".into()),
+            prompt: Some("Do less.".into()),
+            background: Some(false),
+            omit_claude_md: Some(false),
+            ..Default::default()
+        };
+        let def = AgentDefinition::from_raw(raw, AgentDefinitionSource::Project, "c").unwrap();
+        let md = render_definition_md(&def).unwrap();
+        // false bools must be omitted to keep output minimal.
+        assert!(
+            !md.contains("background:"),
+            "false background must be omitted:\n{md}"
+        );
+        assert!(
+            !md.contains("omitClaudeMd:"),
+            "false omitClaudeMd must be omitted:\n{md}"
+        );
+    }
+
+    #[test]
+    fn parse_json_definition_parses_reference_fields() {
+        let json = r#"{
+            "name": "JSON Agent",
+            "description": "Parsed from JSON",
+            "prompt": "JSON prompt.",
+            "effort": "high",
+            "background": true,
+            "requiredMcpServers": ["toolbox"],
+            "initialPrompt": "Start here.",
+            "omitClaudeMd": true
+        }"#;
+        let fields = parse_json_definition(json).expect("parse");
+        assert_eq!(fields.effort.as_deref(), Some("high"));
+        assert_eq!(fields.background, Some(true));
+        assert_eq!(
+            fields.required_mcp_servers.as_deref(),
+            Some(&["toolbox".to_owned()][..])
+        );
+        assert_eq!(fields.initial_prompt.as_deref(), Some("Start here."));
+        assert_eq!(fields.omit_claude_md, Some(true));
+    }
+
+    #[test]
+    fn snapshot_includes_reference_fields() {
+        let raw = RawDefinitionFields {
+            name: Some("Snapshot Agent".into()),
+            description: Some("Full snapshot".into()),
+            prompt: Some("Snap.".into()),
+            effort: Some("medium".into()),
+            background: Some(true),
+            required_mcp_servers: Some(vec!["mcp-a".into()]),
+            initial_prompt: Some("Init.".into()),
+            omit_claude_md: Some(true),
+            ..Default::default()
+        };
+        let def = AgentDefinition::from_raw(raw, AgentDefinitionSource::Project, "c").unwrap();
+        let snap = def.snapshot();
+        assert_eq!(snap.effort.as_deref(), Some("medium"));
+        assert!(snap.background);
+        assert_eq!(snap.required_mcp_servers, vec!["mcp-a"]);
+        assert_eq!(snap.initial_prompt.as_deref(), Some("Init."));
+        assert!(snap.omit_claude_md);
+    }
+
+    #[test]
+    fn reference_fields_roundtrip_through_parse_and_render() {
+        let md = "---\n\
+            name: Round Trip\n\
+            description: Roundtrips cleanly\n\
+            effort: high\n\
+            background: true\n\
+            requiredMcpServers:\n  - my-server\n\
+            initialPrompt: Go!\n\
+            omitClaudeMd: true\n\
+            ---\n\nSystem prompt here.";
+
+        let fields = parse_markdown_frontmatter(md).expect("parse");
+        let def = AgentDefinition::from_raw(fields, AgentDefinitionSource::Project, md).unwrap();
+        let rendered = render_definition_md(&def).unwrap();
+
+        // Re-parse the rendered output and validate the round-trip.
+        let fields2 = parse_markdown_frontmatter(&rendered).expect("re-parse");
+        let def2 =
+            AgentDefinition::from_raw(fields2, AgentDefinitionSource::Project, &rendered).unwrap();
+
+        assert_eq!(def2.effort.as_deref(), Some("high"));
+        assert!(def2.background);
+        assert_eq!(def2.required_mcp_servers, vec!["my-server"]);
+        assert_eq!(def2.initial_prompt.as_deref(), Some("Go!"));
+        assert!(def2.omit_claude_md);
+        assert_eq!(def2.system_prompt, "System prompt here.");
+    }
+
+    // ── AgentToolFilter ───────────────────────────────────────────────────────
+
+    fn make_def(tools: Vec<&str>, disallowed_tools: Vec<&str>) -> AgentDefinition {
+        AgentDefinition {
+            id: "test-agent".into(),
+            name: "Test Agent".into(),
+            description: "For testing".into(),
+            system_prompt: "You are a test agent.".into(),
+            tools: tools.into_iter().map(String::from).collect(),
+            disallowed_tools: disallowed_tools.into_iter().map(String::from).collect(),
+            model: None,
+            max_turns: None,
+            permission_mode: None,
+            color: None,
+            source: AgentDefinitionSource::Builtin,
+            content_hash: None,
+            source_path: None,
+            effort: None,
+            background: false,
+            required_mcp_servers: vec![],
+            initial_prompt: None,
+            omit_claude_md: false,
+        }
+    }
+
+    // ── builtin / default filtering ───────────────────────────────────────────
+
+    #[test]
+    fn filter_unrestricted_def_no_caller_tools_is_none() {
+        // A definition with no allowed-tools list and no caller override is
+        // fully unrestricted (minus background denials).
+        let def = make_def(vec![], vec![]);
+        let filter = AgentToolFilter::compute(&def, None);
+        assert_eq!(filter.allowed, None, "should be unrestricted");
+        assert!(
+            filter.disallowed.contains(&"ask_user".to_owned()),
+            "ask_user must always be denied"
+        );
+    }
+
+    #[test]
+    fn filter_builtin_allowed_tools_applied_when_no_caller() {
+        // Definition restricts to bash+file_read; caller provides nothing →
+        // effective allowed = [bash, file_read].
+        let def = make_def(vec!["bash", "file_read"], vec![]);
+        let filter = AgentToolFilter::compute(&def, None);
+        let allowed = filter.allowed.expect("should have an allow-list");
+        assert_eq!(allowed, vec!["bash", "file_read"]);
+    }
+
+    #[test]
+    fn filter_definition_disallowed_always_excluded() {
+        // A definition that allows bash but disallows file_write.
+        let def = make_def(vec!["bash", "file_write"], vec!["file_write"]);
+        let filter = AgentToolFilter::compute(&def, None);
+        let allowed = filter.allowed.expect("allow-list present");
+        assert!(
+            !allowed.contains(&"file_write".to_owned()),
+            "file_write must be excluded"
+        );
+        assert!(allowed.contains(&"bash".to_owned()));
+        assert!(filter.disallowed.contains(&"file_write".to_owned()));
+    }
+
+    // ── caller-specified tools ─────────────────────────────────────────────────
+
+    #[test]
+    fn filter_caller_restricts_unrestricted_def() {
+        // Caller passes ["bash"] on an unrestricted definition → allow only bash.
+        let def = make_def(vec![], vec![]);
+        let caller = vec!["bash".to_owned()];
+        let filter = AgentToolFilter::compute(&def, Some(&caller));
+        let allowed = filter.allowed.expect("allow-list must be set");
+        assert_eq!(allowed, vec!["bash"]);
+    }
+
+    #[test]
+    fn filter_caller_intersection_with_definition() {
+        // Definition allows [bash, file_read, glob].
+        // Caller wants   [bash, file_write, glob].
+        // Intersection = [bash, glob].
+        let def = make_def(vec!["bash", "file_read", "glob"], vec![]);
+        let caller = vec![
+            "bash".to_owned(),
+            "file_write".to_owned(),
+            "glob".to_owned(),
+        ];
+        let filter = AgentToolFilter::compute(&def, Some(&caller));
+        let mut allowed = filter.allowed.expect("allow-list present");
+        allowed.sort();
+        assert_eq!(allowed, vec!["bash", "glob"]);
+    }
+
+    #[test]
+    fn filter_caller_cannot_expand_definition_allowlist() {
+        // Caller includes extra tools not in the definition — they must be stripped.
+        let def = make_def(vec!["bash"], vec![]);
+        let caller = vec![
+            "bash".to_owned(),
+            "file_write".to_owned(),
+            "glob".to_owned(),
+        ];
+        let filter = AgentToolFilter::compute(&def, Some(&caller));
+        let allowed = filter.allowed.expect("allow-list present");
+        assert_eq!(allowed, vec!["bash"]);
+    }
+
+    #[test]
+    fn filter_empty_caller_slice_treated_as_unspecified() {
+        // Passing an empty caller list should fall back to the definition's own list.
+        let def = make_def(vec!["bash", "file_read"], vec![]);
+        let filter = AgentToolFilter::compute(&def, Some(&[]));
+        let allowed = filter.allowed.expect("allow-list present");
+        assert_eq!(allowed, vec!["bash", "file_read"]);
+    }
+
+    // ── background/async restrictions ─────────────────────────────────────────
+
+    #[test]
+    fn filter_always_denies_ask_user_for_background_agents() {
+        // ask_user is an interactive tool — it must always be denied for background agents.
+        let def = make_def(vec!["bash", "ask_user"], vec![]);
+        let filter = AgentToolFilter::compute(&def, None);
+        // ask_user must not appear in the effective allowed list.
+        if let Some(ref allowed) = filter.allowed {
+            assert!(
+                !allowed.contains(&"ask_user".to_owned()),
+                "ask_user must not appear in allowed: {allowed:?}"
+            );
+        }
+        assert!(
+            filter.disallowed.contains(&"ask_user".to_owned()),
+            "ask_user must be in disallowed: {:?}",
+            filter.disallowed
+        );
+    }
+
+    #[test]
+    fn filter_ask_user_stripped_from_caller_tools() {
+        // Even if the caller explicitly requests ask_user it must be denied.
+        let def = make_def(vec![], vec![]);
+        let caller = vec!["bash".to_owned(), "ask_user".to_owned()];
+        let filter = AgentToolFilter::compute(&def, Some(&caller));
+        let allowed = filter.allowed.expect("allow-list present");
+        assert!(!allowed.contains(&"ask_user".to_owned()));
+        assert!(filter.disallowed.contains(&"ask_user".to_owned()));
+    }
+
+    #[test]
+    fn background_restricted_constant_is_non_empty() {
+        // Verify the constant lists ask_user — this is the primary guard against
+        // accidentally removing the interactive-tool restriction.
+        assert!(
+            BACKGROUND_RESTRICTED_TOOLS.contains(&"ask_user"),
+            "ask_user must be in BACKGROUND_RESTRICTED_TOOLS"
+        );
+    }
+
+    // ── is_unrestricted helper ────────────────────────────────────────────────
+
+    #[test]
+    fn filter_is_unrestricted_when_no_allowlist() {
+        let def = make_def(vec![], vec![]);
+        let filter = AgentToolFilter::compute(&def, None);
+        assert!(filter.is_unrestricted());
+    }
+
+    #[test]
+    fn filter_is_not_unrestricted_when_allowlist_set() {
+        let def = make_def(vec!["bash"], vec![]);
+        let filter = AgentToolFilter::compute(&def, None);
+        assert!(!filter.is_unrestricted());
+    }
+
+    // ── explore built-in uses disallowed_tools ─────────────────────────────────
+
+    #[test]
+    fn filter_explore_builtin_disallows_write_tools() {
+        // The "explore" builtin definition disallows file_write and file_edit.
+        let catalog = AgentCatalog::builtin();
+        let explore = catalog.get("explore").expect("explore must be in catalog");
+        let filter = AgentToolFilter::compute(explore, None);
+        assert!(
+            filter.disallowed.contains(&"file_write".to_owned()),
+            "explore must deny file_write"
+        );
+        assert!(
+            filter.disallowed.contains(&"file_edit".to_owned()),
+            "explore must deny file_edit"
+        );
+        // The allowed list must not include the disallowed tools.
+        if let Some(ref allowed) = filter.allowed {
+            assert!(!allowed.contains(&"file_write".to_owned()));
+            assert!(!allowed.contains(&"file_edit".to_owned()));
+        }
     }
 }

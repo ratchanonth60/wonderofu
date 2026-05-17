@@ -194,7 +194,8 @@ impl ResumeCommand {
             "resume",
             "Resume a persisted session in the live shell when interactive, or show a summary",
             CommandKind::ResumeEntrypoint,
-        );
+        )
+        .with_argument_hint("[conversation id or search term]");
         spec.required_features = BTreeSet::from([FeatureFlag::SessionPersistence]);
         // Upstream alias: /continue resolves to /resume.
         spec.aliases = vec!["continue".into()];
@@ -395,6 +396,8 @@ impl ClearCommand {
         spec.required_features = BTreeSet::from([FeatureFlag::SessionPersistence]);
         // Upstream aliases: /reset and /new both resolve to /clear.
         spec.aliases = vec!["reset".into(), "new".into()];
+        // immediate=true: /clear must not drain queued prompts after executing.
+        spec.immediate = true;
         spec
     }
 }
@@ -861,6 +864,7 @@ fn payload_distribution(messages: &[MessageEnvelope]) -> String {
             | MessagePayload::Permission { .. }
             | MessagePayload::PlanApproval { .. }
             | MessagePayload::ProviderError { .. }
+            | MessagePayload::TaskNotification { .. }
             | MessagePayload::Command { .. } => progress += 1,
         }
     }
@@ -981,6 +985,12 @@ fn message_summary(message: &MessageEnvelope) -> String {
         MessagePayload::ProviderError { kind, message } => {
             format!("error[{kind}]: {message}")
         }
+        MessagePayload::TaskNotification {
+            task_id,
+            xml_payload: _,
+        } => {
+            format!("task-notification {task_id}")
+        }
     }
 }
 
@@ -990,7 +1000,7 @@ fn message_summary(message: &MessageEnvelope) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{CompactCommand, ViewAction, summarized_messages_summary};
+    use super::{CompactCommand, ResumeCommand, ViewAction, summarized_messages_summary};
     use wonder_of_u_core::CommandSpec;
 
     // ── CompactCommand spec ──────────────────────────────────────────────────
@@ -1067,6 +1077,16 @@ mod tests {
         assert!(
             summary.contains("Summarization instructions: remove tool results"),
             "clear with instructions must include them; got: {summary}"
+        );
+    }
+
+    #[test]
+    fn resume_command_spec_carries_argument_hint() {
+        let spec = ResumeCommand::command_spec();
+        assert_eq!(
+            spec.argument_hint.as_deref(),
+            Some("[conversation id or search term]"),
+            "/resume spec should carry the argument hint"
         );
     }
 }

@@ -4,10 +4,11 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use wonder_of_u_core::{
-    AgentCatalog, AgentDefinitionSource, AgentLaunchSpec, FeatureFlag, FleetMemberRequest,
+    AgentCatalog, AgentDefinitionSource, AgentLaunchSpec, AgentToolFilter, FeatureFlag,
+    FleetMemberRequest, PermissionMode, PermissionRuleBehavior, PermissionRuleSource,
     RemoteTaskState, RemoteTaskType, Result, TaskId, Tool, ToolContext, ToolEffect, ToolKind,
     ToolResult, ToolSchema, ToolSpec, ToolUseId, WONDER_OF_U_FORK_DEPTH_ENV, WonderError,
-    agent_loader::AgentDefinitionLoader, get_git_root,
+    WorktreeIsolation, WorktreeIsolationMode, agent_loader::AgentDefinitionLoader, get_git_root,
 };
 use wonder_of_u_storage::FleetStore;
 
@@ -99,11 +100,14 @@ impl AgentInput {
             ));
         }
 
-        // Non-fork isolation (worktree) remains unsupported in the base validate path.
-        if self.isolation.is_some() {
-            return Err(WonderError::validation(
-                "agent source-compatible `isolation` is not supported in the Rust runtime",
-            ));
+        // Only "worktree" isolation is accepted; any other value is rejected.
+        if let Some(ref iso) = self.isolation {
+            if iso != "worktree" {
+                return Err(WonderError::validation(format!(
+                    "agent `isolation` value `{iso}` is not supported; \
+                     accepted value: \"worktree\""
+                )));
+            }
         }
 
         // team_name is still unsupported.
@@ -207,6 +211,8 @@ impl Tool for AgentTool {
 
         // Fork-mode guards: check depth and context before building the request.
         let is_fork = input.mode.as_deref() == Some("fork");
+        let is_worktree = input.isolation.as_deref() == Some("worktree");
+
         if is_fork {
             // Recursive fork guard: reject if already inside a fork subprocess.
             let parent_depth: u32 = std::env::var(WONDER_OF_U_FORK_DEPTH_ENV)
@@ -226,6 +232,45 @@ impl Tool for AgentTool {
                      fork context was not populated in this runtime (no active prompt or TUI session)",
                 ));
             }
+            // Validate the fork context contents eagerly so the error is caught
+            // at queue time (here) rather than only at dispatch time.
+            if let Some(ref ctx) = context.fork_context {
+                ctx.validate()?;
+            }
+        }
+
+        // Bypass-propagation guard: prevent BypassPermissions from silently
+        // escalating into spawned background/child agents.  A child agent
+        // launched without any permission context would inherit an effectively
+        // unrestricted posture, bypassing normal sandboxing for every tool it
+        // calls.  We block the spawn unless the operator has placed an explicit
+        // Policy-level allow rule on the "agent" tool — i.e. a deliberate,
+        // auditable decision that bypass propagation is acceptable in this
+        // deployment.
+        if context.permission_mode == PermissionMode::BypassPermissions {
+            let policy_allows = context.permission_rules.iter().any(|rule| {
+                rule.source == PermissionRuleSource::Policy
+                    && rule.behavior == PermissionRuleBehavior::Allow
+                    && matches!(rule.tool.as_str(), "agent" | "Task" | "*")
+            });
+            if !policy_allows {
+                return Err(WonderError::validation(
+                    "BypassPermissions cannot propagate to spawned background agents; \
+                     add a Policy-level allow rule for 'agent' to explicitly permit \
+                     subagent launch under bypass mode",
+                ));
+            }
+        }
+
+        // Worktree isolation requires a git repo.  Fail explicitly here rather
+        // than letting the error surface later in the dispatcher where it would
+        // be harder to attribute.
+        if is_worktree && get_git_root(&context.cwd).is_err() {
+            return Err(WonderError::validation(format!(
+                "agent isolation=worktree requires a git repository; \
+                 `{}` is not inside one. Run from a git repo or remove `isolation`.",
+                context.cwd.display()
+            )));
         }
 
         // Build the full catalog from the project root when available so a tool
@@ -249,16 +294,42 @@ impl Tool for AgentTool {
 
         let request_id = request.id.clone();
 
-        let effect = ToolEffect::LaunchAgentTask(AgentLaunchSpec { request });
+        // Pre-allocate a stable TaskId so callers can derive deterministic
+        // output paths before the task is actually started.  The runtime
+        // MUST honour this id when creating the task record (see
+        // `AgentLaunchSpec::reserved_task_id`).
+        let reserved_task_id = TaskId::new();
+
+        // Compute the output paths from the app root.  Failures are
+        // non-fatal: paths are best-effort metadata; the task still launches.
+        let output_paths = crate::app_root()
+            .ok()
+            .map(|root| {
+                let paths = wonder_of_u_storage::StoragePaths::new(&root);
+                serde_json::json!({
+                    "output_log": paths.task_log_path(reserved_task_id),
+                    "result":     paths.task_result_path(reserved_task_id),
+                })
+            })
+            .unwrap_or(serde_json::Value::Null);
+
+        let effect = ToolEffect::LaunchAgentTask(AgentLaunchSpec {
+            request,
+            reserved_task_id: Some(reserved_task_id),
+        });
 
         let mut result =
             ToolResult::success(use_id, format!("agent task launch requested: {request_id}"));
         result.metadata = serde_json::json!({
             "request_id": request_id,
+            "reserved_task_id": reserved_task_id.to_string(),
+            "output_paths": output_paths,
             "status": "launch_requested",
             "run_in_background": true,
             "mode": input.mode,
             "fork_mode": is_fork,
+            "isolation": input.isolation,
+            "worktree_isolation": is_worktree,
             "description": input.description,
             "dispatch_hint": "runtime will launch directly or fall back to `fleet dispatch`",
             "supports_send_message": false,
@@ -321,16 +392,17 @@ pub fn build_fleet_member_request_with_catalog(
         }
     }
 
-    // Forward the caller-specified tool list so the sub-agent is constrained
-    // to the same (or a subset of) tools the parent agent was allowed.
-    if let Some(tools) = input.tools.clone() {
-        if !tools.is_empty() {
-            request.allowed_tools = Some(tools);
-        }
-    }
-
     // Forward dependency list for scheduling.
     request.depends_on = input.depends_on.clone().unwrap_or_default();
+
+    // Translate the input isolation string into the typed WorktreeIsolation.
+    // Only "worktree" is accepted (validated earlier in validate()).
+    if input.isolation.as_deref() == Some("worktree") {
+        request.isolation = Some(WorktreeIsolation {
+            mode: WorktreeIsolationMode::Worktree,
+            branch: None,
+        });
+    }
 
     // Resolve subagent_type → definition + snapshot.
     let resolved_def = if let Some(ref subagent_type) = input.subagent_type {
@@ -348,6 +420,38 @@ pub fn build_fleet_member_request_with_catalog(
         if request.model.is_none() && def.source == AgentDefinitionSource::Builtin {
             request.model = def.model.clone();
         }
+
+        // Apply the agent definition's tool filter.
+        //
+        // The filter intersects the definition's allow-list with any caller-
+        // supplied tools, appends background-restricted denials, and removes
+        // denied tools from the effective allow-list.  This replaces the
+        // previous behaviour of blindly forwarding `input.tools` without
+        // applying the definition's own constraints.
+        let caller_tools = input.tools.as_deref().filter(|t| !t.is_empty());
+        let filter = AgentToolFilter::compute(def, caller_tools);
+        request.allowed_tools = filter.allowed;
+        request.disallowed_tools = filter.disallowed;
+    } else {
+        // No definition resolved (should not happen with a well-formed catalog,
+        // but handle defensively). Apply background restrictions and honour the
+        // caller's tool list as-is.
+        let caller_tools = input.tools.as_deref().filter(|t| !t.is_empty());
+        if let Some(tools) = caller_tools {
+            // Remove background-restricted tools from the caller's list.
+            let filtered: Vec<String> = tools
+                .iter()
+                .filter(|t| !wonder_of_u_core::BACKGROUND_RESTRICTED_TOOLS.contains(&t.as_str()))
+                .cloned()
+                .collect();
+            if !filtered.is_empty() {
+                request.allowed_tools = Some(filtered);
+            }
+        }
+        request.disallowed_tools = wonder_of_u_core::BACKGROUND_RESTRICTED_TOOLS
+            .iter()
+            .map(|&s| s.to_owned())
+            .collect();
     }
 
     Ok(request)
@@ -1166,22 +1270,16 @@ mod tests {
         );
     }
 
-    /// Non-fork agent calls (no mode field) do NOT embed fork_context even
-    /// when one is present in the ToolContext.
-    #[test]
-    fn agent_execute_without_fork_mode_does_not_embed_fork_context() {
-        use wonder_of_u_core::{
-            FeatureSet, ForkContextSnapshot, PermissionMode, SessionId, ToolEffect,
-        };
+    // ── Output-path metadata ──────────────────────────────────────────────────
 
-        let dir = unique_test_dir("tools-agent-no-fork-mode");
-        let fork_ctx = ForkContextSnapshot {
-            parent_session_id: "session-abc".into(),
-            fork_depth: 0,
-            parent_system_prompt: None,
-            conversation_summary: None,
-            parent_entrypoint: None,
-        };
+    /// `execute()` includes `reserved_task_id` in both the metadata JSON and in
+    /// the `AgentLaunchSpec` carried by the `LaunchAgentTask` effect, and the
+    /// two values agree.
+    #[test]
+    fn agent_execute_includes_reserved_task_id_in_metadata_and_spec() {
+        use wonder_of_u_core::{FeatureSet, PermissionMode, SessionId, ToolEffect};
+
+        let dir = unique_test_dir("tools-agent-reserved-task-id");
         let context = wonder_of_u_core::ToolContext {
             session_id: SessionId::new(),
             cwd: dir,
@@ -1193,24 +1291,631 @@ mod tests {
             permission_rules: vec![],
             features: FeatureSet::first_release(),
             bash_session_store: None,
-            fork_context: Some(fork_ctx), // context present but mode is not fork
+            fork_context: None,
+        };
+
+        let result = futures::executor::block_on(AgentTool.execute(
+            context,
+            wonder_of_u_core::ToolUseId::new(),
+            json!({ "prompt": "test task" }),
+        ))
+        .expect("execute should succeed");
+
+        // There must be exactly one LaunchAgentTask effect.
+        assert_eq!(result.effects.len(), 1);
+        let ToolEffect::LaunchAgentTask(ref spec) = result.effects[0] else {
+            panic!("expected LaunchAgentTask effect");
+        };
+
+        // The spec must carry a reserved_task_id.
+        let spec_task_id = spec
+            .reserved_task_id
+            .expect("spec must have a reserved_task_id");
+
+        // The metadata must also carry the same id as a string.
+        let meta_task_id_str = result.metadata["reserved_task_id"]
+            .as_str()
+            .expect("metadata.reserved_task_id must be a string");
+
+        assert_eq!(
+            spec_task_id.to_string(),
+            meta_task_id_str,
+            "reserved_task_id in spec and metadata must match"
+        );
+    }
+
+    // ── Bypass-propagation guard ──────────────────────────────────────────────
+
+    /// execute() rejects agent spawn when the parent runs under BypassPermissions
+    /// and no Policy-level allow rule is present.
+    ///
+    /// This is the core of the reference-bypass-guard: a child agent should
+    /// never silently inherit unrestricted permission posture from its parent.
+    #[test]
+    fn agent_execute_rejects_bypass_mode_without_policy_allow() {
+        use wonder_of_u_core::{FeatureSet, PermissionMode, SessionId};
+
+        let dir = unique_test_dir("tools-agent-bypass-no-policy");
+        let context = wonder_of_u_core::ToolContext {
+            session_id: SessionId::new(),
+            cwd: dir,
+            session_worktree: None,
+            permission_mode: PermissionMode::BypassPermissions,
+            additional_working_directories: vec![],
+            provider: None,
+            model: None,
+            permission_rules: vec![],
+            features: FeatureSet::first_release(),
+            bash_session_store: None,
+            fork_context: None,
+        };
+        let tool = AgentTool;
+        let error = futures::executor::block_on(tool.execute(
+            context,
+            wonder_of_u_core::ToolUseId::new(),
+            json!({ "prompt": "do something in bypass" }),
+        ))
+        .expect_err("bypass mode without policy allow should be rejected");
+
+        let msg = error.to_string();
+        assert!(
+            msg.contains("BypassPermissions cannot propagate"),
+            "error must explain bypass propagation risk; got: {msg}"
+        );
+        assert!(
+            msg.contains("Policy-level allow rule"),
+            "error must mention how to explicitly permit it; got: {msg}"
+        );
+    }
+
+    /// execute() succeeds when the parent runs under BypassPermissions AND a
+    /// Policy-level allow rule for "agent" is explicitly present.
+    ///
+    /// This is the designated safe-policy exception: an operator who has
+    /// deliberately set a Policy allow rule acknowledges bypass propagation.
+    #[test]
+    fn agent_execute_allows_bypass_mode_with_policy_allow_for_agent() {
+        use wonder_of_u_core::{
+            FeatureSet, PermissionMode, PermissionRule, PermissionRuleBehavior,
+            PermissionRuleSource, SessionId, ToolEffect,
+        };
+
+        let dir = unique_test_dir("tools-agent-bypass-with-policy");
+        let policy_rule = PermissionRule::new(
+            "agent",
+            PermissionRuleBehavior::Allow,
+            PermissionRuleSource::Policy,
+        );
+        let context = wonder_of_u_core::ToolContext {
+            session_id: SessionId::new(),
+            cwd: dir,
+            session_worktree: None,
+            permission_mode: PermissionMode::BypassPermissions,
+            additional_working_directories: vec![],
+            provider: None,
+            model: None,
+            permission_rules: vec![policy_rule],
+            features: FeatureSet::first_release(),
+            bash_session_store: None,
+            fork_context: None,
+        };
+
+        let result = futures::executor::block_on(AgentTool.execute(
+            context,
+            wonder_of_u_core::ToolUseId::new(),
+            json!({ "prompt": "do something in bypass with explicit policy" }),
+        ))
+        .expect("bypass with explicit Policy-level allow rule should succeed");
+
+        assert!(result.success, "result should be success");
+        assert_eq!(result.effects.len(), 1);
+        assert!(
+            matches!(result.effects[0], ToolEffect::LaunchAgentTask(_)),
+            "should return LaunchAgentTask effect"
+        );
+    }
+
+    /// execute() also accepts a wildcard `"*"` Policy allow rule as the safe
+    /// exception since it explicitly covers all tools.
+    #[test]
+    fn agent_execute_allows_bypass_mode_with_wildcard_policy_allow() {
+        use wonder_of_u_core::{
+            FeatureSet, PermissionMode, PermissionRule, PermissionRuleBehavior,
+            PermissionRuleSource, SessionId, ToolEffect,
+        };
+
+        let dir = unique_test_dir("tools-agent-bypass-wildcard-policy");
+        let policy_rule = PermissionRule::new(
+            "*",
+            PermissionRuleBehavior::Allow,
+            PermissionRuleSource::Policy,
+        );
+        let context = wonder_of_u_core::ToolContext {
+            session_id: SessionId::new(),
+            cwd: dir,
+            session_worktree: None,
+            permission_mode: PermissionMode::BypassPermissions,
+            additional_working_directories: vec![],
+            provider: None,
+            model: None,
+            permission_rules: vec![policy_rule],
+            features: FeatureSet::first_release(),
+            bash_session_store: None,
+            fork_context: None,
         };
         let tool = AgentTool;
         let result = futures::executor::block_on(tool.execute(
             context,
             wonder_of_u_core::ToolUseId::new(),
-            json!({ "prompt": "general task without fork mode" }),
+            json!({ "prompt": "task with wildcard policy" }),
         ))
-        .expect("non-fork agent call should succeed");
+        .expect("wildcard Policy allow should satisfy bypass guard");
 
-        let ToolEffect::LaunchAgentTask(ref spec) = result.effects[0] else {
-            panic!("expected LaunchAgentTask effect");
+        assert!(result.success);
+        assert!(matches!(result.effects[0], ToolEffect::LaunchAgentTask(_)));
+    }
+
+    /// execute() with a non-Policy allow rule (e.g. CliArg) does NOT satisfy
+    /// the bypass guard — only Policy-sourced rules count.
+    #[test]
+    fn agent_execute_rejects_bypass_mode_with_non_policy_allow() {
+        use wonder_of_u_core::{
+            FeatureSet, PermissionMode, PermissionRule, PermissionRuleBehavior,
+            PermissionRuleSource, SessionId,
         };
-        // fork_context must NOT be embedded for non-fork calls.
-        assert!(
-            spec.request.fork_context.is_none(),
-            "non-fork mode must not embed fork_context in the request"
+
+        let dir = unique_test_dir("tools-agent-bypass-cli-allow");
+        // CliArg is not a Policy — must not bypass the guard.
+        let cli_rule = PermissionRule::new(
+            "agent",
+            PermissionRuleBehavior::Allow,
+            PermissionRuleSource::CliArg,
         );
-        assert_eq!(result.metadata["fork_mode"], false);
+        let context = wonder_of_u_core::ToolContext {
+            session_id: SessionId::new(),
+            cwd: dir,
+            session_worktree: None,
+            permission_mode: PermissionMode::BypassPermissions,
+            additional_working_directories: vec![],
+            provider: None,
+            model: None,
+            permission_rules: vec![cli_rule],
+            features: FeatureSet::first_release(),
+            bash_session_store: None,
+            fork_context: None,
+        };
+        let tool = AgentTool;
+        let error = futures::executor::block_on(tool.execute(
+            context,
+            wonder_of_u_core::ToolUseId::new(),
+            json!({ "prompt": "bypass via cli-arg allow" }),
+        ))
+        .expect_err("CliArg allow must not satisfy bypass guard; only Policy does");
+
+        let msg = error.to_string();
+        assert!(
+            msg.contains("BypassPermissions cannot propagate"),
+            "error should reference bypass propagation; got: {msg}"
+        );
+    }
+
+    /// Non-bypass permission modes (Default, AcceptEdits, DontAsk) are never
+    /// subject to the guard and always proceed normally.
+    #[test]
+    fn agent_execute_non_bypass_modes_are_never_blocked() {
+        use wonder_of_u_core::{FeatureSet, PermissionMode, SessionId, ToolEffect};
+
+        for mode in [
+            PermissionMode::Default,
+            PermissionMode::AcceptEdits,
+            PermissionMode::DontAsk,
+        ] {
+            let dir = unique_test_dir("tools-agent-non-bypass-mode");
+            let context = wonder_of_u_core::ToolContext {
+                session_id: SessionId::new(),
+                cwd: dir,
+                session_worktree: None,
+                permission_mode: mode,
+                additional_working_directories: vec![],
+                provider: None,
+                model: None,
+                permission_rules: vec![],
+                features: FeatureSet::first_release(),
+                bash_session_store: None,
+                fork_context: None,
+            };
+            let tool = AgentTool;
+            let result = futures::executor::block_on(tool.execute(
+                context,
+                wonder_of_u_core::ToolUseId::new(),
+                json!({ "prompt": "task in normal mode" }),
+            ))
+            .unwrap_or_else(|e| panic!("mode {mode:?} should not be blocked; got: {e}"));
+
+            assert!(
+                result.success,
+                "mode {mode:?} should produce a success result"
+            );
+            assert!(
+                matches!(result.effects[0], ToolEffect::LaunchAgentTask(_)),
+                "mode {mode:?} should yield a LaunchAgentTask effect"
+            );
+        }
+    }
+
+    /// `isolation=worktree` is accepted in validate(); it no longer returns an
+    /// error for this valid value.
+    #[test]
+    fn agent_validation_accepts_isolation_worktree() {
+        let tool = AgentTool;
+        tool.validate_input(&json!({
+            "prompt": "refactor the module",
+            "isolation": "worktree",
+        }))
+        .expect("isolation=worktree should be accepted");
+    }
+
+    /// `isolation=remote` is still rejected because the Rust runtime has no
+    /// remote execution transport.
+    #[test]
+    fn agent_validation_rejects_isolation_remote() {
+        let tool = AgentTool;
+        let err = tool
+            .validate_input(&json!({
+                "prompt": "do something",
+                "isolation": "remote",
+            }))
+            .expect_err("isolation=remote should be rejected");
+        assert!(
+            err.to_string().to_lowercase().contains("remote"),
+            "error should mention 'remote'; got: {err}"
+        );
+    }
+
+    /// Unknown isolation values are rejected with a clear message listing
+    /// accepted options.
+    #[test]
+    fn agent_validation_rejects_unknown_isolation_value() {
+        let tool = AgentTool;
+        let err = tool
+            .validate_input(&json!({
+                "prompt": "do something",
+                "isolation": "container",
+            }))
+            .expect_err("unknown isolation should be rejected");
+        assert!(
+            err.to_string().contains("container"),
+            "error should echo the unknown value; got: {err}"
+        );
+    }
+
+    /// `mode=fork` combined with `isolation` is still rejected.
+    #[test]
+    fn agent_validation_rejects_fork_with_isolation() {
+        let tool = AgentTool;
+        let err = tool
+            .validate_input(&json!({
+                "prompt": "do something",
+                "mode": "fork",
+                "isolation": "worktree",
+            }))
+            .expect_err("fork + isolation should be rejected");
+        assert!(
+            err.to_string().contains("fork"),
+            "error should mention fork; got: {err}"
+        );
+    }
+
+    /// `build_fleet_member_request_with_catalog` sets `request.isolation` to
+    /// `WorktreeIsolation { mode: Worktree }` when `input.isolation="worktree"`.
+    #[test]
+    fn build_request_sets_isolation_for_worktree() {
+        let catalog = AgentCatalog::builtin();
+        let input = AgentInput {
+            prompt: "do some work".into(),
+            description: None,
+            subagent_type: None,
+            model: None,
+            run_in_background: None,
+            name: None,
+            team_name: None,
+            mode: None,
+            isolation: Some("worktree".into()),
+            cwd: None,
+            tools: None,
+            depends_on: None,
+        };
+        let request =
+            build_fleet_member_request_with_catalog(&input, &catalog).expect("build request");
+        let iso = request.isolation.expect("isolation should be set");
+        assert_eq!(
+            iso.mode,
+            WorktreeIsolationMode::Worktree,
+            "isolation mode should be Worktree"
+        );
+        assert!(iso.branch.is_none(), "branch override should be None");
+    }
+
+    /// When `input.isolation` is `None` the request carries no isolation.
+    #[test]
+    fn build_request_no_isolation_when_not_requested() {
+        let catalog = AgentCatalog::builtin();
+        let input = AgentInput {
+            prompt: "do some work".into(),
+            description: None,
+            subagent_type: None,
+            model: None,
+            run_in_background: None,
+            name: None,
+            team_name: None,
+            mode: None,
+            isolation: None,
+            cwd: None,
+            tools: None,
+            depends_on: None,
+        };
+        let request =
+            build_fleet_member_request_with_catalog(&input, &catalog).expect("build request");
+        assert!(
+            request.isolation.is_none(),
+            "isolation should be None when not requested"
+        );
+    }
+
+    // ── Tool filtering ────────────────────────────────────────────────────────
+
+    /// A request with no subagent_type and no caller tools should still carry
+    /// background-restricted denials (e.g. ask_user).
+    #[test]
+    fn request_always_denies_background_restricted_tools() {
+        let dir = unique_test_dir("tools-filter-background");
+        let catalog = AgentCatalog::builtin();
+        let request = build_fleet_member_request_with_catalog(
+            &AgentInput {
+                prompt: "do work".into(),
+                description: None,
+                subagent_type: None,
+                model: None,
+                run_in_background: None,
+                name: None,
+                team_name: None,
+                mode: None,
+                isolation: None,
+                cwd: None,
+                tools: None,
+                depends_on: None,
+            },
+            &catalog,
+        )
+        .expect("build");
+        // disallowed_tools must always include ask_user.
+        assert!(
+            request.disallowed_tools.contains(&"ask_user".to_owned()),
+            "ask_user must be in disallowed_tools; got: {:?}",
+            request.disallowed_tools
+        );
+        // When no tools are specified and the default def is unrestricted,
+        // allowed_tools should remain None.
+        assert_eq!(
+            request.allowed_tools, None,
+            "unrestricted default should yield None allowed_tools"
+        );
+        let _ = dir; // temp dir lifetime
+    }
+
+    /// Caller-supplied tools that include a background-restricted tool are silently
+    /// stripped from the effective allow-list.
+    #[test]
+    fn caller_supplied_ask_user_is_stripped() {
+        let dir = unique_test_dir("tools-filter-caller-ask-user");
+        let catalog = AgentCatalog::builtin();
+        let request = build_fleet_member_request_with_catalog(
+            &AgentInput {
+                prompt: "task".into(),
+                description: None,
+                subagent_type: None,
+                model: None,
+                run_in_background: None,
+                name: None,
+                team_name: None,
+                mode: None,
+                isolation: None,
+                cwd: None,
+                tools: Some(vec!["bash".to_owned(), "ask_user".to_owned()]),
+                depends_on: None,
+            },
+            &catalog,
+        )
+        .expect("build");
+        // ask_user must not appear in the effective allow-list.
+        if let Some(ref allowed) = request.allowed_tools {
+            assert!(
+                !allowed.contains(&"ask_user".to_owned()),
+                "ask_user must be stripped from allowed_tools; got: {allowed:?}"
+            );
+        }
+        assert!(
+            request.disallowed_tools.contains(&"ask_user".to_owned()),
+            "ask_user must be in disallowed_tools"
+        );
+        let _ = dir;
+    }
+
+    /// When a builtin definition restricts tools and the caller provides a
+    /// superset, the intersection is used (definition wins).
+    #[test]
+    fn definition_allowed_tools_intersect_with_caller_tools() {
+        let dir = unique_test_dir("tools-filter-intersection");
+        let catalog = AgentCatalog::builtin();
+
+        // "explore" definition: tools = [bash, file_read, glob, grep]
+        let request = build_fleet_member_request_with_catalog(
+            &AgentInput {
+                prompt: "explore the codebase".into(),
+                description: None,
+                subagent_type: Some("explore".into()),
+                model: None,
+                run_in_background: None,
+                name: None,
+                team_name: None,
+                mode: None,
+                isolation: None,
+                cwd: None,
+                // Caller asks for bash + file_write (file_write not in def).
+                tools: Some(vec!["bash".to_owned(), "file_write".to_owned()]),
+                depends_on: None,
+            },
+            &catalog,
+        )
+        .expect("build");
+
+        let allowed = request
+            .allowed_tools
+            .expect("explore must have an allow-list");
+        // Only bash is in both the definition's list and the caller's list.
+        assert!(
+            allowed.contains(&"bash".to_owned()),
+            "bash should be allowed: {allowed:?}"
+        );
+        assert!(
+            !allowed.contains(&"file_write".to_owned()),
+            "file_write not in explore definition; must be absent: {allowed:?}"
+        );
+        let _ = dir;
+    }
+
+    /// When a builtin definition has disallowed_tools, those tools are excluded
+    /// from the effective allow-list even if the caller requests them.
+    #[test]
+    fn definition_disallowed_tools_excluded_from_effective_list() {
+        let dir = unique_test_dir("tools-filter-disallowed");
+        let catalog = AgentCatalog::builtin();
+
+        // "explore" has disallowed_tools = [file_write, file_edit].
+        let request = build_fleet_member_request_with_catalog(
+            &AgentInput {
+                prompt: "explore".into(),
+                description: None,
+                subagent_type: Some("explore".into()),
+                model: None,
+                run_in_background: None,
+                name: None,
+                team_name: None,
+                mode: None,
+                isolation: None,
+                cwd: None,
+                tools: None,
+                depends_on: None,
+            },
+            &catalog,
+        )
+        .expect("build");
+
+        assert!(
+            request.disallowed_tools.contains(&"file_write".to_owned()),
+            "file_write must be in disallowed_tools: {:?}",
+            request.disallowed_tools
+        );
+        assert!(
+            request.disallowed_tools.contains(&"file_edit".to_owned()),
+            "file_edit must be in disallowed_tools: {:?}",
+            request.disallowed_tools
+        );
+        if let Some(ref allowed) = request.allowed_tools {
+            assert!(!allowed.contains(&"file_write".to_owned()));
+            assert!(!allowed.contains(&"file_edit".to_owned()));
+        }
+        let _ = dir;
+    }
+
+    /// A custom project-level definition with its own allowed-tools list is
+    /// respected and intersected with any caller-supplied tools.
+    #[test]
+    fn custom_definition_allowed_tools_applied() {
+        use std::fs;
+
+        let root = unique_test_dir("tools-filter-custom-def");
+        let agents_dir = root.join("agents");
+        fs::create_dir_all(&agents_dir).unwrap();
+        // Custom definition: only allows bash and file_read.
+        fs::write(
+            agents_dir.join("restricted-scout.md"),
+            "---\nname: Restricted Scout\ndescription: Limited tools\ntools:\n  - bash\n  - file_read\n---\n\nYou are restricted.",
+        ).unwrap();
+
+        let loader = wonder_of_u_core::agent_loader::AgentDefinitionLoader::new(&root);
+        let (catalog, _) = loader.build_catalog().unwrap();
+
+        let store_dir = unique_test_dir("tools-filter-custom-def-store");
+        let request = build_fleet_member_request_with_catalog(
+            &AgentInput {
+                prompt: "restricted task".into(),
+                description: None,
+                subagent_type: Some("restricted-scout".into()),
+                model: None,
+                run_in_background: None,
+                name: None,
+                team_name: None,
+                mode: None,
+                isolation: None,
+                cwd: None,
+                // Caller wants bash + file_write — but definition only allows bash + file_read.
+                tools: Some(vec!["bash".to_owned(), "file_write".to_owned()]),
+                depends_on: None,
+            },
+            &catalog,
+        )
+        .expect("build");
+
+        let allowed = request.allowed_tools.expect("allow-list must be set");
+        assert_eq!(
+            allowed,
+            vec!["bash"],
+            "only the intersection of def + caller should be allowed"
+        );
+        // file_write is not in the definition's allowed list; it must not appear.
+        assert!(!allowed.contains(&"file_write".to_owned()));
+        let _ = store_dir;
+    }
+
+    /// disallowed_tools on the queued request is preserved through FleetStore
+    /// round-trip (JSON serialisation + deserialization).
+    #[test]
+    fn disallowed_tools_round_trip_through_fleet_store() {
+        let dir = unique_test_dir("tools-filter-roundtrip");
+        let catalog = AgentCatalog::builtin();
+
+        let request_id = queue_fleet_member_request_with_catalog(
+            &dir,
+            &AgentInput {
+                prompt: "explore".into(),
+                description: None,
+                subagent_type: Some("explore".into()),
+                model: None,
+                run_in_background: None,
+                name: None,
+                team_name: None,
+                mode: None,
+                isolation: None,
+                cwd: None,
+                tools: None,
+                depends_on: None,
+            },
+            &catalog,
+        )
+        .expect("queue");
+
+        let store = FleetStore::new(&dir);
+        let loaded = store.read_pending_request(&request_id).expect("read back");
+        assert!(
+            loaded.disallowed_tools.contains(&"ask_user".to_owned()),
+            "ask_user must survive JSON round-trip: {:?}",
+            loaded.disallowed_tools
+        );
+        assert!(
+            loaded.disallowed_tools.contains(&"file_write".to_owned()),
+            "explore's file_write denial must survive round-trip: {:?}",
+            loaded.disallowed_tools
+        );
     }
 }

@@ -2566,6 +2566,62 @@ mod tests {
     }
 
     #[test]
+    fn slash_suggestions_with_argument_hints_render_in_display_column() {
+        // Entries whose `display` already contains a hint (e.g. `/fast [on|off]`)
+        // must be rendered verbatim in the left column of the overlay.
+        let view = ShellView {
+            title: "Session: Hints".into(),
+            messages: vec![MessageLineView::new("ready", MessageRole::Assistant)],
+            prompt: "/f".into(),
+            history_search: None,
+            status: "prompt | 1 messages".into(),
+            loading: false,
+            loading_verb: None,
+            spinner_frame: 0,
+            loading_elapsed_secs: 0,
+            loading_total_tokens: 0,
+            footer: "cwd=/workspace | ctrl-c interrupt".into(),
+            queued_panel: None,
+            task_panel: None,
+            dialog: None,
+            picker_view: None,
+            picker_list: None,
+            notifications: Vec::new(),
+            slash_suggestions: Some(SlashSuggestionsOverlay {
+                entries: vec![
+                    SlashSuggestionEntry {
+                        display: "/fast [on|off]".into(),
+                        description: "fast-mode model remapping".into(),
+                        selected: true,
+                    },
+                    SlashSuggestionEntry {
+                        display: "/effort [low|medium|high|max|auto]".into(),
+                        description: "active effort level".into(),
+                        selected: false,
+                    },
+                ],
+            }),
+            global_search: None,
+            scroll: TranscriptScrollView::default(),
+            sidebar: None,
+            prompt_warning: None,
+        };
+
+        let frame = render_snapshot(64, 12, &view, &Theme::default());
+        let text = frame.to_plain_text();
+
+        // Argument hints must appear in the rendered overlay.
+        assert!(
+            text.contains("/fast [on|off]"),
+            "hint for /fast not found in:\n{text}"
+        );
+        assert!(
+            text.contains("/effort [low|medium|high|max|auto]"),
+            "hint for /effort not found in:\n{text}"
+        );
+    }
+
+    #[test]
     fn transcript_snapshot_keeps_latest_visible_lines() {
         // height=9, CHROME_HEIGHT=1 → available=8, prompt_height=3 (boxed),
         // messages_height=5.  With 8 messages only the tail 5 are visible, so
