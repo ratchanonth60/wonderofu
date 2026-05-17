@@ -9,6 +9,8 @@
 pub mod agent_definition;
 /// Filesystem loader for project-level agent definitions.
 pub mod agent_loader;
+/// Runtime name → task-id registry for local SendMessage routing.
+pub mod agent_name_registry;
 /// Provides app support
 pub mod app;
 /// Provides command support
@@ -84,6 +86,8 @@ pub use agent_definition::{
     DefinitionParseError, RawDefinitionFields, parse_json_definition, parse_markdown_frontmatter,
     render_definition_md,
 };
+/// Re-exports items from `agent_name_registry`
+pub use agent_name_registry::{AgentNameRegistry, NameConflictError, RegisterOutcome};
 /// Re-exports items from `app`
 pub use app::{
     AgentRuntime, AgentTaskState, AppState, CostState, InputMode, PendingLocalToolCall,
