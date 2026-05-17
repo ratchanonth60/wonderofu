@@ -2486,6 +2486,154 @@ fn controller_routes_plan_mode_slash_commands() {
 }
 
 #[test]
+fn controller_plan_exit_restores_accept_edits_origin() {
+    // Entering plan mode from AcceptEdits and exiting should restore AcceptEdits,
+    // not fall back to Default.
+    let dir = unique_test_dir("tui-plan-restore-accept-edits");
+    let registry = commands::registry(Some(dir.clone())).expect("registry");
+    let ctx = CommandContext {
+        permission_mode: PermissionMode::AcceptEdits,
+        ..test_context(&dir)
+    };
+    let mut controller = TuiController::new(
+        ctx,
+        &registry,
+        Some(dir.as_path()),
+        TuiLaunchOptions { session_id: None },
+    )
+    .expect("controller");
+
+    assert_eq!(
+        controller.state.permission_mode,
+        PermissionMode::AcceptEdits
+    );
+
+    controller
+        .execute_slash_command("/plan")
+        .expect("enter plan mode");
+    assert_eq!(controller.state.permission_mode, PermissionMode::Plan);
+    // Controller should have saved the pre-plan origin.
+    assert_eq!(
+        controller.pre_plan_permission_mode,
+        Some(PermissionMode::AcceptEdits)
+    );
+
+    controller
+        .execute_slash_command("/plan exit")
+        .expect("exit plan mode");
+    // Must restore AcceptEdits, not Default.
+    assert_eq!(
+        controller.state.permission_mode,
+        PermissionMode::AcceptEdits,
+        "exiting plan mode should restore the pre-plan AcceptEdits mode"
+    );
+    // Slot must be cleared after restoration.
+    assert_eq!(controller.pre_plan_permission_mode, None);
+}
+
+#[test]
+fn controller_plan_exit_restores_bypass_permissions_origin() {
+    // BypassPermissions is a coordinator/passthrough mode — must survive the
+    // plan-mode round-trip without downgrading to Default.
+    let dir = unique_test_dir("tui-plan-restore-bypass");
+    let registry = commands::registry(Some(dir.clone())).expect("registry");
+    let ctx = CommandContext {
+        permission_mode: PermissionMode::BypassPermissions,
+        ..test_context(&dir)
+    };
+    let mut controller = TuiController::new(
+        ctx,
+        &registry,
+        Some(dir.as_path()),
+        TuiLaunchOptions { session_id: None },
+    )
+    .expect("controller");
+
+    controller
+        .execute_slash_command("/plan")
+        .expect("enter plan mode");
+    assert_eq!(controller.state.permission_mode, PermissionMode::Plan);
+    assert_eq!(
+        controller.pre_plan_permission_mode,
+        Some(PermissionMode::BypassPermissions)
+    );
+
+    controller
+        .execute_slash_command("/plan exit")
+        .expect("exit plan mode");
+    assert_eq!(
+        controller.state.permission_mode,
+        PermissionMode::BypassPermissions,
+        "exiting plan mode should restore BypassPermissions, not Default"
+    );
+    assert_eq!(controller.pre_plan_permission_mode, None);
+}
+
+#[test]
+fn controller_plan_exit_from_default_restores_default() {
+    // Entering plan from Default and exiting must restore Default (the common
+    // case; also validates no regression).
+    let dir = unique_test_dir("tui-plan-restore-default");
+    let registry = commands::registry(Some(dir.clone())).expect("registry");
+    let mut controller = TuiController::new(
+        test_context(&dir),
+        &registry,
+        Some(dir.as_path()),
+        TuiLaunchOptions { session_id: None },
+    )
+    .expect("controller");
+
+    controller
+        .execute_slash_command("/plan")
+        .expect("enter plan mode");
+    assert_eq!(controller.state.permission_mode, PermissionMode::Plan);
+
+    controller
+        .execute_slash_command("/plan exit")
+        .expect("exit plan mode");
+    assert_eq!(
+        controller.state.permission_mode,
+        PermissionMode::Default,
+        "exiting plan mode entered from Default should restore Default"
+    );
+    assert_eq!(controller.pre_plan_permission_mode, None);
+}
+
+#[test]
+fn controller_pre_plan_slot_cleared_on_unrelated_mode_change() {
+    // If the user changes permission mode via a non-plan command while in plan
+    // mode the pre-plan slot should be cleared so we don't carry stale state.
+    let dir = unique_test_dir("tui-plan-slot-clear");
+    let registry = commands::registry(Some(dir.clone())).expect("registry");
+    let mut controller = TuiController::new(
+        test_context(&dir),
+        &registry,
+        Some(dir.as_path()),
+        TuiLaunchOptions { session_id: None },
+    )
+    .expect("controller");
+
+    controller
+        .execute_slash_command("/plan")
+        .expect("enter plan mode");
+    assert_eq!(
+        controller.pre_plan_permission_mode,
+        Some(PermissionMode::Default)
+    );
+
+    // Directly set a non-plan permission mode (simulates `/permissions` command
+    // changing mode outside the plan flow).
+    controller
+        .execute_slash_command("/permissions accept-edits")
+        .expect("change mode mid-session");
+    // AcceptEdits is not Plan, so the pre-plan slot should have been cleared.
+    assert_eq!(
+        controller.pre_plan_permission_mode, None,
+        "pre_plan slot must be cleared when leaving plan mode via an unrelated mode change"
+    );
+}
+
+#[test]
 fn controller_executes_queued_plan_prompt() {
     let dir = unique_test_dir("tui-slash-plan-prompt");
     let (api_base, handle) = spawn_json_sequence_server(
