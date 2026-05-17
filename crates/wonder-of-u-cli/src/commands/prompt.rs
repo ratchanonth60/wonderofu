@@ -43,6 +43,13 @@ pub(crate) struct PromptExecutionInput {
     pub temperature: Option<f32>,
     pub tool_use: bool,
     pub allowed_tools: Option<BTreeSet<String>>,
+    /// Tool names that must be excluded from the provider tool loop.
+    ///
+    /// Populated from the `--disallowed-tools` CLI flag, which is injected by
+    /// the fleet dispatcher from `FleetMemberRequest::disallowed_tools`.  Any
+    /// tool in this set is removed from the effective `allowed_tools` before
+    /// the tool loop executes.
+    pub disallowed_tools: BTreeSet<String>,
     pub prompt: String,
     pub session_title: String,
     pub entrypoint: &'static str,
@@ -74,6 +81,11 @@ pub(crate) struct PromptTurnInput {
     pub temperature: Option<f32>,
     pub tool_use: bool,
     pub allowed_tools: Option<BTreeSet<String>>,
+    /// Tool names excluded from the provider tool loop.
+    ///
+    /// Enforced by subtracting from `allowed_tools` (or from the full registry
+    /// when `allowed_tools` is `None`) before each round of the tool loop.
+    pub disallowed_tools: BTreeSet<String>,
     pub user_prompt: String,
     pub request_prompt: String,
 }
@@ -132,6 +144,13 @@ struct PromptArgs {
     tools: bool,
     #[arg(long, value_delimiter = ',')]
     allowed_tools: Vec<String>,
+    /// Comma-separated list of tool names to deny for this prompt run.
+    ///
+    /// Populated by `fleet dispatch` / `fleet reconcile` when the agent
+    /// definition specifies `disallowed_tools` so that enforcement is
+    /// carried through to the child subprocess, not only computed.
+    #[arg(long, value_delimiter = ',')]
+    disallowed_tools: Vec<String>,
     #[arg(trailing_var_arg = true, allow_hyphen_values = true, num_args = 1..)]
     prompt: Vec<String>,
 }
@@ -149,6 +168,7 @@ impl Command for PromptCommand {
     ) -> Result<CommandOutput> {
         let args = parse_command_args::<PromptArgs>("prompt", &invocation)?;
         let allowed_tools = parse_allowed_tools(&args.allowed_tools)?;
+        let disallowed_tools = parse_tool_name_set(&args.disallowed_tools)?;
         if allowed_tools.is_some() && !args.tools {
             return Err(WonderError::validation(
                 "--allowed-tools requires --tools so the provider tool loop is enabled",
@@ -169,6 +189,7 @@ impl Command for PromptCommand {
                 temperature: args.temperature,
                 tool_use: args.tools,
                 allowed_tools,
+                disallowed_tools,
                 session_title: prompt_title(&prompt),
                 prompt,
                 entrypoint: "prompt",
@@ -204,6 +225,7 @@ pub(crate) fn execute_prompt_run(
             temperature: input.temperature,
             tool_use: input.tool_use,
             allowed_tools: input.allowed_tools,
+            disallowed_tools: input.disallowed_tools,
             user_prompt: input.prompt.clone(),
             request_prompt: input.prompt,
         },
@@ -467,6 +489,23 @@ fn parse_allowed_tools(tools: &[String]) -> Result<Option<BTreeSet<String>>> {
     Ok(Some(allowed))
 }
 
+/// Parses a flat list of tool name strings into a [`BTreeSet<String>`].
+///
+/// Unlike [`parse_allowed_tools`] this never returns `None` — an empty input
+/// yields an empty set.  Names are trimmed and lowercased; blank entries are
+/// rejected with a validation error.
+fn parse_tool_name_set(tools: &[String]) -> Result<BTreeSet<String>> {
+    let mut set = BTreeSet::new();
+    for tool in tools {
+        let trimmed = tool.trim();
+        if trimmed.is_empty() {
+            return Err(WonderError::validation("tool names must not be empty"));
+        }
+        set.insert(trimmed.to_ascii_lowercase());
+    }
+    Ok(set)
+}
+
 pub(crate) fn load_or_create_state(
     context: &CommandContext,
     storage_dir: Option<&Path>,
@@ -682,10 +721,21 @@ fn execute_prompt_tool_loop(
         max_output_tokens,
         temperature,
         allowed_tools,
+        disallowed_tools,
         user_prompt,
         request_prompt,
         ..
     } = input;
+
+    // When disallowed_tools is non-empty and allowed_tools is Some, subtract the
+    // denied set eagerly.  When allowed_tools is None (all tools), we instead
+    // filter the resolved spec list below so we don't have to enumerate the full
+    // registry just to produce a subtracted allowlist.
+    let effective_allowed: Option<BTreeSet<String>> = if !disallowed_tools.is_empty() {
+        allowed_tools.map(|a| a.difference(&disallowed_tools).cloned().collect())
+    } else {
+        allowed_tools
+    };
     let registry = match storage_dir {
         Some(root) => builtin_registry_with_mcp_catalog(root),
         // No persistent storage: fall back to built-ins only.
@@ -705,9 +755,12 @@ fn execute_prompt_tool_loop(
         let provider_tools = provider_tool_specs(
             &registry,
             &tool_context(state, system_prompt.as_deref()),
-            allowed_tools.as_ref(),
+            effective_allowed.as_ref(),
         )
         .into_iter()
+        // When the original allowed_tools was None (all tools), disallowed_tools
+        // is enforced here by name-filtering the fully-resolved spec list.
+        .filter(|spec| !disallowed_tools.contains(&spec.name))
         .map(tool_spec_to_provider_tool)
         .collect::<Vec<_>>();
         let response = runtime.complete_with_tool_use(

@@ -4,11 +4,11 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use wonder_of_u_core::{
-    AgentCatalog, AgentDefinitionSource, AgentLaunchSpec, FeatureFlag, FleetMemberRequest,
-    PermissionMode, PermissionRuleBehavior, PermissionRuleSource, RemoteTaskState, RemoteTaskType,
-    Result, TaskId, Tool, ToolContext, ToolEffect, ToolKind, ToolResult, ToolSchema, ToolSpec,
-    ToolUseId, WONDER_OF_U_FORK_DEPTH_ENV, WonderError, WorktreeIsolation, WorktreeIsolationMode,
-    agent_loader::AgentDefinitionLoader, get_git_root,
+    AgentCatalog, AgentDefinitionSource, AgentLaunchSpec, AgentToolFilter, FeatureFlag,
+    FleetMemberRequest, PermissionMode, PermissionRuleBehavior, PermissionRuleSource,
+    RemoteTaskState, RemoteTaskType, Result, TaskId, Tool, ToolContext, ToolEffect, ToolKind,
+    ToolResult, ToolSchema, ToolSpec, ToolUseId, WONDER_OF_U_FORK_DEPTH_ENV, WonderError,
+    WorktreeIsolation, WorktreeIsolationMode, agent_loader::AgentDefinitionLoader, get_git_root,
 };
 use wonder_of_u_storage::FleetStore;
 
@@ -232,6 +232,11 @@ impl Tool for AgentTool {
                      fork context was not populated in this runtime (no active prompt or TUI session)",
                 ));
             }
+            // Validate the fork context contents eagerly so the error is caught
+            // at queue time (here) rather than only at dispatch time.
+            if let Some(ref ctx) = context.fork_context {
+                ctx.validate()?;
+            }
         }
 
         // Bypass-propagation guard: prevent BypassPermissions from silently
@@ -387,14 +392,6 @@ pub fn build_fleet_member_request_with_catalog(
         }
     }
 
-    // Forward the caller-specified tool list so the sub-agent is constrained
-    // to the same (or a subset of) tools the parent agent was allowed.
-    if let Some(tools) = input.tools.clone() {
-        if !tools.is_empty() {
-            request.allowed_tools = Some(tools);
-        }
-    }
-
     // Forward dependency list for scheduling.
     request.depends_on = input.depends_on.clone().unwrap_or_default();
 
@@ -423,6 +420,38 @@ pub fn build_fleet_member_request_with_catalog(
         if request.model.is_none() && def.source == AgentDefinitionSource::Builtin {
             request.model = def.model.clone();
         }
+
+        // Apply the agent definition's tool filter.
+        //
+        // The filter intersects the definition's allow-list with any caller-
+        // supplied tools, appends background-restricted denials, and removes
+        // denied tools from the effective allow-list.  This replaces the
+        // previous behaviour of blindly forwarding `input.tools` without
+        // applying the definition's own constraints.
+        let caller_tools = input.tools.as_deref().filter(|t| !t.is_empty());
+        let filter = AgentToolFilter::compute(def, caller_tools);
+        request.allowed_tools = filter.allowed;
+        request.disallowed_tools = filter.disallowed;
+    } else {
+        // No definition resolved (should not happen with a well-formed catalog,
+        // but handle defensively). Apply background restrictions and honour the
+        // caller's tool list as-is.
+        let caller_tools = input.tools.as_deref().filter(|t| !t.is_empty());
+        if let Some(tools) = caller_tools {
+            // Remove background-restricted tools from the caller's list.
+            let filtered: Vec<String> = tools
+                .iter()
+                .filter(|t| !wonder_of_u_core::BACKGROUND_RESTRICTED_TOOLS.contains(&t.as_str()))
+                .cloned()
+                .collect();
+            if !filtered.is_empty() {
+                request.allowed_tools = Some(filtered);
+            }
+        }
+        request.disallowed_tools = wonder_of_u_core::BACKGROUND_RESTRICTED_TOOLS
+            .iter()
+            .map(|&s| s.to_owned())
+            .collect();
     }
 
     Ok(request)
@@ -1630,6 +1659,263 @@ mod tests {
         assert!(
             request.isolation.is_none(),
             "isolation should be None when not requested"
+        );
+    }
+
+    // ── Tool filtering ────────────────────────────────────────────────────────
+
+    /// A request with no subagent_type and no caller tools should still carry
+    /// background-restricted denials (e.g. ask_user).
+    #[test]
+    fn request_always_denies_background_restricted_tools() {
+        let dir = unique_test_dir("tools-filter-background");
+        let catalog = AgentCatalog::builtin();
+        let request = build_fleet_member_request_with_catalog(
+            &AgentInput {
+                prompt: "do work".into(),
+                description: None,
+                subagent_type: None,
+                model: None,
+                run_in_background: None,
+                name: None,
+                team_name: None,
+                mode: None,
+                isolation: None,
+                cwd: None,
+                tools: None,
+                depends_on: None,
+            },
+            &catalog,
+        )
+        .expect("build");
+        // disallowed_tools must always include ask_user.
+        assert!(
+            request.disallowed_tools.contains(&"ask_user".to_owned()),
+            "ask_user must be in disallowed_tools; got: {:?}",
+            request.disallowed_tools
+        );
+        // When no tools are specified and the default def is unrestricted,
+        // allowed_tools should remain None.
+        assert_eq!(
+            request.allowed_tools, None,
+            "unrestricted default should yield None allowed_tools"
+        );
+        let _ = dir; // temp dir lifetime
+    }
+
+    /// Caller-supplied tools that include a background-restricted tool are silently
+    /// stripped from the effective allow-list.
+    #[test]
+    fn caller_supplied_ask_user_is_stripped() {
+        let dir = unique_test_dir("tools-filter-caller-ask-user");
+        let catalog = AgentCatalog::builtin();
+        let request = build_fleet_member_request_with_catalog(
+            &AgentInput {
+                prompt: "task".into(),
+                description: None,
+                subagent_type: None,
+                model: None,
+                run_in_background: None,
+                name: None,
+                team_name: None,
+                mode: None,
+                isolation: None,
+                cwd: None,
+                tools: Some(vec!["bash".to_owned(), "ask_user".to_owned()]),
+                depends_on: None,
+            },
+            &catalog,
+        )
+        .expect("build");
+        // ask_user must not appear in the effective allow-list.
+        if let Some(ref allowed) = request.allowed_tools {
+            assert!(
+                !allowed.contains(&"ask_user".to_owned()),
+                "ask_user must be stripped from allowed_tools; got: {allowed:?}"
+            );
+        }
+        assert!(
+            request.disallowed_tools.contains(&"ask_user".to_owned()),
+            "ask_user must be in disallowed_tools"
+        );
+        let _ = dir;
+    }
+
+    /// When a builtin definition restricts tools and the caller provides a
+    /// superset, the intersection is used (definition wins).
+    #[test]
+    fn definition_allowed_tools_intersect_with_caller_tools() {
+        let dir = unique_test_dir("tools-filter-intersection");
+        let catalog = AgentCatalog::builtin();
+
+        // "explore" definition: tools = [bash, file_read, glob, grep]
+        let request = build_fleet_member_request_with_catalog(
+            &AgentInput {
+                prompt: "explore the codebase".into(),
+                description: None,
+                subagent_type: Some("explore".into()),
+                model: None,
+                run_in_background: None,
+                name: None,
+                team_name: None,
+                mode: None,
+                isolation: None,
+                cwd: None,
+                // Caller asks for bash + file_write (file_write not in def).
+                tools: Some(vec!["bash".to_owned(), "file_write".to_owned()]),
+                depends_on: None,
+            },
+            &catalog,
+        )
+        .expect("build");
+
+        let allowed = request
+            .allowed_tools
+            .expect("explore must have an allow-list");
+        // Only bash is in both the definition's list and the caller's list.
+        assert!(
+            allowed.contains(&"bash".to_owned()),
+            "bash should be allowed: {allowed:?}"
+        );
+        assert!(
+            !allowed.contains(&"file_write".to_owned()),
+            "file_write not in explore definition; must be absent: {allowed:?}"
+        );
+        let _ = dir;
+    }
+
+    /// When a builtin definition has disallowed_tools, those tools are excluded
+    /// from the effective allow-list even if the caller requests them.
+    #[test]
+    fn definition_disallowed_tools_excluded_from_effective_list() {
+        let dir = unique_test_dir("tools-filter-disallowed");
+        let catalog = AgentCatalog::builtin();
+
+        // "explore" has disallowed_tools = [file_write, file_edit].
+        let request = build_fleet_member_request_with_catalog(
+            &AgentInput {
+                prompt: "explore".into(),
+                description: None,
+                subagent_type: Some("explore".into()),
+                model: None,
+                run_in_background: None,
+                name: None,
+                team_name: None,
+                mode: None,
+                isolation: None,
+                cwd: None,
+                tools: None,
+                depends_on: None,
+            },
+            &catalog,
+        )
+        .expect("build");
+
+        assert!(
+            request.disallowed_tools.contains(&"file_write".to_owned()),
+            "file_write must be in disallowed_tools: {:?}",
+            request.disallowed_tools
+        );
+        assert!(
+            request.disallowed_tools.contains(&"file_edit".to_owned()),
+            "file_edit must be in disallowed_tools: {:?}",
+            request.disallowed_tools
+        );
+        if let Some(ref allowed) = request.allowed_tools {
+            assert!(!allowed.contains(&"file_write".to_owned()));
+            assert!(!allowed.contains(&"file_edit".to_owned()));
+        }
+        let _ = dir;
+    }
+
+    /// A custom project-level definition with its own allowed-tools list is
+    /// respected and intersected with any caller-supplied tools.
+    #[test]
+    fn custom_definition_allowed_tools_applied() {
+        use std::fs;
+
+        let root = unique_test_dir("tools-filter-custom-def");
+        let agents_dir = root.join("agents");
+        fs::create_dir_all(&agents_dir).unwrap();
+        // Custom definition: only allows bash and file_read.
+        fs::write(
+            agents_dir.join("restricted-scout.md"),
+            "---\nname: Restricted Scout\ndescription: Limited tools\ntools:\n  - bash\n  - file_read\n---\n\nYou are restricted.",
+        ).unwrap();
+
+        let loader = wonder_of_u_core::agent_loader::AgentDefinitionLoader::new(&root);
+        let (catalog, _) = loader.build_catalog().unwrap();
+
+        let store_dir = unique_test_dir("tools-filter-custom-def-store");
+        let request = build_fleet_member_request_with_catalog(
+            &AgentInput {
+                prompt: "restricted task".into(),
+                description: None,
+                subagent_type: Some("restricted-scout".into()),
+                model: None,
+                run_in_background: None,
+                name: None,
+                team_name: None,
+                mode: None,
+                isolation: None,
+                cwd: None,
+                // Caller wants bash + file_write — but definition only allows bash + file_read.
+                tools: Some(vec!["bash".to_owned(), "file_write".to_owned()]),
+                depends_on: None,
+            },
+            &catalog,
+        )
+        .expect("build");
+
+        let allowed = request.allowed_tools.expect("allow-list must be set");
+        assert_eq!(
+            allowed,
+            vec!["bash"],
+            "only the intersection of def + caller should be allowed"
+        );
+        // file_write is not in the definition's allowed list; it must not appear.
+        assert!(!allowed.contains(&"file_write".to_owned()));
+        let _ = store_dir;
+    }
+
+    /// disallowed_tools on the queued request is preserved through FleetStore
+    /// round-trip (JSON serialisation + deserialization).
+    #[test]
+    fn disallowed_tools_round_trip_through_fleet_store() {
+        let dir = unique_test_dir("tools-filter-roundtrip");
+        let catalog = AgentCatalog::builtin();
+
+        let request_id = queue_fleet_member_request_with_catalog(
+            &dir,
+            &AgentInput {
+                prompt: "explore".into(),
+                description: None,
+                subagent_type: Some("explore".into()),
+                model: None,
+                run_in_background: None,
+                name: None,
+                team_name: None,
+                mode: None,
+                isolation: None,
+                cwd: None,
+                tools: None,
+                depends_on: None,
+            },
+            &catalog,
+        )
+        .expect("queue");
+
+        let store = FleetStore::new(&dir);
+        let loaded = store.read_pending_request(&request_id).expect("read back");
+        assert!(
+            loaded.disallowed_tools.contains(&"ask_user".to_owned()),
+            "ask_user must survive JSON round-trip: {:?}",
+            loaded.disallowed_tools
+        );
+        assert!(
+            loaded.disallowed_tools.contains(&"file_write".to_owned()),
+            "explore's file_write denial must survive round-trip: {:?}",
+            loaded.disallowed_tools
         );
     }
 }

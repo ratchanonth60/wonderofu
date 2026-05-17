@@ -80,9 +80,9 @@ pub mod yaml;
 
 /// Re-exports items from `agent_definition`
 pub use agent_definition::{
-    AgentCatalog, AgentDefinition, AgentDefinitionSnapshot, AgentDefinitionSource,
-    DefinitionParseError, RawDefinitionFields, parse_json_definition, parse_markdown_frontmatter,
-    render_definition_md,
+    AgentCatalog, AgentDefinition, AgentDefinitionSnapshot, AgentDefinitionSource, AgentToolFilter,
+    BACKGROUND_RESTRICTED_TOOLS, DefinitionParseError, RawDefinitionFields, parse_json_definition,
+    parse_markdown_frontmatter, render_definition_md,
 };
 /// Re-exports items from `app`
 pub use app::{
@@ -121,7 +121,7 @@ pub use fingerprint::{fingerprint_json, fingerprint_str};
 pub use fleet::{
     AGENT_TASK_RESULT_SCHEMA_VERSION, AgentTaskResult, FLEET_SCHEMA_VERSION,
     FLEET_STEERING_SCHEMA_VERSION, FORK_SYSTEM_PROMPT_CAP_BYTES, FleetMemberRequest, FleetRunState,
-    FleetRunStatus, FleetSteeringMessage, ForkContextSnapshot, SteeringSource,
+    FleetRunStatus, FleetSteeringMessage, ForkContextSnapshot, MAX_FORK_DEPTH, SteeringSource,
     WONDER_OF_U_FORK_DEPTH_ENV, WorktreeIsolation, WorktreeIsolationMode,
 };
 /// Re-exports items from `fleet_roles`

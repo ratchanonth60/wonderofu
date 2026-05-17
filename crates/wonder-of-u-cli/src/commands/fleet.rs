@@ -506,6 +506,7 @@ impl FleetCommand {
                 allowed_tools: resolved_role
                     .as_ref()
                     .and_then(role_allowed_tools_for_launch),
+                disallowed_tools: vec![],
                 worktree_branch,
                 worktree_path,
                 worktree_head_commit,
@@ -1516,6 +1517,9 @@ fn request_to_agent_launch(
 
     // Compose fork-lite child system prompt when the request carries a fork context.
     let (fork_system_prompt, fork_depth) = if let Some(ref ctx) = req.fork_context {
+        // Validate fork context before dispatch — reject invalid/phantom forks early.
+        ctx.validate()?;
+
         let mut parts: Vec<String> = Vec::new();
         if let Some(ref parent_prompt) = ctx.parent_system_prompt {
             parts.push(parent_prompt.clone());
@@ -1560,6 +1564,7 @@ fn request_to_agent_launch(
         fleet_request_id: Some(req.id.clone()),
         parent_task_id: req.parent_task_id,
         allowed_tools,
+        disallowed_tools: req.disallowed_tools.clone(),
         worktree_branch,
         worktree_path,
         worktree_head_commit,
