@@ -329,7 +329,7 @@ impl AgentDefinitionLoader {
             }
 
             // Build definition.
-            let def = match AgentDefinition::from_raw(raw, source, &content) {
+            let mut def = match AgentDefinition::from_raw(raw, source, &content) {
                 Ok(d) => d,
                 Err(e) => {
                     result.warnings.push(LoadWarning::ParseError {
@@ -339,6 +339,8 @@ impl AgentDefinitionLoader {
                     continue;
                 }
             };
+            // Attach the source path so management commands can locate the file.
+            def.source_path = Some(path.clone());
 
             // Within a single directory, first file for an id wins.
             if seen_ids.insert(def.id.clone()) {

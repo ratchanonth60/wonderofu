@@ -80,6 +80,7 @@ pub mod yaml;
 pub use agent_definition::{
     AgentCatalog, AgentDefinition, AgentDefinitionSnapshot, AgentDefinitionSource,
     DefinitionParseError, RawDefinitionFields, parse_json_definition, parse_markdown_frontmatter,
+    render_definition_md,
 };
 /// Re-exports items from `app`
 pub use app::{
