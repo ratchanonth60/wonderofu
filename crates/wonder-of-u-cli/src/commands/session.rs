@@ -194,7 +194,8 @@ impl ResumeCommand {
             "resume",
             "Resume a persisted session in the live shell when interactive, or show a summary",
             CommandKind::ResumeEntrypoint,
-        );
+        )
+        .with_argument_hint("[conversation id or search term]");
         spec.required_features = BTreeSet::from([FeatureFlag::SessionPersistence]);
         spec
     }
@@ -986,7 +987,7 @@ fn message_summary(message: &MessageEnvelope) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{CompactCommand, ViewAction, summarized_messages_summary};
+    use super::{CompactCommand, ResumeCommand, ViewAction, summarized_messages_summary};
     use wonder_of_u_core::CommandSpec;
 
     // ── CompactCommand spec ──────────────────────────────────────────────────
@@ -1063,6 +1064,16 @@ mod tests {
         assert!(
             summary.contains("Summarization instructions: remove tool results"),
             "clear with instructions must include them; got: {summary}"
+        );
+    }
+
+    #[test]
+    fn resume_command_spec_carries_argument_hint() {
+        let spec = ResumeCommand::command_spec();
+        assert_eq!(
+            spec.argument_hint.as_deref(),
+            Some("[conversation id or search term]"),
+            "/resume spec should carry the argument hint"
         );
     }
 }

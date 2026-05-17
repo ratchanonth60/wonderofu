@@ -77,6 +77,7 @@ impl ColorCommand {
             "Set the prompt bar color for this session",
             CommandKind::Local,
         )
+        .with_argument_hint("<color|default>")
     }
 }
 
@@ -147,6 +148,7 @@ impl FastCommand {
             "Show or change fast-mode model remapping",
             CommandKind::Local,
         )
+        .with_argument_hint("[on|off]")
     }
 }
 
@@ -168,6 +170,7 @@ impl EffortCommand {
             "Show or change the active effort level",
             CommandKind::Local,
         )
+        .with_argument_hint("[low|medium|high|max|auto]")
     }
 }
 
@@ -1289,5 +1292,35 @@ mod tests {
         assert_eq!(settings.effort_level.as_deref(), Some("max"));
         assert!(rendered.contains("effort_level=max"));
         assert!(rendered.contains("persisted=true"));
+    }
+
+    #[test]
+    fn color_command_spec_carries_argument_hint() {
+        let spec = super::ColorCommand::command_spec();
+        assert_eq!(
+            spec.argument_hint.as_deref(),
+            Some("<color|default>"),
+            "/color spec should carry the argument hint"
+        );
+    }
+
+    #[test]
+    fn fast_command_spec_carries_argument_hint() {
+        let spec = super::FastCommand::command_spec();
+        assert_eq!(
+            spec.argument_hint.as_deref(),
+            Some("[on|off]"),
+            "/fast spec should carry the argument hint"
+        );
+    }
+
+    #[test]
+    fn effort_command_spec_carries_argument_hint() {
+        let spec = super::EffortCommand::command_spec();
+        assert_eq!(
+            spec.argument_hint.as_deref(),
+            Some("[low|medium|high|max|auto]"),
+            "/effort spec should carry the argument hint"
+        );
     }
 }

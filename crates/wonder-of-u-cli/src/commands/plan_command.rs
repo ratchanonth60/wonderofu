@@ -32,7 +32,8 @@ impl PlanCommand {
             "plan",
             "Show plan-mode readiness and current permission mode",
             CommandKind::Local,
-        );
+        )
+        .with_argument_hint("[open|<description>]");
         spec.required_features = BTreeSet::from([FeatureFlag::Permissions]);
         spec
     }
@@ -283,7 +284,9 @@ mod tests {
     use wonder_of_u_core::PermissionMode;
     use wonder_of_u_test_support::unique_test_dir;
 
-    use super::{PlanAction, parse_plan_action, render_plan_display, resolve_plan_path};
+    use super::{
+        PlanAction, PlanCommand, parse_plan_action, render_plan_display, resolve_plan_path,
+    };
 
     #[test]
     fn plan_defaults_to_enter_outside_plan_mode_and_show_inside() {
@@ -324,5 +327,15 @@ mod tests {
         assert!(rendered.contains("plan_exists=true"));
         assert!(rendered.contains("Current Plan"));
         assert!(rendered.contains("- keep `/plan` parity"));
+    }
+
+    #[test]
+    fn plan_command_spec_carries_argument_hint() {
+        let spec = PlanCommand::command_spec();
+        assert_eq!(
+            spec.argument_hint.as_deref(),
+            Some("[open|<description>]"),
+            "/plan spec should carry the argument hint"
+        );
     }
 }

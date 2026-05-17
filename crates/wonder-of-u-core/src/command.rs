@@ -69,6 +69,13 @@ pub struct CommandSpec {
     /// Stores the interactive only
     #[serde(default)]
     pub interactive_only: bool,
+    /// Optional argument hint shown next to the command name in slash-command
+    /// autocomplete (e.g. `[on|off]` or `<color|default>`).
+    ///
+    /// `None` means no hint is rendered; the field is omitted from serialised
+    /// output when absent so existing stored specs remain valid.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub argument_hint: Option<String>,
 }
 
 impl CommandSpec {
@@ -85,7 +92,26 @@ impl CommandSpec {
             hidden: false,
             requires_auth: false,
             interactive_only: false,
+            argument_hint: None,
         }
+    }
+
+    /// Sets the argument hint shown next to the command name in slash-command
+    /// autocomplete (e.g. `[on|off]` or `<color|default>`).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use wonder_of_u_core::{CommandSpec, CommandKind};
+    ///
+    /// let spec = CommandSpec::new("fast", "Toggle fast mode", CommandKind::Local)
+    ///     .with_argument_hint("[on|off]");
+    /// assert_eq!(spec.argument_hint.as_deref(), Some("[on|off]"));
+    /// ```
+    #[must_use]
+    pub fn with_argument_hint(mut self, hint: impl Into<String>) -> Self {
+        self.argument_hint = Some(hint.into());
+        self
     }
 
     /// Validates the value
@@ -504,5 +530,58 @@ mod tests {
 
         let error = spec.validate().expect_err("duplicate alias");
         assert!(error.to_string().contains("duplicate command alias"));
+    }
+
+    #[test]
+    fn argument_hint_defaults_to_none() {
+        let spec = CommandSpec::new("help", "show help", CommandKind::Local);
+        assert!(spec.argument_hint.is_none());
+    }
+
+    #[test]
+    fn with_argument_hint_sets_the_hint() {
+        let spec = CommandSpec::new("fast", "toggle fast mode", CommandKind::Local)
+            .with_argument_hint("[on|off]");
+        assert_eq!(spec.argument_hint.as_deref(), Some("[on|off]"));
+    }
+
+    #[test]
+    fn command_spec_clone_preserves_argument_hint() {
+        let spec = CommandSpec::new("color", "set color", CommandKind::Local)
+            .with_argument_hint("<color|default>");
+        let cloned = spec.clone();
+        assert_eq!(cloned.argument_hint, spec.argument_hint);
+    }
+
+    #[test]
+    fn argument_hint_round_trips_through_serde() {
+        let spec = CommandSpec::new("effort", "set effort", CommandKind::Local)
+            .with_argument_hint("[low|medium|high|max|auto]");
+        let json = serde_json::to_string(&spec).expect("serialize");
+        let decoded: CommandSpec = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(
+            decoded.argument_hint.as_deref(),
+            Some("[low|medium|high|max|auto]")
+        );
+    }
+
+    #[test]
+    fn argument_hint_absent_in_json_when_none() {
+        let spec = CommandSpec::new("status", "show status", CommandKind::Local);
+        let json = serde_json::to_string(&spec).expect("serialize");
+        assert!(
+            !json.contains("argument_hint"),
+            "field should be omitted when None"
+        );
+    }
+
+    #[test]
+    fn argument_hint_none_deserializes_from_legacy_json_without_field() {
+        // Ensures existing serialised CommandSpec payloads (without the new
+        // field) continue to deserialise correctly with argument_hint = None.
+        let json =
+            r#"{"name":"status","description":"show status","kind":"local","source":"built_in"}"#;
+        let spec: CommandSpec = serde_json::from_str(json).expect("deserialize legacy");
+        assert!(spec.argument_hint.is_none());
     }
 }
