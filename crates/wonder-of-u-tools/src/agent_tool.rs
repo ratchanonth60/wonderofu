@@ -5,9 +5,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use wonder_of_u_core::{
     AgentCatalog, AgentDefinitionSource, AgentLaunchSpec, FeatureFlag, FleetMemberRequest,
-    RemoteTaskState, RemoteTaskType, Result, TaskId, Tool, ToolContext, ToolEffect, ToolKind,
-    ToolResult, ToolSchema, ToolSpec, ToolUseId, WONDER_OF_U_FORK_DEPTH_ENV, WonderError,
-    agent_loader::AgentDefinitionLoader, get_git_root,
+    PermissionMode, PermissionRuleBehavior, PermissionRuleSource, RemoteTaskState, RemoteTaskType,
+    Result, TaskId, Tool, ToolContext, ToolEffect, ToolKind, ToolResult, ToolSchema, ToolSpec,
+    ToolUseId, WONDER_OF_U_FORK_DEPTH_ENV, WonderError, agent_loader::AgentDefinitionLoader,
+    get_git_root,
 };
 use wonder_of_u_storage::FleetStore;
 
@@ -224,6 +225,29 @@ impl Tool for AgentTool {
                 return Err(WonderError::validation(
                     "mode=fork requires an active session with fork context; \
                      fork context was not populated in this runtime (no active prompt or TUI session)",
+                ));
+            }
+        }
+
+        // Bypass-propagation guard: prevent BypassPermissions from silently
+        // escalating into spawned background/child agents.  A child agent
+        // launched without any permission context would inherit an effectively
+        // unrestricted posture, bypassing normal sandboxing for every tool it
+        // calls.  We block the spawn unless the operator has placed an explicit
+        // Policy-level allow rule on the "agent" tool — i.e. a deliberate,
+        // auditable decision that bypass propagation is acceptable in this
+        // deployment.
+        if context.permission_mode == PermissionMode::BypassPermissions {
+            let policy_allows = context.permission_rules.iter().any(|rule| {
+                rule.source == PermissionRuleSource::Policy
+                    && rule.behavior == PermissionRuleBehavior::Allow
+                    && matches!(rule.tool.as_str(), "agent" | "Task" | "*")
+            });
+            if !policy_allows {
+                return Err(WonderError::validation(
+                    "BypassPermissions cannot propagate to spawned background agents; \
+                     add a Policy-level allow rule for 'agent' to explicitly permit \
+                     subagent launch under bypass mode",
                 ));
             }
         }
@@ -1212,5 +1236,224 @@ mod tests {
             "non-fork mode must not embed fork_context in the request"
         );
         assert_eq!(result.metadata["fork_mode"], false);
+    }
+
+    // ── Bypass-propagation guard ──────────────────────────────────────────────
+
+    /// execute() rejects agent spawn when the parent runs under BypassPermissions
+    /// and no Policy-level allow rule is present.
+    ///
+    /// This is the core of the reference-bypass-guard: a child agent should
+    /// never silently inherit unrestricted permission posture from its parent.
+    #[test]
+    fn agent_execute_rejects_bypass_mode_without_policy_allow() {
+        use wonder_of_u_core::{FeatureSet, PermissionMode, SessionId};
+
+        let dir = unique_test_dir("tools-agent-bypass-no-policy");
+        let context = wonder_of_u_core::ToolContext {
+            session_id: SessionId::new(),
+            cwd: dir,
+            session_worktree: None,
+            permission_mode: PermissionMode::BypassPermissions,
+            additional_working_directories: vec![],
+            provider: None,
+            model: None,
+            permission_rules: vec![],
+            features: FeatureSet::first_release(),
+            bash_session_store: None,
+            fork_context: None,
+        };
+        let tool = AgentTool;
+        let error = futures::executor::block_on(tool.execute(
+            context,
+            wonder_of_u_core::ToolUseId::new(),
+            json!({ "prompt": "do something in bypass" }),
+        ))
+        .expect_err("bypass mode without policy allow should be rejected");
+
+        let msg = error.to_string();
+        assert!(
+            msg.contains("BypassPermissions cannot propagate"),
+            "error must explain bypass propagation risk; got: {msg}"
+        );
+        assert!(
+            msg.contains("Policy-level allow rule"),
+            "error must mention how to explicitly permit it; got: {msg}"
+        );
+    }
+
+    /// execute() succeeds when the parent runs under BypassPermissions AND a
+    /// Policy-level allow rule for "agent" is explicitly present.
+    ///
+    /// This is the designated safe-policy exception: an operator who has
+    /// deliberately set a Policy allow rule acknowledges bypass propagation.
+    #[test]
+    fn agent_execute_allows_bypass_mode_with_policy_allow_for_agent() {
+        use wonder_of_u_core::{
+            FeatureSet, PermissionMode, PermissionRule, PermissionRuleBehavior,
+            PermissionRuleSource, SessionId, ToolEffect,
+        };
+
+        let dir = unique_test_dir("tools-agent-bypass-with-policy");
+        let policy_rule = PermissionRule::new(
+            "agent",
+            PermissionRuleBehavior::Allow,
+            PermissionRuleSource::Policy,
+        );
+        let context = wonder_of_u_core::ToolContext {
+            session_id: SessionId::new(),
+            cwd: dir,
+            session_worktree: None,
+            permission_mode: PermissionMode::BypassPermissions,
+            additional_working_directories: vec![],
+            provider: None,
+            model: None,
+            permission_rules: vec![policy_rule],
+            features: FeatureSet::first_release(),
+            bash_session_store: None,
+            fork_context: None,
+        };
+        let tool = AgentTool;
+        let result = futures::executor::block_on(tool.execute(
+            context,
+            wonder_of_u_core::ToolUseId::new(),
+            json!({ "prompt": "do something in bypass with explicit policy" }),
+        ))
+        .expect("bypass with explicit Policy-level allow rule should succeed");
+
+        assert!(result.success, "result should be success");
+        assert_eq!(result.effects.len(), 1);
+        assert!(
+            matches!(result.effects[0], ToolEffect::LaunchAgentTask(_)),
+            "should return LaunchAgentTask effect"
+        );
+    }
+
+    /// execute() also accepts a wildcard `"*"` Policy allow rule as the safe
+    /// exception since it explicitly covers all tools.
+    #[test]
+    fn agent_execute_allows_bypass_mode_with_wildcard_policy_allow() {
+        use wonder_of_u_core::{
+            FeatureSet, PermissionMode, PermissionRule, PermissionRuleBehavior,
+            PermissionRuleSource, SessionId, ToolEffect,
+        };
+
+        let dir = unique_test_dir("tools-agent-bypass-wildcard-policy");
+        let policy_rule = PermissionRule::new(
+            "*",
+            PermissionRuleBehavior::Allow,
+            PermissionRuleSource::Policy,
+        );
+        let context = wonder_of_u_core::ToolContext {
+            session_id: SessionId::new(),
+            cwd: dir,
+            session_worktree: None,
+            permission_mode: PermissionMode::BypassPermissions,
+            additional_working_directories: vec![],
+            provider: None,
+            model: None,
+            permission_rules: vec![policy_rule],
+            features: FeatureSet::first_release(),
+            bash_session_store: None,
+            fork_context: None,
+        };
+        let tool = AgentTool;
+        let result = futures::executor::block_on(tool.execute(
+            context,
+            wonder_of_u_core::ToolUseId::new(),
+            json!({ "prompt": "task with wildcard policy" }),
+        ))
+        .expect("wildcard Policy allow should satisfy bypass guard");
+
+        assert!(result.success);
+        assert!(matches!(result.effects[0], ToolEffect::LaunchAgentTask(_)));
+    }
+
+    /// execute() with a non-Policy allow rule (e.g. CliArg) does NOT satisfy
+    /// the bypass guard — only Policy-sourced rules count.
+    #[test]
+    fn agent_execute_rejects_bypass_mode_with_non_policy_allow() {
+        use wonder_of_u_core::{
+            FeatureSet, PermissionMode, PermissionRule, PermissionRuleBehavior,
+            PermissionRuleSource, SessionId,
+        };
+
+        let dir = unique_test_dir("tools-agent-bypass-cli-allow");
+        // CliArg is not a Policy — must not bypass the guard.
+        let cli_rule = PermissionRule::new(
+            "agent",
+            PermissionRuleBehavior::Allow,
+            PermissionRuleSource::CliArg,
+        );
+        let context = wonder_of_u_core::ToolContext {
+            session_id: SessionId::new(),
+            cwd: dir,
+            session_worktree: None,
+            permission_mode: PermissionMode::BypassPermissions,
+            additional_working_directories: vec![],
+            provider: None,
+            model: None,
+            permission_rules: vec![cli_rule],
+            features: FeatureSet::first_release(),
+            bash_session_store: None,
+            fork_context: None,
+        };
+        let tool = AgentTool;
+        let error = futures::executor::block_on(tool.execute(
+            context,
+            wonder_of_u_core::ToolUseId::new(),
+            json!({ "prompt": "bypass via cli-arg allow" }),
+        ))
+        .expect_err("CliArg allow must not satisfy bypass guard; only Policy does");
+
+        let msg = error.to_string();
+        assert!(
+            msg.contains("BypassPermissions cannot propagate"),
+            "error should reference bypass propagation; got: {msg}"
+        );
+    }
+
+    /// Non-bypass permission modes (Default, AcceptEdits, DontAsk) are never
+    /// subject to the guard and always proceed normally.
+    #[test]
+    fn agent_execute_non_bypass_modes_are_never_blocked() {
+        use wonder_of_u_core::{FeatureSet, PermissionMode, SessionId, ToolEffect};
+
+        for mode in [
+            PermissionMode::Default,
+            PermissionMode::AcceptEdits,
+            PermissionMode::DontAsk,
+        ] {
+            let dir = unique_test_dir("tools-agent-non-bypass-mode");
+            let context = wonder_of_u_core::ToolContext {
+                session_id: SessionId::new(),
+                cwd: dir,
+                session_worktree: None,
+                permission_mode: mode,
+                additional_working_directories: vec![],
+                provider: None,
+                model: None,
+                permission_rules: vec![],
+                features: FeatureSet::first_release(),
+                bash_session_store: None,
+                fork_context: None,
+            };
+            let tool = AgentTool;
+            let result = futures::executor::block_on(tool.execute(
+                context,
+                wonder_of_u_core::ToolUseId::new(),
+                json!({ "prompt": "task in normal mode" }),
+            ))
+            .unwrap_or_else(|e| panic!("mode {mode:?} should not be blocked; got: {e}"));
+
+            assert!(
+                result.success,
+                "mode {mode:?} should produce a success result"
+            );
+            assert!(
+                matches!(result.effects[0], ToolEffect::LaunchAgentTask(_)),
+                "mode {mode:?} should yield a LaunchAgentTask effect"
+            );
+        }
     }
 }
