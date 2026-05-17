@@ -2446,6 +2446,24 @@ impl<'a> TuiController<'a> {
                     Some(SHELL_NOTIFICATION_TTL),
                     true,
                 );
+                // Inject once per task id into the model-facing transcript so
+                // the model can observe task completion without polling.
+                // The idempotence set survives session saves so a crash-recover
+                // reload never double-injects the same task.
+                if !self.state.injected_task_notifications.contains(&task.id) {
+                    let xml = payload_from_task_state(task).render_xml();
+                    let task_id = task.id;
+                    if let Ok(msg) = append_contextual_message(
+                        &mut self.state,
+                        MessagePayload::TaskNotification {
+                            task_id,
+                            xml_payload: xml,
+                        },
+                    ) {
+                        self.state.injected_task_notifications.insert(task_id);
+                        let _ = self.persist_messages(&[msg]);
+                    }
+                }
             }
             self.state.background_tasks = effective_tasks;
             changed = true;

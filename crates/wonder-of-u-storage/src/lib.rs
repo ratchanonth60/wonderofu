@@ -1134,6 +1134,8 @@ fn session_memory_text(payload: &MessagePayload) -> Option<(SessionMemorySource,
         )),
         // Provider errors are not searchable session memory; skip them.
         MessagePayload::ProviderError { .. } => None,
+        // Task notification XML is structured for the model, not user memory search.
+        MessagePayload::TaskNotification { .. } => None,
     }
 }
 

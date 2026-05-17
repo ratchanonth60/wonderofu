@@ -1214,9 +1214,12 @@ mod tests {
             fork_context: None,
         };
 
-        let result =
-            futures::executor::block_on(AgentTool.execute(context, wonder_of_u_core::ToolUseId::new(), json!({ "prompt": "test task" })))
-                .expect("execute should succeed");
+        let result = futures::executor::block_on(AgentTool.execute(
+            context,
+            wonder_of_u_core::ToolUseId::new(),
+            json!({ "prompt": "test task" }),
+        ))
+        .expect("execute should succeed");
 
         // There must be exactly one LaunchAgentTask effect.
         assert_eq!(result.effects.len(), 1);
@@ -1266,9 +1269,12 @@ mod tests {
             fork_context: None,
         };
 
-        let result =
-            futures::executor::block_on(AgentTool.execute(context, wonder_of_u_core::ToolUseId::new(), json!({ "prompt": "path check" })))
-                .expect("execute should succeed");
+        let result = futures::executor::block_on(AgentTool.execute(
+            context,
+            wonder_of_u_core::ToolUseId::new(),
+            json!({ "prompt": "path check" }),
+        ))
+        .expect("execute should succeed");
 
         let ToolEffect::LaunchAgentTask(ref spec) = result.effects[0] else {
             panic!("expected LaunchAgentTask effect");
@@ -1277,7 +1283,10 @@ mod tests {
 
         // output_paths must be a non-null object with both keys.
         let paths = &result.metadata["output_paths"];
-        assert!(paths.is_object(), "output_paths must be an object when WONDER_OF_U_STORAGE_DIR is set; got: {paths}");
+        assert!(
+            paths.is_object(),
+            "output_paths must be an object when WONDER_OF_U_STORAGE_DIR is set; got: {paths}"
+        );
 
         let log_path = paths["output_log"]
             .as_str()
@@ -1410,4 +1419,3 @@ mod tests {
         );
     }
 }
-

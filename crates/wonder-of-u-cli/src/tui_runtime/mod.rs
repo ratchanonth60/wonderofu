@@ -35,7 +35,7 @@ use wonder_of_u_core::{
     PendingToolApprovalState, PendingToolConversationRound, PermissionDecision, PermissionMode,
     PermissionRequest, PermissionRuleSource, ProviderReadiness, QueuePlacement, Result, SessionId,
     TaskState, TaskStatus, ToolContext, ToolKind, ToolQuery, ToolResult, ToolSource, ToolUseId,
-    WonderError, parse_slash_command,
+    WonderError, parse_slash_command, payload_from_task_state,
 };
 use wonder_of_u_mcp::McpConfigStore;
 use wonder_of_u_storage::{TaskStore, TranscriptStore};

@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeMap, VecDeque},
+    collections::{BTreeMap, BTreeSet, VecDeque},
     path::PathBuf,
     sync::{Arc, RwLock},
 };
@@ -849,6 +849,15 @@ pub struct AppState {
     pub context_window_size: Option<u64>,
     /// Stores the costs
     pub costs: CostState,
+    /// Task IDs for which a `<task-notification>` XML message has already been
+    /// injected into this session's model-facing transcript.
+    ///
+    /// Persisted so that re-opening the same session (or a crash-recovery load)
+    /// never re-injects notifications for tasks whose terminal state was already
+    /// recorded.  Serialisation omits the field when empty to keep state files
+    /// compact.
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub injected_task_notifications: BTreeSet<TaskId>,
 }
 
 impl AppState {
@@ -879,6 +888,7 @@ impl AppState {
             pending_tool_approval: None,
             context_window_size: None,
             costs: CostState::new(),
+            injected_task_notifications: BTreeSet::new(),
         }
     }
 

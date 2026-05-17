@@ -611,7 +611,8 @@ fn render_context_summary(state: &AppState) -> String {
             | MessagePayload::HookResult { .. }
             | MessagePayload::HookProgress { .. }
             | MessagePayload::PlanApproval { .. }
-            | MessagePayload::ProviderError { .. } => {}
+            | MessagePayload::ProviderError { .. }
+            | MessagePayload::TaskNotification { .. } => {}
         }
     }
     let running_tasks = state

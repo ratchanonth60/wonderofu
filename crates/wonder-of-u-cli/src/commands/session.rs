@@ -857,6 +857,7 @@ fn payload_distribution(messages: &[MessageEnvelope]) -> String {
             | MessagePayload::Permission { .. }
             | MessagePayload::PlanApproval { .. }
             | MessagePayload::ProviderError { .. }
+            | MessagePayload::TaskNotification { .. }
             | MessagePayload::Command { .. } => progress += 1,
         }
     }
@@ -976,6 +977,12 @@ fn message_summary(message: &MessageEnvelope) -> String {
         ),
         MessagePayload::ProviderError { kind, message } => {
             format!("error[{kind}]: {message}")
+        }
+        MessagePayload::TaskNotification {
+            task_id,
+            xml_payload: _,
+        } => {
+            format!("task-notification {task_id}")
         }
     }
 }
