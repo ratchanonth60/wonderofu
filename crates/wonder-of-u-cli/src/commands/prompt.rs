@@ -19,9 +19,10 @@ use wonder_of_u_core::{
     ToolContext, ToolEffect, ToolQuery, ToolResult, ToolUseId, WONDER_OF_U_FORK_DEPTH_ENV,
     WonderError, best_prompt_suggestion,
 };
+use wonder_of_u_core::{MailboxKind, MailboxMessage};
 use wonder_of_u_storage::{
-    AgentTaskResultStore, CostStore, FleetStore, SessionCostLedger, SessionMemoryIndexStore,
-    SessionMetadata, SessionSnapshot, TranscriptStore,
+    AgentTaskResultStore, CostStore, FleetStore, MailboxStore, SessionCostLedger,
+    SessionMemoryIndexStore, SessionMetadata, SessionSnapshot, TranscriptStore,
 };
 use wonder_of_u_tools::{builtin_registry_with_mcp_catalog, provider_tool_specs};
 
@@ -930,8 +931,20 @@ fn truncate_utf8_bytes(value: &str, max_bytes: usize) -> String {
 ///
 /// * If `storage_dir` is `Some` and `direct_launch_fleet_request` succeeds, the
 ///   result content and metadata are updated to reflect the live task id.
+/// * If `app_state` is `Some` and the request carries a non-empty `name`, the
+///   new `task_id` is registered in [`AppState`] for local `SendMessage` routing.
 /// * Otherwise the request is queued as a pending file (fallback) so `fleet
 ///   dispatch` can recover it later.
+///
+/// For each [`ToolEffect::SendAgentMessage`]:
+///
+/// * When `app_state` is `Some` and the recipient name resolves to a local task
+///   via [`AppState::lookup_agent_by_name`], the message is appended to the
+///   agent's mailbox inbox via [`MailboxStore`].  The fleet steering record is
+///   also written as an immutable audit trail.
+/// * When the recipient is not a locally-registered agent, the message falls
+///   back to the existing fleet steering path unchanged.
+/// * Broadcast (`to = "*"`) always uses fleet steering only.
 ///
 /// Effects are always drained before this function returns so they are never
 /// persisted to the transcript.
@@ -939,6 +952,7 @@ pub(crate) fn process_tool_effects(
     mut result: ToolResult,
     storage_dir: Option<&Path>,
     cwd: &Path,
+    mut app_state: Option<&mut AppState>,
 ) -> ToolResult {
     if result.effects.is_empty() {
         return result;
@@ -963,6 +977,17 @@ pub(crate) fn process_tool_effects(
                                 serde_json::Value::String(task_id.to_string()),
                             );
                             meta.remove("dispatch_hint");
+
+                            // Register explicit agent name → task_id for local
+                            // SendMessage routing.  A name conflict is non-fatal;
+                            // the steering audit trail is still intact.
+                            if let (Some(state), Some(name)) =
+                                (app_state.as_deref_mut(), &spec.request.name)
+                            {
+                                if !name.is_empty() {
+                                    let _ = state.register_agent_name(name.clone(), task_id);
+                                }
+                            }
                         }
                         Err(launch_err) => {
                             // Direct launch failed — fall back to pending queue.
@@ -1046,22 +1071,150 @@ pub(crate) fn process_tool_effects(
                 }
             }
             ToolEffect::SendAgentMessage(spec) => {
+                // ── Step 1: attempt local mailbox delivery ────────────────────
+                // Non-broadcast recipients are resolved through the agent name
+                // registry first.  When found, the message is appended to the
+                // agent's local mailbox inbox AND written as a fleet steering
+                // record for the immutable audit trail.
+                let sender_task_id_str = std::env::var("WONDER_OF_U_TASK_ID").ok();
+                let sender_identity = sender_task_id_str.as_deref().unwrap_or("unknown");
+
+                let local_target = if spec.to != "*" {
+                    app_state
+                        .as_deref()
+                        .and_then(|s| s.lookup_agent_by_name(&spec.to))
+                } else {
+                    None
+                };
+
+                if let (Some(target_task_id), Some(dir)) = (local_target, storage_dir) {
+                    // Build the mailbox message.  Subject defaults to the
+                    // summary when provided, or the first 80 chars of content.
+                    let subject = spec.summary.as_deref().unwrap_or_else(|| {
+                        let end = spec
+                            .content
+                            .char_indices()
+                            .nth(80)
+                            .map(|(i, _)| i)
+                            .unwrap_or(spec.content.len());
+                        &spec.content[..end]
+                    });
+                    let mailbox_msg =
+                        MailboxMessage::new(sender_identity, &spec.to, subject, &spec.content);
+                    let mailbox_id = mailbox_msg.id;
+
+                    let mailbox_store = MailboxStore::new(dir);
+                    let mailbox_outcome =
+                        mailbox_store.append(MailboxKind::Agent, &spec.to, &mailbox_msg);
+
+                    match mailbox_outcome {
+                        Ok(()) => {
+                            // Also write the fleet steering record as an audit
+                            // trail — best-effort; don't fail the delivery if
+                            // fleet context is absent.
+                            let fleet_id_str = std::env::var("WONDER_OF_U_FLEET_ID").ok();
+                            let sender_tid = sender_task_id_str
+                                .as_deref()
+                                .and_then(|s| s.parse::<TaskId>().ok());
+                            let steering_id = if let Some(fid_str) = fleet_id_str {
+                                if let Ok(fleet_id) = fid_str.parse::<FleetId>() {
+                                    let fleet_store = FleetStore::new(dir);
+                                    if let Ok(run) = fleet_store.read_run(fleet_id) {
+                                        if !run.status.is_terminal() {
+                                            let steering_msg = FleetSteeringMessage::new_agent(
+                                                fleet_id,
+                                                &spec.content,
+                                                spec.to.clone(),
+                                                spec.summary.clone(),
+                                                sender_tid,
+                                                &spec.message_kind,
+                                            );
+                                            let sid = steering_msg.id.clone();
+                                            let _ =
+                                                fleet_store.write_steering_message(&steering_msg);
+                                            Some(sid)
+                                        } else {
+                                            None
+                                        }
+                                    } else {
+                                        None
+                                    }
+                                } else {
+                                    None
+                                }
+                            } else {
+                                None
+                            };
+
+                            result.content = format!(
+                                "message delivered to agent \"{}\"\u{2019}s mailbox inbox",
+                                spec.to
+                            );
+                            let meta = ensure_meta(&mut result);
+                            meta.insert(
+                                "status".into(),
+                                serde_json::Value::String("delivered_mailbox".into()),
+                            );
+                            meta.insert(
+                                "mailbox_id".into(),
+                                serde_json::Value::String(mailbox_id.to_string()),
+                            );
+                            meta.insert(
+                                "recipient".into(),
+                                serde_json::Value::String(spec.to.clone()),
+                            );
+                            meta.insert(
+                                "recipient_task_id".into(),
+                                serde_json::Value::String(target_task_id.to_string()),
+                            );
+                            meta.insert("is_local_agent".into(), serde_json::Value::Bool(true));
+                            meta.insert("live_delivery".into(), serde_json::Value::Bool(false));
+                            if let Some(sid) = steering_id {
+                                meta.insert("steering_id".into(), serde_json::Value::String(sid));
+                            }
+                            continue;
+                        }
+                        Err(e) => {
+                            // Mailbox name sanitisation or I/O failure — fall
+                            // through to the fleet steering path below with a
+                            // note in metadata.
+                            let meta = ensure_meta(&mut result);
+                            meta.insert(
+                                "mailbox_error".into(),
+                                serde_json::Value::String(e.to_string()),
+                            );
+                        }
+                    }
+                }
+
+                // ── Step 2: fleet steering path (audit + non-local fallback) ──
                 // Read fleet context injected by the task runtime at launch.
                 let fleet_id_str = std::env::var("WONDER_OF_U_FLEET_ID").ok();
                 let sender_task_id_str = std::env::var("WONDER_OF_U_TASK_ID").ok();
 
                 let (fleet_id_str, dir) = match (fleet_id_str, storage_dir) {
                     (None, _) => {
+                        // No fleet context and not a local agent → unknown recipient.
+                        let is_local = local_target.is_some();
                         result.success = false;
-                        result.content = "send_message: WONDER_OF_U_FLEET_ID is not set; \
+                        result.content = if is_local {
+                            "send_message: WONDER_OF_U_FLEET_ID is not set; \
                              message not written"
-                            .into();
+                                .into()
+                        } else {
+                            format!(
+                                "send_message: recipient \"{}\" is not a locally-registered \
+                                 agent and WONDER_OF_U_FLEET_ID is not set; message not written",
+                                spec.to
+                            )
+                        };
                         let meta = ensure_meta(&mut result);
                         meta.insert(
                             "status".into(),
                             serde_json::Value::String("failed_no_fleet_context".into()),
                         );
                         meta.insert("live_delivery".into(), serde_json::Value::Bool(false));
+                        meta.insert("is_local_agent".into(), serde_json::Value::Bool(false));
                         continue;
                     }
                     (_, None) => {
@@ -1075,6 +1228,7 @@ pub(crate) fn process_tool_effects(
                             serde_json::Value::String("failed_no_storage".into()),
                         );
                         meta.insert("live_delivery".into(), serde_json::Value::Bool(false));
+                        meta.insert("is_local_agent".into(), serde_json::Value::Bool(false));
                         continue;
                     }
                     (Some(fid), Some(d)) => (fid, d),
@@ -1151,6 +1305,10 @@ pub(crate) fn process_tool_effects(
                                     serde_json::Value::String(steering_id),
                                 );
                                 meta.insert("live_delivery".into(), serde_json::Value::Bool(false));
+                                meta.insert(
+                                    "is_local_agent".into(),
+                                    serde_json::Value::Bool(false),
+                                );
                             }
                             Err(e) => {
                                 result.success = false;
@@ -1332,7 +1490,7 @@ fn execute_tool_call(
         )
     };
 
-    let result = process_tool_effects(result, storage_dir, &context.cwd);
+    let result = process_tool_effects(result, storage_dir, &context.cwd, Some(state));
     let _ = apply_worktree_tool_result(state, &result)?;
     messages.push(append_contextual_message(
         state,
@@ -1450,7 +1608,7 @@ mod tests {
         let use_id = ToolUseId::new();
         let result = ToolResult::success(use_id, "hello");
         let dir = unique_test_dir("prompt-effects-passthrough");
-        let processed = process_tool_effects(result, Some(&dir), &dir);
+        let processed = process_tool_effects(result, Some(&dir), &dir, None);
         assert!(processed.success);
         assert_eq!(processed.content, "hello");
         assert!(processed.effects.is_empty());
@@ -1473,7 +1631,7 @@ mod tests {
         let _guard = EnvVarGuard::set("WONDER_OF_U_STORAGE_DIR", dir.as_os_str());
 
         // Pass storage_dir=None to trigger the env-var-based fallback path.
-        let processed = process_tool_effects(result, None, &dir);
+        let processed = process_tool_effects(result, None, &dir, None);
 
         // The result should still be a success (fallback queue succeeded).
         assert!(
@@ -1509,7 +1667,7 @@ mod tests {
         let _guard = EnvVarGuard::set("WONDER_OF_U_STORAGE_DIR", dir.as_os_str());
         let catalog = AgentCatalog::builtin();
         let result = launch_effect_result("no storage", &catalog);
-        let processed = process_tool_effects(result, None, &dir);
+        let processed = process_tool_effects(result, None, &dir, None);
         assert!(
             processed.effects.is_empty(),
             "effects should always be drained"
@@ -1540,7 +1698,7 @@ mod tests {
             "please review the auth module",
             Some("review auth"),
         );
-        let processed = process_tool_effects(result, Some(&dir), &dir);
+        let processed = process_tool_effects(result, Some(&dir), &dir, None);
 
         assert!(
             processed.success,
@@ -1583,7 +1741,7 @@ mod tests {
         let _fid = EnvVarGuard::remove("WONDER_OF_U_FLEET_ID");
 
         let result = send_message_effect_result("reviewer", "hi", Some("hi"));
-        let processed = process_tool_effects(result, Some(&dir), &dir);
+        let processed = process_tool_effects(result, Some(&dir), &dir, None);
 
         assert!(!processed.success, "should fail without fleet id");
         assert!(
@@ -1614,7 +1772,7 @@ mod tests {
         let _no_xdg = EnvVarGuard::remove("XDG_CONFIG_HOME");
         // Keep HOME set so env resolution still fails due to missing fleet.
         // Actually we pass None directly and check error.
-        let processed = process_tool_effects(result, None, &dir);
+        let processed = process_tool_effects(result, None, &dir, None);
 
         assert!(!processed.success, "should fail without storage dir");
         assert!(processed.effects.is_empty());
@@ -1634,7 +1792,7 @@ mod tests {
         let _fid = EnvVarGuard::set("WONDER_OF_U_FLEET_ID", fleet_id.to_string().as_str());
 
         let result = send_message_effect_result("reviewer", "more work", Some("more work"));
-        let processed = process_tool_effects(result, Some(&dir), &dir);
+        let processed = process_tool_effects(result, Some(&dir), &dir, None);
 
         assert!(!processed.success, "should fail for terminal fleet");
         assert!(
@@ -1670,12 +1828,172 @@ mod tests {
         let _fid = EnvVarGuard::set("WONDER_OF_U_FLEET_ID", fleet_id.to_string().as_str());
 
         let result = send_message_effect_result("*", "focus on auth", Some("focus auth"));
-        let processed = process_tool_effects(result, Some(&dir), &dir);
+        let processed = process_tool_effects(result, Some(&dir), &dir, None);
 
         assert!(processed.success, "broadcast should succeed");
         let msgs = store.list_steering_messages(fleet_id).expect("list");
         assert_eq!(msgs.len(), 1);
         assert_eq!(msgs[0].recipient.as_deref(), Some("*"));
         assert_eq!(msgs[0].source, SteeringSource::Agent);
+    }
+
+    // ── Mailbox delivery tests ─────────────────────────────────────────────────
+
+    /// When the recipient is a locally-registered agent, the message is written
+    /// to the agent's mailbox inbox and the result reflects mailbox delivery.
+    #[test]
+    fn process_send_message_known_agent_writes_mailbox_record() {
+        use wonder_of_u_core::MailboxKind;
+        use wonder_of_u_core::TaskId;
+        use wonder_of_u_storage::MailboxStore;
+
+        let dir = unique_test_dir("prompt-send-msg-mailbox-known");
+
+        // Build an AppState with "reviewer" registered.
+        let mut state = AppState::new(dir.clone());
+        let target_task_id = TaskId::new();
+        state
+            .register_agent_name("reviewer".into(), target_task_id)
+            .expect("register reviewer");
+
+        // Set up a fleet run so the audit steering path also succeeds.
+        let store = FleetStore::new(&dir);
+        let run = FleetRunState::new("test fleet", PermissionMode::Default, None);
+        let fleet_id = run.id;
+        store.write_run(&run).expect("write run");
+        let _fid = EnvVarGuard::set("WONDER_OF_U_FLEET_ID", fleet_id.to_string().as_str());
+        let fake_sender = TaskId::new();
+        let _tid = EnvVarGuard::set("WONDER_OF_U_TASK_ID", fake_sender.to_string().as_str());
+
+        let result = send_message_effect_result(
+            "reviewer",
+            "please review the auth module",
+            Some("review auth"),
+        );
+        let processed = process_tool_effects(result, Some(&dir), &dir, Some(&mut state));
+
+        assert!(
+            processed.success,
+            "known agent delivery should succeed; content: {}",
+            processed.content
+        );
+        assert!(processed.effects.is_empty(), "effects should be drained");
+        assert_eq!(
+            processed.metadata["status"].as_str(),
+            Some("delivered_mailbox"),
+            "status should be delivered_mailbox"
+        );
+        assert_eq!(processed.metadata["is_local_agent"], true);
+        assert_eq!(processed.metadata["live_delivery"], false);
+        assert!(
+            processed.metadata["mailbox_id"].is_string(),
+            "mailbox_id should be set"
+        );
+        assert_eq!(
+            processed.metadata["recipient_task_id"].as_str(),
+            Some(target_task_id.to_string().as_str())
+        );
+
+        // Verify the mailbox record was written.
+        let mailbox = MailboxStore::new(&dir);
+        let msgs = mailbox
+            .list(MailboxKind::Agent, "reviewer")
+            .expect("list mailbox");
+        assert_eq!(msgs.len(), 1, "one mailbox message should be written");
+        assert_eq!(msgs[0].to, "reviewer");
+        assert_eq!(msgs[0].body, "please review the auth module");
+        assert_eq!(msgs[0].subject, "review auth");
+
+        // Steering audit trail should also be present.
+        let steering_msgs = store
+            .list_steering_messages(fleet_id)
+            .expect("list steering");
+        assert_eq!(
+            steering_msgs.len(),
+            1,
+            "audit steering message should exist"
+        );
+        assert_eq!(steering_msgs[0].recipient.as_deref(), Some("reviewer"));
+        // Steering id is reported in metadata when audit succeeds.
+        assert!(
+            processed.metadata["steering_id"].is_string(),
+            "steering_id should be populated as audit trail"
+        );
+    }
+
+    /// When the recipient is not registered locally, SendMessage falls back to
+    /// fleet steering with is_local_agent=false in metadata.
+    #[test]
+    fn process_send_message_unknown_recipient_uses_fleet_steering() {
+        let dir = unique_test_dir("prompt-send-msg-mailbox-unknown");
+
+        // Empty AppState — no registered agents.
+        let mut state = AppState::new(dir.clone());
+
+        let store = FleetStore::new(&dir);
+        let run = FleetRunState::new("fallback fleet", PermissionMode::Default, None);
+        let fleet_id = run.id;
+        store.write_run(&run).expect("write run");
+        let _fid = EnvVarGuard::set("WONDER_OF_U_FLEET_ID", fleet_id.to_string().as_str());
+
+        let result = send_message_effect_result("unknown-peer", "hello", Some("hello"));
+        let processed = process_tool_effects(result, Some(&dir), &dir, Some(&mut state));
+
+        // Should still succeed via fleet steering.
+        assert!(
+            processed.success,
+            "unknown recipient should fall back to steering; content: {}",
+            processed.content
+        );
+        assert_eq!(
+            processed.metadata["status"].as_str(),
+            Some("queued_advisory")
+        );
+        assert_eq!(
+            processed.metadata["is_local_agent"], false,
+            "is_local_agent should be false for unregistered recipient"
+        );
+        // No mailbox should be written — mailboxes dir does not exist yet.
+        let mailbox_path = dir.join("mailboxes").join("agents").join("unknown-peer");
+        assert!(
+            !mailbox_path.exists(),
+            "no mailbox should be created for unknown recipient"
+        );
+    }
+
+    /// Verifies that register_agent_name works correctly on AppState for focused
+    /// name-registration contract checks.  (The launch registration itself is
+    /// exercised indirectly when direct_launch succeeds; here we test the
+    /// AppState API in isolation.)
+    #[test]
+    fn app_state_register_and_lookup_agent_name() {
+        use wonder_of_u_core::TaskId;
+
+        let dir = unique_test_dir("prompt-agent-name-registry");
+        let mut state = AppState::new(dir);
+
+        let tid = TaskId::new();
+        state
+            .register_agent_name("planner".into(), tid)
+            .expect("first registration succeeds");
+
+        assert_eq!(
+            state.lookup_agent_by_name("planner"),
+            Some(tid),
+            "registered name should resolve"
+        );
+        assert_eq!(
+            state.lookup_agent_by_name("unknown"),
+            None,
+            "unregistered name should return None"
+        );
+
+        // Deregistering the task clears the name.
+        state.deregister_agent_task(tid);
+        assert_eq!(
+            state.lookup_agent_by_name("planner"),
+            None,
+            "name should be gone after deregister"
+        );
     }
 }
