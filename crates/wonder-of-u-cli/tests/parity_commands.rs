@@ -1113,3 +1113,166 @@ fn tasks_prune_output_has_required_fields() {
         "/tasks prune must list the pruned completed task id; got:\n{text}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Command-alias parity tests  (todo: reference-command-alias-parity)
+// ---------------------------------------------------------------------------
+
+/// Each alias listed below must resolve to the same handler as the canonical
+/// name **and** must not appear as a duplicate elsewhere in the registry.
+///
+/// Alias → canonical mapping (mirrors `claude-leak` upstream):
+/// - `allowed-tools` → `permissions`
+/// - `bashes`        → `tasks`
+/// - `reset`         → `clear`
+/// - `new`           → `clear`
+/// - `quit`          → `exit`
+/// - `continue`      → `resume`
+#[test]
+fn command_aliases_are_registered_and_resolve() {
+    // pairs: (alias, expected canonical name)
+    let cases: &[(&str, &str)] = &[
+        ("allowed-tools", "permissions"),
+        ("bashes", "tasks"),
+        ("reset", "clear"),
+        ("new", "clear"),
+        ("quit", "exit"),
+        ("continue", "resume"),
+    ];
+
+    let dir = tempfile::tempdir().expect("temp dir");
+    let registry = build_command_registry(Some(dir.path().to_path_buf())).expect("build registry");
+
+    for (alias, canonical) in cases {
+        // The alias must resolve to a command.
+        let cmd = registry.resolve(alias).unwrap_or_else(|| {
+            panic!("alias '{alias}' must resolve to a command (expected '{canonical}')")
+        });
+        // The resolved command's spec name must be the canonical one.
+        assert_eq!(
+            cmd.spec().name,
+            *canonical,
+            "alias '{alias}' must resolve to '{canonical}', got '{}'",
+            cmd.spec().name
+        );
+        // The alias must also appear in the spec's alias list.
+        assert!(
+            cmd.spec().aliases.iter().any(|a| a == alias),
+            "alias '{alias}' must appear in the spec.aliases of '{canonical}'; aliases={:?}",
+            cmd.spec().aliases
+        );
+    }
+}
+
+/// Aliases introduced by this fix must not create duplicate registry entries.
+#[test]
+fn new_aliases_do_not_collide_with_existing_names() {
+    let new_aliases = [
+        "allowed-tools",
+        "bashes",
+        "reset",
+        "new",
+        "quit",
+        "continue",
+    ];
+
+    let dir = tempfile::tempdir().expect("temp dir");
+    let registry = build_command_registry(Some(dir.path().to_path_buf())).expect("build registry");
+
+    // Collect every canonical name to check there are no collisions.
+    let canonical_names: HashSet<String> = registry
+        .all_specs()
+        .iter()
+        .map(|s| s.name.clone())
+        .collect();
+
+    for alias in new_aliases {
+        assert!(
+            !canonical_names.contains(alias),
+            "alias '{alias}' must not shadow an existing canonical command name"
+        );
+    }
+
+    // The no-duplicate invariant must still hold after adding the new aliases.
+    let mut seen: HashSet<String> = HashSet::new();
+    let mut duplicates: Vec<String> = Vec::new();
+    for spec in registry.all_specs() {
+        for name in std::iter::once(&spec.name).chain(spec.aliases.iter()) {
+            if !seen.insert(name.clone()) {
+                duplicates.push(name.clone());
+            }
+        }
+    }
+    assert!(
+        duplicates.is_empty(),
+        "Adding new aliases introduced duplicate registry entries: {:?}",
+        duplicates
+    );
+}
+
+/// Each alias must be usable via `registry.resolve()` and return the correct
+/// `CommandOutput` variant so the dispatch path is exercised end-to-end.
+#[test]
+fn exit_quit_alias_returns_exit_requested() {
+    use futures::executor::block_on;
+    use wonder_of_u_core::{CommandInvocation, CommandOutput};
+
+    let dir = tempfile::tempdir().expect("temp dir");
+    let registry = build_command_registry(Some(dir.path().to_path_buf())).expect("build registry");
+
+    let cmd = registry.resolve("quit").expect("'quit' alias must resolve");
+
+    let result = block_on(cmd.execute(
+        parity_ctx(dir.path()),
+        CommandInvocation {
+            name: "quit".into(),
+            args: String::new(),
+            raw: "/quit".into(),
+        },
+    ));
+    assert!(result.is_ok(), "/quit must return Ok; got: {:?}", result);
+    assert!(
+        matches!(result.unwrap(), CommandOutput::ExitRequested),
+        "/quit must produce CommandOutput::ExitRequested"
+    );
+}
+
+/// `allowed-tools` alias must produce the same permissions output as
+/// `/permissions` when invoked with the `show` sub-command.
+#[test]
+fn allowed_tools_alias_produces_permissions_output() {
+    use futures::executor::block_on;
+    use wonder_of_u_core::{CommandInvocation, CommandOutput};
+
+    let dir = tempfile::tempdir().expect("temp dir");
+    let registry = build_command_registry(Some(dir.path().to_path_buf())).expect("build registry");
+
+    let cmd = registry
+        .resolve("allowed-tools")
+        .expect("'allowed-tools' alias must resolve");
+
+    let result = block_on(cmd.execute(
+        parity_ctx(dir.path()),
+        CommandInvocation {
+            name: "allowed-tools".into(),
+            args: "show".into(),
+            raw: "/allowed-tools show".into(),
+        },
+    ));
+    assert!(
+        result.is_ok(),
+        "/allowed-tools show must return Ok; got: {:?}",
+        result
+    );
+    let CommandOutput::Text(text) = result.unwrap() else {
+        panic!("expected Text output from /allowed-tools show");
+    };
+    assert!(
+        text.contains("permission_mode="),
+        "/allowed-tools must output permission_mode=; got:\n{text}"
+    );
+    assert!(
+        text.contains("tools="),
+        "/allowed-tools must list tool count; got:\n{text}"
+    );
+}

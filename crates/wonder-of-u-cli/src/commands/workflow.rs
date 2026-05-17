@@ -27,6 +27,9 @@ impl PermissionsCommand {
     }
 
     /// Returns the `CommandSpec` for `/permissions`.
+    ///
+    /// The alias `allowed-tools` mirrors the upstream `claude-leak` surface so
+    /// that users familiar with the TypeScript CLI can use either spelling.
     pub fn command_spec() -> CommandSpec {
         let mut spec = CommandSpec::new(
             "permissions",
@@ -34,6 +37,8 @@ impl PermissionsCommand {
             CommandKind::Local,
         );
         spec.required_features = BTreeSet::from([FeatureFlag::Permissions]);
+        // Upstream alias: /allowed-tools resolves to /permissions.
+        spec.aliases = vec!["allowed-tools".into()];
         spec
     }
 }
@@ -205,8 +210,13 @@ impl ExitCommand {
     }
 
     /// Returns the `CommandSpec` for `/exit`.
+    ///
+    /// The alias `quit` is the conventional REPL shorthand supported upstream.
     pub fn command_spec() -> CommandSpec {
-        CommandSpec::new("exit", "Request CLI exit", CommandKind::Local)
+        let mut spec = CommandSpec::new("exit", "Request CLI exit", CommandKind::Local);
+        // Upstream alias: /quit resolves to /exit.
+        spec.aliases = vec!["quit".into()];
+        spec
     }
 }
 

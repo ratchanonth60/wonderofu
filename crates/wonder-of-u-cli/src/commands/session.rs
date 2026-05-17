@@ -196,6 +196,8 @@ impl ResumeCommand {
             CommandKind::ResumeEntrypoint,
         );
         spec.required_features = BTreeSet::from([FeatureFlag::SessionPersistence]);
+        // Upstream alias: /continue resolves to /resume.
+        spec.aliases = vec!["continue".into()];
         spec
     }
 }
@@ -391,6 +393,8 @@ impl ClearCommand {
             CommandKind::Local,
         );
         spec.required_features = BTreeSet::from([FeatureFlag::SessionPersistence]);
+        // Upstream aliases: /reset and /new both resolve to /clear.
+        spec.aliases = vec!["reset".into(), "new".into()];
         spec
     }
 }

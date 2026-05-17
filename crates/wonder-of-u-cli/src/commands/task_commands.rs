@@ -67,6 +67,8 @@ impl TasksCommand {
             CommandKind::Local,
         );
         spec.required_features = BTreeSet::from([FeatureFlag::BackgroundTasks]);
+        // Upstream alias: /bashes resolves to /tasks.
+        spec.aliases = vec!["bashes".into()];
         spec
     }
 }
