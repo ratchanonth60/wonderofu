@@ -26,10 +26,11 @@ mod features;
 mod fleet;
 mod fleet_plan;
 mod help;
+pub(crate) mod hook_commands;
 pub(crate) mod hooks;
 pub(crate) mod import;
-pub(crate) mod keybindings;
 pub(crate) mod keybinding_commands;
+pub(crate) mod keybindings;
 mod mcp;
 pub mod memory;
 pub(crate) mod output_style;
@@ -55,7 +56,6 @@ pub(crate) mod theme;
 mod tui;
 pub mod vim;
 pub(crate) mod workflow;
-pub(crate) mod hook_commands;
 
 use advanced::{BridgeCommand, DebugCommand, DiagnosticsCommand, VoiceCommand};
 use auth::{ConfigCommand, LoginCommand, LogoutCommand, ModelCommand};
@@ -76,6 +76,8 @@ pub(crate) use extras::{
 use features::FeaturesCommand;
 use fleet::FleetCommand;
 use help::HelpCommand;
+use hook_commands::HooksCommand;
+use keybinding_commands::KeybindingsCommand;
 use mcp::McpCommand;
 use plan_command::PlanCommand;
 use plugin::{PluginCommand, ReloadPluginsCommand};
@@ -83,9 +85,6 @@ use preferences::{
     BriefCommand, ColorCommand, EffortCommand, FastCommand, OptimizeTonkenCommand, ThemeCommand,
     VimCommand,
 };
-use keybinding_commands::KeybindingsCommand;
-use terminal_setup::TerminalSetupCommand;
-use hook_commands::HooksCommand;
 use privacy_settings::PrivacySettingsCommand;
 use project::{
     AddDirCommand, BranchCommand, ContextCommand, CopyCommand, DiffCommand, FilesCommand,
@@ -109,6 +108,7 @@ use status::{
 use summary::SummaryCommand;
 use tag::TagCommand;
 use task_commands::{AgentsCommand, TasksCommand};
+use terminal_setup::TerminalSetupCommand;
 use tui::TuiCommand;
 use workflow::{ExitCommand, PermissionsCommand};
 

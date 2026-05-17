@@ -412,8 +412,7 @@ mod tests {
             session_tags: Vec::new(),
             additional_working_directories: Vec::new(),
         };
-        let output =
-            super::hooks_open_output(&context, Some(dir.as_path())).expect("open output");
+        let output = super::hooks_open_output(&context, Some(dir.as_path())).expect("open output");
 
         assert!(output.contains("open_external=true"));
         assert!(output.contains(&format!(
