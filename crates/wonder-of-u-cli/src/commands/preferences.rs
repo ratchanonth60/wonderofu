@@ -72,11 +72,13 @@ impl ColorCommand {
 
     /// Handles command spec
     pub fn command_spec() -> CommandSpec {
+        // immediate=true: /color must not drain queued prompts after executing.
         CommandSpec::new(
             "color",
             "Set the prompt bar color for this session",
             CommandKind::Local,
         )
+        .with_immediate(true)
     }
 }
 
@@ -142,11 +144,13 @@ impl FastCommand {
 
     /// Handles command spec
     pub fn command_spec() -> CommandSpec {
+        // immediate=true: /fast must not drain queued prompts after executing.
         CommandSpec::new(
             "fast",
             "Show or change fast-mode model remapping",
             CommandKind::Local,
         )
+        .with_immediate(true)
     }
 }
 
@@ -163,11 +167,13 @@ impl EffortCommand {
 
     /// Handles command spec
     pub fn command_spec() -> CommandSpec {
+        // immediate=true: /effort must not drain queued prompts after executing.
         CommandSpec::new(
             "effort",
             "Show or change the active effort level",
             CommandKind::Local,
         )
+        .with_immediate(true)
     }
 }
 

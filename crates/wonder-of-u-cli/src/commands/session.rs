@@ -395,6 +395,8 @@ impl ClearCommand {
         spec.required_features = BTreeSet::from([FeatureFlag::SessionPersistence]);
         // Upstream aliases: /reset and /new both resolve to /clear.
         spec.aliases = vec!["reset".into(), "new".into()];
+        // immediate=true: /clear must not drain queued prompts after executing.
+        spec.immediate = true;
         spec
     }
 }

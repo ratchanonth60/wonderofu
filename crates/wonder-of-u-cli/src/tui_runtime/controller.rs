@@ -1794,6 +1794,8 @@ impl<'a> TuiController<'a> {
             )?
             .ok_or_else(|| WonderError::not_found("command", invocation.name.clone()))?,
         };
+        // Capture the immediate flag before consuming `command` via execute.
+        let is_immediate = command.spec().immediate;
         let output = block_on(command.execute(context, invocation.clone()))?;
         let (text, exit_requested) = command_output_text(output);
         if self.persistence.persisted {
@@ -1815,7 +1817,12 @@ impl<'a> TuiController<'a> {
             self.record_command_message(input, text.as_deref())?;
         }
         let _ = self.refresh_runtime_state()?;
-        self.drain_queued_commands(before_blocking)?;
+        // Immediate commands (e.g. /exit, /clear, /color, /effort, /fast,
+        // /hooks) must not trigger queued-prompt draining: they act
+        // synchronously and their side-effects should not cascade.
+        if !is_immediate {
+            self.drain_queued_commands(before_blocking)?;
+        }
         self.exit_requested |= exit_requested;
         if exit_requested {
             self.status_note = Some("exit requested".into());

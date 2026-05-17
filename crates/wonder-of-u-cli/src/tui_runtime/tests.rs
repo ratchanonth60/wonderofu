@@ -8271,3 +8271,105 @@ fn provider_form_picker_view_stage2_api_base_shows_plain_url() {
         view.query
     );
 }
+
+// ── immediate-flag tests ──────────────────────────────────────────────────────
+
+/// All six commands that must bypass queued-prompt draining carry
+/// `immediate = true` in the registry spec.
+#[test]
+fn immediate_commands_have_immediate_flag_set_in_registry() {
+    let dir = unique_test_dir("tui-immediate-specs");
+    let registry = commands::registry(Some(dir.clone())).expect("registry");
+
+    // /clear requires SessionPersistence but resolve_spec bypasses availability
+    // checking, so all six can be looked up unconditionally.
+    for name in ["exit", "clear", "color", "effort", "fast", "hooks"] {
+        let spec = registry
+            .resolve_spec(name)
+            .unwrap_or_else(|| panic!("/{name} not registered"));
+        assert!(
+            spec.immediate,
+            "/{name} must have immediate=true so queued-prompt draining is skipped"
+        );
+    }
+}
+
+/// `/exit` is an immediate command: executing it must not drain any queued
+/// prompts that were enqueued before the command ran.
+///
+/// We use `storage_dir=None` so that `persistence.persisted` stays `false` and
+/// `restore_current_session` is never called — which would otherwise wipe the
+/// in-memory queue by replacing the entire `AppState` from storage.
+#[test]
+fn exit_command_does_not_drain_queued_prompts() {
+    let dir = unique_test_dir("tui-exit-no-drain");
+    let registry = commands::registry(Some(dir.clone())).expect("registry");
+    // storage_dir=None → persistence.persisted=false → restore_current_session
+    // is never triggered, preserving our manually-seeded queued_commands.
+    let mut controller = TuiController::new(
+        test_context(&dir),
+        &registry,
+        None,
+        TuiLaunchOptions { session_id: None },
+    )
+    .expect("controller");
+
+    // Pre-seed the queue with a prompt that would normally be drained.
+    controller
+        .state
+        .queue_command("hello world", QueuePlacement::Later);
+    assert_eq!(controller.state.queued_commands.len(), 1);
+
+    controller
+        .execute_slash_command("/exit")
+        .expect("execute /exit");
+
+    assert_eq!(
+        controller.state.queued_commands.len(),
+        1,
+        "/exit (immediate) must not drain queued prompts"
+    );
+    // exit_requested must still be honoured.
+    assert!(
+        controller.exit_requested,
+        "/exit must set exit_requested regardless of immediate flag"
+    );
+}
+
+/// A non-immediate command (e.g. `/model`) must drain queued commands after
+/// execution.  We seed the queue with an empty string, which
+/// `drain_queued_commands` will pop and discard, so the queue ends up empty.
+///
+/// `storage_dir=None` is used for the same reason as the exit test: to keep
+/// `persistence.persisted=false` and avoid `restore_current_session` wiping
+/// the queue before drain runs.
+#[test]
+fn non_immediate_command_drains_queued_empty_prompt() {
+    let _api_key = EnvVarGuard::set("ANTHROPIC_API_KEY", "");
+    let _oai_key = EnvVarGuard::set("OPENAI_API_KEY", "");
+    let dir = unique_test_dir("tui-non-immediate-drain");
+    let registry = commands::registry(Some(dir.clone())).expect("registry");
+    let mut controller = TuiController::new(
+        test_context(&dir),
+        &registry,
+        None,
+        TuiLaunchOptions { session_id: None },
+    )
+    .expect("controller");
+
+    // An empty-string queued command is popped and skipped by drain, so it
+    // exercises the drain path without attempting a model call.
+    controller.state.queue_command("", QueuePlacement::Later);
+    assert_eq!(controller.state.queued_commands.len(), 1);
+
+    // /model is not immediate — drain runs after execution.
+    controller
+        .execute_slash_command("/model openai:gpt-4.1")
+        .expect("execute /model");
+
+    assert_eq!(
+        controller.state.queued_commands.len(),
+        0,
+        "non-immediate command (/model) must drain queued commands"
+    );
+}

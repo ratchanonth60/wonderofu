@@ -69,6 +69,12 @@ pub struct CommandSpec {
     /// Stores the interactive only
     #[serde(default)]
     pub interactive_only: bool,
+    /// When `true` the command executes synchronously and bypasses queued-prompt
+    /// draining afterward.  Use this for commands like `/exit`, `/clear`,
+    /// `/color`, `/effort`, `/fast`, and `/hooks` whose side-effects must not
+    /// be followed by an automatic prompt submission.
+    #[serde(default)]
+    pub immediate: bool,
 }
 
 impl CommandSpec {
@@ -85,7 +91,27 @@ impl CommandSpec {
             hidden: false,
             requires_auth: false,
             interactive_only: false,
+            immediate: false,
         }
+    }
+
+    /// Marks this command as immediate, bypassing queued-prompt draining.
+    ///
+    /// Returns `self` to allow builder-style construction.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use wonder_of_u_core::command::{CommandSpec, CommandKind};
+    ///
+    /// let spec = CommandSpec::new("exit", "Exit the CLI", CommandKind::Local)
+    ///     .with_immediate(true);
+    /// assert!(spec.immediate);
+    /// ```
+    #[must_use]
+    pub fn with_immediate(mut self, immediate: bool) -> Self {
+        self.immediate = immediate;
+        self
     }
 
     /// Validates the value
@@ -504,5 +530,46 @@ mod tests {
 
         let error = spec.validate().expect_err("duplicate alias");
         assert!(error.to_string().contains("duplicate command alias"));
+    }
+
+    // ── immediate flag tests ──────────────────────────────────────────────────
+
+    #[test]
+    fn command_spec_immediate_defaults_to_false() {
+        let spec = CommandSpec::new("check", "verify something", CommandKind::Local);
+        assert!(!spec.immediate, "immediate should default to false");
+    }
+
+    #[test]
+    fn command_spec_with_immediate_sets_flag() {
+        let spec =
+            CommandSpec::new("exit", "Request CLI exit", CommandKind::Local).with_immediate(true);
+        assert!(spec.immediate);
+    }
+
+    #[test]
+    fn command_spec_with_immediate_false_clears_flag() {
+        let mut spec = CommandSpec::new("exit", "Request CLI exit", CommandKind::Local);
+        spec.immediate = true;
+        let spec = spec.with_immediate(false);
+        assert!(!spec.immediate);
+    }
+
+    #[test]
+    fn command_spec_immediate_round_trips_through_serde() {
+        let spec =
+            CommandSpec::new("exit", "Request CLI exit", CommandKind::Local).with_immediate(true);
+        let json = serde_json::to_string(&spec).expect("serialize");
+        let decoded: CommandSpec = serde_json::from_str(&json).expect("deserialize");
+        assert!(decoded.immediate);
+    }
+
+    #[test]
+    fn command_spec_immediate_defaults_in_serde_missing_field() {
+        // A JSON payload without the `immediate` key must deserialise with
+        // `immediate = false` thanks to `#[serde(default)]`.
+        let json = r#"{"name":"exit","description":"quit","kind":"local","source":"built_in"}"#;
+        let spec: CommandSpec = serde_json::from_str(json).expect("deserialize");
+        assert!(!spec.immediate);
     }
 }

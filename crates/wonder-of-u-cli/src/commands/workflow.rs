@@ -213,7 +213,8 @@ impl ExitCommand {
     ///
     /// The alias `quit` is the conventional REPL shorthand supported upstream.
     pub fn command_spec() -> CommandSpec {
-        let mut spec = CommandSpec::new("exit", "Request CLI exit", CommandKind::Local);
+        let mut spec =
+            CommandSpec::new("exit", "Request CLI exit", CommandKind::Local).with_immediate(true);
         // Upstream alias: /quit resolves to /exit.
         spec.aliases = vec!["quit".into()];
         spec
