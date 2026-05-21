@@ -27,6 +27,18 @@ fn fake_server_config(exit_after: Option<&str>) -> McpServerConfig {
     }
 }
 
+fn fake_server_config_with_env(env: BTreeMap<String, String>) -> McpServerConfig {
+    McpServerConfig {
+        name: "demo".into(),
+        command: fake_server_path(),
+        args: Vec::new(),
+        env,
+        enabled: true,
+        cwd: None,
+        protocol_version: None,
+    }
+}
+
 #[tokio::test]
 async fn integration_mcp_fake_server_tool_call() {
     let mut client = McpClient::connect(
@@ -130,6 +142,29 @@ async fn integration_mcp_client_reconnects_after_server_restart() {
             .map(|tool| tool.name.as_str())
             .collect::<Vec<_>>(),
         vec!["Echo Text"]
+    );
+}
+
+#[tokio::test]
+async fn integration_mcp_rejects_oversized_message_before_allocation() {
+    let config = fake_server_config_with_env(BTreeMap::from([(
+        "WONDER_OF_U_FAKE_MCP_OVERSIZE_ON".into(),
+        "tools/list".into(),
+    )]));
+    let mut client = McpClient::connect(&config, &McpClientIdentity::default(), "2024-11-05")
+        .expect("connect fake server");
+
+    let error = timeout(
+        Duration::from_secs(1),
+        tokio::task::spawn_blocking(move || client.list_tools()),
+    )
+    .await
+    .expect("oversized response should not hang")
+    .expect("join blocking task")
+    .expect_err("oversized content length should fail");
+    assert!(
+        error.to_string().contains("exceeds maximum"),
+        "unexpected error: {error}"
     );
 }
 

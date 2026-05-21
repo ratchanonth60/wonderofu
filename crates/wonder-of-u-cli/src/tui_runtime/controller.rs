@@ -470,6 +470,15 @@ impl<'a> TuiController<'a> {
             return Ok(());
         }
 
+        if let Some(ResolvedKey::System(
+            system @ (wonder_of_u_tui::SystemAction::OpenModelPicker
+            | wonder_of_u_tui::SystemAction::ToggleThinking
+            | wonder_of_u_tui::SystemAction::ToggleFastMode),
+        )) = resolved
+        {
+            return self.handle_prompt_hotkey_system_action(system, before_blocking);
+        }
+
         let Some(resolved) = resolved else {
             return if self.vim_enabled
                 && (self.vim.mode() == VimMode::Normal || key.code == KeyCode::Esc)
@@ -519,6 +528,38 @@ impl<'a> TuiController<'a> {
                 Ok(())
             }
             ResolvedKey::Vim(_) => Ok(()),
+        }
+    }
+
+    fn handle_prompt_hotkey_system_action<F>(
+        &mut self,
+        system: wonder_of_u_tui::SystemAction,
+        before_blocking: &mut F,
+    ) -> Result<()>
+    where
+        F: FnMut(&Self) -> Result<()>,
+    {
+        match system {
+            wonder_of_u_tui::SystemAction::OpenModelPicker => {
+                self.execute_slash_command_with("/model", before_blocking)
+            }
+            wonder_of_u_tui::SystemAction::ToggleThinking => {
+                let command = if self.state.thinking_enabled {
+                    "/thinking off"
+                } else {
+                    "/thinking on"
+                };
+                self.execute_slash_command_with(command, before_blocking)
+            }
+            wonder_of_u_tui::SystemAction::ToggleFastMode => {
+                let command = if self.state.fast_mode {
+                    "/fast off"
+                } else {
+                    "/fast on"
+                };
+                self.execute_slash_command_with(command, before_blocking)
+            }
+            _ => self.handle_system_action(system),
         }
     }
 
@@ -624,6 +665,9 @@ impl<'a> TuiController<'a> {
                 self.toggle_expand_tool_output();
                 Ok(())
             }
+            wonder_of_u_tui::SystemAction::OpenModelPicker
+            | wonder_of_u_tui::SystemAction::ToggleThinking
+            | wonder_of_u_tui::SystemAction::ToggleFastMode => Ok(()),
         }
     }
 

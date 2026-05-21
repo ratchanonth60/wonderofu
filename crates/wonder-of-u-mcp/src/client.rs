@@ -18,6 +18,7 @@ use crate::{
 };
 
 const PROCESS_EXIT_TIMEOUT: Duration = Duration::from_millis(250);
+const MAX_MCP_MESSAGE_BYTES: usize = 64 * 1024 * 1024;
 /// Represents mcp client
 #[derive(Debug)]
 pub struct McpClient {
@@ -254,6 +255,9 @@ impl McpClient {
                 if envelope.id == Some(request_id) {
                     return Ok(envelope.into_response());
                 }
+                if envelope.id.is_some_and(|id| id < request_id) {
+                    continue;
+                }
                 return Err(WonderError::internal(format!(
                     "received out-of-order mcp response for id {:?} while waiting for {request_id}",
                     envelope.id
@@ -307,6 +311,12 @@ impl McpClient {
                 self.config.name
             ))
         })?;
+        if content_length > MAX_MCP_MESSAGE_BYTES {
+            return Err(WonderError::internal(format!(
+                "mcp server `{}` content length {content_length} exceeds maximum {MAX_MCP_MESSAGE_BYTES} bytes",
+                self.config.name
+            )));
+        }
         let mut body = vec![0; content_length];
         reader.read_exact(&mut body)?;
         serde_json::from_slice(&body).map_err(Into::into)

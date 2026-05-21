@@ -27,6 +27,12 @@ pub enum SystemAction {
     OpenGlobalSearch,
     /// Represents expanding or collapsing grouped tool output
     ExpandToolOutput,
+    /// Open the model picker from the prompt.
+    OpenModelPicker,
+    /// Toggle extended-thinking mode from the prompt.
+    ToggleThinking,
+    /// Toggle fast model mode from the prompt.
+    ToggleFastMode,
 }
 /// Enumerates vim command
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -211,6 +217,12 @@ const CONTROL: KeyModifiers = KeyModifiers {
     alt: false,
 };
 
+const ALT: KeyModifiers = KeyModifiers {
+    shift: false,
+    control: false,
+    alt: true,
+};
+
 const RESERVED_BINDINGS: [KeyBinding; 5] = [
     KeyBinding {
         context: KeyBindingContext::Any,
@@ -254,7 +266,7 @@ const RESERVED_BINDINGS: [KeyBinding; 5] = [
     },
 ];
 
-fn prompt_bindings(context: KeyBindingContext) -> [KeyBinding; 13] {
+fn prompt_bindings(context: KeyBindingContext) -> [KeyBinding; 16] {
     [
         bind(
             context,
@@ -334,6 +346,24 @@ fn prompt_bindings(context: KeyBindingContext) -> [KeyBinding; 13] {
             KeyCode::Enter,
             SHIFT,
             ResolvedKey::Edit(EditAction::InsertLiteralNewline),
+        ),
+        bind(
+            context,
+            KeyCode::Char('p'),
+            ALT,
+            ResolvedKey::System(SystemAction::OpenModelPicker),
+        ),
+        bind(
+            context,
+            KeyCode::Char('t'),
+            ALT,
+            ResolvedKey::System(SystemAction::ToggleThinking),
+        ),
+        bind(
+            context,
+            KeyCode::Char('o'),
+            ALT,
+            ResolvedKey::System(SystemAction::ToggleFastMode),
         ),
     ]
 }
@@ -514,6 +544,42 @@ mod tests {
                 }
             ),
             Some(ResolvedKey::InsertChar('x'))
+        );
+    }
+
+    #[test]
+    fn resolver_maps_meta_prompt_hotkeys() {
+        let resolver = KeyBindingResolver::new();
+
+        assert_eq!(
+            resolver.resolve(
+                KeyBindingContext::Prompt,
+                KeyEvent {
+                    code: KeyCode::Char('p'),
+                    modifiers: ALT,
+                }
+            ),
+            Some(ResolvedKey::System(SystemAction::OpenModelPicker))
+        );
+        assert_eq!(
+            resolver.resolve(
+                KeyBindingContext::Prompt,
+                KeyEvent {
+                    code: KeyCode::Char('t'),
+                    modifiers: ALT,
+                }
+            ),
+            Some(ResolvedKey::System(SystemAction::ToggleThinking))
+        );
+        assert_eq!(
+            resolver.resolve(
+                KeyBindingContext::Prompt,
+                KeyEvent {
+                    code: KeyCode::Char('o'),
+                    modifiers: ALT,
+                }
+            ),
+            Some(ResolvedKey::System(SystemAction::ToggleFastMode))
         );
     }
 

@@ -164,6 +164,16 @@ fn ctrl_r_key() -> KeyEvent {
     }
 }
 
+fn alt_key(ch: char) -> KeyEvent {
+    KeyEvent {
+        code: KeyCode::Char(ch),
+        modifiers: wonder_of_u_tui::KeyModifiers {
+            alt: true,
+            ..wonder_of_u_tui::KeyModifiers::default()
+        },
+    }
+}
+
 fn shift_backtab_key() -> KeyEvent {
     KeyEvent {
         code: KeyCode::BackTab,
@@ -2082,6 +2092,83 @@ fn thinking_slash_command_toggles_and_reports_state() {
         "expected status to start with 'thinking off', got {:?}",
         controller.status_note
     );
+}
+
+#[test]
+fn controller_meta_t_toggles_thinking_mode() {
+    let dir = unique_test_dir("tui-thinking-meta-toggle");
+    let registry = commands::registry(Some(dir.clone())).expect("registry");
+    let mut controller = TuiController::new(
+        test_context(&dir),
+        &registry,
+        Some(dir.as_path()),
+        TuiLaunchOptions { session_id: None },
+    )
+    .expect("controller");
+    controller.pending_setup_overlay = None;
+    controller.dialog = None;
+
+    send_prompt_key(&mut controller, alt_key('t'));
+    assert!(controller.state.thinking_enabled);
+    assert_eq!(controller.status_note.as_deref(), Some("thinking on"));
+    assert!(matches!(
+        controller.state.messages.last().map(|message| &message.payload),
+        Some(MessagePayload::Command { input, .. }) if input == "/thinking on"
+    ));
+
+    send_prompt_key(&mut controller, alt_key('t'));
+    assert!(!controller.state.thinking_enabled);
+    assert_eq!(controller.status_note.as_deref(), Some("thinking off"));
+}
+
+#[test]
+fn controller_meta_o_toggles_fast_mode() {
+    let dir = unique_test_dir("tui-fast-meta-toggle");
+    let registry = commands::registry(Some(dir.clone())).expect("registry");
+    let mut controller = TuiController::new(
+        test_context(&dir),
+        &registry,
+        Some(dir.as_path()),
+        TuiLaunchOptions { session_id: None },
+    )
+    .expect("controller");
+    controller.pending_setup_overlay = None;
+    controller.dialog = None;
+
+    send_prompt_key(&mut controller, alt_key('o'));
+    assert!(controller.state.fast_mode);
+    assert_eq!(controller.status_note.as_deref(), Some("fast on"));
+    assert!(matches!(
+        controller.state.messages.last().map(|message| &message.payload),
+        Some(MessagePayload::Command { input, .. }) if input == "/fast on"
+    ));
+
+    send_prompt_key(&mut controller, alt_key('o'));
+    assert!(!controller.state.fast_mode);
+    assert_eq!(controller.status_note.as_deref(), Some("fast off"));
+}
+
+#[test]
+fn controller_meta_p_opens_model_picker() {
+    let dir = unique_test_dir("tui-model-meta-picker");
+    let registry = commands::registry(Some(dir.clone())).expect("registry");
+    let mut controller = TuiController::new(
+        test_context(&dir),
+        &registry,
+        Some(dir.as_path()),
+        TuiLaunchOptions { session_id: None },
+    )
+    .expect("controller");
+    controller.pending_setup_overlay = None;
+    controller.dialog = None;
+
+    send_prompt_key(&mut controller, alt_key('p'));
+
+    assert!(controller.pending_model_picker.is_some());
+    assert!(matches!(
+        controller.dialog.as_ref(),
+        Some(dialog) if dialog.title == "Model picker"
+    ));
 }
 
 #[test]
