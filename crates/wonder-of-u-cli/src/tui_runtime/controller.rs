@@ -398,7 +398,7 @@ impl<'a> TuiController<'a> {
         // Some terminals collapse modified Enter handling inconsistently even when
         // the keymap contains an explicit Shift+Enter binding, so keep a direct
         // multiline composition path here as a safety net.
-        if key.code == KeyCode::Enter && key.modifiers.shift && self.vim.mode() != VimMode::Normal {
+        if key.code == KeyCode::Enter && key.modifiers.shift && self.vim.mode() == VimMode::Insert {
             self.prompt
                 .apply_edit_action(EditAction::InsertLiteralNewline);
             self.turn_state = TurnState::EditingInput;
@@ -481,14 +481,14 @@ impl<'a> TuiController<'a> {
 
         let Some(resolved) = resolved else {
             return if self.vim_enabled
-                && (self.vim.mode() == VimMode::Normal || key.code == KeyCode::Esc)
+                && (self.vim.mode() != VimMode::Insert || key.code == KeyCode::Esc)
             {
                 self.handle_vim_key(key)
             } else {
                 Ok(())
             };
         };
-        if self.vim_enabled && (self.vim.mode() == VimMode::Normal || key.code == KeyCode::Esc) {
+        if self.vim_enabled && (self.vim.mode() != VimMode::Insert || key.code == KeyCode::Esc) {
             return self.handle_vim_key(key);
         }
 
@@ -575,6 +575,7 @@ impl<'a> TuiController<'a> {
             VimMode::Insert => "vim insert".into(),
             VimMode::Normal if self.vim.has_pending_operator() => "vim operator pending".into(),
             VimMode::Normal => "vim normal".into(),
+            VimMode::Visual => "vim visual".into(),
         });
         self.needs_render = true;
         Ok(())
@@ -1906,6 +1907,7 @@ impl<'a> TuiController<'a> {
             self.status_note = Some(match self.vim.mode() {
                 VimMode::Insert => "vim insert".into(),
                 VimMode::Normal => "vim normal".into(),
+                VimMode::Visual => "vim visual".into(),
             });
         } else if parse_insights_hint(text.as_deref().unwrap_or_default()) {
             self.status_note = Some("insights queued".into());
@@ -2042,7 +2044,7 @@ impl<'a> TuiController<'a> {
             self.vim_enabled = true;
             self.vim = VimState::new(match self.vim.mode() {
                 VimMode::Insert => VimMode::Normal,
-                VimMode::Normal => VimMode::Insert,
+                VimMode::Normal | VimMode::Visual => VimMode::Insert,
             });
         }
         if let Some(mode) = parse_vim_mode_hint(text) {
@@ -2712,6 +2714,7 @@ impl<'a> TuiController<'a> {
             match self.vim.mode() {
                 VimMode::Insert => " · vim:insert",
                 VimMode::Normal => " · vim:normal",
+                VimMode::Visual => " · vim:visual",
             }
         } else {
             ""
