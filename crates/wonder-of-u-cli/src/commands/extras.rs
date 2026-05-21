@@ -14,8 +14,9 @@ use serde_json::{Value, json};
 use time::OffsetDateTime;
 use wonder_of_u_agent::{AuthMaterial, CredentialStore, SettingsStore};
 use wonder_of_u_core::{
-    Command, CommandContext, CommandInvocation, CommandKind, CommandOutput, CommandSpec,
-    MessageEnvelope, MessagePayload, Result, SessionId, ToolSpec,
+    AppState, AuthMaterialKind, AuthState, Command, CommandContext, CommandInvocation, CommandKind,
+    CommandOutput, CommandSpec, MessageEnvelope, MessagePayload, Result, SessionId, ToolSpec,
+    WonderError, app::ThinkingEffort, permission_mode_label,
 };
 use wonder_of_u_storage::{STORAGE_SCHEMA_VERSION, SessionMetadata, StoragePaths, TranscriptStore};
 
@@ -266,25 +267,23 @@ impl StickersCommand {
     }
 }
 
-/// Represents rewind command
-pub struct RewindCommand {
-    storage_dir: Option<PathBuf>,
-}
+/// Represents x402 command
+pub struct X402Command;
 
-impl RewindCommand {
+impl X402Command {
     /// Constant fn
-    pub const fn new(storage_dir: Option<PathBuf>) -> Self {
-        Self { storage_dir }
+    pub const fn new() -> Self {
+        Self
     }
 
     /// Handles command spec
     pub fn command_spec() -> CommandSpec {
         let mut spec = CommandSpec::new(
-            "rewind",
-            "Restore the conversation to a previous checkpoint",
+            "x402",
+            "Show x402 payment integration status",
             CommandKind::Local,
         );
-        spec.aliases.push("checkpoint".into());
+        spec.hidden = true;
         spec
     }
 }
@@ -434,7 +433,11 @@ impl OnboardingCommand {
     }
 }
 
-/// Represents teleport command
+/// Lists local sessions; remote teleport is not available in this Rust port.
+///
+/// When `FeatureFlag::RemoteTriggers` is enabled in a future release this
+/// command will gain actual remote-session switching.  Until then it is a
+/// local-first session browser only.
 pub struct TeleportCommand;
 
 impl TeleportCommand {
@@ -447,45 +450,57 @@ impl TeleportCommand {
     pub fn command_spec() -> CommandSpec {
         CommandSpec::new(
             "teleport",
-            "Teleport to a remote Claude Code session",
+            "List local sessions (remote teleport: not available in this build)",
             CommandKind::Local,
         )
     }
 }
 
-/// Represents remote env command
-pub struct RemoteEnvCommand;
+/// Shows stored remote-env config; transport is inert in this local-first build.
+///
+/// Config values are preserved for forward compatibility with a future release
+/// gated on `FeatureFlag::RemoteTriggers`; they do not drive any live
+/// connection today.
+pub struct RemoteEnvCommand {
+    storage_dir: Option<PathBuf>,
+}
 
 impl RemoteEnvCommand {
-    /// Constant fn
-    pub const fn new() -> Self {
-        Self
+    /// Creates a command backed by the configured storage directory.
+    pub fn new(storage_dir: Option<PathBuf>) -> Self {
+        Self { storage_dir }
     }
 
     /// Handles command spec
     pub fn command_spec() -> CommandSpec {
         CommandSpec::new(
             "remote-env",
-            "Configure the default remote environment for teleport sessions",
+            "Show stored remote-env config (transport inactive; remote sessions unavailable)",
             CommandKind::Local,
         )
     }
 }
 
-/// Represents remote setup command
-pub struct RemoteSetupCommand;
+/// Stores remote-setup config for forward compatibility; no live transport.
+///
+/// Config is persisted so it survives a future upgrade that enables
+/// `FeatureFlag::RemoteTriggers`, but it does not activate any remote
+/// session today.
+pub struct RemoteSetupCommand {
+    storage_dir: Option<PathBuf>,
+}
 
 impl RemoteSetupCommand {
-    /// Constant fn
-    pub const fn new() -> Self {
-        Self
+    /// Creates a command backed by the configured storage directory.
+    pub fn new(storage_dir: Option<PathBuf>) -> Self {
+        Self { storage_dir }
     }
 
     /// Handles command spec
     pub fn command_spec() -> CommandSpec {
         let mut spec = CommandSpec::new(
             "web-setup",
-            "Set up Claude Code on the web (requires Claude.ai account)",
+            "Store remote/web session config only (transport unavailable in this Rust build)",
             CommandKind::Local,
         );
         spec.aliases.push("remote-setup".into());
@@ -493,7 +508,10 @@ impl RemoteSetupCommand {
     }
 }
 
-/// Represents bridge kick command
+/// No-op stub; the remote bridge transport is not implemented in this build.
+///
+/// When `FeatureFlag::RemoteTriggers` is available this command will attempt
+/// an actual bridge reconnect.  For now it reports unavailability only.
 pub struct BridgeKickCommand;
 
 impl BridgeKickCommand {
@@ -515,12 +533,14 @@ impl BridgeKickCommand {
 }
 
 /// Represents sandbox toggle command
-pub struct SandboxToggleCommand;
+pub struct SandboxToggleCommand {
+    storage_dir: Option<PathBuf>,
+}
 
 impl SandboxToggleCommand {
-    /// Constant fn
-    pub const fn new() -> Self {
-        Self
+    /// Creates a command backed by the configured storage directory.
+    pub fn new(storage_dir: Option<PathBuf>) -> Self {
+        Self { storage_dir }
     }
 
     /// Handles command spec
@@ -535,20 +555,29 @@ impl SandboxToggleCommand {
     }
 }
 
-/// Represents ultraplan command
-pub struct UltraplanCommand;
+/// Enables ultraplan flag for local planning guidance only.
+///
+/// Cloud-based multi-agent exploration requires a Claude.ai/cloud backend
+/// that is not available in this Rust local-first build.  The flag is stored
+/// so local planning prompts can include extra decomposition guidance; it does
+/// not activate any remote agent today.
+///
+/// Full cloud multi-agent support is gated on `FeatureFlag::RemoteTriggers`.
+pub struct UltraplanCommand {
+    storage_dir: Option<PathBuf>,
+}
 
 impl UltraplanCommand {
-    /// Constant fn
-    pub const fn new() -> Self {
-        Self
+    /// Creates a command backed by the configured storage directory.
+    pub fn new(storage_dir: Option<PathBuf>) -> Self {
+        Self { storage_dir }
     }
 
     /// Handles command spec
     pub fn command_spec() -> CommandSpec {
         CommandSpec::new(
             "ultraplan",
-            "Launch a multi-agent remote exploration (requires Claude.ai)",
+            "Enable extended local planning guidance (cloud multi-agent: not available)",
             CommandKind::Local,
         )
     }
@@ -635,27 +664,6 @@ impl PrCommentsCommand {
             CommandKind::NonInteractive,
         );
         spec.aliases.push("pr_comments".into());
-        spec
-    }
-}
-
-/// Represents summary command
-pub struct SummaryCommand;
-
-impl SummaryCommand {
-    /// Constant fn
-    pub const fn new() -> Self {
-        Self
-    }
-
-    /// Handles command spec
-    pub fn command_spec() -> CommandSpec {
-        let mut spec = CommandSpec::new(
-            "summary",
-            "Show summary guidance for the current session",
-            CommandKind::NonInteractive,
-        );
-        spec.hidden = true;
         spec
     }
 }
@@ -1079,20 +1087,17 @@ impl Command for StickersCommand {
 }
 
 #[async_trait]
-impl Command for RewindCommand {
+impl Command for X402Command {
     fn spec(&self) -> CommandSpec {
         Self::command_spec()
     }
 
     async fn execute(
         &self,
-        context: CommandContext,
+        _context: CommandContext,
         _invocation: CommandInvocation,
     ) -> Result<CommandOutput> {
-        Ok(CommandOutput::Text(render_rewind(
-            self.storage_dir.as_deref(),
-            &context,
-        )?))
+        Ok(CommandOutput::Text(render_x402_status().into()))
     }
 }
 
@@ -1244,8 +1249,9 @@ impl Command for RemoteEnvCommand {
         _context: CommandContext,
         _invocation: CommandInvocation,
     ) -> Result<CommandOutput> {
+        let storage_dir = self.storage_dir.clone().or_else(|| storage_root(None));
         Ok(CommandOutput::Text(render_remote_env(
-            storage_root(None).as_deref(),
+            storage_dir.as_deref(),
         )?))
     }
 }
@@ -1261,8 +1267,9 @@ impl Command for RemoteSetupCommand {
         _context: CommandContext,
         invocation: CommandInvocation,
     ) -> Result<CommandOutput> {
+        let storage_dir = self.storage_dir.clone().or_else(|| storage_root(None));
         Ok(CommandOutput::Text(remote_setup(
-            storage_root(None).as_deref(),
+            storage_dir.as_deref(),
             invocation.args.trim(),
         )?))
     }
@@ -1296,8 +1303,9 @@ impl Command for SandboxToggleCommand {
         _context: CommandContext,
         invocation: CommandInvocation,
     ) -> Result<CommandOutput> {
+        let storage_dir = self.storage_dir.clone().or_else(|| storage_root(None));
         Ok(CommandOutput::Text(toggle_sandbox(
-            storage_root(None).as_deref(),
+            storage_dir.as_deref(),
             invocation.args.trim(),
         )?))
     }
@@ -1314,8 +1322,9 @@ impl Command for UltraplanCommand {
         _context: CommandContext,
         _invocation: CommandInvocation,
     ) -> Result<CommandOutput> {
+        let storage_dir = self.storage_dir.clone().or_else(|| storage_root(None));
         Ok(CommandOutput::Text(enable_ultraplan(
-            storage_root(None).as_deref(),
+            storage_dir.as_deref(),
         )?))
     }
 }
@@ -1389,24 +1398,6 @@ impl Command for PrCommentsCommand {
             ))));
         }
         Ok(CommandOutput::Text(fetch_pr_comments(args)))
-    }
-}
-
-#[async_trait]
-impl Command for SummaryCommand {
-    fn spec(&self) -> CommandSpec {
-        Self::command_spec()
-    }
-
-    async fn execute(
-        &self,
-        context: CommandContext,
-        _invocation: CommandInvocation,
-    ) -> Result<CommandOutput> {
-        Ok(CommandOutput::Text(render_summary(
-            storage_root(None).as_deref(),
-            &context,
-        )?))
     }
 }
 
@@ -1754,46 +1745,6 @@ fn recommend_advisor(task: &str) -> String {
     format!("Advisor recommendation: {recommendation}\nreason={task}")
 }
 
-fn render_rewind(storage_dir: Option<&Path>, context: &CommandContext) -> Result<String> {
-    let Some(storage_dir) = storage_dir else {
-        return Ok(
-            "Rewind: no checkpoints found in current session. Use /compact to create a checkpoint."
-                .into(),
-        );
-    };
-    let store = TranscriptStore::new(storage_dir);
-    let mut checkpoints = Vec::new();
-    if let Some(snapshot) = store.read_snapshot_if_exists(context.session_id)? {
-        checkpoints.push(format!(
-            "• current session ({}) - {} messages",
-            context.session_id,
-            snapshot.state.messages.len()
-        ));
-    }
-    for metadata in store.list_metadata()?.into_iter().take(10) {
-        if metadata.session_id == context.session_id {
-            continue;
-        }
-        if let Some(snapshot) = store.read_snapshot_if_exists(metadata.session_id)? {
-            checkpoints.push(format!(
-                "• {} - {} ({})",
-                metadata.session_id,
-                metadata.title,
-                snapshot.state.messages.len()
-            ));
-        }
-    }
-    if checkpoints.is_empty() {
-        return Ok(
-            "Rewind: no checkpoints found in current session. Use /compact to create a checkpoint."
-                .into(),
-        );
-    }
-    let mut lines = vec!["Rewind checkpoints:".into()];
-    lines.extend(checkpoints);
-    Ok(lines.join("\n"))
-}
-
 fn verifier_tool_names(tool_specs: &[ToolSpec]) -> Vec<String> {
     tool_specs
         .iter()
@@ -1961,16 +1912,25 @@ fn render_stickers() -> &'static str {
     "Claude stickers\n /\\_/\\\\\n( ^.^ )\n > ^ <\n\n(=^･ω･^=)\n  /|_|\\\\"
 }
 
+fn render_x402_status() -> &'static str {
+    "x402 payment integration is not available in this local-first Rust port.\nstatus=deferred\nscope=product-integration"
+}
+
 fn render_teleport(storage_dir: Option<&Path>, session_id: SessionId) -> Result<String> {
     let Some(storage_dir) = storage_dir else {
-        return Ok("Teleport: storage directory unavailable.".into());
+        return Ok(
+            "Local sessions: storage directory unavailable. remote teleport: not available.".into(),
+        );
     };
     let store = TranscriptStore::new(storage_dir);
     let metadata = store.list_metadata()?;
     if metadata.is_empty() {
-        return Ok("Teleport: no stored sessions found.".into());
+        return Ok(
+            "Local sessions: none found. remote teleport: not available in this build.".into(),
+        );
     }
-    let mut lines = vec!["Teleport sessions".into()];
+    // Remote teleport is not implemented; this lists local sessions only.
+    let mut lines = vec!["Local sessions (remote teleport: not available in this build)".into()];
     for entry in metadata.into_iter().take(10) {
         let snapshot = store.read_snapshot_if_exists(entry.session_id)?.is_some();
         let status = if entry.session_id == session_id {
@@ -1991,24 +1951,35 @@ fn render_teleport(storage_dir: Option<&Path>, session_id: SessionId) -> Result<
 fn render_remote_env(storage_dir: Option<&Path>) -> Result<String> {
     let config = read_extras_config(storage_dir)?;
     Ok(match config.remote {
+        // Config was saved for forward compatibility but the transport is inert.
         Some(remote) => format!(
-            "Remote environment\nhost={}\nport={}\nauth={}",
+            "Remote environment (transport inactive — remote sessions not available in this build)\nhost={}\nport={}\nauth={}\nstatus=config stored for future use only\nSee /status for build capabilities.",
             remote.host, remote.port, remote.auth
         ),
-        None => "Remote environment not configured.\nUse /remote-setup <host[:port]> [auth]".into(),
+        None => concat!(
+            "Remote sessions are not available in this Rust local-first build.\n",
+            "No remote-env config is stored.\n",
+            "See /status for build capabilities."
+        )
+        .into(),
     })
 }
 
 fn remote_setup(storage_dir: Option<&Path>, args: &str) -> Result<String> {
+    // Config is persisted for forward compatibility even though remote session
+    // transport is not implemented in this Rust local-first build.
     if args.is_empty() {
-        return render_remote_env(storage_dir)
-            .map(|current| format!("{current}\nusage=/remote-setup example.com:22 ssh"));
+        return render_remote_env(storage_dir).map(|current| {
+            format!(
+                "{current}\nusage=/remote-setup example.com:22 ssh\nNote: stores config only; remote/web session transport is unavailable in this Rust build."
+            )
+        });
     }
     let mut config = read_extras_config(storage_dir)?;
     if args.eq_ignore_ascii_case("clear") {
         config.remote = None;
         write_extras_config(storage_dir, &config)?;
-        return Ok("Remote environment cleared.".into());
+        return Ok("Remote environment config cleared.\nNote: remote session transport is not implemented.".into());
     }
     let mut parts = args.split_whitespace();
     let host_port = parts.next().unwrap_or_default();
@@ -2019,18 +1990,22 @@ fn remote_setup(storage_dir: Option<&Path>, args: &str) -> Result<String> {
     };
     config.remote = Some(RemoteEnvConfig { host, port, auth });
     write_extras_config(storage_dir, &config)?;
-    render_remote_env(storage_dir)
+    // Append the honesty note after the current-config display.
+    let env_view = render_remote_env(storage_dir)?;
+    Ok(format!(
+        "{env_view}\nconfig stored locally only\nremote/web session transport is unavailable in this Rust build"
+    ))
 }
 
-fn render_bridge_kick(storage_dir: Option<&Path>) -> Result<String> {
-    let config = read_extras_config(storage_dir)?;
-    Ok(match config.remote {
-        Some(remote) => format!(
-            "Bridge status\nremote_target={}:{}\nstatus=restart required\ninstructions=restart the bridge process, then retry /teleport",
-            remote.host, remote.port
-        ),
-        None => "Bridge status\nstatus=not configured\ninstructions=run /remote-setup first".into(),
-    })
+fn render_bridge_kick(_storage_dir: Option<&Path>) -> Result<String> {
+    // The remote bridge transport is not implemented in this Rust local-first
+    // build; this command is a no-op regardless of stored config.
+    // When FeatureFlag::RemoteTriggers is enabled this will attempt a real
+    // bridge reconnect.
+    Ok(
+        "Bridge status\nstatus=not available\nreason=remote bridge transport is not implemented in this build\nSee /status for build capabilities."
+            .into(),
+    )
 }
 
 fn toggle_sandbox(storage_dir: Option<&Path>, args: &str) -> Result<String> {
@@ -2054,10 +2029,18 @@ fn toggle_sandbox(storage_dir: Option<&Path>, args: &str) -> Result<String> {
 }
 
 fn enable_ultraplan(storage_dir: Option<&Path>) -> Result<String> {
+    // Flag is stored so local planning prompts apply extra decomposition
+    // guidance.  Cloud-based multi-agent exploration requires a
+    // Claude.ai/cloud backend that is not available in this build;
+    // FeatureFlag::RemoteTriggers will gate that when implemented.
     let mut config = read_extras_config(storage_dir)?;
     config.ultraplan_enabled = true;
     write_extras_config(storage_dir, &config)?;
-    Ok("Ultraplan enabled.\nGuidance=spend extra time decomposing the task, enumerate risks, and checkpoint before implementation.".into())
+    Ok(concat!(
+        "Ultraplan flag enabled (local planning guidance only).\n",
+        "cloud-based multi-agent exploration requires Claude.ai/cloud backend: not available in this build.\n",
+        "flag stored for local planning guidance only — extra decomposition, risk enumeration, and checkpointing hints are active."
+    ).into())
 }
 
 fn render_thinkback(storage_dir: Option<&Path>, session_id: SessionId) -> Result<String> {
@@ -2158,13 +2141,6 @@ fn load_session_messages(
         .unwrap_or_default())
 }
 
-fn count_tool_calls(messages: &[MessageEnvelope]) -> usize {
-    messages
-        .iter()
-        .filter(|message| matches!(message.payload, MessagePayload::AssistantToolUse { .. }))
-        .count()
-}
-
 fn recent_tool_calls(messages: &[MessageEnvelope], limit: usize) -> Vec<String> {
     messages
         .iter()
@@ -2193,6 +2169,213 @@ fn thinking_blocks(messages: &[MessageEnvelope]) -> Vec<String> {
             _ => None,
         })
         .collect()
+}
+
+const HELP_SLASH_COMMANDS: &[(&str, &str)] = &[
+    ("/help", "Show this help"),
+    ("/clear", "Clear conversation history"),
+    ("/compact", "Compact conversation context"),
+    ("/thinking", "Toggle extended thinking on/off"),
+    ("/brief", "Toggle concise-response mode"),
+    (
+        "/optimize-tonken",
+        "Toggle token-optimisation mode (alias: /optimize-token)",
+    ),
+    ("/stats", "Show session statistics"),
+    ("/login", "Authenticate with a provider"),
+    ("/logout", "Sign out"),
+    ("/doctor", "Run diagnostic checks"),
+    ("/model", "Switch AI model"),
+    ("/search", "(ctrl+f) Search workspace files"),
+    ("/status", "Show provider status"),
+    ("/review", "Start code review mode"),
+    ("/exit", "Exit the TUI"),
+];
+
+const HELP_KEYBOARD_SHORTCUTS: &[(&str, &str)] = &[
+    ("ctrl+c", "Interrupt current operation"),
+    ("ctrl+l", "Clear screen"),
+    ("ctrl+r", "History search"),
+    ("ctrl+f", "Global file search"),
+    ("ctrl+o", "Expand/collapse tool output"),
+    ("esc", "Cancel / close overlay"),
+    ("enter", "Submit prompt"),
+    ("shift+enter", "Insert newline"),
+    ("↑/↓", "Scroll transcript"),
+];
+
+/// Renders the `/help` slash-command response for the TUI transcript.
+pub fn execute_help_command() -> Result<String> {
+    let mut lines = vec!["Slash Commands".into()];
+    append_help_rows(&mut lines, HELP_SLASH_COMMANDS);
+    lines.push(String::new());
+    lines.push("Keyboard Shortcuts".into());
+    append_help_rows(&mut lines, HELP_KEYBOARD_SHORTCUTS);
+    Ok(lines.join("\n"))
+}
+
+fn append_help_rows(lines: &mut Vec<String>, rows: &[(&str, &str)]) {
+    let label_width = rows
+        .iter()
+        .map(|(label, _)| label.chars().count())
+        .max()
+        .unwrap_or_default()
+        + 2;
+    lines.extend(
+        rows.iter()
+            .map(|(label, description)| format!("{label:<label_width$}{description}")),
+    );
+}
+
+/// Renders the `/thinking` slash-command response for the current session state.
+pub fn execute_thinking_command(app: &AppState, arg: Option<&str>) -> Result<String> {
+    let current = app.thinking_enabled;
+    let effort = match app.thinking_effort {
+        ThinkingEffort::Low => "low",
+        ThinkingEffort::Medium => "medium",
+        ThinkingEffort::High => "high",
+    };
+    match arg {
+        Some("on") => Ok("Thinking enabled — Claude will reason before responding".into()),
+        Some("off") => Ok("Thinking disabled".into()),
+        Some("low") => Ok("Thinking effort set to low".into()),
+        Some("medium") => Ok("Thinking effort set to medium".into()),
+        Some("high") => Ok("Thinking effort set to high".into()),
+        None | Some("") => Ok(format!(
+            "Thinking is currently {} (effort: {effort}). Options: on, off, low, medium, high",
+            if current { "enabled" } else { "disabled" }
+        )),
+        Some(other) => Err(WonderError::Validation(format!(
+            "Unknown argument: {other}. Use 'on', 'off', 'low', 'medium', or 'high'"
+        ))),
+    }
+}
+
+/// Renders session-local token usage and estimated cost statistics.
+pub fn execute_stats_command(app: &AppState) -> Result<String> {
+    let usage = app.costs.usage;
+    let cost = app.costs.estimated_cost_usd.unwrap_or_default();
+    let model = app.model.as_deref().unwrap_or("unknown");
+    let provider = app.provider.as_deref().unwrap_or("unknown");
+
+    let mut lines = vec![
+        "Session Statistics".into(),
+        "─────────────────────────────".into(),
+        format!("Provider:  {provider}"),
+        format!("Model:     {model}"),
+        "─────────────────────────────".into(),
+        format!("Input tokens:        {:>10}", usage.input_tokens),
+        format!("Output tokens:       {:>10}", usage.output_tokens),
+        format!("Cache create tokens: {:>10}", usage.cache_creation_tokens),
+        format!("Cache read tokens:   {:>10}", usage.cache_read_tokens),
+        format!("Total tokens:        {:>10}", usage.total_tokens()),
+        "─────────────────────────────".into(),
+    ];
+    if cost > 0.0 {
+        lines.push(format!("Estimated cost:      ${cost:.4}"));
+    }
+    Ok(lines.join("\n"))
+}
+
+/// Renders the `/settings` slash-command response for the current session state.
+pub fn execute_settings_command(app: &AppState) -> Result<String> {
+    let usage = app.costs.usage;
+    let provider = app.provider.as_deref().unwrap_or("unknown");
+    let model = app.model.as_deref().unwrap_or("unknown");
+    let storage = storage_root(None)
+        .map(|root| StoragePaths::new(root).sessions_dir())
+        .map(|path| home_relative_path(&path))
+        .unwrap_or_else(|| "unavailable".into());
+    let total_cost = app.costs.estimated_cost_usd.unwrap_or_default();
+
+    Ok([
+        "── Configuration ──────────────────────────────".into(),
+        format_settings_row("Provider:", provider),
+        format_settings_row("Model:", model),
+        format_settings_row("Storage:", &storage),
+        format_settings_row("Permission:", permission_mode_label(app.permission_mode)),
+        format_settings_row("Thinking:", if app.thinking_enabled { "on" } else { "off" }),
+        String::new(),
+        "── Session Usage ───────────────────────────────".into(),
+        format_settings_row("Input tokens:", &format_token_count(usage.input_tokens)),
+        format_settings_row("Output tokens:", &format_token_count(usage.output_tokens)),
+        format_settings_row("Cache read:", &format_token_count(usage.cache_read_tokens)),
+        format_settings_row(
+            "Cache write:",
+            &format_token_count(usage.cache_creation_tokens),
+        ),
+        format_settings_row("Total cost:", &format!("${total_cost:.4}")),
+        String::new(),
+        "── Provider Status ─────────────────────────────".into(),
+        format_settings_row("Auth:", &render_auth_status(&app.auth)),
+        format_settings_row(
+            "Context:",
+            &render_context_status(usage.total_tokens(), app.context_window_size),
+        ),
+    ]
+    .join("\n"))
+}
+
+fn format_settings_row(label: &str, value: &str) -> String {
+    format!("  {label:<14}{value}")
+}
+
+fn render_auth_status(auth: &AuthState) -> String {
+    let symbol = if auth.is_ready() { "✓" } else { "!" };
+    let status = match auth.status_label() {
+        "not_required" => "ready",
+        other => other,
+    };
+    format!("{symbol} {status} ({})", auth_kind_display(auth.kind))
+}
+
+fn auth_kind_display(kind: AuthMaterialKind) -> &'static str {
+    match kind {
+        AuthMaterialKind::None => "none",
+        AuthMaterialKind::ApiKey => "api-key",
+        AuthMaterialKind::OAuth => "oauth",
+        AuthMaterialKind::AwsSigV4 => "aws-sigv4",
+        AuthMaterialKind::AwsBearer => "aws-bearer",
+        AuthMaterialKind::AwsProfile => "aws-profile",
+        AuthMaterialKind::GcpOAuth2 => "gcp-oauth2",
+    }
+}
+
+fn render_context_status(used_tokens: u64, max_tokens: Option<u64>) -> String {
+    let Some(max_tokens) = max_tokens.filter(|max_tokens| *max_tokens > 0) else {
+        return "unknown".into();
+    };
+    let percentage = used_tokens.saturating_mul(100) / max_tokens;
+    format!(
+        "{} / {} tokens ({}%)",
+        format_token_count(used_tokens),
+        format_token_count(max_tokens),
+        percentage.min(100)
+    )
+}
+
+fn format_token_count(value: u64) -> String {
+    let digits = value.to_string();
+    let mut formatted = String::with_capacity(digits.len() + digits.len() / 3);
+    for (index, digit) in digits.chars().enumerate() {
+        if index > 0 && (digits.len() - index) % 3 == 0 {
+            formatted.push(',');
+        }
+        formatted.push(digit);
+    }
+    formatted
+}
+
+fn home_relative_path(path: &Path) -> String {
+    let Some(home) = env::var_os("HOME").filter(|home| !home.is_empty()) else {
+        return path.display().to_string();
+    };
+    let home = PathBuf::from(home);
+    match path.strip_prefix(&home) {
+        Ok(suffix) if suffix.as_os_str().is_empty() => "~".into(),
+        Ok(suffix) => format!("~/{}", suffix.display()),
+        Err(_) => path.display().to_string(),
+    }
 }
 
 fn synthesize_metadata(
@@ -2321,31 +2504,6 @@ fn tool_version(tool: &str, version_args: &[&str]) -> String {
         Ok(output) => format!("{tool}=unavailable(status={})", output.status),
         Err(_) => format!("{tool}=missing"),
     }
-}
-
-fn render_summary(storage_dir: Option<&Path>, context: &CommandContext) -> Result<String> {
-    let messages = load_session_messages(storage_dir, context.session_id)?;
-    let snapshot = load_session_snapshot(storage_dir, context.session_id);
-    let metadata = storage_dir.and_then(|dir| {
-        TranscriptStore::new(dir)
-            .read_metadata(context.session_id)
-            .ok()
-    });
-    let token_usage = snapshot
-        .as_ref()
-        .map(|snapshot| snapshot.state.costs.usage.total_tokens())
-        .or_else(|| {
-            metadata
-                .as_ref()
-                .map(|metadata| metadata.costs.usage.total_tokens())
-        })
-        .unwrap_or_default();
-    Ok(format!(
-        "Session summary\nmessage_count={}\ntool_calls={}\ntoken_usage={token_usage}\nsession_id={}",
-        messages.len(),
-        count_tool_calls(&messages),
-        context.session_id
-    ))
 }
 
 fn preview_json(value: &Value) -> String {
@@ -2589,7 +2747,7 @@ fn render_oauth_refresh(storage_dir: Option<&Path>) -> Result<String> {
 
 fn open_issue_url() -> String {
     let url = "https://github.com/anthropics/claude-code/issues";
-    if open_url(url).is_ok() {
+    if super::try_open_browser(url) {
         format!("Opened issue tracker: {url}")
     } else {
         format!("Issue tracker: {url}")
@@ -2688,34 +2846,6 @@ fn completion_hint(shell: &str) -> &'static str {
     }
 }
 
-fn open_url(url: &str) -> std::io::Result<()> {
-    #[cfg(target_os = "linux")]
-    let status = ProcessCommand::new("xdg-open").arg(url).status()?;
-
-    #[cfg(target_os = "macos")]
-    let status = ProcessCommand::new("open").arg(url).status()?;
-
-    #[cfg(target_os = "windows")]
-    let status = ProcessCommand::new("cmd")
-        .args(["/C", "start", ""])
-        .arg(url)
-        .status()?;
-
-    #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
-    {
-        let _ = url;
-        return Err(std::io::Error::other("unsupported platform"));
-    }
-
-    if status.success() {
-        Ok(())
-    } else {
-        Err(std::io::Error::other(format!(
-            "open command exited with {status}"
-        )))
-    }
-}
-
 fn parse_proc_status() -> Vec<(String, String)> {
     fs::read_to_string("/proc/self/status")
         .ok()
@@ -2777,7 +2907,7 @@ mod tests {
     use futures::executor::block_on;
     use serde_json::json;
     use tempfile::tempdir;
-    use wonder_of_u_core::{FeatureSet, PermissionMode, SessionId};
+    use wonder_of_u_core::{FeatureSet, PermissionMode, SessionId, TokenUsage};
     use wonder_of_u_storage::TranscriptStore;
 
     use super::*;
@@ -2795,9 +2925,49 @@ mod tests {
             effort_level: None,
             brief_mode: false,
             fast_mode: false,
+            optimize_token_mode: false,
             session_tags: Vec::new(),
             additional_working_directories: Vec::new(),
         }
+    }
+
+    #[test]
+    fn issue_command_does_not_launch_browser_under_tests() {
+        let output = block_on(IssueCommand::new().execute(
+            test_context(),
+            CommandInvocation {
+                name: "issue".into(),
+                args: String::new(),
+                raw: "/issue".into(),
+            },
+        ))
+        .expect("run issue command");
+
+        let CommandOutput::Text(text) = output else {
+            panic!("expected text output");
+        };
+
+        assert!(text.contains("Issue tracker: https://github.com/anthropics/claude-code/issues"));
+    }
+
+    #[test]
+    fn x402_command_reports_deferred_local_status() {
+        let output = block_on(X402Command::new().execute(
+            test_context(),
+            CommandInvocation {
+                name: "x402".into(),
+                args: String::new(),
+                raw: "/x402".into(),
+            },
+        ))
+        .expect("run x402 command");
+
+        let CommandOutput::Text(text) = output else {
+            panic!("expected text output");
+        };
+
+        assert!(text.contains("x402 payment integration is not available"));
+        assert!(text.contains("status=deferred"));
     }
 
     #[test]
@@ -2925,5 +3095,119 @@ mod tests {
 
         let blocks = thinking_blocks(&messages);
         assert_eq!(blocks.last().map(String::as_str), Some("second"));
+    }
+
+    #[test]
+    fn thinking_command_reports_and_validates_state() {
+        let mut app = AppState::new(PathBuf::from("/workspace"));
+        assert_eq!(
+            execute_thinking_command(&app, None).expect("report thinking state"),
+            "Thinking is currently disabled (effort: medium). Options: on, off, low, medium, high"
+        );
+
+        app.set_thinking_enabled(true);
+        assert_eq!(
+            execute_thinking_command(&app, Some("")).expect("report thinking state"),
+            "Thinking is currently enabled (effort: medium). Options: on, off, low, medium, high"
+        );
+        assert_eq!(
+            execute_thinking_command(&app, Some("on")).expect("enable thinking"),
+            "Thinking enabled — Claude will reason before responding"
+        );
+        assert_eq!(
+            execute_thinking_command(&app, Some("off")).expect("disable thinking"),
+            "Thinking disabled"
+        );
+        assert_eq!(
+            execute_thinking_command(&app, Some("low")).expect("set low effort"),
+            "Thinking effort set to low"
+        );
+        app.set_thinking_effort(ThinkingEffort::High);
+        assert_eq!(
+            execute_thinking_command(&app, Some("")).expect("report thinking effort"),
+            "Thinking is currently enabled (effort: high). Options: on, off, low, medium, high"
+        );
+        assert_eq!(
+            execute_thinking_command(&app, Some("medium")).expect("set medium effort"),
+            "Thinking effort set to medium"
+        );
+        assert_eq!(
+            execute_thinking_command(&app, Some("high")).expect("set high effort"),
+            "Thinking effort set to high"
+        );
+        assert!(matches!(
+            execute_thinking_command(&app, Some("maybe")),
+            Err(WonderError::Validation(message))
+                if message == "Unknown argument: maybe. Use 'on', 'off', 'low', 'medium', or 'high'"
+        ));
+    }
+
+    #[test]
+    fn help_command_lists_expected_slash_commands_and_shortcuts() {
+        let rendered = execute_help_command().expect("render help");
+
+        assert!(rendered.contains("Slash Commands"));
+        assert!(rendered.contains("/help"));
+        assert!(rendered.contains("/search"));
+        assert!(rendered.contains("/exit"));
+        assert!(rendered.contains("Keyboard Shortcuts"));
+        assert!(rendered.contains("ctrl+f"));
+        assert!(rendered.contains("shift+enter"));
+    }
+
+    #[test]
+    fn stats_command_renders_session_usage_table() {
+        let mut app = AppState::new(PathBuf::from("/workspace"));
+        app.provider = Some("openai".into());
+        app.model = Some("gpt-4.1".into());
+        app.record_cost_usage(
+            TokenUsage {
+                input_tokens: 128,
+                output_tokens: 32,
+                cache_creation_tokens: 16,
+                cache_read_tokens: 8,
+            },
+            Some(0.42),
+        );
+
+        let rendered = execute_stats_command(&app).expect("render stats");
+
+        assert!(rendered.contains("Session Statistics"));
+        assert!(rendered.contains("Provider:  openai"));
+        assert!(rendered.contains("Model:     gpt-4.1"));
+        assert!(rendered.contains("Input tokens:               128"));
+        assert!(rendered.contains("Total tokens:               184"));
+        assert!(rendered.contains("Estimated cost:      $0.4200"));
+    }
+
+    #[test]
+    fn settings_command_renders_configuration_and_usage_sections() {
+        let mut app = AppState::new(PathBuf::from("/workspace"));
+        app.provider = Some("anthropic".into());
+        app.model = Some("claude-3-5-sonnet-20241022".into());
+        app.permission_mode = PermissionMode::Default;
+        app.auth = AuthState::ready(
+            AuthMaterialKind::ApiKey,
+            wonder_of_u_core::AuthSource::Environment,
+        );
+        app.set_context_window_size(Some(200_000));
+        app.record_cost_usage(
+            TokenUsage {
+                input_tokens: 12_450,
+                output_tokens: 3_821,
+                cache_creation_tokens: 1_200,
+                cache_read_tokens: 8_100,
+            },
+            Some(0.0412),
+        );
+
+        let rendered = execute_settings_command(&app).expect("render settings");
+
+        assert!(rendered.contains("Configuration"));
+        assert!(rendered.contains("Session Usage"));
+        assert!(rendered.contains("Provider Status"));
+        assert!(rendered.contains("Auth:"));
+        assert!(rendered.contains("12,450"));
+        assert!(rendered.contains("$0.0412"));
     }
 }

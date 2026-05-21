@@ -69,6 +69,19 @@ pub struct CommandSpec {
     /// Stores the interactive only
     #[serde(default)]
     pub interactive_only: bool,
+    /// When `true` the command executes synchronously and bypasses queued-prompt
+    /// draining afterward.  Use this for commands like `/exit`, `/clear`,
+    /// `/color`, `/effort`, `/fast`, and `/hooks` whose side-effects must not
+    /// be followed by an automatic prompt submission.
+    #[serde(default)]
+    pub immediate: bool,
+    /// Optional argument hint shown next to the command name in slash-command
+    /// autocomplete (e.g. `[on|off]` or `<color|default>`).
+    ///
+    /// `None` means no hint is rendered; the field is omitted from serialised
+    /// output when absent so existing stored specs remain valid.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub argument_hint: Option<String>,
 }
 
 impl CommandSpec {
@@ -85,7 +98,46 @@ impl CommandSpec {
             hidden: false,
             requires_auth: false,
             interactive_only: false,
+            immediate: false,
+            argument_hint: None,
         }
+    }
+
+    /// Marks this command as immediate, bypassing queued-prompt draining.
+    ///
+    /// Returns `self` to allow builder-style construction.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use wonder_of_u_core::command::{CommandSpec, CommandKind};
+    ///
+    /// let spec = CommandSpec::new("exit", "Exit the CLI", CommandKind::Local)
+    ///     .with_immediate(true);
+    /// assert!(spec.immediate);
+    /// ```
+    #[must_use]
+    pub fn with_immediate(mut self, immediate: bool) -> Self {
+        self.immediate = immediate;
+        self
+    }
+
+    /// Sets the argument hint shown next to the command name in slash-command
+    /// autocomplete (e.g. `[on|off]` or `<color|default>`).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use wonder_of_u_core::{CommandSpec, CommandKind};
+    ///
+    /// let spec = CommandSpec::new("fast", "Toggle fast mode", CommandKind::Local)
+    ///     .with_argument_hint("[on|off]");
+    /// assert_eq!(spec.argument_hint.as_deref(), Some("[on|off]"));
+    /// ```
+    #[must_use]
+    pub fn with_argument_hint(mut self, hint: impl Into<String>) -> Self {
+        self.argument_hint = Some(hint.into());
+        self
     }
 
     /// Validates the value
@@ -218,6 +270,8 @@ pub struct CommandContext {
     pub brief_mode: bool,
     /// Stores the fast mode
     pub fast_mode: bool,
+    /// Stores whether token-optimisation mode is enabled for the session.
+    pub optimize_token_mode: bool,
     /// Stores the session tags
     pub session_tags: Vec<String>,
     /// Stores the additional working directories
@@ -502,5 +556,99 @@ mod tests {
 
         let error = spec.validate().expect_err("duplicate alias");
         assert!(error.to_string().contains("duplicate command alias"));
+    }
+
+    // ── immediate flag tests ──────────────────────────────────────────────────
+
+    #[test]
+    fn command_spec_immediate_defaults_to_false() {
+        let spec = CommandSpec::new("check", "verify something", CommandKind::Local);
+        assert!(!spec.immediate, "immediate should default to false");
+    }
+
+    #[test]
+    fn command_spec_with_immediate_sets_flag() {
+        let spec =
+            CommandSpec::new("exit", "Request CLI exit", CommandKind::Local).with_immediate(true);
+        assert!(spec.immediate);
+    }
+
+    #[test]
+    fn command_spec_with_immediate_false_clears_flag() {
+        let mut spec = CommandSpec::new("exit", "Request CLI exit", CommandKind::Local);
+        spec.immediate = true;
+        let spec = spec.with_immediate(false);
+        assert!(!spec.immediate);
+    }
+
+    #[test]
+    fn command_spec_immediate_round_trips_through_serde() {
+        let spec =
+            CommandSpec::new("exit", "Request CLI exit", CommandKind::Local).with_immediate(true);
+        let json = serde_json::to_string(&spec).expect("serialize");
+        let decoded: CommandSpec = serde_json::from_str(&json).expect("deserialize");
+        assert!(decoded.immediate);
+    }
+
+    #[test]
+    fn command_spec_immediate_defaults_in_serde_missing_field() {
+        // A JSON payload without the `immediate` key must deserialise with
+        // `immediate = false` thanks to `#[serde(default)]`.
+        let json = r#"{"name":"exit","description":"quit","kind":"local","source":"built_in"}"#;
+        let spec: CommandSpec = serde_json::from_str(json).expect("deserialize");
+        assert!(!spec.immediate);
+    }
+
+    #[test]
+    fn argument_hint_defaults_to_none() {
+        let spec = CommandSpec::new("help", "show help", CommandKind::Local);
+        assert!(spec.argument_hint.is_none());
+    }
+
+    #[test]
+    fn with_argument_hint_sets_the_hint() {
+        let spec = CommandSpec::new("fast", "toggle fast mode", CommandKind::Local)
+            .with_argument_hint("[on|off]");
+        assert_eq!(spec.argument_hint.as_deref(), Some("[on|off]"));
+    }
+
+    #[test]
+    fn command_spec_clone_preserves_argument_hint() {
+        let spec = CommandSpec::new("color", "set color", CommandKind::Local)
+            .with_argument_hint("<color|default>");
+        let cloned = spec.clone();
+        assert_eq!(cloned.argument_hint, spec.argument_hint);
+    }
+
+    #[test]
+    fn argument_hint_round_trips_through_serde() {
+        let spec = CommandSpec::new("effort", "set effort", CommandKind::Local)
+            .with_argument_hint("[low|medium|high|max|auto]");
+        let json = serde_json::to_string(&spec).expect("serialize");
+        let decoded: CommandSpec = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(
+            decoded.argument_hint.as_deref(),
+            Some("[low|medium|high|max|auto]")
+        );
+    }
+
+    #[test]
+    fn argument_hint_absent_in_json_when_none() {
+        let spec = CommandSpec::new("status", "show status", CommandKind::Local);
+        let json = serde_json::to_string(&spec).expect("serialize");
+        assert!(
+            !json.contains("argument_hint"),
+            "field should be omitted when None"
+        );
+    }
+
+    #[test]
+    fn argument_hint_none_deserializes_from_legacy_json_without_field() {
+        // Ensures existing serialised CommandSpec payloads (without the new
+        // field) continue to deserialise correctly with argument_hint = None.
+        let json =
+            r#"{"name":"status","description":"show status","kind":"local","source":"built_in"}"#;
+        let spec: CommandSpec = serde_json::from_str(json).expect("deserialize legacy");
+        assert!(spec.argument_hint.is_none());
     }
 }

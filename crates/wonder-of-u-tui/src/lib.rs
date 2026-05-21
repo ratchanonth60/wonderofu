@@ -21,6 +21,8 @@ pub mod dialog;
 pub mod diff;
 /// Provides event support
 pub mod event;
+/// Provides fleet view support
+pub mod fleet_view;
 /// Provides frame support
 pub mod frame;
 /// Provides input support
@@ -100,6 +102,10 @@ pub use event::{
     KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind, TurnState, UiEvent,
     normalize_key_event, normalize_mouse_event,
 };
+/// Re-exports items from `fleet_view`
+pub use fleet_view::{
+    FleetMemberEntryView, FleetMemberStatusView, FleetRunCounts, FleetRunView, FleetStatusView,
+};
 /// Re-exports items from `frame`
 pub use frame::{Cell, FrameBuffer, Rect};
 /// Re-exports items from `input`
@@ -139,8 +145,8 @@ pub use message::{
     RejectedPermissionSummaryView, RejectedToolMessageKind, RejectedToolMessageView,
     RichMessageView, SystemErrorKind, SystemErrorView, TaskActivityKind, TaskActivitySummaryView,
     TaskPanelView, ThinkingBlockView, ToolCallView, ToolResultCounts, ToolResultStatus,
-    TranscriptBoundaryView, UnknownToolOutputView, footer_text, message_lines, queued_panel_view,
-    rich_message_views, status_text, task_panel_view,
+    TranscriptBoundaryView, UnknownToolOutputView, footer_text, message_lines,
+    message_lines_for_width, queued_panel_view, rich_message_views, status_text, task_panel_view,
 };
 /// Re-exports items from `notification`
 pub use notification::{
@@ -158,7 +164,9 @@ pub use prompt::{
 };
 /// Re-exports items from `render`
 pub use render::{
-    ShellView, SlashSuggestionEntry, SlashSuggestionsOverlay, render_shell, render_snapshot,
+    ContextSuggestion, ContextSuggestionsView, GlobalSearchOverlayView, MIN_SIDEBAR_WIDTH,
+    SIDEBAR_WIDTH, ShellView, SidebarView, SlashSuggestionEntry, SlashSuggestionsOverlay,
+    SuggestionSeverity, TranscriptScrollView, render_shell, render_snapshot, shell_main_area_width,
 };
 /// Re-exports items from `security`
 pub use security::{

@@ -128,6 +128,8 @@ impl SkillsCommand {
                 allowed_tools: args
                     .tools
                     .then(|| normalized_allowed_tools(&skill.manifest.allowed_tools)),
+                // Skills don't yet expose a disallowed_tools manifest field.
+                disallowed_tools: Default::default(),
                 session_title: skill_session_title(skill, &user_request),
                 prompt: combined_prompt.clone(),
                 entrypoint: "skills.run",

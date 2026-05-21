@@ -1,13 +1,24 @@
 use super::*;
+use std::time::{Duration, Instant};
+
+/// Lines scrolled per single mouse-wheel notch in the transcript area.
+const MOUSE_SCROLL_LINES: i32 = 3;
+const SPINNER_PROGRESS_INTERVAL: Duration = Duration::from_millis(100);
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 #[allow(dead_code)]
 pub(super) enum ActiveOverlay {
     HistorySearch,
+    GlobalSearch,
     Picker,
     ConfirmDialog,
     NoticeDialog,
     None,
+}
+
+enum StreamingCompletionEvent {
+    Delta(String),
+    Done(Result<wonder_of_u_agent::CompletionResponse>),
 }
 
 pub(super) struct TuiController<'a> {
@@ -18,8 +29,16 @@ pub(super) struct TuiController<'a> {
     pub(super) prompt: TextBuffer,
     pub(super) keymap: KeyBindingResolver,
     pub(super) vim: VimState,
+    pub(super) vim_enabled: bool,
     pub(super) history_search: Option<HistorySearchState>,
+    pub(super) global_search_open: bool,
+    pub(super) global_search_query: String,
+    pub(super) global_search_results: Vec<SearchMatch>,
+    pub(super) global_search_selected: usize,
+    pub(super) global_search_cursor: usize,
+    pub(super) global_search_dirty_since: Option<Instant>,
     pub(super) turn_state: TurnState,
+    pub(super) loading_frame: u64,
     pub(super) needs_render: bool,
     pub(super) exit_requested: bool,
     pub(super) status_note: Option<String>,
@@ -30,6 +49,12 @@ pub(super) struct TuiController<'a> {
     pub(super) pending_permission_picker: Option<PermissionPickerState>,
     pub(super) pending_memory_picker: Option<MemoryPickerState>,
     pub(super) pending_external_editor: Option<ExternalEditorRequest>,
+    /// Ephemeral setup hub overlay opened by `/setup`.  Never persisted.
+    pub(super) pending_setup_overlay: Option<SetupOverlayState>,
+    /// Ephemeral provider-login / API-base form opened from the setup hub.  Never persisted.
+    pub(super) pending_provider_form: Option<ProviderFormState>,
+    /// Ephemeral Copilot device-code OAuth flow.  Never persisted.
+    pub(super) pending_copilot_oauth: Option<CopilotOAuthFlowState>,
     /// Countdown ticks until the task notification dialog is auto-dismissed.
     pub(super) task_notice_ttl: Option<u8>,
     pub(super) notifications: NotificationQueue,
@@ -37,6 +62,40 @@ pub(super) struct TuiController<'a> {
     pub(super) slash_suggestions: Vec<PromptSuggestion>,
     /// Live filtered state when the user is typing a `/` command.
     pub(super) active_suggestions: Option<PromptSuggestionState>,
+    /// Ephemeral transcript scroll position; never persisted to `AppState`.
+    pub(super) scroll_state: TranscriptScrollState,
+    /// Last known terminal dimensions `(width, height)` in columns × rows.
+    ///
+    /// Updated on every `UiEvent::Resize` so that mouse hit-testing can
+    /// recompute the transcript area rect without touching ratatui's backend.
+    pub(super) last_terminal_size: (u16, u16),
+    /// Set to `true` when the user explicitly cancels the setup overlay during
+    /// this session, suppressing the autostart re-open logic.
+    pub(super) setup_cancelled_this_session: bool,
+    /// Whether the right-side sidebar companion panel is currently visible.
+    /// Ephemeral per TUI session; never persisted.
+    pub(super) sidebar_visible: bool,
+    /// Whether collapsed tool output previews should render fully expanded inline.
+    pub(super) expand_tool_output: bool,
+    /// Cached live integration summaries shown in the sidebar.
+    ///
+    /// Some sections read small config files or scan PATH; cache them outside
+    /// `view()` so typing/rendering never performs blocking discovery work.
+    pub(super) sidebar_cache: SidebarPanelCache,
+    /// The permission mode that was active immediately before the session
+    /// entered [`PermissionMode::Plan`].  Set when plan mode is entered so that
+    /// [`PlanAction::Exit`] can restore the original mode (e.g. `AcceptEdits`
+    /// or `BypassPermissions`) rather than always falling back to `Default`.
+    /// Cleared whenever the session leaves plan mode.
+    pub(super) pre_plan_permission_mode: Option<PermissionMode>,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub(super) struct SidebarPanelCache {
+    pub(super) tool_lines: Vec<String>,
+    pub(super) mcp_lines: Vec<String>,
+    pub(super) lsp_lines: Vec<String>,
+    pub(super) todo_lines: Vec<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -170,11 +229,19 @@ impl<'a> TuiController<'a> {
             storage_dir: storage_dir.map(Path::to_path_buf),
             state,
             persistence,
-            prompt: TextBuffer::new(false),
-            keymap: crate::commands::workflow::load_keybinding_resolver(storage_dir)?,
+            prompt: TextBuffer::new(true),
+            keymap: crate::commands::keybinding_commands::load_keybinding_resolver(storage_dir)?,
             vim: VimState::default(),
+            vim_enabled: true,
             history_search: None,
+            global_search_open: false,
+            global_search_query: String::new(),
+            global_search_results: Vec::new(),
+            global_search_selected: 0,
+            global_search_cursor: 0,
+            global_search_dirty_since: None,
             turn_state: TurnState::Idle,
+            loading_frame: 0,
             needs_render: true,
             exit_requested: false,
             status_note: None,
@@ -185,15 +252,27 @@ impl<'a> TuiController<'a> {
             pending_permission_picker: None,
             pending_memory_picker: None,
             pending_external_editor: None,
+            pending_setup_overlay: None,
+            pending_provider_form: None,
+            pending_copilot_oauth: None,
             task_notice_ttl: None,
             notifications: NotificationQueue::new(),
             slash_suggestions: build_slash_suggestions(registry),
             active_suggestions: None,
+            scroll_state: TranscriptScrollState::new(),
+            last_terminal_size: (0, 0),
+            setup_cancelled_this_session: false,
+            sidebar_visible: true,
+            expand_tool_output: false,
+            sidebar_cache: SidebarPanelCache::default(),
+            pre_plan_permission_mode: None,
         };
         controller.hydrate_initial_settings()?;
         controller.refresh_runtime_state()?;
         controller.rebuild_ephemeral_state();
+        controller.refresh_sidebar_panel_cache();
         controller.persist_state_snapshot()?;
+        controller.maybe_auto_open_setup()?;
         Ok(controller)
     }
 
@@ -205,8 +284,13 @@ impl<'a> TuiController<'a> {
             return Ok(());
         };
         let settings = SettingsStore::new(storage_dir).read()?;
+        self.state.theme = settings.theme;
         self.state.effort_level = settings.effort_level;
         self.state.fast_mode = settings.fast_mode;
+        self.vim_enabled = settings.vim_mode.unwrap_or(true);
+        if !self.vim_enabled {
+            self.vim = VimState::new(VimMode::Insert);
+        }
         Ok(())
     }
 
@@ -218,7 +302,9 @@ impl<'a> TuiController<'a> {
             UiEvent::Key(key) => self.handle_key_event(key, &mut before_blocking),
             UiEvent::Paste(text) => {
                 if !text.is_empty() {
-                    if self.history_search.is_some() {
+                    if self.global_search_open {
+                        self.edit_global_search_query_text(&text);
+                    } else if self.history_search.is_some() {
                         self.edit_history_search_query_text(&text);
                     } else {
                         self.prompt.insert_text(&text);
@@ -232,6 +318,17 @@ impl<'a> TuiController<'a> {
                 Ok(())
             }
             UiEvent::Tick => {
+                if matches!(
+                    self.turn_state,
+                    TurnState::ModelRequestActive
+                        | TurnState::CommandQueued
+                        | TurnState::ToolPermissionPending
+                ) {
+                    self.loading_frame = self.loading_frame.wrapping_add(1);
+                    self.needs_render = true;
+                } else {
+                    self.loading_frame = 0;
+                }
                 match self.task_notice_ttl {
                     Some(0) => {
                         self.dismiss_task_notice();
@@ -242,7 +339,12 @@ impl<'a> TuiController<'a> {
                     None => {}
                 }
                 self.needs_render |= self.notifications.tick();
+                self.tick_copilot_oauth_poll()?;
+                self.needs_render |= self.refresh_global_search_if_ready()?;
                 if self.refresh_runtime_state()? {
+                    self.needs_render = true;
+                }
+                if self.refresh_sidebar_panel_cache() {
                     self.needs_render = true;
                 }
                 Ok(())
@@ -257,7 +359,13 @@ impl<'a> TuiController<'a> {
                 self.needs_render = true;
                 Ok(())
             }
-            UiEvent::Resize { .. } | UiEvent::Mouse(_) => {
+            UiEvent::Resize { width, height } => {
+                self.needs_render = true;
+                self.on_terminal_resize(width, height);
+                Ok(())
+            }
+            UiEvent::Mouse(raw) => {
+                self.handle_mouse_event(UiEvent::Mouse(raw));
                 self.needs_render = true;
                 Ok(())
             }
@@ -273,11 +381,39 @@ impl<'a> TuiController<'a> {
         F: FnMut(&Self) -> Result<()>,
     {
         let resolved = self.keymap.resolve(KeyBindingContext::Prompt, key);
-        if self.dialog.is_some() {
+        if self.global_search_open {
+            return self.handle_global_search_key(key, resolved);
+        }
+        if self.dialog.is_some()
+            || self.has_picker_overlay()
+            || self.pending_copilot_oauth.is_some()
+        {
             return self.handle_dialog_key(key, resolved, before_blocking);
         }
         if self.history_search.is_some() {
             return self.handle_history_search_key(key, resolved);
+        }
+
+        // The footer advertises Shift+Tab permission-mode cycling in the prompt.
+        // Handle BackTab before slash-suggestion interception so it never gets
+        // mistaken for completion/selection input.
+        if key.code == KeyCode::BackTab {
+            return self.cycle_prompt_permission_mode_backward();
+        }
+
+        // Some terminals collapse modified Enter handling inconsistently even when
+        // the keymap contains an explicit Shift+Enter binding, so keep a direct
+        // multiline composition path here as a safety net.
+        if key.code == KeyCode::Enter && key.modifiers.shift && self.vim.mode() == VimMode::Insert {
+            self.prompt
+                .apply_edit_action(EditAction::InsertLiteralNewline);
+            self.turn_state = TurnState::EditingInput;
+            self.state.input_mode = InputMode::Prompt;
+            self.reset_history_recall();
+            self.status_note = None;
+            self.update_slash_suggestions();
+            self.needs_render = true;
+            return Ok(());
         }
 
         // Slash-autocomplete intercepts: Tab accepts, Up/Down navigate, Esc dismisses.
@@ -304,14 +440,61 @@ impl<'a> TuiController<'a> {
             }
         }
 
+        // Route scroll keys to the transcript when no picker/dialog overlay is active.
+        // Plain Home/End fall through intentionally so they reach the keymap resolver
+        // and perform prompt cursor movement.
+        if !self.has_picker_overlay() && self.dialog.is_none() {
+            let page = self.scroll_state.last_visible_lines.max(1);
+            match (key.code, key.modifiers.control) {
+                (KeyCode::PageUp, _) => {
+                    self.scroll_state.scroll_by(page as i32);
+                    self.needs_render = true;
+                    return Ok(());
+                }
+                (KeyCode::PageDown, _) => {
+                    self.scroll_state.scroll_by(-(page as i32));
+                    self.needs_render = true;
+                    return Ok(());
+                }
+                (KeyCode::Home, true) => {
+                    self.scroll_state.scroll_to_top();
+                    self.needs_render = true;
+                    return Ok(());
+                }
+                (KeyCode::End, true) => {
+                    self.scroll_state.scroll_to_bottom();
+                    self.needs_render = true;
+                    return Ok(());
+                }
+                _ => {}
+            }
+        }
+
+        // Ctrl+B toggles the sidebar panel.
+        if key.is_ctrl_char('b') {
+            self.toggle_sidebar();
+            return Ok(());
+        }
+
+        if let Some(ResolvedKey::System(
+            system @ (wonder_of_u_tui::SystemAction::OpenModelPicker
+            | wonder_of_u_tui::SystemAction::ToggleThinking
+            | wonder_of_u_tui::SystemAction::ToggleFastMode),
+        )) = resolved
+        {
+            return self.handle_prompt_hotkey_system_action(system, before_blocking);
+        }
+
         let Some(resolved) = resolved else {
-            return if self.vim.mode() == VimMode::Normal || key.code == KeyCode::Esc {
+            return if self.vim_enabled
+                && (self.vim.mode() != VimMode::Insert || key.code == KeyCode::Esc)
+            {
                 self.handle_vim_key(key)
             } else {
                 Ok(())
             };
         };
-        if self.vim.mode() == VimMode::Normal || key.code == KeyCode::Esc {
+        if self.vim_enabled && (self.vim.mode() != VimMode::Insert || key.code == KeyCode::Esc) {
             return self.handle_vim_key(key);
         }
 
@@ -354,6 +537,38 @@ impl<'a> TuiController<'a> {
         }
     }
 
+    fn handle_prompt_hotkey_system_action<F>(
+        &mut self,
+        system: wonder_of_u_tui::SystemAction,
+        before_blocking: &mut F,
+    ) -> Result<()>
+    where
+        F: FnMut(&Self) -> Result<()>,
+    {
+        match system {
+            wonder_of_u_tui::SystemAction::OpenModelPicker => {
+                self.execute_slash_command_with("/model", before_blocking)
+            }
+            wonder_of_u_tui::SystemAction::ToggleThinking => {
+                let command = if self.state.thinking_enabled {
+                    "/thinking off"
+                } else {
+                    "/thinking on"
+                };
+                self.execute_slash_command_with(command, before_blocking)
+            }
+            wonder_of_u_tui::SystemAction::ToggleFastMode => {
+                let command = if self.state.fast_mode {
+                    "/fast off"
+                } else {
+                    "/fast on"
+                };
+                self.execute_slash_command_with(command, before_blocking)
+            }
+            _ => self.handle_system_action(system),
+        }
+    }
+
     pub(super) fn handle_vim_key(&mut self, key: KeyEvent) -> Result<()> {
         let result = self.vim.handle_key(&mut self.prompt, &self.keymap, key);
         if let Some(system) = result.system {
@@ -366,6 +581,7 @@ impl<'a> TuiController<'a> {
             VimMode::Insert => "vim insert".into(),
             VimMode::Normal if self.vim.has_pending_operator() => "vim operator pending".into(),
             VimMode::Normal => "vim normal".into(),
+            VimMode::Visual => "vim visual".into(),
         });
         self.needs_render = true;
         Ok(())
@@ -410,7 +626,7 @@ impl<'a> TuiController<'a> {
             .and_then(|s| s.selected())
             .map(|s| s.replacement.clone());
         if let Some(text) = replacement {
-            self.prompt = TextBuffer::new(false);
+            self.prompt = TextBuffer::new(true);
             for ch in text.chars() {
                 self.prompt.insert_char(ch);
             }
@@ -448,6 +664,17 @@ impl<'a> TuiController<'a> {
                 Ok(())
             }
             wonder_of_u_tui::SystemAction::HistorySearch => self.open_or_step_history_search(),
+            wonder_of_u_tui::SystemAction::OpenGlobalSearch => {
+                self.toggle_global_search(None);
+                Ok(())
+            }
+            wonder_of_u_tui::SystemAction::ExpandToolOutput => {
+                self.toggle_expand_tool_output();
+                Ok(())
+            }
+            wonder_of_u_tui::SystemAction::OpenModelPicker
+            | wonder_of_u_tui::SystemAction::ToggleThinking
+            | wonder_of_u_tui::SystemAction::ToggleFastMode => Ok(()),
         }
     }
 
@@ -520,6 +747,15 @@ impl<'a> TuiController<'a> {
         }
         if self.pending_model_picker.is_some() {
             return self.handle_model_picker_key(key, resolved, before_blocking);
+        }
+        if self.pending_setup_overlay.is_some() {
+            return self.handle_setup_overlay_key(key, resolved, before_blocking);
+        }
+        if self.pending_provider_form.is_some() {
+            return self.handle_provider_form_key(key, resolved);
+        }
+        if self.pending_copilot_oauth.is_some() {
+            return self.handle_copilot_oauth_dialog_key(key, resolved);
         }
         match self.dialog.as_ref().map(DialogView::kind) {
             Some(wonder_of_u_tui::DialogKind::Permission) => {
@@ -733,12 +969,10 @@ impl<'a> TuiController<'a> {
             resolved.auth_state(),
         );
 
-        let registry = builtin_tool_registry()?;
-        let tool_context = self.tool_context();
-        let provider_tools = provider_tool_specs(&registry, &tool_context, None)
-            .into_iter()
-            .map(tool_spec_to_provider_tool)
-            .collect::<Vec<_>>();
+        let registry = match self.storage_dir.as_deref() {
+            Some(root) => wonder_of_u_tools::builtin_registry_with_mcp_catalog(root),
+            None => wonder_of_u_tools::builtin_registry(),
+        }?;
 
         let mut rounds = pending
             .rounds
@@ -750,7 +984,7 @@ impl<'a> TuiController<'a> {
         let first_result = if approved {
             self.approve_pending_tool_call(
                 &registry,
-                &tool_context,
+                &self.tool_context(),
                 &pending_call,
                 &pending.reason,
                 before_blocking,
@@ -768,7 +1002,7 @@ impl<'a> TuiController<'a> {
         for (index, call) in remaining_calls.iter().cloned().enumerate() {
             match self.execute_tool_call(
                 &registry,
-                &tool_context,
+                &self.tool_context(),
                 &call.provider_call,
                 call.use_id,
                 before_blocking,
@@ -798,7 +1032,6 @@ impl<'a> TuiController<'a> {
             &pending.request_prompt,
             &runtime,
             &resolved,
-            &provider_tools,
             rounds,
             before_blocking,
         )
@@ -830,11 +1063,14 @@ impl<'a> TuiController<'a> {
             self.status_note = Some(format!("running tool {}", call.provider_call.tool_name));
             self.needs_render = true;
             before_blocking(self)?;
-            let result = match block_on(tool.execute(
-                context.clone(),
-                call.use_id,
-                call.provider_call.arguments.clone(),
-            )) {
+            let context = context.clone();
+            let arguments = call.provider_call.arguments.clone();
+            let use_id = call.use_id;
+            let result = match run_with_spinner_tick(
+                move || block_on(tool.execute(context, use_id, arguments)),
+                SPINNER_PROGRESS_INTERVAL,
+                || self.tick_loading_animation(before_blocking),
+            ) {
                 Ok(result) => result,
                 Err(error) => {
                     ToolResult::failure(call.use_id, format!("tool execution failed: {error}"))
@@ -896,19 +1132,23 @@ impl<'a> TuiController<'a> {
     pub(super) fn continue_tool_loop_from_rounds<F>(
         &mut self,
         request_prompt: &str,
-        runtime: &ProviderRuntime,
+        _runtime: &ProviderRuntime,
         resolved: &wonder_of_u_agent::ResolvedProviderExecution,
-        provider_tools: &[ProviderToolSpec],
         mut rounds: Vec<ToolConversationRound>,
         before_blocking: &mut F,
     ) -> Result<()>
     where
         F: FnMut(&Self) -> Result<()>,
     {
-        let registry = builtin_tool_registry()?;
-        let tool_context = self.tool_context();
-
+        let registry = match self.storage_dir.as_deref() {
+            Some(root) => wonder_of_u_tools::builtin_registry_with_mcp_catalog(root),
+            None => wonder_of_u_tools::builtin_registry(),
+        }?;
         for iteration in rounds.len()..MAX_TOOL_LOOP_ITERATIONS {
+            let provider_tools = provider_tool_specs(&registry, &self.tool_context(), None)
+                .into_iter()
+                .map(tool_spec_to_provider_tool)
+                .collect::<Vec<_>>();
             self.turn_state = TurnState::ModelRequestActive;
             self.state.input_mode = InputMode::Prompt;
             self.status_note = Some(format!(
@@ -919,22 +1159,27 @@ impl<'a> TuiController<'a> {
             self.needs_render = true;
             before_blocking(self)?;
 
-            let response = runtime.complete_with_tool_use(
-                resolved,
-                &ToolUseRequest {
-                    prompt: request_prompt.to_string(),
-                    system_prompt: self.state.effective_system_prompt(None),
-                    max_output_tokens: None,
-                    temperature: None,
-                    tools: provider_tools.to_vec(),
-                    rounds: rounds.clone(),
-                    effort_level: self.state.effort_level.clone(),
-                },
+            let resolved = resolved.clone();
+            let request = ToolUseRequest {
+                prompt: request_prompt.to_string(),
+                system_prompt: self.state.effective_system_prompt(None),
+                max_output_tokens: None,
+                temperature: None,
+                tools: provider_tools.clone(),
+                rounds: rounds.clone(),
+                effort_level: self.state.effort_level.clone(),
+            };
+            let response = run_with_spinner_tick(
+                move || ProviderRuntime::new().complete_with_tool_use(&resolved, &request),
+                SPINNER_PROGRESS_INTERVAL,
+                || self.tick_loading_animation(before_blocking),
             )?;
 
             match response {
                 ToolUseResponse::Final(response) => {
                     self.state.pending_tool_approval = None;
+                    self.state
+                        .set_context_window_size(response.context_window_size);
                     self.state.record_cost_usage(response.usage, None);
                     let assistant_message = append_contextual_message(
                         &mut self.state,
@@ -949,6 +1194,8 @@ impl<'a> TuiController<'a> {
                     return Ok(());
                 }
                 ToolUseResponse::ToolCalls(batch) => {
+                    self.state
+                        .set_context_window_size(batch.context_window_size);
                     self.state.record_cost_usage(batch.usage, None);
                     let local_calls = batch
                         .calls
@@ -994,7 +1241,7 @@ impl<'a> TuiController<'a> {
                     for (index, call) in local_calls.iter().cloned().enumerate() {
                         match self.execute_tool_call(
                             &registry,
-                            &tool_context,
+                            &self.tool_context(),
                             &call.provider_call,
                             call.use_id,
                             before_blocking,
@@ -1052,11 +1299,12 @@ impl<'a> TuiController<'a> {
             return Ok(());
         }
 
-        self.prompt = TextBuffer::new(false);
+        self.prompt = TextBuffer::new(true);
         self.reset_history_recall();
         self.status_note = None;
         self.needs_render = true;
 
+        let is_provider_prompt = !input.starts_with('/');
         let result = if input.starts_with('/') {
             self.turn_state = TurnState::CommandQueued;
             before_blocking(self)?;
@@ -1074,8 +1322,33 @@ impl<'a> TuiController<'a> {
                 }
                 self.needs_render = true;
             }
+            Err(error) if is_provider_prompt => {
+                // Persist the error into history so the user can see it even
+                // after scrolling; then leave the prompt cleared.
+                let sanitized = sanitize_error_for_display(&error.to_string());
+                if let Ok(error_msg) = append_contextual_message(
+                    &mut self.state,
+                    MessagePayload::ProviderError {
+                        kind: "provider".into(),
+                        message: sanitized,
+                    },
+                ) {
+                    // Best-effort persist; non-fatal if storage is unavailable.
+                    let _ = persist_messages_and_state(
+                        self.storage_dir.as_deref(),
+                        &self.state,
+                        &mut self.persistence,
+                        &[error_msg],
+                    );
+                    self.notify_transcript_changed();
+                }
+                self.turn_state = TurnState::Interrupted;
+                self.status_note = Some("provider error — see history".into());
+                self.needs_render = true;
+            }
             Err(error) => {
-                self.prompt = TextBuffer::from_text(&original, false);
+                // Slash-command errors restore the prompt so the user can retry.
+                self.prompt = TextBuffer::from_text(&original, true);
                 self.turn_state = TurnState::Interrupted;
                 self.status_note = Some(format!("error: {error}"));
                 self.needs_render = true;
@@ -1138,19 +1411,26 @@ impl<'a> TuiController<'a> {
         on_progress(self)?;
 
         let response = if streaming {
-            runtime.complete_streaming(&resolved, &request, |delta| {
-                append_streamed_text(&mut self.state, assistant_index, delta)?;
-                self.turn_state = TurnState::StreamingResponse;
-                self.status_note = Some(format!("streaming {} response", resolved.provider_id()));
-                self.needs_render = true;
-                on_progress(self)
-            })?
+            self.complete_streaming_with_progress(
+                &resolved,
+                request.clone(),
+                assistant_index,
+                on_progress,
+            )?
         } else {
-            let response = runtime.complete(&resolved, &request)?;
+            let resolved = resolved.clone();
+            let request = request.clone();
+            let response = run_with_spinner_tick(
+                move || ProviderRuntime::new().complete(&resolved, &request),
+                SPINNER_PROGRESS_INTERVAL,
+                || self.tick_loading_animation(on_progress),
+            )?;
             set_assistant_message_content(&mut self.state, assistant_index, &response.output_text)?;
             response
         };
 
+        self.state
+            .set_context_window_size(response.context_window_size);
         self.state.record_cost_usage(response.usage, None);
         let assistant_message = self
             .state
@@ -1172,11 +1452,56 @@ impl<'a> TuiController<'a> {
         Ok(())
     }
 
+    fn complete_streaming_with_progress<F>(
+        &mut self,
+        resolved: &wonder_of_u_agent::ResolvedProviderExecution,
+        request: CompletionRequest,
+        assistant_index: usize,
+        on_progress: &mut F,
+    ) -> Result<wonder_of_u_agent::CompletionResponse>
+    where
+        F: FnMut(&Self) -> Result<()>,
+    {
+        let provider_id = resolved.provider_id().to_string();
+        let resolved = resolved.clone();
+        let (tx, rx) = mpsc::channel::<StreamingCompletionEvent>();
+        std::thread::spawn(move || {
+            let runtime = ProviderRuntime::new();
+            let delta_tx = tx.clone();
+            let result = runtime.complete_streaming(&resolved, &request, move |delta| {
+                delta_tx
+                    .send(StreamingCompletionEvent::Delta(delta.to_string()))
+                    .map_err(|_| WonderError::internal("streaming receiver dropped"))
+            });
+            let _ = tx.send(StreamingCompletionEvent::Done(result));
+        });
+
+        loop {
+            match rx.recv_timeout(SPINNER_PROGRESS_INTERVAL) {
+                Ok(StreamingCompletionEvent::Delta(delta)) => {
+                    append_streamed_text(&mut self.state, assistant_index, &delta)?;
+                    self.turn_state = TurnState::StreamingResponse;
+                    self.status_note = Some(format!("streaming {provider_id} response"));
+                    self.tick_loading_animation(on_progress)?;
+                }
+                Ok(StreamingCompletionEvent::Done(result)) => return result,
+                Err(mpsc::RecvTimeoutError::Timeout) => {
+                    self.tick_loading_animation(on_progress)?;
+                }
+                Err(mpsc::RecvTimeoutError::Disconnected) => {
+                    return Err(WonderError::internal(
+                        "streaming provider worker exited before returning a result",
+                    ));
+                }
+            }
+        }
+    }
+
     pub(super) fn execute_tool_loop_submission<F>(
         &mut self,
         input: &str,
         request_prompt: &str,
-        runtime: &ProviderRuntime,
+        _runtime: &ProviderRuntime,
         resolved: &wonder_of_u_agent::ResolvedProviderExecution,
         on_progress: &mut F,
     ) -> Result<()>
@@ -1184,12 +1509,10 @@ impl<'a> TuiController<'a> {
         F: FnMut(&Self) -> Result<()>,
     {
         self.state.pending_tool_approval = None;
-        let registry = builtin_tool_registry()?;
-        let tool_context = self.tool_context();
-        let provider_tools = provider_tool_specs(&registry, &tool_context, None)
-            .into_iter()
-            .map(tool_spec_to_provider_tool)
-            .collect::<Vec<_>>();
+        let registry = match self.storage_dir.as_deref() {
+            Some(root) => wonder_of_u_tools::builtin_registry_with_mcp_catalog(root),
+            None => wonder_of_u_tools::builtin_registry(),
+        }?;
 
         let user_message = append_contextual_message(
             &mut self.state,
@@ -1204,6 +1527,10 @@ impl<'a> TuiController<'a> {
         let mut rounds = Vec::<ToolConversationRound>::new();
         let system_prompt = self.state.effective_system_prompt(None);
         for iteration in 0..MAX_TOOL_LOOP_ITERATIONS {
+            let provider_tools = provider_tool_specs(&registry, &self.tool_context(), None)
+                .into_iter()
+                .map(tool_spec_to_provider_tool)
+                .collect::<Vec<_>>();
             self.turn_state = TurnState::ModelRequestActive;
             self.status_note = Some(if iteration == 0 {
                 format!("awaiting {} tool-aware response", resolved.provider_id())
@@ -1217,22 +1544,27 @@ impl<'a> TuiController<'a> {
             self.needs_render = true;
             on_progress(self)?;
 
-            let response = runtime.complete_with_tool_use(
-                resolved,
-                &ToolUseRequest {
-                    prompt: request_prompt.to_string(),
-                    system_prompt: system_prompt.clone(),
-                    max_output_tokens: None,
-                    temperature: None,
-                    tools: provider_tools.clone(),
-                    rounds: rounds.clone(),
-                    effort_level: self.state.effort_level.clone(),
-                },
+            let resolved = resolved.clone();
+            let request = ToolUseRequest {
+                prompt: request_prompt.to_string(),
+                system_prompt: system_prompt.clone(),
+                max_output_tokens: None,
+                temperature: None,
+                tools: provider_tools.clone(),
+                rounds: rounds.clone(),
+                effort_level: self.state.effort_level.clone(),
+            };
+            let response = run_with_spinner_tick(
+                move || ProviderRuntime::new().complete_with_tool_use(&resolved, &request),
+                SPINNER_PROGRESS_INTERVAL,
+                || self.tick_loading_animation(on_progress),
             )?;
 
             match response {
                 ToolUseResponse::Final(response) => {
                     self.state.pending_tool_approval = None;
+                    self.state
+                        .set_context_window_size(response.context_window_size);
                     self.state.record_cost_usage(response.usage, None);
                     let assistant_message = append_contextual_message(
                         &mut self.state,
@@ -1250,6 +1582,8 @@ impl<'a> TuiController<'a> {
                     return Ok(());
                 }
                 ToolUseResponse::ToolCalls(batch) => {
+                    self.state
+                        .set_context_window_size(batch.context_window_size);
                     self.state.record_cost_usage(batch.usage, None);
                     let local_calls = batch
                         .calls
@@ -1295,7 +1629,7 @@ impl<'a> TuiController<'a> {
                     for (index, call) in local_calls.iter().cloned().enumerate() {
                         let outcome = self.execute_tool_call(
                             &registry,
-                            &tool_context,
+                            &self.tool_context(),
                             &call.provider_call,
                             call.use_id,
                             on_progress,
@@ -1381,6 +1715,181 @@ impl<'a> TuiController<'a> {
     where
         F: FnMut(&Self) -> Result<()>,
     {
+        // Handle /sidebar as a TUI-local toggle that never reaches the command registry.
+        let trimmed = input.trim();
+        let sub = trimmed
+            .strip_prefix("/sidebar")
+            .map(str::trim)
+            .unwrap_or("");
+        if trimmed == "/sidebar" || trimmed.starts_with("/sidebar ") {
+            let enabled = match sub {
+                "on" => Some(true),
+                "off" => Some(false),
+                "toggle" | "" => None,
+                // Unknown subcommand — treat as a plain toggle.
+                _ => None,
+            };
+            match enabled {
+                Some(v) => {
+                    self.sidebar_visible = v;
+                    self.status_note = Some(if v {
+                        "sidebar on".into()
+                    } else {
+                        "sidebar off".into()
+                    });
+                    self.needs_render = true;
+                }
+                None => {
+                    self.toggle_sidebar();
+                }
+            }
+            return Ok(());
+        }
+        if trimmed == "/thinking" || trimmed.starts_with("/thinking ") {
+            let arg = trimmed
+                .strip_prefix("/thinking")
+                .map(str::trim)
+                .unwrap_or("");
+            let output =
+                commands::execute_thinking_command(&self.state, (!arg.is_empty()).then_some(arg))?;
+            let effort = match self.state.thinking_effort {
+                wonder_of_u_core::app::ThinkingEffort::Low => "low",
+                wonder_of_u_core::app::ThinkingEffort::Medium => "medium",
+                wonder_of_u_core::app::ThinkingEffort::High => "high",
+            };
+            match arg {
+                "on" => {
+                    self.state.set_thinking_enabled(true);
+                    self.status_note = Some("thinking on".into());
+                }
+                "off" => {
+                    self.state.set_thinking_enabled(false);
+                    self.status_note = Some("thinking off".into());
+                }
+                "low" => {
+                    self.state
+                        .set_thinking_effort(wonder_of_u_core::app::ThinkingEffort::Low);
+                    self.status_note = Some("thinking effort low".into());
+                }
+                "medium" => {
+                    self.state
+                        .set_thinking_effort(wonder_of_u_core::app::ThinkingEffort::Medium);
+                    self.status_note = Some("thinking effort medium".into());
+                }
+                "high" => {
+                    self.state
+                        .set_thinking_effort(wonder_of_u_core::app::ThinkingEffort::High);
+                    self.status_note = Some("thinking effort high".into());
+                }
+                "" => {
+                    self.status_note = Some(format!(
+                        "thinking {} · effort {effort}",
+                        if self.state.thinking_enabled {
+                            "on"
+                        } else {
+                            "off"
+                        }
+                    ));
+                }
+                _ => {}
+            }
+            // TODO: Include `self.state.thinking_enabled` in provider completion requests.
+            self.dismiss_dialog();
+            self.record_command_message(input, Some(&output))?;
+            self.needs_render = true;
+            return Ok(());
+        }
+        if trimmed == "/help" || trimmed.starts_with("/help ") {
+            let arg = trimmed.strip_prefix("/help").map(str::trim).unwrap_or("");
+            if !arg.is_empty() {
+                return Err(WonderError::validation(
+                    "/help does not take arguments in the TUI",
+                ));
+            }
+            let output = commands::execute_help_command()?;
+            self.dismiss_dialog();
+            self.record_command_message(input, Some(&output))?;
+            self.status_note = Some("help".into());
+            self.needs_render = true;
+            return Ok(());
+        }
+        if trimmed == "/stats" || trimmed.starts_with("/stats ") {
+            let arg = trimmed.strip_prefix("/stats").map(str::trim).unwrap_or("");
+            if !arg.is_empty() {
+                return Err(WonderError::validation("/stats does not take arguments"));
+            }
+            let output = commands::execute_stats_command(&self.state)?;
+            self.dismiss_dialog();
+            self.record_command_message(input, Some(&output))?;
+            self.status_note = Some("session stats".into());
+            self.needs_render = true;
+            return Ok(());
+        }
+        if trimmed == "/settings" || trimmed.starts_with("/settings ") {
+            let arg = trimmed
+                .strip_prefix("/settings")
+                .map(str::trim)
+                .unwrap_or("");
+            if !arg.is_empty() {
+                return Err(WonderError::validation("/settings does not take arguments"));
+            }
+            let output = commands::execute_settings_command(&self.state)?;
+            self.dismiss_dialog();
+            self.record_command_message(input, Some(&output))?;
+            self.status_note = Some("settings".into());
+            self.needs_render = true;
+            return Ok(());
+        }
+        // Handle /login as a TUI-local shortcut when no CLI flags are present.
+        // /login              → open the /setup overlay (guided choice)
+        // /login copilot      → open Copilot OAuth device-code flow directly
+        // /login <provider>   → open provider API-key form for that provider
+        // /login --provider … → fall through to LoginCommand (keeps CLI parity)
+        if trimmed == "/login" || trimmed.starts_with("/login ") {
+            let arg = trimmed
+                .strip_prefix("/login")
+                .map(str::trim)
+                .unwrap_or("")
+                .trim();
+            // If the user passed real CLI flags, fall through to the command registry.
+            if !arg.starts_with('-') {
+                match arg {
+                    "" => {
+                        // No provider specified — open the setup hub so the user can
+                        // choose interactively.
+                        return self.execute_slash_command_with("/setup", before_blocking);
+                    }
+                    "copilot" => {
+                        self.open_copilot_oauth_flow();
+                        return Ok(());
+                    }
+                    provider => {
+                        // Check whether this is a known API-key provider; if so open
+                        // the provider form pre-filtered to that provider.
+                        let known = ProviderResolver::builtin()
+                            .registry()
+                            .get(provider)
+                            .map(|p| p.auth_kind == AuthMaterialKind::ApiKey)
+                            .unwrap_or(false);
+                        if known {
+                            self.open_provider_form(ProviderFormKind::ApiKey);
+                        } else {
+                            // Unknown provider — open the setup hub and let the user pick.
+                            return self.execute_slash_command_with("/setup", before_blocking);
+                        }
+                        return Ok(());
+                    }
+                }
+            }
+        }
+        if trimmed == "/search" || trimmed.starts_with("/search ") {
+            let query = trimmed
+                .strip_prefix("/search")
+                .map(str::trim)
+                .unwrap_or_default();
+            self.open_global_search(query);
+            return Ok(());
+        }
         let invocation = parse_slash_command(input)
             .ok_or_else(|| WonderError::validation("invalid slash command"))?;
         let context = self.command_context();
@@ -1395,6 +1904,8 @@ impl<'a> TuiController<'a> {
             )?
             .ok_or_else(|| WonderError::not_found("command", invocation.name.clone()))?,
         };
+        // Capture the immediate flag before consuming `command` via execute.
+        let is_immediate = command.spec().immediate;
         let output = block_on(command.execute(context, invocation.clone()))?;
         let (text, exit_requested) = command_output_text(output);
         if self.persistence.persisted {
@@ -1411,11 +1922,17 @@ impl<'a> TuiController<'a> {
             && self.pending_memory_picker.is_none()
             && self.pending_tag_removal.is_none()
             && self.pending_theme_picker.is_none()
+            && self.pending_setup_overlay.is_none()
         {
             self.record_command_message(input, text.as_deref())?;
         }
         let _ = self.refresh_runtime_state()?;
-        self.drain_queued_commands(before_blocking)?;
+        // Immediate commands (e.g. /exit, /clear, /color, /effort, /fast,
+        // /hooks) must not trigger queued-prompt draining: they act
+        // synchronously and their side-effects should not cascade.
+        if !is_immediate {
+            self.drain_queued_commands(before_blocking)?;
+        }
         self.exit_requested |= exit_requested;
         if exit_requested {
             self.status_note = Some("exit requested".into());
@@ -1432,6 +1949,7 @@ impl<'a> TuiController<'a> {
                 || dialog.title == "Color"
                 || dialog.title == "Fast"
                 || dialog.title == "Brief"
+                || dialog.title == "Optimize Token"
                 || dialog.title == "Effort"
                 || dialog.title == "Feedback"
                 || dialog.title == "Insights"
@@ -1454,6 +1972,7 @@ impl<'a> TuiController<'a> {
             self.status_note = Some(match self.vim.mode() {
                 VimMode::Insert => "vim insert".into(),
                 VimMode::Normal => "vim normal".into(),
+                VimMode::Visual => "vim visual".into(),
             });
         } else if parse_insights_hint(text.as_deref().unwrap_or_default()) {
             self.status_note = Some("insights queued".into());
@@ -1461,6 +1980,13 @@ impl<'a> TuiController<'a> {
             self.status_note = Some(format!("fast {}", if enabled { "on" } else { "off" }));
         } else if let Some(enabled) = parse_brief_mode_hint(text.as_deref().unwrap_or_default()) {
             self.status_note = Some(format!("brief {}", if enabled { "on" } else { "off" }));
+        } else if let Some(enabled) =
+            parse_optimize_token_mode_hint(text.as_deref().unwrap_or_default())
+        {
+            self.status_note = Some(format!(
+                "optimize token {}",
+                if enabled { "on" } else { "off" }
+            ));
         } else if let Some(effort) = parse_effort_hint(text.as_deref().unwrap_or_default()) {
             self.status_note = Some(format!("effort {effort}"));
         } else if let Some(color) = parse_session_color_hint(text.as_deref().unwrap_or_default()) {
@@ -1470,6 +1996,7 @@ impl<'a> TuiController<'a> {
             || self.pending_tag_removal.is_some()
             || self.pending_theme_picker.is_some()
             || self.pending_model_picker.is_some()
+            || self.pending_setup_overlay.is_some()
         {
         } else if self.pending_external_editor.is_some() {
             self.status_note = Some("opening file in editor".into());
@@ -1546,6 +2073,18 @@ impl<'a> TuiController<'a> {
         let auth = match descriptor.auth_kind {
             wonder_of_u_core::AuthMaterialKind::None => AuthState::not_required(),
             wonder_of_u_core::AuthMaterialKind::ApiKey => AuthState::missing(descriptor.auth_kind),
+            wonder_of_u_core::AuthMaterialKind::AwsSigV4 => {
+                AuthState::missing(descriptor.auth_kind)
+            }
+            wonder_of_u_core::AuthMaterialKind::AwsBearer => {
+                AuthState::missing(descriptor.auth_kind)
+            }
+            wonder_of_u_core::AuthMaterialKind::AwsProfile => {
+                AuthState::missing(descriptor.auth_kind)
+            }
+            wonder_of_u_core::AuthMaterialKind::GcpOAuth2 => {
+                AuthState::missing(descriptor.auth_kind)
+            }
             wonder_of_u_core::AuthMaterialKind::OAuth => AuthState::pending(
                 descriptor.auth_kind,
                 None,
@@ -1567,12 +2106,14 @@ impl<'a> TuiController<'a> {
             self.state.add_additional_working_directory(directory);
         }
         if parse_vim_toggle_hint(text) {
+            self.vim_enabled = true;
             self.vim = VimState::new(match self.vim.mode() {
                 VimMode::Insert => VimMode::Normal,
-                VimMode::Normal => VimMode::Insert,
+                VimMode::Normal | VimMode::Visual => VimMode::Insert,
             });
         }
         if let Some(mode) = parse_vim_mode_hint(text) {
+            self.vim_enabled = true;
             self.vim = VimState::new(mode);
         }
         if let Some(picker) = parse_permission_picker_state(text) {
@@ -1603,6 +2144,15 @@ impl<'a> TuiController<'a> {
         } else {
             self.pending_model_picker = None;
         }
+        if let Some(overlay) = parse_setup_overlay_state(text) {
+            self.open_setup_overlay(overlay);
+        } else {
+            // Only clear setup overlay if we actually parsed some command output;
+            // avoid clobbering it mid-interaction when unrelated hints fire.
+            if text.lines().any(|line| line.starts_with("setup_menu=")) {
+                self.pending_setup_overlay = None;
+            }
+        }
         if let Some(theme) = parse_theme_hint(text) {
             self.state
                 .set_theme((theme != "default").then(|| theme.to_string()));
@@ -1616,6 +2166,9 @@ impl<'a> TuiController<'a> {
         }
         if let Some(enabled) = parse_brief_mode_hint(text) {
             self.state.set_brief_mode(enabled);
+        }
+        if let Some(enabled) = parse_optimize_token_mode_hint(text) {
+            self.state.set_optimize_token_mode(enabled);
         }
         if let Some(effort) = parse_effort_hint(text) {
             self.state
@@ -1661,7 +2214,30 @@ impl<'a> TuiController<'a> {
             .find_map(|line| line.strip_prefix("permission_mode="))
             .and_then(parse_permission_mode_hint)
         {
-            self.state.permission_mode = mode;
+            // Track the pre-plan mode so we can restore it on `/plan exit`.
+            // Entering plan: remember what we're leaving so exit restores
+            // correctly (e.g. AcceptEdits/BypassPermissions, not always Default).
+            // Leaving plan: restore the saved pre-plan mode and clear the slot,
+            // ignoring whatever the command hardcoded (it doesn't know our origin).
+            let apply_mode = if mode == PermissionMode::Plan
+                && self.state.permission_mode != PermissionMode::Plan
+            {
+                // Entering plan mode — save origin.
+                self.pre_plan_permission_mode = Some(self.state.permission_mode);
+                mode
+            } else if mode != PermissionMode::Plan
+                && self.state.permission_mode == PermissionMode::Plan
+            {
+                // Leaving plan mode — restore saved origin, or use the
+                // command-supplied mode as a passthrough fallback.
+                self.pre_plan_permission_mode.take().unwrap_or(mode)
+            } else {
+                // Any other transition (Default→AcceptEdits, etc.) — apply as-is
+                // and clear the stale pre-plan slot if we somehow have one.
+                self.pre_plan_permission_mode = None;
+                mode
+            };
+            self.state.permission_mode = apply_mode;
         }
         let Some(selection) = text
             .lines()
@@ -1750,7 +2326,9 @@ impl<'a> TuiController<'a> {
             &self.state,
             &mut self.persistence,
             &[message],
-        )
+        )?;
+        self.notify_transcript_changed();
+        Ok(())
     }
 
     pub(super) fn persist_messages(&mut self, messages: &[MessageEnvelope]) -> Result<()> {
@@ -1762,17 +2340,27 @@ impl<'a> TuiController<'a> {
             &self.state,
             &mut self.persistence,
             messages,
-        )
+        )?;
+        // Keep scroll state consistent: follow-tail stays pinned; scrolled-up
+        // mode preserves the viewport relative to the bottom of the transcript.
+        self.notify_transcript_changed();
+        Ok(())
     }
 
     pub(super) fn tool_context(&self) -> ToolContext {
+        let system_prompt = self.state.effective_system_prompt(None);
         ToolContext {
             session_id: self.state.session.id,
             cwd: self.state.session.cwd.clone(),
+            session_worktree: self.state.session.worktree.clone(),
             permission_mode: self.state.permission_mode,
             additional_working_directories: self.state.additional_working_directories.clone(),
+            provider: self.state.provider.clone(),
+            model: self.state.model.clone(),
             permission_rules: Vec::new(),
             features: self.state.features.clone(),
+            bash_session_store: None,
+            fork_context: build_fork_context_snapshot(&self.state, system_prompt.as_deref()),
         }
     }
 
@@ -1890,11 +2478,26 @@ impl<'a> TuiController<'a> {
         self.status_note = Some(format!("running tool {}", call.tool_name));
         self.needs_render = true;
         on_progress(self)?;
-        let result = match block_on(tool.execute(context.clone(), use_id, call.arguments.clone())) {
+        let context = context.clone();
+        let arguments = call.arguments.clone();
+        let result = match run_with_spinner_tick(
+            move || block_on(tool.execute(context, use_id, arguments)),
+            SPINNER_PROGRESS_INTERVAL,
+            || self.tick_loading_animation(on_progress),
+        ) {
             Ok(result) => result,
             Err(error) => ToolResult::failure(use_id, format!("tool execution failed: {error}")),
         };
         self.finalize_tool_result(Vec::new(), call, result, on_progress)
+    }
+
+    fn tick_loading_animation<F>(&mut self, on_progress: &mut F) -> Result<()>
+    where
+        F: FnMut(&Self) -> Result<()>,
+    {
+        self.loading_frame = self.loading_frame.wrapping_add(1);
+        self.needs_render = true;
+        on_progress(self)
     }
 
     pub(super) fn finalize_tool_result<F>(
@@ -1907,6 +2510,15 @@ impl<'a> TuiController<'a> {
     where
         F: FnMut(&Self) -> Result<()>,
     {
+        // Clone cwd to avoid a simultaneous borrow of self.state.
+        let cwd = self.state.session.cwd.clone();
+        let result = process_tool_effects(
+            result,
+            self.storage_dir.as_deref(),
+            &cwd,
+            Some(&mut self.state),
+        );
+        let _ = commands::apply_worktree_tool_result(&mut self.state, &result)?;
         messages.push(append_contextual_message(
             &mut self.state,
             MessagePayload::ToolResult {
@@ -1934,9 +2546,12 @@ impl<'a> TuiController<'a> {
         self.persistence.transcript_warning_count = restored.transcript.warnings.len();
         self.persistence.persisted = true;
         self.state = restored.state;
+        std::env::set_current_dir(&self.state.session.cwd)?;
         self.state.session.entrypoint = Some("tui".into());
         self.state.session.app_version = Some(env!("CARGO_PKG_VERSION").into());
         self.rebuild_ephemeral_state();
+        // Messages have been fully replaced; bring scroll state in sync.
+        self.notify_transcript_changed();
         Ok(())
     }
 
@@ -2000,6 +2615,24 @@ impl<'a> TuiController<'a> {
                     Some(SHELL_NOTIFICATION_TTL),
                     true,
                 );
+                // Inject once per task id into the model-facing transcript so
+                // the model can observe task completion without polling.
+                // The idempotence set survives session saves so a crash-recover
+                // reload never double-injects the same task.
+                if !self.state.injected_task_notifications.contains(&task.id) {
+                    let xml = payload_from_task_state(task).render_xml();
+                    let task_id = task.id;
+                    if let Ok(msg) = append_contextual_message(
+                        &mut self.state,
+                        MessagePayload::TaskNotification {
+                            task_id,
+                            xml_payload: xml,
+                        },
+                    ) {
+                        self.state.injected_task_notifications.insert(task_id);
+                        let _ = self.persist_messages(&[msg]);
+                    }
+                }
             }
             self.state.background_tasks = effective_tasks;
             changed = true;
@@ -2036,6 +2669,7 @@ impl<'a> TuiController<'a> {
             effort_level: self.state.effort_level.clone(),
             brief_mode: self.state.brief_mode,
             fast_mode: self.state.fast_mode,
+            optimize_token_mode: self.state.optimize_token_mode,
             session_tags: self.state.session.tags.clone(),
             additional_working_directories: self.state.additional_working_directories.clone(),
         }
@@ -2048,7 +2682,19 @@ impl<'a> TuiController<'a> {
             .as_ref()
             .and_then(|search| current_history_search_match(search, &history_entries))
             .map_or_else(|| self.prompt.text(), ToString::to_string);
-        let mut view = ShellView::from_app_state(&self.state, prompt);
+        let mut view = ShellView::from_app_state(&self.state, prompt, self.expand_tool_output);
+        let terminal_width = self.last_terminal_size.0;
+        let summary_width = if terminal_width == 0 {
+            80
+        } else {
+            usize::from(shell_main_area_width(terminal_width, self.sidebar_visible)).max(1)
+        };
+        view.messages =
+            message_lines_for_width(&self.state.messages, summary_width, self.expand_tool_output);
+        if !self.sidebar_visible {
+            view.sidebar = None;
+        }
+        view.spinner_frame = self.loading_frame;
         view.history_search = self
             .history_search
             .as_ref()
@@ -2059,78 +2705,102 @@ impl<'a> TuiController<'a> {
                 match_index: search.cursor,
                 match_total: search.matches.len(),
             });
-        let mut status = session_status_text(&self.state);
-        status.push_str(" | turn=");
-        status.push_str(turn_state_label(self.turn_state));
-        if let Some(note) = &self.status_note {
-            status.push_str(" | ");
-            status.push_str(note);
-        }
-        view.status = status;
-        view.loading = matches!(
-            self.turn_state,
-            TurnState::ModelRequestActive
-                | TurnState::CommandQueued
-                | TurnState::ToolPermissionPending
-        );
-        view.loading_verb = match self.turn_state {
-            TurnState::ModelRequestActive => Some("thinking".to_string()),
-            TurnState::CommandQueued => Some("running".to_string()),
-            TurnState::ToolPermissionPending => Some("waiting".to_string()),
-            _ => None,
-        };
-        if self.prompt.is_empty() && !matches!(self.turn_state, TurnState::ModelRequestActive) {
-            view.status = "  / commands  ·  ↑ history  ·  ⌃R search".to_string();
+        // Populate sidebar sections with live controller state when the panel is
+        // visible.  The renderer ignores the sidebar entirely when the terminal is
+        // too narrow, so we always fill the data here.
+        if let Some(sb) = view.sidebar.as_mut() {
+            // Section 1 – Session: title (or id prefix), turn state, status note.
+            let mut session_lines = vec![format!(
+                "◈ {}",
+                if self.state.session.title.is_empty() {
+                    self.state
+                        .session
+                        .id
+                        .to_string()
+                        .chars()
+                        .take(8)
+                        .collect::<String>()
+                } else {
+                    self.state.session.title.clone()
+                }
+            )];
+            if let Some(note) = &self.status_note {
+                session_lines.push(format!("  {note}"));
+            }
+            sb.session_lines = session_lines;
+
+            sb.context_lines = context_sidebar_lines(
+                self.state.costs.usage.total_tokens(),
+                self.state.context_window_size,
+            );
+
+            // Section 4 – Status: turn-state indicator + last error summary.
+            let state_icon = match self.turn_state {
+                TurnState::Idle | TurnState::EditingInput => "●",
+                TurnState::ModelRequestActive | TurnState::StreamingResponse => "⟳",
+                TurnState::CommandQueued | TurnState::ToolExecuting => "⚙",
+                TurnState::ToolPermissionPending => "?",
+                TurnState::Interrupted => "⚠",
+                TurnState::Completed => "✓",
+            };
+            sb.status_lines = vec![format!(
+                "{state_icon} {}",
+                turn_state_label(self.turn_state)
+            )];
+            if let Some(verb) = loading_verb_label(self.turn_state) {
+                sb.status_lines.push(format!("  {verb}…"));
+            }
+            if let Some(note) = &self.status_note {
+                sb.status_lines.push(format!("  {note}"));
+            }
+
+            // Section 6 – Workspace: runtime label, git branch, truncated cwd.
+            let mut workspace_lines = vec![
+                runtime_label(self.state.provider.as_deref(), self.state.model.as_deref())
+                    .to_string(),
+            ];
+            if let Some(branch) = &self.state.session.git_branch {
+                workspace_lines.push(format!("⎇  {branch}"));
+            }
+            // Truncate cwd to 30 chars so it fits the sidebar column.
+            if let Some(cwd) = self.state.session.cwd.to_str() {
+                let label: String = if cwd.len() > 36 {
+                    format!("…{}", &cwd[cwd.len() - 35..])
+                } else {
+                    cwd.to_string()
+                };
+                workspace_lines.push(format!("  {label}"));
+            }
+            sb.workspace_lines = workspace_lines;
         }
 
-        let mut footer = session_footer_text(&self.state);
-        footer.push_str(if self.persistence.persisted {
-            " | storage=persisted"
+        let chrome_status = chrome_status_text(&self.state);
+        view.status = if let Some(note) = &self.status_note {
+            format!("{note} | {chrome_status}")
         } else {
-            " | storage=memory"
-        });
-        footer.push_str(" | ");
-        footer.push_str(runtime_label(
-            self.state.provider.as_deref(),
-            self.state.model.as_deref(),
-        ));
-        footer.push_str(" | vim:");
-        footer.push_str(match self.vim.mode() {
-            VimMode::Insert => "insert",
-            VimMode::Normal => "normal",
-        });
-        footer.push_str(" | theme:");
-        footer.push_str(match self.state.theme.as_deref() {
-            Some("midnight") => "midnight",
-            Some("light") => "light",
-            _ => "default",
-        });
-        footer.push_str(" | color:");
-        footer.push_str(match self.state.session_color.as_deref() {
-            Some("red") => "red",
-            Some("blue") => "blue",
-            Some("green") => "green",
-            Some("yellow") => "yellow",
-            Some("purple") => "purple",
-            Some("orange") => "orange",
-            Some("pink") => "pink",
-            Some("cyan") => "cyan",
-            _ => "default",
-        });
-        footer.push_str(" | effort:");
-        footer.push_str(match self.state.effort_level.as_deref() {
-            Some("low") => "low",
-            Some("medium") => "medium",
-            Some("high") => "high",
-            Some("max") => "max",
-            _ => "auto",
-        });
-        footer.push_str(" | fast:");
-        footer.push_str(if self.state.fast_mode { "on" } else { "off" });
-        footer.push_str(" | brief:");
-        footer.push_str(if self.state.brief_mode { "on" } else { "off" });
-        footer.push_str(" | ⌃C exit | ? help");
-        view.footer = footer;
+            chrome_status
+        };
+        view.loading = is_loading_turn_state(self.turn_state);
+        view.loading_verb = loading_verb_label(self.turn_state).map(str::to_string);
+
+        // Elapsed seconds: tick interval is 500 ms, so divide frame count by 2.
+        view.loading_elapsed_secs = self.loading_frame / 2;
+        // Cumulative token count from costs tracking (0 when no API calls yet).
+        view.loading_total_tokens = self.state.costs.usage.total_tokens();
+
+        // Compact Claude-style footer; verbose cwd/provider/model metadata lives in the sidebar.
+        let permission_label = permission_mode_output_label(self.state.permission_mode);
+        let vim_hint = if self.vim_enabled {
+            match self.vim.mode() {
+                VimMode::Insert => " · vim:insert",
+                VimMode::Normal => " · vim:normal",
+                VimMode::Visual => " · vim:visual",
+            }
+        } else {
+            ""
+        };
+        view.footer =
+            format!("▸▸ {permission_label}{vim_hint} (shift+tab to cycle) · ⌃B sidebar · ⌃C exit");
         let picker_list = self.current_picker_list_view();
         view.dialog = if picker_list.is_some() {
             None
@@ -2153,7 +2823,92 @@ impl<'a> TuiController<'a> {
                 .collect();
             SlashSuggestionsOverlay { entries }
         });
+        view.global_search = self.global_search_open.then(|| GlobalSearchOverlayView {
+            query: self.global_search_query.clone(),
+            results: self.global_search_results.clone(),
+            selected: self.global_search_selected,
+        });
+        // Wire scroll position so the renderer shows the correct transcript window.
+        view.scroll = TranscriptScrollView {
+            offset_from_bottom: self.scroll_state.offset_from_bottom,
+            total_lines: self.scroll_state.last_total_lines,
+            visible_lines: self.scroll_state.last_visible_lines,
+        };
+
+        // Populate sidebar provider summary with live provider/model info.
+        // Active provider is prefixed with ◈; other ready providers are shown
+        // compactly below it.  A trailing count line shows how many configured
+        // providers are not yet authenticated so the user knows what to set up.
+        if let Some(sb) = view.sidebar.as_mut() {
+            let active_provider = self.state.provider.as_deref().unwrap_or("");
+            let active_model = self.state.model.as_deref().unwrap_or("");
+            let mut provider_lines: Vec<String> = Vec::new();
+
+            if let Ok(report) = ProviderResolver::builtin().load_report(self.storage_dir.as_deref())
+            {
+                let ready_count = report.available_providers.len();
+                for pd in &report.available_providers {
+                    // Use the currently active model when this is the active provider;
+                    // otherwise fall back to the provider's default.
+                    let model = if pd.id == active_provider {
+                        active_model
+                    } else {
+                        pd.default_model.as_str()
+                    };
+                    let label = format!("{}({})", model, pd.id);
+                    if pd.id == active_provider {
+                        provider_lines.push(format!("◈ {label}"));
+                    } else {
+                        provider_lines.push(format!("  {label}"));
+                    }
+                }
+
+                // Show how many of the full registry are not yet ready so the
+                // user gets a nudge without the sidebar becoming overwhelming.
+                let total = ProviderRegistry::builtin().providers().count();
+                let missing = total.saturating_sub(ready_count);
+                if missing > 0 {
+                    provider_lines.push(format!("  +{missing} more (/setup to configure)"));
+                }
+            }
+
+            // Fallback: if no providers loaded, show the active selection as one line.
+            if provider_lines.is_empty() && !active_provider.is_empty() {
+                provider_lines.push(format!("◈ {}({})", active_model, active_provider));
+            }
+
+            sb.provider_lines = provider_lines;
+        }
+
+        // Populate tool, MCP, LSP, and todo sidebar sections.
+        if let Some(sb) = view.sidebar.as_mut() {
+            sb.tool_lines = self.sidebar_cache.tool_lines.clone();
+            sb.mcp_lines = self.sidebar_cache.mcp_lines.clone();
+            sb.lsp_lines = self.sidebar_cache.lsp_lines.clone();
+            sb.todo_lines = self.sidebar_cache.todo_lines.clone();
+        }
+
         view
+    }
+
+    pub(super) fn refresh_sidebar_panel_cache(&mut self) -> bool {
+        let tool_context = self.tool_context();
+        let next = SidebarPanelCache {
+            tool_lines: tool_sidebar_lines(&tool_context, self.storage_dir.as_deref()),
+            mcp_lines: mcp_sidebar_lines(self.storage_dir.as_deref(), &self.state.session.cwd),
+            lsp_lines: lsp_sidebar_lines(&self.state.session.cwd),
+            todo_lines: todo_merged_sidebar_lines(
+                &self.state.session.cwd,
+                self.storage_dir.as_deref(),
+                self.state.session.id,
+            ),
+        };
+        if self.sidebar_cache == next {
+            false
+        } else {
+            self.sidebar_cache = next;
+            true
+        }
     }
 
     pub(super) fn push_notification(
@@ -2196,6 +2951,22 @@ impl<'a> TuiController<'a> {
         self.pending_permission_picker = Some(picker);
         self.status_note = None;
         self.refresh_permission_picker_dialog();
+    }
+
+    pub(super) fn cycle_prompt_permission_mode_backward(&mut self) -> Result<()> {
+        let mode = previous_prompt_permission_mode(self.state.permission_mode);
+        let output = format!(
+            "permission_mode={}\nstatus=permission mode updated\nplan_mode_active={}",
+            permission_mode_output_label(mode),
+            matches!(mode, PermissionMode::Plan),
+        );
+        self.apply_command_output_hints(Some(&output));
+        self.status_note = Some(format!(
+            "permission mode {}",
+            permission_mode_status_label(mode)
+        ));
+        self.needs_render = true;
+        self.persist_state_snapshot()
     }
 
     pub(super) fn refresh_permission_picker_dialog(&mut self) {
@@ -2864,6 +3635,545 @@ impl<'a> TuiController<'a> {
         Ok(())
     }
 
+    // -----------------------------------------------------------------------
+    // Setup overlay
+    // -----------------------------------------------------------------------
+
+    /// Opens the setup hub overlay, clearing all other picker overlays first.
+    pub(super) fn open_setup_overlay(&mut self, mut overlay: SetupOverlayState) {
+        if overlay.items.is_empty() {
+            self.status_note = Some("setup menu is empty".into());
+            self.needs_render = true;
+            return;
+        }
+        overlay.clamp_selection();
+        self.pending_permission_picker = None;
+        self.pending_memory_picker = None;
+        self.pending_tag_removal = None;
+        self.pending_theme_picker = None;
+        self.pending_model_picker = None;
+        self.pending_setup_overlay = Some(overlay);
+        self.status_note = Some(picker_status_note("setup"));
+        self.dialog = None;
+        self.needs_render = true;
+    }
+
+    /// Moves the highlighted row by `delta` (+1 down, -1 up).
+    pub(super) fn step_setup_overlay(&mut self, delta: isize) {
+        let Some(overlay) = &mut self.pending_setup_overlay else {
+            return;
+        };
+        if overlay.items.is_empty() {
+            return;
+        }
+        let count = overlay.items.len();
+        let current = overlay.selected_index as isize;
+        overlay.selected_index = (current + delta).rem_euclid(count as isize) as usize;
+        self.needs_render = true;
+    }
+
+    /// Confirms the currently highlighted setup item and dispatches its action.
+    pub(super) fn complete_setup_overlay<F>(&mut self, before_blocking: &mut F) -> Result<()>
+    where
+        F: FnMut(&Self) -> Result<()>,
+    {
+        let Some(overlay) = self.pending_setup_overlay.take() else {
+            self.dismiss_dialog();
+            return Ok(());
+        };
+        self.dialog = None;
+        let Some(item) = overlay.items.get(overlay.selected_index).cloned() else {
+            return Ok(());
+        };
+        match item.action {
+            SetupItemAction::Dispatch(command) => {
+                // Execute the slash command for this item (e.g. "/model", "/theme").
+                self.execute_slash_command_with(&command, before_blocking)?;
+            }
+            SetupItemAction::Placeholder(message) => {
+                // Show a notice dialog while the full form is deferred.
+                let body: Vec<String> = message.lines().map(str::to_string).collect();
+                self.dialog = Some(DialogView::notice(item.label.clone(), body.clone()));
+                self.status_note = Some(format!("setup: {}", item.label.to_ascii_lowercase()));
+                self.push_notification(
+                    format!("setup-placeholder:{}", item.id),
+                    NotificationSeverity::Info,
+                    item.label,
+                    body,
+                    Some(SHELL_NOTIFICATION_TTL),
+                    false,
+                );
+                self.needs_render = true;
+            }
+            SetupItemAction::Deferred(message) => {
+                // Show a notice dialog explaining that this cloud/remote feature is
+                // intentionally out-of-scope for the local-first TUI.
+                let body: Vec<String> = message.lines().map(str::to_string).collect();
+                self.dialog = Some(DialogView::notice(item.label.clone(), body.clone()));
+                self.status_note = Some(format!(
+                    "setup: {} (deferred)",
+                    item.label.to_ascii_lowercase()
+                ));
+                self.push_notification(
+                    format!("setup-deferred:{}", item.id),
+                    NotificationSeverity::Info,
+                    item.label,
+                    body,
+                    Some(SHELL_NOTIFICATION_TTL),
+                    false,
+                );
+                self.needs_render = true;
+            }
+            SetupItemAction::ProviderForm(kind) => {
+                self.open_provider_form(kind);
+            }
+            SetupItemAction::CopilotOAuth => {
+                self.open_copilot_oauth_flow();
+            }
+        }
+        Ok(())
+    }
+
+    /// Cancels the setup overlay, records a status note, and marks this session
+    /// so that the autostart logic does not re-open the overlay.
+    pub(super) fn cancel_setup_overlay(&mut self) -> Result<()> {
+        let Some(overlay) = self.pending_setup_overlay.take() else {
+            self.dismiss_dialog();
+            return Ok(());
+        };
+        // Prevent maybe_auto_open_setup from re-opening for the rest of this session.
+        self.setup_cancelled_this_session = true;
+        self.dialog = None;
+        self.record_command_message(&overlay.original_input, Some("status=setup cancelled"))?;
+        self.status_note = Some("setup cancelled".into());
+        self.needs_render = true;
+        Ok(())
+    }
+
+    /// Handles keyboard input while the setup overlay is active.
+    pub(super) fn handle_setup_overlay_key<F>(
+        &mut self,
+        key: KeyEvent,
+        resolved: Option<ResolvedKey>,
+        before_blocking: &mut F,
+    ) -> Result<()>
+    where
+        F: FnMut(&Self) -> Result<()>,
+    {
+        match key.code {
+            KeyCode::Tab | KeyCode::Enter => self.complete_setup_overlay(before_blocking),
+            KeyCode::Up => {
+                self.step_setup_overlay(-1);
+                Ok(())
+            }
+            KeyCode::Down => {
+                self.step_setup_overlay(1);
+                Ok(())
+            }
+            KeyCode::Esc => self.cancel_setup_overlay(),
+            _ => match resolved {
+                Some(ResolvedKey::Edit(EditAction::InsertNewline)) => {
+                    self.complete_setup_overlay(before_blocking)
+                }
+                Some(ResolvedKey::System(wonder_of_u_tui::SystemAction::Interrupt)) => {
+                    self.cancel_setup_overlay()
+                }
+                _ => {
+                    self.status_note = Some(picker_status_note("setup"));
+                    self.needs_render = true;
+                    Ok(())
+                }
+            },
+        }
+    }
+
+    /// Opens `/setup` automatically when the provider is not yet configured,
+    /// unless the user already dismissed it during this session.
+    ///
+    /// Called once at the end of [`TuiController::new`]. After the first
+    /// successful provider configuration the method becomes a no-op.
+    pub(super) fn maybe_auto_open_setup(&mut self) -> Result<()> {
+        if self.setup_cancelled_this_session {
+            return Ok(());
+        }
+        if self.state.provider_readiness() == ProviderReadiness::Ready {
+            return Ok(());
+        }
+        // Provider is not ready and the user has not cancelled yet - run the
+        // slash command so the normal output-parsing path opens the overlay.
+        self.execute_slash_command_with("/setup", &mut |_| Ok(()))
+    }
+
+    /// Opens a two-stage provider form (API-key or API-base) from the setup hub.
+    ///
+    /// Providers are pre-filtered: API-key forms only list providers that
+    /// require a key (`AuthMaterialKind::ApiKey`); API-base forms list all.
+    pub(super) fn open_provider_form(&mut self, kind: ProviderFormKind) {
+        let options: Vec<ProviderFormOption> = ProviderResolver::builtin()
+            .registry()
+            .providers()
+            .filter(|p| match kind {
+                ProviderFormKind::ApiKey => p.auth_kind == AuthMaterialKind::ApiKey,
+                ProviderFormKind::ApiBase => true,
+            })
+            .map(|p| ProviderFormOption {
+                provider_id: p.id.clone(),
+                display_name: p.display_name.clone(),
+            })
+            .collect();
+        // The setup overlay is replaced by the provider form.
+        self.pending_setup_overlay = None;
+        self.pending_provider_form = Some(ProviderFormState::new(kind, options));
+        self.needs_render = true;
+    }
+
+    /// Handles keyboard input while the provider form is active.
+    pub(super) fn handle_provider_form_key(
+        &mut self,
+        key: KeyEvent,
+        resolved: Option<ResolvedKey>,
+    ) -> Result<()> {
+        let stage = match &self.pending_provider_form {
+            Some(f) => f.stage.clone(),
+            None => return Ok(()),
+        };
+        match stage {
+            ProviderFormStage::PickProvider => match key.code {
+                KeyCode::Up => {
+                    let f = self.pending_provider_form.as_mut().unwrap();
+                    if !f.options.is_empty() {
+                        f.selected_index =
+                            (f.selected_index + f.options.len() - 1) % f.options.len();
+                    }
+                    self.needs_render = true;
+                    Ok(())
+                }
+                KeyCode::Down => {
+                    let f = self.pending_provider_form.as_mut().unwrap();
+                    if !f.options.is_empty() {
+                        f.selected_index = (f.selected_index + 1) % f.options.len();
+                    }
+                    self.needs_render = true;
+                    Ok(())
+                }
+                KeyCode::Esc => self.cancel_provider_form(),
+                _ => {
+                    let advance =
+                        matches!(resolved, Some(ResolvedKey::Edit(EditAction::InsertNewline)))
+                            || matches!(key.code, KeyCode::Tab | KeyCode::Enter);
+                    if advance {
+                        let f = self.pending_provider_form.as_mut().unwrap();
+                        if f.options.is_empty() {
+                            self.status_note = Some("no providers available for this form".into());
+                        } else {
+                            f.stage = ProviderFormStage::EnterValue;
+                        }
+                    } else {
+                        self.status_note = Some(provider_form_status_note(&stage));
+                    }
+                    self.needs_render = true;
+                    Ok(())
+                }
+            },
+            ProviderFormStage::EnterValue => {
+                if key.code == KeyCode::Esc {
+                    // Go back to provider selection; clear the staged input.
+                    let f = self.pending_provider_form.as_mut().unwrap();
+                    f.stage = ProviderFormStage::PickProvider;
+                    f.input = TextBuffer::new(false);
+                    self.needs_render = true;
+                    return Ok(());
+                }
+                if matches!(resolved, Some(ResolvedKey::Edit(EditAction::InsertNewline)))
+                    || key.code == KeyCode::Enter
+                {
+                    return self.complete_provider_form();
+                }
+                if let Some(res) = resolved {
+                    let f = self.pending_provider_form.as_mut().unwrap();
+                    apply_picker_query_edit(&mut f.input, res);
+                }
+                self.needs_render = true;
+                Ok(())
+            }
+        }
+    }
+
+    /// Commits the staged value and closes the form.
+    ///
+    /// For API keys the value is written to [`CredentialStore`] and the status
+    /// note names the provider but **never** includes the key value itself.
+    /// For API-base URLs the value is written to [`SettingsStore`].
+    pub(super) fn complete_provider_form(&mut self) -> Result<()> {
+        let Some(form) = self.pending_provider_form.take() else {
+            return Ok(());
+        };
+        let Some(opt) = form.options.get(form.selected_index).cloned() else {
+            self.status_note = Some("provider form: no provider selected".into());
+            self.needs_render = true;
+            return Ok(());
+        };
+        let provider_id = opt.provider_id;
+        let provider_display = opt.display_name;
+        let value = form.input.text().to_string();
+        let Some(dir) = self.storage_dir.clone() else {
+            self.status_note = Some("provider form: no storage dir configured".into());
+            self.needs_render = true;
+            return Ok(());
+        };
+        match form.kind {
+            ProviderFormKind::ApiKey => {
+                CredentialStore::new(&dir).set_api_key(&provider_id, value)?;
+                // Status note names the provider but NEVER includes the key value.
+                self.status_note = Some(format!("API key saved for {provider_display}"));
+            }
+            ProviderFormKind::ApiBase => {
+                let mut settings = SettingsStore::new(&dir).read()?;
+                settings
+                    .providers
+                    .entry(provider_id.clone())
+                    .or_insert_with(Default::default)
+                    .api_base = Some(value);
+                SettingsStore::new(&dir).write(&settings)?;
+                self.status_note = Some(format!("API base saved for {provider_display}"));
+            }
+        }
+        self.needs_render = true;
+        Ok(())
+    }
+
+    /// Cancels the provider form and records a status note.
+    pub(super) fn cancel_provider_form(&mut self) -> Result<()> {
+        self.pending_provider_form = None;
+        self.status_note = Some("provider form cancelled".into());
+        self.needs_render = true;
+        Ok(())
+    }
+
+    // ── Copilot OAuth device-code flow ────────────────────────────────────────
+
+    /// Opens the Copilot device-code OAuth dialog.
+    ///
+    /// Requests a device code synchronously (a single fast HTTP call), then
+    /// shows a confirmation dialog with the verification URL and user code.
+    /// The browser is **never** opened and polling does **not** begin until
+    /// the user explicitly presses Enter.
+    pub(super) fn open_copilot_oauth_flow(&mut self) {
+        // Clear the setup overlay so the dialog renders instead of the picker.
+        self.pending_setup_overlay = None;
+        self.needs_render = true;
+
+        let device_code = match request_copilot_device_code() {
+            Ok(code) => code,
+            Err(err) => {
+                self.dialog = Some(DialogView::notice(
+                    "Copilot Login Failed",
+                    [format!("Could not start Copilot login: {err}")],
+                ));
+                self.status_note = Some("copilot oauth: device code request failed".into());
+                self.needs_render = true;
+                return;
+            }
+        };
+
+        // Build a confirm-style dialog showing the URL and user code.  The raw
+        // `device_code` secret is kept only in `pending_copilot_oauth`, never in
+        // the dialog body or any logged/displayed text.
+        let dialog = DialogView {
+            title: "GitHub Copilot Login".into(),
+            body: vec![
+                "Authorize Wonder-of-U to use GitHub Copilot.".into(),
+                String::new(),
+                format!("1. Visit:      {}", device_code.verification_uri),
+                format!("2. Enter code: {}", device_code.user_code),
+                String::new(),
+                "Press Enter to open the browser and wait for authorization.".into(),
+                "Press Esc to cancel.".into(),
+            ],
+            actions: vec![
+                DialogActionView::new("Open Browser", true),
+                DialogActionView::new("Cancel", false),
+            ],
+        };
+        self.dialog = Some(dialog);
+        self.pending_copilot_oauth =
+            Some(CopilotOAuthFlowState::AwaitingConfirmation { device_code });
+        self.status_note = Some("copilot oauth: press Enter to open browser".into());
+        self.needs_render = true;
+    }
+
+    /// Handles key events while the Copilot OAuth dialog is visible.
+    ///
+    /// - `AwaitingConfirmation`: Enter / `y` opens the browser and starts
+    ///   polling; Esc cancels.
+    /// - `Polling`: Esc cancels (dropping the background thread result).
+    pub(super) fn handle_copilot_oauth_dialog_key(
+        &mut self,
+        key: KeyEvent,
+        resolved: Option<ResolvedKey>,
+    ) -> Result<()> {
+        let Some(state) = &self.pending_copilot_oauth else {
+            self.dismiss_dialog();
+            return Ok(());
+        };
+        match state {
+            CopilotOAuthFlowState::AwaitingConfirmation { .. } => {
+                let confirmed =
+                    matches!(resolved, Some(ResolvedKey::Edit(EditAction::InsertNewline)))
+                        || matches!(resolved, Some(ResolvedKey::InsertChar('y')))
+                        || matches!(resolved, Some(ResolvedKey::InsertChar('Y')));
+                let cancelled = key.code == KeyCode::Esc
+                    || matches!(
+                        resolved,
+                        Some(ResolvedKey::System(
+                            wonder_of_u_tui::SystemAction::Interrupt
+                        ))
+                    );
+                if confirmed {
+                    // Start polling; browser opens inside this call.
+                    self.start_copilot_oauth_polling();
+                } else if cancelled {
+                    self.pending_copilot_oauth = None;
+                    self.dialog = None;
+                    self.status_note = Some("copilot oauth cancelled".into());
+                    self.needs_render = true;
+                } else {
+                    self.status_note = Some("press Enter to open browser, Esc to cancel".into());
+                    self.needs_render = true;
+                }
+                Ok(())
+            }
+            CopilotOAuthFlowState::Polling { user_code, .. } => {
+                let user_code = user_code.clone();
+                let cancelled = key.code == KeyCode::Esc
+                    || matches!(
+                        resolved,
+                        Some(ResolvedKey::System(
+                            wonder_of_u_tui::SystemAction::Interrupt
+                        ))
+                    );
+                if cancelled {
+                    // Drop the flow; the background thread result is discarded.
+                    self.pending_copilot_oauth = None;
+                    self.dialog = None;
+                    self.status_note = Some("copilot oauth polling cancelled".into());
+                    self.needs_render = true;
+                } else {
+                    // Remind the user of the code without blocking or advancing.
+                    self.status_note = Some(format!(
+                        "copilot oauth: waiting for authorization (code: {user_code})"
+                    ));
+                    self.needs_render = true;
+                }
+                Ok(())
+            }
+        }
+    }
+
+    /// Transitions from `AwaitingConfirmation` to `Polling`.
+    ///
+    /// Opens the browser (best-effort; failure is non-fatal) and spawns a
+    /// background thread that calls [`poll_copilot_access_token`].  The main
+    /// thread checks the channel on each [`UiEvent::Tick`] via
+    /// [`Self::tick_copilot_oauth_poll`].
+    pub(super) fn start_copilot_oauth_polling(&mut self) {
+        let Some(CopilotOAuthFlowState::AwaitingConfirmation { device_code }) =
+            self.pending_copilot_oauth.take()
+        else {
+            return;
+        };
+
+        // Open browser; failure is non-fatal — the user can navigate manually.
+        open_browser_url(&device_code.verification_uri);
+
+        let user_code = device_code.user_code.clone();
+        let dc_secret = device_code.device_code.clone();
+        let interval = device_code.interval;
+        let timeout = device_code.expires_in.max(1);
+
+        let (tx, rx) = mpsc::channel();
+        std::thread::spawn(move || {
+            let result = poll_copilot_access_token(
+                &dc_secret,
+                interval,
+                std::time::Duration::from_secs(timeout),
+            );
+            // A send error means the receiver was dropped (user cancelled); ignore it.
+            let _ = tx.send(result);
+        });
+
+        // Replace the confirmation dialog with a "polling" notice.
+        self.dialog = Some(DialogView::notice(
+            "GitHub Copilot Login",
+            [
+                "Waiting for authorization in the browser\u{2026}".to_string(),
+                format!("Code: {user_code}  (still valid)"),
+                String::new(),
+                "Approve the request in your browser, then return here.".to_string(),
+                "Press Esc to cancel.".to_string(),
+            ],
+        ));
+        self.pending_copilot_oauth = Some(CopilotOAuthFlowState::Polling {
+            user_code,
+            result_rx: rx,
+        });
+        self.status_note = Some("copilot oauth: waiting for browser authorization\u{2026}".into());
+        self.needs_render = true;
+    }
+
+    /// Checks the polling channel on each [`UiEvent::Tick`].
+    ///
+    /// When the background thread sends a result the OAuth token is stored via
+    /// [`CredentialStore`] and the dialog is dismissed.  The raw token value is
+    /// **never** included in the status note, dialog body, notifications, or
+    /// any logged output.
+    pub(super) fn tick_copilot_oauth_poll(&mut self) -> Result<()> {
+        // Borrow `pending_copilot_oauth` immutably to peek at the channel.
+        let poll_result = if let Some(CopilotOAuthFlowState::Polling { result_rx, .. }) =
+            &self.pending_copilot_oauth
+        {
+            match result_rx.try_recv() {
+                Ok(r) => Some(r),
+                Err(mpsc::TryRecvError::Disconnected) => Some(Err(WonderError::validation(
+                    "copilot oauth polling thread disconnected",
+                ))),
+                // Still waiting — nothing to do this tick.
+                Err(mpsc::TryRecvError::Empty) => None,
+            }
+        } else {
+            None
+        };
+        // The immutable borrow ends here; we can now mutate freely.
+
+        let Some(result) = poll_result else {
+            return Ok(());
+        };
+
+        // Clear the flow state and dismiss the dialog.
+        self.pending_copilot_oauth = None;
+        self.dialog = None;
+        self.needs_render = true;
+
+        match result {
+            Ok(token) => {
+                if let Some(dir) = self.storage_dir.clone() {
+                    CredentialStore::new(&dir).set_oauth_token(
+                        "copilot",
+                        token.access_token,
+                        token.refresh_token,
+                        token.expires_at,
+                    )?;
+                }
+                // Confirm success without ever echoing the token value.
+                self.status_note = Some("GitHub Copilot authorized successfully".into());
+            }
+            Err(err) => {
+                self.status_note = Some(format!("Copilot OAuth failed: {err}"));
+            }
+        }
+        Ok(())
+    }
+
     pub(super) fn dismiss_dialog(&mut self) {
         self.dialog = None;
         self.pending_permission_picker = None;
@@ -2871,6 +4181,9 @@ impl<'a> TuiController<'a> {
         self.pending_tag_removal = None;
         self.pending_theme_picker = None;
         self.pending_model_picker = None;
+        self.pending_setup_overlay = None;
+        self.pending_provider_form = None;
+        self.pending_copilot_oauth = None;
         if matches!(
             self.state.input_mode,
             InputMode::PermissionPending | InputMode::TaskNotification
@@ -2905,6 +4218,9 @@ impl<'a> TuiController<'a> {
         if self.history_search.is_some() {
             return ActiveOverlay::HistorySearch;
         }
+        if self.global_search_open {
+            return ActiveOverlay::GlobalSearch;
+        }
         if self.has_picker_overlay() {
             return ActiveOverlay::Picker;
         }
@@ -2924,6 +4240,8 @@ impl<'a> TuiController<'a> {
             || self.pending_tag_removal.is_some()
             || self.pending_theme_picker.is_some()
             || self.pending_model_picker.is_some()
+            || self.pending_setup_overlay.is_some()
+            || self.pending_provider_form.is_some()
     }
 
     pub(super) fn current_picker_list_view(&self) -> Option<PickerListView> {
@@ -3033,6 +4351,41 @@ impl<'a> TuiController<'a> {
                 hint: PICKER_HINT.into(),
             });
         }
+        if let Some(form) = &self.pending_provider_form {
+            return Some(provider_form_picker_view(form));
+        }
+        if let Some(overlay) = &self.pending_setup_overlay {
+            let readiness_hint = format!(
+                "{PICKER_HINT}  ·  provider: {}  readiness: {}",
+                overlay.provider_label, overlay.readiness_label
+            );
+            return Some(PickerListView {
+                title: "Setup".into(),
+                query: String::new(),
+                entries: overlay
+                    .items
+                    .iter()
+                    .enumerate()
+                    .map(|(i, item)| PickerListEntry {
+                        label: item.label.clone(),
+                        description: item.description.clone(),
+                        tag: match &item.action {
+                            SetupItemAction::Dispatch(_) => None,
+                            // Not-yet-implemented local items get "coming soon".
+                            SetupItemAction::Placeholder(_) => Some("coming soon".into()),
+                            // Cloud/remote-only features are clearly labelled "deferred"
+                            // so users know they are intentionally out-of-scope, not
+                            // merely unfinished.
+                            SetupItemAction::Deferred(_) => Some("deferred".into()),
+                            SetupItemAction::ProviderForm(_) => None,
+                            SetupItemAction::CopilotOAuth => None,
+                        },
+                        selected: i == overlay.selected_index,
+                    })
+                    .collect(),
+                hint: readiness_hint,
+            });
+        }
         None
     }
 
@@ -3123,7 +4476,7 @@ impl<'a> TuiController<'a> {
             self.needs_render = true;
             return Ok(());
         };
-        self.prompt = TextBuffer::from_text(selection, false);
+        self.prompt = TextBuffer::from_text(selection, true);
         self.turn_state = TurnState::EditingInput;
         self.state.input_mode = InputMode::Prompt;
         self.status_note = Some("history search accepted".into());
@@ -3157,8 +4510,193 @@ impl<'a> TuiController<'a> {
             .is_some_and(|search| !search.matches.is_empty())
     }
 
+    pub(super) fn open_global_search(&mut self, query: &str) {
+        self.global_search_open = true;
+        self.global_search_query = query.to_string();
+        self.global_search_cursor = self.global_search_query.chars().count();
+        self.global_search_results.clear();
+        self.global_search_selected = 0;
+        self.global_search_dirty_since = None;
+        self.active_suggestions = None;
+        self.status_note = Some("workspace search".into());
+        self.needs_render = true;
+        if !query.trim().is_empty() {
+            self.refresh_global_search_now();
+        }
+    }
+
+    pub(super) fn toggle_global_search(&mut self, query: Option<&str>) {
+        if self.global_search_open {
+            self.close_global_search();
+        } else {
+            self.open_global_search(query.unwrap_or_default());
+        }
+    }
+
+    pub(super) fn close_global_search(&mut self) {
+        self.global_search_open = false;
+        self.global_search_query.clear();
+        self.global_search_results.clear();
+        self.global_search_selected = 0;
+        self.global_search_cursor = 0;
+        self.global_search_dirty_since = None;
+        self.status_note = Some("workspace search closed".into());
+        self.needs_render = true;
+    }
+
+    pub(super) fn handle_global_search_key(
+        &mut self,
+        key: KeyEvent,
+        resolved: Option<ResolvedKey>,
+    ) -> Result<()> {
+        match key.code {
+            KeyCode::Esc => {
+                self.close_global_search();
+                return Ok(());
+            }
+            KeyCode::Up => {
+                self.step_global_search_selection(-1);
+                return Ok(());
+            }
+            KeyCode::Down => {
+                self.step_global_search_selection(1);
+                return Ok(());
+            }
+            _ => {}
+        }
+
+        match resolved {
+            Some(ResolvedKey::Edit(EditAction::InsertNewline)) => {
+                self.accept_global_search_result()
+            }
+            Some(ResolvedKey::System(wonder_of_u_tui::SystemAction::OpenGlobalSearch)) => {
+                self.close_global_search();
+                Ok(())
+            }
+            Some(ResolvedKey::System(wonder_of_u_tui::SystemAction::Redraw)) => {
+                self.needs_render = true;
+                Ok(())
+            }
+            Some(ResolvedKey::System(system)) => self.handle_system_action(system),
+            Some(resolved) if self.edit_global_search_query(resolved) => Ok(()),
+            Some(_) | None => {
+                self.needs_render = true;
+                Ok(())
+            }
+        }
+    }
+
+    pub(super) fn edit_global_search_query_text(&mut self, text: &str) {
+        let mut query = TextBuffer::from_text(&self.global_search_query, false);
+        query.set_cursor(self.global_search_cursor);
+        query.insert_text(text);
+        self.update_global_search_query(query);
+    }
+
+    pub(super) fn edit_global_search_query(&mut self, resolved: ResolvedKey) -> bool {
+        let mut query = TextBuffer::from_text(&self.global_search_query, false);
+        query.set_cursor(self.global_search_cursor);
+        if !apply_picker_query_edit(&mut query, resolved) {
+            return false;
+        }
+        self.update_global_search_query(query);
+        true
+    }
+
+    pub(super) fn update_global_search_query(&mut self, query: TextBuffer) {
+        self.global_search_query = query.text();
+        self.global_search_cursor = query.cursor();
+        self.global_search_selected = 0;
+        if self.global_search_query.trim().is_empty() {
+            self.global_search_results.clear();
+            self.global_search_dirty_since = None;
+            self.status_note = Some("workspace search".into());
+        } else {
+            self.global_search_dirty_since = Some(Instant::now());
+            self.status_note = Some("searching workspace…".into());
+        }
+        self.needs_render = true;
+    }
+
+    pub(super) fn refresh_global_search_if_ready(&mut self) -> Result<bool> {
+        let Some(dirty_since) = self.global_search_dirty_since else {
+            return Ok(false);
+        };
+        if !self.global_search_open || dirty_since.elapsed() < Duration::from_millis(100) {
+            return Ok(false);
+        }
+        self.refresh_global_search_now();
+        Ok(true)
+    }
+
+    pub(super) fn refresh_global_search_now(&mut self) {
+        self.global_search_dirty_since = None;
+        match crate::commands::search::search_workspace(
+            &self.state.session.cwd,
+            &self.global_search_query,
+        ) {
+            Ok(results) => {
+                self.global_search_selected = self
+                    .global_search_selected
+                    .min(results.len().saturating_sub(1));
+                self.global_search_results = results;
+                self.status_note = Some(format!(
+                    "workspace search: {} match{}",
+                    self.global_search_results.len(),
+                    if self.global_search_results.len() == 1 {
+                        ""
+                    } else {
+                        "es"
+                    }
+                ));
+            }
+            Err(error) => {
+                self.global_search_results.clear();
+                self.global_search_selected = 0;
+                self.status_note = Some(format!("workspace search failed: {error}"));
+            }
+        }
+        self.needs_render = true;
+    }
+
+    pub(super) fn step_global_search_selection(&mut self, delta: isize) {
+        if !self.global_search_results.is_empty() {
+            self.global_search_selected = (self.global_search_selected as isize + delta)
+                .rem_euclid(self.global_search_results.len() as isize)
+                as usize;
+        }
+        self.needs_render = true;
+    }
+
+    pub(super) fn accept_global_search_result(&mut self) -> Result<()> {
+        if self.global_search_dirty_since.is_some() {
+            self.refresh_global_search_now();
+        }
+        let Some(result) = self
+            .global_search_results
+            .get(self.global_search_selected)
+            .cloned()
+        else {
+            return Ok(());
+        };
+        self.prompt
+            .insert_text(&format!("{}:{} ", result.file, result.line));
+        self.turn_state = TurnState::EditingInput;
+        self.state.input_mode = InputMode::Prompt;
+        self.close_global_search();
+        self.status_note = Some(format!("inserted {}:{}", result.file, result.line));
+        self.needs_render = true;
+        Ok(())
+    }
+
     pub(super) fn rebuild_ephemeral_state(&mut self) {
         self.history_search = None;
+        self.global_search_open = false;
+        self.global_search_query.clear();
+        self.global_search_results.clear();
+        self.global_search_selected = 0;
+        self.global_search_cursor = 0;
+        self.global_search_dirty_since = None;
         self.dialog = None;
         self.pending_permission_picker = None;
         self.pending_memory_picker = None;
@@ -3166,6 +4704,9 @@ impl<'a> TuiController<'a> {
         self.pending_theme_picker = None;
         self.pending_model_picker = None;
         self.pending_external_editor = None;
+        self.pending_setup_overlay = None;
+        self.pending_provider_form = None;
+        self.pending_copilot_oauth = None;
         match self.state.input_mode {
             InputMode::Prompt => {
                 self.turn_state = if self.prompt.text().trim().is_empty() {
@@ -3259,6 +4800,17 @@ impl<'a> TuiController<'a> {
     }
 
     pub(super) fn prompt_cursor(&self, width: u16, height: u16) -> (u16, u16) {
+        // Use the live sidebar_visible flag so cursor placement matches the
+        // actual rendered layout (no sidebar column deduction when toggled off).
+        let sidebar_active = self.sidebar_visible;
+        if self.global_search_open {
+            return global_search_cursor_position(
+                width,
+                height,
+                &self.view(),
+                self.global_search_cursor,
+            );
+        }
         if let Some(search) = &self.history_search {
             let view = HistorySearchView {
                 query: search.query.text(),
@@ -3269,13 +4821,50 @@ impl<'a> TuiController<'a> {
                 match_index: search.cursor,
                 match_total: search.matches.len(),
             };
-            return history_search_cursor_position(width, height, &view, search.query.cursor());
+            return history_search_cursor_position(
+                width,
+                height,
+                &view,
+                search.query.cursor(),
+                sidebar_active,
+                context_warning_visible(&self.state),
+            );
         }
-        prompt_cursor_position(width, height, &self.prompt.text(), self.prompt.cursor())
+        prompt_cursor_position(
+            width,
+            height,
+            &self.prompt.text(),
+            self.prompt.cursor(),
+            sidebar_active,
+            context_warning_visible(&self.state),
+        )
     }
 
     pub(super) fn needs_render(&self) -> bool {
         self.needs_render
+    }
+
+    /// Flips the sidebar panel on or off and sets a transient status note.
+    pub(super) fn toggle_sidebar(&mut self) {
+        self.sidebar_visible = !self.sidebar_visible;
+        self.status_note = Some(if self.sidebar_visible {
+            "sidebar on".into()
+        } else {
+            "sidebar off".into()
+        });
+        self.needs_render = true;
+    }
+
+    /// Flips inline tool output expansion and sets a transient status note.
+    pub(super) fn toggle_expand_tool_output(&mut self) {
+        self.expand_tool_output = !self.expand_tool_output;
+        self.status_note = Some(if self.expand_tool_output {
+            "tool output expanded".into()
+        } else {
+            "tool output collapsed".into()
+        });
+        self.notify_transcript_changed();
+        self.needs_render = true;
     }
 
     pub(super) fn exit_requested(&self) -> bool {
@@ -3306,12 +4895,253 @@ impl<'a> TuiController<'a> {
     pub(super) fn mark_rendered(&mut self) {
         self.needs_render = false;
     }
+
+    /// Recomputes the visible transcript height from terminal dimensions and
+    /// calls [`TranscriptScrollState::on_resize`] to keep the scroll state
+    /// consistent after the terminal is resized.
+    ///
+    /// Uses a rough prompt-height estimate derived from the current prompt text
+    /// so that the scroll state stays accurate without building a full view.
+    pub(super) fn on_terminal_resize(&mut self, width: u16, height: u16) {
+        self.last_terminal_size = (width, height);
+        // Box prompt height: top border + content rows + bottom border.
+        let prompt_lines = self.prompt.text().lines().count().max(1);
+        let uncapped = u16::try_from(prompt_lines)
+            .unwrap_or(u16::MAX)
+            .saturating_add(2);
+        let cap = (height / 3).max(3);
+        let warning_height = u16::from(context_warning_visible(&self.state));
+        let prompt_height = uncapped
+            .saturating_add(warning_height)
+            .min(cap.saturating_add(warning_height));
+        let layout = ShellLayout::split(
+            Rect::new(
+                0,
+                0,
+                shell_main_area_width(width, self.sidebar_visible),
+                height,
+            ),
+            prompt_height,
+        );
+        let total = self.transcript_line_count(shell_main_area_width(width, self.sidebar_visible));
+        self.scroll_state
+            .on_resize(usize::from(layout.messages.height), total);
+    }
+
+    /// Recomputes the total rendered transcript line count and notifies the
+    /// scroll state so that follow-tail and scrolled-up modes remain correct.
+    ///
+    /// Call this after any operation that adds or removes messages from
+    /// `self.state.messages`.
+    pub(super) fn notify_transcript_changed(&mut self) {
+        let total = self.transcript_line_count(shell_main_area_width(
+            self.last_terminal_size.0.max(1),
+            self.sidebar_visible,
+        ));
+        self.scroll_state.on_messages_changed(total);
+    }
+
+    /// Returns the transcript messages [`Rect`] derived from the last known
+    /// terminal dimensions.
+    ///
+    /// Returns an empty rect until the first `UiEvent::Resize` arrives, so
+    /// mouse wheel events before the terminal reports its size are silently
+    /// ignored.
+    pub(super) fn transcript_messages_rect(&self) -> Rect {
+        let (width, height) = self.last_terminal_size;
+        if width == 0 || height == 0 {
+            return Rect::new(0, 0, 0, 0);
+        }
+        let prompt_lines = self.prompt.text().lines().count().max(1);
+        let uncapped = u16::try_from(prompt_lines)
+            .unwrap_or(u16::MAX)
+            .saturating_add(2);
+        let cap = (height / 3).max(3);
+        let warning_height = u16::from(context_warning_visible(&self.state));
+        let prompt_height = uncapped
+            .saturating_add(warning_height)
+            .min(cap.saturating_add(warning_height));
+        ShellLayout::split(
+            Rect::new(
+                0,
+                0,
+                shell_main_area_width(width, self.sidebar_visible),
+                height,
+            ),
+            prompt_height,
+        )
+        .messages
+    }
+
+    /// Handles a mouse event from the terminal, scrolling the transcript on
+    /// vertical wheel events when the pointer is over the transcript area and
+    /// no overlay is active.
+    ///
+    /// `ScrollLeft` and `ScrollRight` events are silently ignored, as are all
+    /// button and move events.
+    pub(super) fn handle_mouse_event(&mut self, event: UiEvent) {
+        let Some(mouse) = event.normalized_mouse() else {
+            return;
+        };
+
+        // Map vertical wheel to signed line deltas.
+        // `ScrollUp`   → positive → offset_from_bottom grows  → older content.
+        // `ScrollDown` → negative → offset_from_bottom shrinks → newer content.
+        let delta: i32 = match mouse.kind {
+            MouseEventKind::ScrollUp => MOUSE_SCROLL_LINES,
+            MouseEventKind::ScrollDown => -(MOUSE_SCROLL_LINES),
+            // Horizontal wheel and all button/move events are not handled here.
+            _ => return,
+        };
+
+        // Do not scroll while any modal overlay (dialog, picker, history
+        // search) is shown; those overlays own their own navigation.
+        if self.active_overlay() != ActiveOverlay::None {
+            return;
+        }
+
+        // Only apply the scroll when the pointer is inside the transcript
+        // messages area; wheel events over the prompt bar or chrome are
+        // silently ignored.
+        if !self
+            .transcript_messages_rect()
+            .contains(mouse.column, mouse.row)
+        {
+            return;
+        }
+
+        self.scroll_state.scroll_by(delta);
+        self.needs_render = true;
+    }
+
+    fn transcript_line_count(&self, terminal_width: u16) -> usize {
+        let summary_width = usize::from(terminal_width.max(1));
+        let mut total = if self.state.messages.is_empty() {
+            0
+        } else {
+            message_lines_for_width(&self.state.messages, summary_width, self.expand_tool_output)
+                .len()
+        };
+        if is_loading_turn_state(self.turn_state) {
+            total = total.saturating_add(1);
+        }
+        total
+    }
+}
+
+fn is_loading_turn_state(state: TurnState) -> bool {
+    matches!(
+        state,
+        TurnState::ModelRequestActive | TurnState::CommandQueued | TurnState::ToolPermissionPending
+    )
+}
+
+fn loading_verb_label(state: TurnState) -> Option<&'static str> {
+    match state {
+        TurnState::ModelRequestActive => Some("thinking"),
+        TurnState::CommandQueued => Some("running"),
+        TurnState::ToolPermissionPending => Some("waiting"),
+        _ => None,
+    }
+}
+
+fn model_status_label(provider: Option<&str>, model: Option<&str>) -> String {
+    match (provider, model) {
+        (Some(provider), Some(model)) => format!("{provider}:{model}"),
+        (None, Some(model)) => model.to_string(),
+        (Some(provider), None) => provider.to_string(),
+        (None, None) => "model:auto".into(),
+    }
+}
+
+fn estimated_cost_label(cost: Option<f64>) -> String {
+    cost.map_or_else(|| "cost:--".into(), |cost| format!("${cost:.2}"))
+}
+
+fn context_sidebar_lines(used_tokens: u64, max_tokens: Option<u64>) -> Vec<String> {
+    let Some(max_tokens) = max_tokens.filter(|max_tokens| *max_tokens > 0) else {
+        return vec!["Context: unknown".into()];
+    };
+    let percentage = used_tokens.saturating_mul(100) / max_tokens;
+    let filled = ((used_tokens.saturating_mul(24)) / max_tokens).min(24) as usize;
+    vec![
+        format!(
+            "{} / {} tokens",
+            format_token_count(used_tokens),
+            format_token_count(max_tokens)
+        ),
+        format!(
+            "[{}{}] {}%",
+            "#".repeat(filled),
+            "-".repeat(24usize.saturating_sub(filled)),
+            percentage.min(100)
+        ),
+    ]
+}
+
+fn context_warning_visible(state: &AppState) -> bool {
+    state
+        .context_window_size
+        .filter(|max_tokens| *max_tokens > 0)
+        .is_some_and(|max_tokens| {
+            state.costs.usage.total_tokens().saturating_mul(100) / max_tokens >= 75
+        })
+}
+
+fn format_token_count(value: u64) -> String {
+    let digits = value.to_string();
+    let mut formatted = String::with_capacity(digits.len() + digits.len() / 3);
+    for (index, digit) in digits.chars().enumerate() {
+        if index > 0 && (digits.len() - index) % 3 == 0 {
+            formatted.push(',');
+        }
+        formatted.push(digit);
+    }
+    formatted
+}
+
+fn compact_cwd_label(path: &Path) -> String {
+    let display = path.display().to_string();
+    if display.chars().count() <= 24 {
+        return display;
+    }
+
+    let tail = display
+        .chars()
+        .rev()
+        .take(23)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect::<String>();
+    format!("…{tail}")
+}
+
+fn chrome_status_text(state: &AppState) -> String {
+    let mut parts = vec![
+        model_status_label(state.provider.as_deref(), state.model.as_deref()),
+        compact_cwd_label(&state.session.cwd),
+        format!("{} tok", state.costs.usage.total_tokens()),
+        estimated_cost_label(state.costs.estimated_cost_usd),
+    ];
+
+    if state.messages.is_empty() {
+        parts.push("ready".into());
+    }
+
+    parts.join(" | ")
 }
 
 /// Build the full list of slash-command suggestions from the command registry.
 ///
 /// Called once at TUI startup; the result is stored on `TuiController` and
 /// re-used (with live filtering) on every keystroke.
+///
+/// When a [`CommandSpec`] carries an `argument_hint` (e.g. `[on|off]`), the
+/// hint is appended to the display text so the autocomplete overlay reads e.g.
+/// `/fast [on|off]`.  The *replacement* text stays as just `/commandname` so
+/// the cursor lands right after the command name, ready for the user to type
+/// their argument.
 pub(super) fn build_slash_suggestions(registry: &CommandRegistry) -> Vec<PromptSuggestion> {
     registry
         .all_specs()
@@ -3319,9 +5149,420 @@ pub(super) fn build_slash_suggestions(registry: &CommandRegistry) -> Vec<PromptS
         .filter(|spec| !spec.hidden)
         .map(|spec| {
             let slash = format!("/{}", spec.name);
-            PromptSuggestion::new(spec.name.clone(), slash.clone(), slash)
+            let display = match &spec.argument_hint {
+                Some(hint) => format!("{slash} {hint}"),
+                None => slash.clone(),
+            };
+            PromptSuggestion::new(spec.name.clone(), display, slash)
                 .with_description(spec.description.clone())
                 .with_keywords(spec.aliases.iter().map(|a| format!("/{a}")))
         })
         .collect()
+}
+
+// ── Sidebar data helpers ──────────────────────────────────────────────────────
+
+/// Known LSP binaries and their display labels.
+pub(super) const LSP_SERVERS: &[(&str, &str)] = &[
+    ("rust-analyzer", "Rust"),
+    ("typescript-language-server", "TypeScript"),
+    ("pyright-langserver", "Python"),
+    ("gopls", "Go"),
+    ("clangd", "C/C++"),
+];
+
+/// Compile a compact tools summary for the sidebar.
+///
+/// Shows `N enabled / M registered` on the first line, then a breakdown of
+/// enabled tools by [`ToolKind`].  Falls back to an error line if the registry
+/// cannot be built.
+///
+/// When `storage_dir` is `Some`, MCP catalog tools from enabled servers are
+/// included in the count (soft-fails per server).
+pub(super) fn tool_sidebar_lines(context: &ToolContext, storage_dir: Option<&Path>) -> Vec<String> {
+    let registry = {
+        let result = match storage_dir {
+            Some(root) => wonder_of_u_tools::builtin_registry_with_mcp_catalog(root),
+            None => wonder_of_u_tools::builtin_registry(),
+        };
+        match result {
+            Ok(r) => r,
+            Err(e) => return vec![format!("⚠ tools unavailable: {e}")],
+        }
+    };
+
+    let all_specs = registry.all_specs();
+    let registered = all_specs.len();
+
+    // Match the provider tool loop so this count reflects tools actually
+    // offered to the model after feature and static permission filtering.
+    let enabled_specs = provider_tool_specs(&registry, context, None);
+    let enabled = enabled_specs.len();
+
+    let mut lines = vec![format!("  {enabled} enabled / {registered} registered")];
+
+    // Breakdown by source – compact one-liner per non-zero category.
+    let native = enabled_specs
+        .iter()
+        .filter(|s| s.source == ToolSource::Native)
+        .count();
+    let mcp = enabled_specs
+        .iter()
+        .filter(|s| s.source == ToolSource::Mcp)
+        .count();
+    let skill = enabled_specs
+        .iter()
+        .filter(|s| s.source == ToolSource::Skill)
+        .count();
+    let plugin = enabled_specs
+        .iter()
+        .filter(|s| s.source == ToolSource::Plugin)
+        .count();
+
+    // Breakdown by kind for native tools (most informative for users).
+    let shell = enabled_specs
+        .iter()
+        .filter(|s| s.kind == ToolKind::Shell)
+        .count();
+    let file = enabled_specs
+        .iter()
+        .filter(|s| s.kind == ToolKind::FileRead || s.kind == ToolKind::FileWrite)
+        .count();
+    let web = enabled_specs
+        .iter()
+        .filter(|s| s.kind == ToolKind::Web)
+        .count();
+
+    if native > 0 {
+        let mut parts: Vec<String> = Vec::new();
+        if shell > 0 {
+            parts.push(format!("{shell}sh"));
+        }
+        if file > 0 {
+            parts.push(format!("{file}fs"));
+        }
+        if web > 0 {
+            parts.push(format!("{web}web"));
+        }
+        let rest = native.saturating_sub(shell + file + web);
+        if rest > 0 {
+            parts.push(format!("{rest}other"));
+        }
+        lines.push(format!("  native: {}", parts.join(" ")));
+    }
+    if mcp > 0 {
+        lines.push(format!("  mcp: {mcp}"));
+    }
+    if skill > 0 {
+        lines.push(format!("  skill: {skill}"));
+    }
+    if plugin > 0 {
+        lines.push(format!("  plugin: {plugin}"));
+    }
+
+    lines
+}
+
+/// Build the MCP sidebar section from the stored config (no server spawning).
+///
+/// Reads `McpConfigStore` only during sidebar cache refreshes. Shows a concise
+/// enabled/total count plus one line per server name.
+pub(super) fn mcp_sidebar_lines(
+    storage_dir: Option<&std::path::Path>,
+    cwd: &std::path::Path,
+) -> Vec<String> {
+    let Some(dir) = storage_dir else {
+        return vec!["  mcp: no storage dir".into()];
+    };
+
+    let store = McpConfigStore::new(dir);
+    let config = match store.read_with_project(cwd, None) {
+        Ok((config, _)) => config,
+        Err(e) => return vec![format!("⚠ mcp config unavailable: {e}")],
+    };
+
+    let total = config.servers.len();
+    let enabled = config.servers.iter().filter(|s| s.enabled).count();
+
+    if total == 0 {
+        return vec!["  no servers configured".into()];
+    }
+
+    let mut lines = vec![format!("  {enabled}/{total} servers enabled")];
+    for server in &config.servers {
+        let icon = if server.enabled { "✓" } else { "  " };
+        // Truncate long names so they fit the sidebar column.
+        let name: String = server.name.chars().take(20).collect();
+        lines.push(format!("{icon} {name}"));
+    }
+    lines
+}
+
+/// Check PATH for common LSP binaries and return one line per entry.
+///
+/// Each line is `✓ Label` when the binary is found or `  Label (not found)`
+/// otherwise.  Never probes network or spawns processes.
+pub(super) fn lsp_sidebar_lines(cwd: &std::path::Path) -> Vec<String> {
+    // Annotate with project-type hints so users know which servers matter.
+    let project_hints: &[(&str, &str)] = &[
+        ("Cargo.toml", "rust-analyzer"),
+        ("package.json", "typescript-language-server"),
+        ("pyproject.toml", "pyright-langserver"),
+        ("go.mod", "gopls"),
+    ];
+
+    let mut lines = Vec::new();
+    for (binary, label) in LSP_SERVERS {
+        let found = binary_on_path(binary);
+        // Show a hint when the binary is relevant to this project.
+        let is_relevant = project_hints
+            .iter()
+            .any(|(marker, bin)| *bin == *binary && cwd.join(marker).exists());
+        if found {
+            lines.push(format!("✓ {label}"));
+        } else if is_relevant {
+            // Missing but relevant – highlight so users notice.
+            lines.push(format!("⚠ {label} (not found)"));
+        } else {
+            lines.push(format!("  {label} (not found)"));
+        }
+    }
+    lines
+}
+
+fn previous_prompt_permission_mode(mode: PermissionMode) -> PermissionMode {
+    match mode {
+        PermissionMode::Default => PermissionMode::Plan,
+        PermissionMode::AcceptEdits => PermissionMode::Default,
+        PermissionMode::BypassPermissions => PermissionMode::AcceptEdits,
+        PermissionMode::DontAsk => PermissionMode::BypassPermissions,
+        PermissionMode::Plan => PermissionMode::DontAsk,
+    }
+}
+
+fn permission_mode_status_label(mode: PermissionMode) -> &'static str {
+    match mode {
+        PermissionMode::Default => "default",
+        PermissionMode::AcceptEdits => "accept edits",
+        PermissionMode::BypassPermissions => "bypass permissions",
+        PermissionMode::DontAsk => "don't ask",
+        PermissionMode::Plan => "plan mode",
+    }
+}
+
+/// Parse `todos.md` in `cwd` and return compact `[x]`/`[ ]` lines.
+///
+/// At most [`TODO_SIDEBAR_CAP`] items are shown; the rest are summarised as
+/// `+N more`.  Returns an empty `Vec` when the file does not exist (not an
+/// error – the Todo section is simply hidden).
+pub(super) fn todo_sidebar_lines(cwd: &std::path::Path) -> Vec<String> {
+    let path = cwd.join("todos.md");
+    if !path.exists() {
+        return Vec::new();
+    }
+
+    let content = match std::fs::read_to_string(&path) {
+        Ok(c) => c,
+        Err(e) => return vec![format!("⚠ todos unreadable: {e}")],
+    };
+
+    parse_todo_lines(&content)
+}
+
+pub(super) fn todo_task_store_sidebar_lines(
+    storage_dir: &std::path::Path,
+    session_id: SessionId,
+) -> Option<Vec<String>> {
+    let store = TodoTaskStore::new(storage_dir);
+    let list = store.read_or_default(session_id).ok()?;
+    let mut visible: Vec<_> = list
+        .tasks
+        .values()
+        .filter(|entry| entry.status != TodoTaskStatus::Deleted)
+        .collect();
+    visible.sort_by_key(|entry| entry.created_at);
+
+    if visible.is_empty() {
+        return None;
+    }
+
+    let total = visible.len();
+    let shown = total.min(TODO_SIDEBAR_CAP);
+    let mut lines: Vec<String> = visible[..shown]
+        .iter()
+        .map(|entry| {
+            let label: String = entry.subject.chars().take(22).collect();
+            match entry.status {
+                TodoTaskStatus::Pending => format!("  {label}"),
+                TodoTaskStatus::InProgress => format!("▷ {label}"),
+                TodoTaskStatus::Completed => format!("✓ {label}"),
+                TodoTaskStatus::Deleted => unreachable!("deleted entries are filtered above"),
+            }
+        })
+        .collect();
+
+    let remaining = total.saturating_sub(shown);
+    if remaining > 0 {
+        lines.push(format!("  +{remaining} more"));
+    }
+    Some(lines)
+}
+
+pub(super) fn todo_merged_sidebar_lines(
+    cwd: &std::path::Path,
+    storage_dir: Option<&std::path::Path>,
+    session_id: SessionId,
+) -> Vec<String> {
+    if let Some(storage_dir) = storage_dir
+        && let Some(lines) = todo_task_store_sidebar_lines(storage_dir, session_id)
+    {
+        return lines;
+    }
+    todo_sidebar_lines(cwd)
+}
+
+/// Maximum number of todo items shown in the sidebar before `+N more` cap.
+const TODO_SIDEBAR_CAP: usize = 6;
+
+/// Extract and format todo checkbox lines from markdown content.
+///
+/// Recognises `- [ ] …` and `- [x] …` (case-insensitive `x`).  Leading
+/// whitespace before the `-` is ignored so nested items are included.
+pub(super) fn parse_todo_lines(content: &str) -> Vec<String> {
+    let items: Vec<(bool, &str)> = content
+        .lines()
+        .filter_map(|line| {
+            let trimmed = line.trim_start();
+            trimmed
+                .strip_prefix("- [x] ")
+                .or_else(|| trimmed.strip_prefix("- [X] "))
+                .map(|t| (true, t))
+                .or_else(|| trimmed.strip_prefix("- [ ] ").map(|t| (false, t)))
+        })
+        .collect();
+
+    let total = items.len();
+    let shown = items.len().min(TODO_SIDEBAR_CAP);
+    let mut lines: Vec<String> = items[..shown]
+        .iter()
+        .map(|(done, text)| {
+            // Truncate long task descriptions so they fit the sidebar column.
+            let label: String = text.chars().take(22).collect();
+            if *done {
+                format!("✓ {label}")
+            } else {
+                format!("  {label}")
+            }
+        })
+        .collect();
+
+    let remaining = total.saturating_sub(shown);
+    if remaining > 0 {
+        lines.push(format!("  +{remaining} more"));
+    }
+    lines
+}
+
+/// Return `true` when `name` resolves to an executable file on `PATH`.
+///
+/// Mirrors the same logic used in `commands/advanced.rs` so LSP availability
+/// checks are consistent across the CLI surface.
+pub(super) fn binary_on_path(name: &str) -> bool {
+    let Some(paths) = std::env::var_os("PATH") else {
+        return false;
+    };
+    std::env::split_paths(&paths).any(|dir| dir.join(name).is_file())
+}
+
+#[cfg(test)]
+mod build_slash_suggestions_tests {
+    use std::sync::Arc;
+
+    use async_trait::async_trait;
+    use wonder_of_u_core::{
+        Command, CommandContext, CommandInvocation, CommandKind, CommandOutput, CommandRegistry,
+        CommandSpec, Result,
+    };
+
+    use super::build_slash_suggestions;
+
+    struct FakeCmd(CommandSpec);
+
+    #[async_trait]
+    impl Command for FakeCmd {
+        fn spec(&self) -> CommandSpec {
+            self.0.clone()
+        }
+
+        async fn execute(&self, _: CommandContext, _: CommandInvocation) -> Result<CommandOutput> {
+            Ok(CommandOutput::Noop)
+        }
+    }
+
+    fn registry_with(specs: impl IntoIterator<Item = CommandSpec>) -> CommandRegistry {
+        let mut reg = CommandRegistry::new();
+        for spec in specs {
+            reg.register(Arc::new(FakeCmd(spec))).expect("register");
+        }
+        reg
+    }
+
+    #[test]
+    fn no_hint_produces_slash_name_display_and_replacement() {
+        let spec = CommandSpec::new("status", "show status", CommandKind::Local);
+        let reg = registry_with([spec]);
+        let suggestions = build_slash_suggestions(&reg);
+        assert_eq!(suggestions.len(), 1);
+        assert_eq!(suggestions[0].display_text, "/status");
+        assert_eq!(suggestions[0].replacement, "/status");
+    }
+
+    #[test]
+    fn hint_appended_to_display_text_but_not_replacement() {
+        let spec = CommandSpec::new("fast", "fast mode", CommandKind::Local)
+            .with_argument_hint("[on|off]");
+        let reg = registry_with([spec]);
+        let suggestions = build_slash_suggestions(&reg);
+        assert_eq!(suggestions.len(), 1);
+        // Display shows the hint so the user knows what to type.
+        assert_eq!(suggestions[0].display_text, "/fast [on|off]");
+        // Replacement stays bare so the cursor lands right after the command
+        // name, ready for the user to type their argument.
+        assert_eq!(suggestions[0].replacement, "/fast");
+    }
+
+    #[test]
+    fn hidden_commands_are_excluded_from_suggestions() {
+        let mut hidden = CommandSpec::new("internal", "internal cmd", CommandKind::Local);
+        hidden.hidden = true;
+        let visible = CommandSpec::new("help", "help", CommandKind::Local);
+        let reg = registry_with([hidden, visible]);
+        let suggestions = build_slash_suggestions(&reg);
+        assert_eq!(suggestions.len(), 1);
+        assert_eq!(suggestions[0].display_text, "/help");
+    }
+
+    #[test]
+    fn aliases_become_keywords_in_suggestion() {
+        let mut spec = CommandSpec::new("resume", "resume", CommandKind::Local);
+        spec.aliases = vec!["continue".into()];
+        let reg = registry_with([spec]);
+        let suggestions = build_slash_suggestions(&reg);
+        assert!(
+            suggestions[0].keywords.contains(&"/continue".to_string()),
+            "expected /continue in keywords"
+        );
+    }
+
+    #[test]
+    fn description_is_passed_through_to_suggestion() {
+        let spec = CommandSpec::new("effort", "set effort level", CommandKind::Local)
+            .with_argument_hint("[low|medium|high|max|auto]");
+        let reg = registry_with([spec]);
+        let suggestions = build_slash_suggestions(&reg);
+        assert_eq!(
+            suggestions[0].description.as_deref(),
+            Some("set effort level")
+        );
+    }
 }

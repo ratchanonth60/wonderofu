@@ -2,7 +2,11 @@ use std::{collections::BTreeMap, time::Duration};
 
 use serde_json::json;
 use tokio::time::timeout;
-use wonder_of_u_mcp::{McpClient, McpClientIdentity, McpContent, McpServerConfig};
+use wonder_of_u_core::tool::Tool;
+use wonder_of_u_mcp::{
+    McpClient, McpClientIdentity, McpConfig, McpContent, McpServerConfig, McpSessionPool,
+    discover_catalog_tools,
+};
 
 fn fake_server_path() -> String {
     env!("CARGO_BIN_EXE_fake_mcp_server").to_string()
@@ -13,6 +17,18 @@ fn fake_server_config(exit_after: Option<&str>) -> McpServerConfig {
     if let Some(exit_after) = exit_after {
         env.insert("WONDER_OF_U_FAKE_MCP_EXIT_AFTER".into(), exit_after.into());
     }
+    McpServerConfig {
+        name: "demo".into(),
+        command: fake_server_path(),
+        args: Vec::new(),
+        env,
+        enabled: true,
+        cwd: None,
+        protocol_version: None,
+    }
+}
+
+fn fake_server_config_with_env(env: BTreeMap<String, String>) -> McpServerConfig {
     McpServerConfig {
         name: "demo".into(),
         command: fake_server_path(),
@@ -38,6 +54,17 @@ async fn integration_mcp_fake_server_tool_call() {
     let tools = client.list_tools().expect("list tools");
     assert_eq!(tools.len(), 1);
     assert_eq!(tools[0].name, "Echo Text");
+    assert_eq!(
+        tools[0]
+            .annotations
+            .as_ref()
+            .and_then(|annotations| annotations.read_only_hint),
+        Some(true)
+    );
+    assert_eq!(
+        tools[0].meta.as_ref().expect("meta")["origin"],
+        json!("fake-server")
+    );
 
     let result = client
         .call_tool("Echo Text", json!({ "text": "hello integration" }))
@@ -117,4 +144,153 @@ async fn integration_mcp_client_reconnects_after_server_restart() {
             .collect::<Vec<_>>(),
         vec!["Echo Text"]
     );
+}
+
+#[tokio::test]
+async fn integration_mcp_rejects_oversized_message_before_allocation() {
+    let config = fake_server_config_with_env(BTreeMap::from([(
+        "WONDER_OF_U_FAKE_MCP_OVERSIZE_ON".into(),
+        "tools/list".into(),
+    )]));
+    let mut client = McpClient::connect(&config, &McpClientIdentity::default(), "2024-11-05")
+        .expect("connect fake server");
+
+    let error = timeout(
+        Duration::from_secs(1),
+        tokio::task::spawn_blocking(move || client.list_tools()),
+    )
+    .await
+    .expect("oversized response should not hang")
+    .expect("join blocking task")
+    .expect_err("oversized content length should fail");
+    assert!(
+        error.to_string().contains("exceeds maximum"),
+        "unexpected error: {error}"
+    );
+}
+
+#[tokio::test]
+async fn integration_mcp_expands_config_env_before_spawn() {
+    let config = fake_server_config_with_env(BTreeMap::from([
+        (
+            "WONDER_OF_U_FAKE_MCP_ECHO_ENV".into(),
+            "EXPANDED_TOKEN".into(),
+        ),
+        ("EXPANDED_TOKEN".into(), "prefix-${PATH_SUFFIX}".into()),
+    ]));
+    let _guard = wonder_of_u_test_support::EnvVarGuard::set("PATH_SUFFIX", "secret");
+    let mut client = McpClient::connect(&config, &McpClientIdentity::default(), "2024-11-05")
+        .expect("connect fake server");
+
+    let result = client
+        .call_tool("Echo Text", json!({ "text": "ignored" }))
+        .expect("call tool");
+    assert_eq!(
+        result.content[0].text.as_deref(),
+        Some("env EXPANDED_TOKEN: prefix-secret")
+    );
+}
+
+#[tokio::test]
+async fn integration_mcp_session_pool_reuses_server_process() {
+    let config = fake_server_config_with_env(BTreeMap::from([(
+        "WONDER_OF_U_FAKE_MCP_ECHO_PID".into(),
+        "1".into(),
+    )]));
+    let mut pool = McpSessionPool::new();
+
+    let first = pool
+        .with_client(
+            &config,
+            &McpClientIdentity::default(),
+            "2024-11-05",
+            |client| client.call_tool("Echo Text", json!({ "text": "first" })),
+        )
+        .expect("first call");
+    let second = pool
+        .with_client(
+            &config,
+            &McpClientIdentity::default(),
+            "2024-11-05",
+            |client| client.call_tool("Echo Text", json!({ "text": "second" })),
+        )
+        .expect("second call");
+
+    assert_eq!(pool.len(), 1);
+    assert_eq!(first.content[0].text, second.content[0].text);
+}
+
+// ── discover_catalog_tools + DynamicMcpTool ─────────────────────────────────
+
+/// Build a [`McpConfig`] that points to the fake server binary.
+fn fake_mcp_config() -> McpConfig {
+    McpConfig {
+        servers: vec![fake_server_config(None)],
+        ..McpConfig::default()
+    }
+}
+
+#[test]
+fn discover_catalog_tools_returns_one_tool_from_fake_server() {
+    let config = fake_mcp_config();
+    let tools = discover_catalog_tools(&config);
+
+    assert_eq!(tools.len(), 1, "expected exactly one catalog tool");
+    let tool = &tools[0];
+    // Qualified name must be namespaced.
+    assert_eq!(
+        tool.spec().name,
+        "mcp__demo__echo_text",
+        "qualified name should be namespaced with server prefix"
+    );
+    assert!(
+        tool.spec().read_only,
+        "readOnlyHint should propagate to ToolSpec"
+    );
+    assert_eq!(
+        tool.spec().input_schema["x-mcp-search-like-hint"],
+        json!(true)
+    );
+    assert_eq!(tool.server_name(), "demo");
+}
+
+#[test]
+fn discover_catalog_tools_skips_unreachable_servers() {
+    let mut config = fake_mcp_config();
+    // Add a server that cannot be started.
+    config.servers.push(McpServerConfig {
+        name: "bad-server".into(),
+        command: "/no/such/binary".into(),
+        args: Vec::new(),
+        env: BTreeMap::new(),
+        enabled: true,
+        cwd: None,
+        protocol_version: None,
+    });
+
+    // Should still return the tool from the reachable server.
+    let tools = discover_catalog_tools(&config);
+    assert_eq!(
+        tools.len(),
+        1,
+        "unreachable server should be silently skipped"
+    );
+}
+
+#[test]
+fn discover_catalog_tools_skips_disabled_servers() {
+    let mut config = fake_mcp_config();
+    config.servers[0].enabled = false;
+
+    let tools = discover_catalog_tools(&config);
+    assert!(
+        tools.is_empty(),
+        "disabled servers must not contribute tools"
+    );
+}
+
+#[test]
+fn discover_catalog_tools_empty_config_returns_nothing() {
+    let tools = discover_catalog_tools(&McpConfig::default());
+    assert!(tools.is_empty(), "empty config should return no tools");
 }

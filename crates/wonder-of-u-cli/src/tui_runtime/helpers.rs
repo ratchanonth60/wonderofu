@@ -1,5 +1,31 @@
 use super::*;
 
+pub(super) fn run_with_spinner_tick<T>(
+    work: impl FnOnce() -> Result<T> + Send + 'static,
+    interval: Duration,
+    mut on_tick: impl FnMut() -> Result<()>,
+) -> Result<T>
+where
+    T: Send + 'static,
+{
+    let (tx, rx) = mpsc::channel::<Result<T>>();
+    std::thread::spawn(move || {
+        let _ = tx.send(work());
+    });
+
+    loop {
+        match rx.recv_timeout(interval) {
+            Ok(result) => return result,
+            Err(mpsc::RecvTimeoutError::Timeout) => on_tick()?,
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                return Err(WonderError::internal(
+                    "background worker exited before returning a result",
+                ));
+            }
+        }
+    }
+}
+
 pub(super) fn command_output_text(output: CommandOutput) -> (Option<String>, bool) {
     match output {
         CommandOutput::Text(text)
@@ -28,6 +54,41 @@ pub(super) fn launch_external_editor(request: &ExternalEditorRequest) -> Result<
             "editor exited unsuccessfully: {editor}"
         )))
     }
+}
+
+/// Opens `url` in the system browser.
+///
+/// Failure is intentionally silenced: if the browser cannot be launched the
+/// user can still navigate to the URL manually using the code shown in the
+/// dialog.
+pub(super) fn open_browser_url(url: &str) {
+    if browser_launch_disabled() {
+        return;
+    }
+
+    #[cfg(target_os = "macos")]
+    let _ = ProcessCommand::new("open").arg(url).spawn();
+    #[cfg(target_os = "linux")]
+    let _ = ProcessCommand::new("xdg-open").arg(url).spawn();
+    #[cfg(target_os = "windows")]
+    let _ = ProcessCommand::new("cmd")
+        .args(["/c", "start", "", url])
+        .spawn();
+}
+
+pub(super) fn browser_launch_disabled() -> bool {
+    cfg!(test) || env_flag_enabled("WONDER_OF_U_NO_BROWSER")
+}
+
+fn env_flag_enabled(name: &str) -> bool {
+    std::env::var(name)
+        .map(|value| {
+            matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            )
+        })
+        .unwrap_or(false)
 }
 
 pub(super) fn tui_editor_command() -> Option<(String, Vec<String>)> {
@@ -140,9 +201,8 @@ pub(super) fn ratatui_color(color: wonder_of_u_tui::Color) -> RatatuiColor {
 pub(super) fn theme_for_state(name: Option<&str>, session_color: Option<&str>) -> Theme {
     let mut theme = match name {
         Some("midnight") => Theme {
-            background: wonder_of_u_tui::TextStyle::default()
-                .bg(wonder_of_u_tui::Color::Black)
-                .fg(wonder_of_u_tui::Color::Grey),
+            // No explicit background: terminal theme shows through.
+            background: wonder_of_u_tui::TextStyle::default().fg(wonder_of_u_tui::Color::Grey),
             border: wonder_of_u_tui::TextStyle::default().fg(wonder_of_u_tui::Color::DarkMagenta),
             title: wonder_of_u_tui::TextStyle::default()
                 .fg(wonder_of_u_tui::Color::Magenta)
@@ -157,9 +217,9 @@ pub(super) fn theme_for_state(name: Option<&str>, session_color: Option<&str>) -
             footer: wonder_of_u_tui::TextStyle::default().fg(wonder_of_u_tui::Color::DarkCyan),
         },
         Some("light") => Theme {
-            background: wonder_of_u_tui::TextStyle::default()
-                .bg(wonder_of_u_tui::Color::White)
-                .fg(wonder_of_u_tui::Color::Black),
+            // No explicit background for light theme either: the terminal
+            // background colour shows through (consistent with Ink parity).
+            background: wonder_of_u_tui::TextStyle::default().fg(wonder_of_u_tui::Color::Black),
             border: wonder_of_u_tui::TextStyle::default().fg(wonder_of_u_tui::Color::Blue),
             title: wonder_of_u_tui::TextStyle::default()
                 .fg(wonder_of_u_tui::Color::DarkBlue)
@@ -209,34 +269,85 @@ pub(super) fn prompt_cursor_position(
     height: u16,
     prompt: &str,
     cursor: usize,
+    // Whether the caller's ShellView contains a sidebar panel.  When true the
+    // renderer subtracts SIDEBAR_WIDTH + 1 from the terminal width on terminals
+    // wider than MIN_SIDEBAR_WIDTH, and we must mirror that here so the cursor
+    // x coordinate never overshoots into the │ separator or sidebar columns.
+    sidebar_active: bool,
+    // Whether a context warning row is rendered above the prompt box.
+    prompt_warning_visible: bool,
 ) -> (u16, u16) {
+    const MIN_PROMPT_HEIGHT: u16 = 4;
+    const MIN_PROMPT_CAP_HEIGHT: u16 = 6;
+
+    let uncapped_height = ShellView {
+        title: String::new(),
+        messages: Vec::new(),
+        prompt: prompt.into(),
+        history_search: None,
+        status: String::new(),
+        loading: false,
+        loading_verb: None,
+        spinner_frame: 0,
+        loading_elapsed_secs: 0,
+        loading_total_tokens: 0,
+        footer: String::new(),
+        queued_panel: None,
+        task_panel: None,
+        dialog: None,
+        picker_view: None,
+        picker_list: None,
+        notifications: Vec::new(),
+        slash_suggestions: None,
+        global_search: None,
+        scroll: wonder_of_u_tui::TranscriptScrollView::default(),
+        sidebar: None,
+        prompt_warning: None,
+    }
+    .prompt_height();
+    // Apply the same 1/3-terminal cap used by the renderer.
+    let warning_height = u16::from(prompt_warning_visible);
+    let cap = (height / 3)
+        .max(MIN_PROMPT_CAP_HEIGHT)
+        .saturating_add(warning_height);
+    let capped_height = uncapped_height.saturating_add(warning_height).min(cap);
+    // Mirror render_shell: on wide terminals the sidebar column is carved out,
+    // shrinking the area available for the prompt.
+    let effective_width = wonder_of_u_tui::shell_main_area_width(width, sidebar_active);
     let layout = ShellLayout::split(
-        wonder_of_u_tui::Rect::new(0, 0, width.max(1), height.max(1)),
-        ShellView {
-            title: String::new(),
-            messages: Vec::new(),
-            prompt: prompt.into(),
-            history_search: None,
-            status: String::new(),
-            loading: false,
-            loading_verb: None,
-            footer: String::new(),
-            queued_panel: None,
-            task_panel: None,
-            dialog: None,
-            picker_view: None,
-            picker_list: None,
-            notifications: Vec::new(),
-            slash_suggestions: None,
-        }
-        .prompt_height(),
+        wonder_of_u_tui::Rect::new(0, 0, effective_width.max(1), height.max(1)),
+        capped_height,
     );
-    let inner = wonder_of_u_tui::Rect::new(
-        layout.prompt.x.saturating_add(2),
-        layout.prompt.y.saturating_add(1),
-        layout.prompt.width.saturating_sub(4),
-        layout.prompt.height.saturating_sub(2),
-    );
+    // Rounded prompt: content is inset by one cell inside the border.  When the
+    // prompt is tall enough to render the integrated footer row, one additional
+    // interior row is reserved for that footer surface.
+    let prompt_box_height = layout.prompt.height.saturating_sub(warning_height);
+    let boxed = layout.prompt.width >= 3 && prompt_box_height >= MIN_PROMPT_HEIGHT;
+    let content_x = if boxed {
+        layout.prompt.x.saturating_add(1)
+    } else {
+        layout.prompt.x
+    };
+    let content_y = if boxed {
+        layout
+            .prompt
+            .y
+            .saturating_add(warning_height)
+            .saturating_add(1)
+    } else {
+        layout.prompt.y.saturating_add(warning_height)
+    };
+    let content_width = if boxed {
+        layout.prompt.width.saturating_sub(2)
+    } else {
+        layout.prompt.width
+    };
+    let content_height = if boxed {
+        prompt_box_height.saturating_sub(3)
+    } else {
+        prompt_box_height
+    };
+
     let cursor_text = prompt.chars().take(cursor).collect::<String>();
     let mut line = 0u16;
     let mut column = 0u16;
@@ -248,14 +359,16 @@ pub(super) fn prompt_cursor_position(
             column = column.saturating_add(1);
         }
     }
+    // First line has a "› " prefix (2 chars); subsequent lines start at column 0.
+    let x_offset: u16 = if line == 0 { 2 } else { 0 };
+    // Clamp column so that content_x + x_offset + column never exceeds
+    // content_x + content_width − 1 (the rightmost cell inside the prompt area).
+    let max_col = content_width.saturating_sub(x_offset).saturating_sub(1);
     (
-        inner
-            .x
-            .saturating_add(2)
-            .saturating_add(column.min(inner.width.saturating_sub(1))),
-        inner
-            .y
-            .saturating_add(line.min(inner.height.saturating_sub(1))),
+        content_x
+            .saturating_add(x_offset)
+            .saturating_add(column.min(max_col)),
+        content_y.saturating_add(line.min(content_height.saturating_sub(1))),
     )
 }
 
@@ -264,43 +377,117 @@ pub(super) fn history_search_cursor_position(
     height: u16,
     view: &HistorySearchView,
     query_cursor: usize,
+    // Whether the caller's ShellView contains a sidebar panel — mirrors the
+    // same flag in prompt_cursor_position.
+    sidebar_active: bool,
+    // Whether a context warning row is rendered above the prompt box.
+    prompt_warning_visible: bool,
 ) -> (u16, u16) {
+    const HISTORY_SEARCH_PREFIX: &str = "history: ";
+    const MIN_PROMPT_HEIGHT: u16 = 4;
+    const MIN_PROMPT_CAP_HEIGHT: u16 = 6;
+
+    let uncapped_height = ShellView {
+        title: String::new(),
+        messages: Vec::new(),
+        prompt: view.match_text.clone().unwrap_or_default(),
+        history_search: Some(view.clone()),
+        status: String::new(),
+        loading: false,
+        loading_verb: None,
+        spinner_frame: 0,
+        loading_elapsed_secs: 0,
+        loading_total_tokens: 0,
+        footer: String::new(),
+        queued_panel: None,
+        task_panel: None,
+        dialog: None,
+        picker_view: None,
+        picker_list: None,
+        notifications: Vec::new(),
+        slash_suggestions: None,
+        global_search: None,
+        scroll: wonder_of_u_tui::TranscriptScrollView::default(),
+        sidebar: None,
+        prompt_warning: None,
+    }
+    .prompt_height();
+    let warning_height = u16::from(prompt_warning_visible);
+    let cap = (height / 3)
+        .max(MIN_PROMPT_CAP_HEIGHT)
+        .saturating_add(warning_height);
+    let capped_height = uncapped_height.saturating_add(warning_height).min(cap);
+    // Mirror render_shell's sidebar column deduction on wide terminals.
+    let effective_width = wonder_of_u_tui::shell_main_area_width(width, sidebar_active);
     let layout = ShellLayout::split(
-        wonder_of_u_tui::Rect::new(0, 0, width.max(1), height.max(1)),
-        ShellView {
-            title: String::new(),
-            messages: Vec::new(),
-            prompt: view.match_text.clone().unwrap_or_default(),
-            history_search: Some(view.clone()),
-            status: String::new(),
-            loading: false,
-            loading_verb: None,
-            footer: String::new(),
-            queued_panel: None,
-            task_panel: None,
-            dialog: None,
-            picker_view: None,
-            picker_list: None,
-            notifications: Vec::new(),
-            slash_suggestions: None,
-        }
-        .prompt_height(),
+        wonder_of_u_tui::Rect::new(0, 0, effective_width.max(1), height.max(1)),
+        capped_height,
     );
-    let inner = wonder_of_u_tui::Rect::new(
-        layout.prompt.x.saturating_add(2),
-        layout.prompt.y.saturating_add(1),
-        layout.prompt.width.saturating_sub(4),
-        layout.prompt.height.saturating_sub(2),
-    );
-    let query_prefix = "search: ".chars().count();
+    // History-search queries now live in the integrated prompt footer row when
+    // the rounded box has enough height; tiny fallbacks still render inline.
+    let prompt_box_height = layout.prompt.height.saturating_sub(warning_height);
+    let boxed = layout.prompt.width >= 3 && prompt_box_height >= MIN_PROMPT_HEIGHT;
+    let content_x = if boxed {
+        layout.prompt.x.saturating_add(1)
+    } else {
+        layout.prompt.x
+    };
+    let content_y = if boxed {
+        layout.prompt.bottom().saturating_sub(2)
+    } else {
+        layout.prompt.y.saturating_add(warning_height)
+    };
+    let content_width = if boxed {
+        layout.prompt.width.saturating_sub(2)
+    } else {
+        layout.prompt.width
+    };
+    let query_prefix = HISTORY_SEARCH_PREFIX.chars().count();
     (
-        inner
-            .x
+        content_x
             .saturating_add(
                 u16::try_from(query_prefix.saturating_add(query_cursor)).unwrap_or(u16::MAX),
             )
-            .min(inner.right().saturating_sub(1)),
-        inner.y,
+            .min(content_x.saturating_add(content_width).saturating_sub(1)),
+        content_y,
+    )
+}
+
+pub(super) fn global_search_cursor_position(
+    width: u16,
+    height: u16,
+    view: &ShellView,
+    query_cursor: usize,
+) -> (u16, u16) {
+    const MIN_PROMPT_CAP_HEIGHT: u16 = 6;
+
+    let main_width = wonder_of_u_tui::shell_main_area_width(width, view.sidebar.is_some());
+    let warning_height = u16::from(view.prompt_warning.is_some());
+    let prompt_height = view.prompt_height().saturating_add(warning_height).min(
+        (height / 3)
+            .max(MIN_PROMPT_CAP_HEIGHT)
+            .saturating_add(warning_height),
+    );
+    let layout = ShellLayout::split(
+        wonder_of_u_tui::Rect::new(0, 0, main_width.max(1), height.max(1)),
+        prompt_height,
+    );
+    let viewport = layout.messages;
+    let overlay_width = (viewport.width.saturating_mul(4) / 5).clamp(40, viewport.width);
+    let overlay_height = (viewport.height.saturating_mul(3) / 5).clamp(8, viewport.height);
+    let overlay_x = viewport.x + viewport.width.saturating_sub(overlay_width) / 2;
+    let overlay_y = viewport.y + viewport.height.saturating_sub(overlay_height) / 2;
+    let inner_x = overlay_x.saturating_add(1);
+    let inner_y = overlay_y.saturating_add(1);
+    let inner_width = overlay_width.saturating_sub(2);
+    let query_prefix = "Query: ".chars().count();
+    (
+        inner_x
+            .saturating_add(
+                u16::try_from(query_prefix.saturating_add(query_cursor)).unwrap_or(u16::MAX),
+            )
+            .min(inner_x.saturating_add(inner_width).saturating_sub(1)),
+        inner_y,
     )
 }
 
@@ -547,7 +734,7 @@ pub(super) fn permission_dialog_for_tool_call(
 }
 
 pub(super) fn tool_permission_flags(tool_name: &str) -> (bool, bool) {
-    builtin_tool_registry()
+    wonder_of_u_tools::builtin_registry()
         .ok()
         .and_then(|registry| registry.resolve(tool_name))
         .map(|tool| {
@@ -890,6 +1077,7 @@ pub(super) fn parse_vim_mode_hint(text: &str) -> Option<VimMode> {
     {
         "insert" => Some(VimMode::Insert),
         "normal" => Some(VimMode::Normal),
+        "visual" => Some(VimMode::Visual),
         _ => None,
     }
 }
@@ -1114,6 +1302,19 @@ pub(super) fn parse_brief_mode_hint(text: &str) -> Option<bool> {
     }
 }
 
+/// Parses `optimize_token_mode=<value>` from command output, returning `Some`
+/// when a recognised value is present and `None` otherwise.
+pub(super) fn parse_optimize_token_mode_hint(text: &str) -> Option<bool> {
+    let value = text
+        .lines()
+        .find_map(|line| line.strip_prefix("optimize_token_mode="))?;
+    match value.trim() {
+        "true" | "on" | "enabled" => Some(true),
+        "false" | "off" | "disabled" => Some(false),
+        _ => None,
+    }
+}
+
 pub(super) fn parse_insights_hint(text: &str) -> bool {
     text.lines()
         .any(|line| line.trim() == "insights_prompt_ready=true")
@@ -1164,22 +1365,26 @@ pub(super) fn filtered_picker_indices<T>(
     let Some(query) = normalized_picker_query(query) else {
         return (0..options.len()).collect();
     };
-    options
+    let mut filtered = options
         .iter()
         .enumerate()
         .filter_map(|(index, option)| {
-            searchable(option)
-                .to_ascii_lowercase()
-                .contains(&query)
-                .then_some(index)
+            wonder_of_u_tui::prompt::fuzzy_match_score(&query, &searchable(option))
+                .map(|score| (index, score))
         })
-        .collect()
+        .collect::<Vec<_>>();
+    filtered.sort_by(|(left_index, left_score), (right_index, right_score)| {
+        right_score
+            .cmp(left_score)
+            .then_with(|| left_index.cmp(right_index))
+    });
+    filtered.into_iter().map(|(index, _)| index).collect()
 }
 
 pub(super) fn normalized_picker_query(query: &TextBuffer) -> Option<String> {
     let query = query.text();
     let trimmed = query.trim();
-    (!trimmed.is_empty()).then(|| trimmed.to_ascii_lowercase())
+    (!trimmed.is_empty()).then(|| trimmed.to_string())
 }
 
 pub(super) fn picker_query_label(query: &TextBuffer) -> String {
@@ -1250,6 +1455,103 @@ pub(super) fn overlay_closed_status(title: &str) -> String {
     format!("{} closed", title.to_ascii_lowercase())
 }
 
+#[cfg(test)]
+#[allow(clippy::items_after_test_module)]
+mod tests {
+    use std::{
+        sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        },
+        time::Duration,
+    };
+
+    use wonder_of_u_tui::TextBuffer;
+
+    use super::{filtered_picker_indices, run_with_spinner_tick, theme_for_state};
+
+    /// All named themes must leave `background.bg = None` so the terminal
+    /// emulator's own background colour shows through (Ink/Claude Code parity).
+    /// Forcing an explicit black or white background produces opaque rectangles
+    /// that look wrong in translucent or custom-coloured terminal windows.
+    #[test]
+    fn named_themes_have_no_explicit_background_colour() {
+        for name in &[Some("default"), Some("midnight"), Some("light"), None] {
+            let theme = theme_for_state(*name, None);
+            assert!(
+                theme.background.bg.is_none(),
+                "theme {name:?} must not set an explicit background colour (got {:?})",
+                theme.background.bg,
+            );
+        }
+    }
+
+    /// Named themes must each produce a distinct border colour so users can
+    /// visually distinguish them.  This is a regression guard: if two themes
+    /// collapse to the same border colour the `/theme` picker becomes useless.
+    #[test]
+    fn midnight_and_light_themes_have_distinct_border_colours() {
+        let midnight = theme_for_state(Some("midnight"), None);
+        let light = theme_for_state(Some("light"), None);
+        assert_ne!(
+            midnight.border.fg, light.border.fg,
+            "midnight and light themes must have different border colours"
+        );
+    }
+
+    #[test]
+    fn filtered_picker_indices_supports_fuzzy_matches() {
+        let mut query = TextBuffer::new(true);
+        query.insert_text("ae");
+        let options = [
+            "Default - balanced prompts",
+            "Accept edits - allow workspace changes",
+            "Plan - no edits",
+        ];
+
+        let filtered = filtered_picker_indices(&query, &options, |option| option.to_string());
+
+        assert_eq!(filtered.first().copied(), Some(1));
+        assert!(filtered.contains(&2));
+    }
+
+    #[test]
+    fn filtered_picker_indices_ranks_better_matches_first() {
+        let mut query = TextBuffer::new(true);
+        query.insert_text("st");
+        let options = ["Status", "Terminal setup", "Theme"];
+
+        let filtered = filtered_picker_indices(&query, &options, |option| option.to_string());
+
+        assert_eq!(filtered, vec![0, 1]);
+    }
+
+    #[test]
+    fn spinner_tick_helper_reports_progress_while_worker_blocks() {
+        let ticks = Arc::new(AtomicUsize::new(0));
+        let tick_counter = Arc::clone(&ticks);
+
+        let result = run_with_spinner_tick(
+            || {
+                std::thread::sleep(Duration::from_millis(220));
+                Ok("done")
+            },
+            Duration::from_millis(50),
+            || {
+                tick_counter.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            },
+        )
+        .expect("worker result");
+
+        assert_eq!(result, "done");
+        assert!(
+            ticks.load(Ordering::SeqCst) >= 2,
+            "blocking worker should allow repeated spinner ticks"
+        );
+    }
+}
+
 pub(super) fn parse_known_notice(text: &str) -> Option<(String, Vec<String>, &'static str)> {
     [
         ("## Context Usage", "Context Usage", "context usage"),
@@ -1259,6 +1561,7 @@ pub(super) fn parse_known_notice(text: &str) -> Option<(String, Vec<String>, &'s
         ("## Color", "Color", "color"),
         ("## Fast", "Fast", "fast"),
         ("## Brief", "Brief", "brief"),
+        ("## Optimize Token", "Optimize Token", "optimize token"),
         ("## Effort", "Effort", "effort"),
         ("## Feedback", "Feedback", "feedback"),
         ("## Insights", "Insights", "insights"),
@@ -1345,4 +1648,198 @@ pub(super) fn parse_external_editor_request(
         cwd: cwd.to_path_buf(),
         path: PathBuf::from(path),
     })
+}
+
+/// Parses the `setup_menu=true` / `setup_item=<json>` payload emitted by the
+/// `/setup` command and returns a ready-to-open [`SetupOverlayState`], or
+/// `None` if the payload is absent or `setup_menu=false`.
+pub(super) fn parse_setup_overlay_state(text: &str) -> Option<SetupOverlayState> {
+    let enabled = text
+        .lines()
+        .find_map(|line| line.strip_prefix("setup_menu="))?
+        .trim()
+        == "true";
+    if !enabled {
+        return None;
+    }
+    let provider_label = text
+        .lines()
+        .find_map(|line| line.strip_prefix("provider_selection="))
+        .unwrap_or("unconfigured")
+        .trim()
+        .to_string();
+    let readiness_label = text
+        .lines()
+        .find_map(|line| line.strip_prefix("provider_readiness="))
+        .unwrap_or("unknown")
+        .trim()
+        .to_string();
+    let items: Vec<SetupItem> = text
+        .lines()
+        .filter_map(|line| line.strip_prefix("setup_item="))
+        .filter_map(parse_setup_item)
+        .collect();
+    if items.is_empty() {
+        return None;
+    }
+    Some(SetupOverlayState::new(
+        items,
+        provider_label,
+        readiness_label,
+    ))
+}
+
+/// Parses a single `setup_item=<json>` value into a [`SetupItem`].
+pub(super) fn parse_setup_item(line: &str) -> Option<SetupItem> {
+    let value: serde_json::Value = serde_json::from_str(line).ok()?;
+    let id = value.get("id")?.as_str()?.to_string();
+    let label = value.get("label")?.as_str()?.to_string();
+    let description = value.get("description")?.as_str()?.to_string();
+    let command = value
+        .get("command")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let action = action_for_item_id(&id, &command);
+    Some(SetupItem {
+        id,
+        label,
+        description,
+        action,
+    })
+}
+
+// -- Provider-form helpers ----------------------------------------------------
+
+use super::setup::{ProviderFormKind, ProviderFormStage, ProviderFormState};
+
+/// Returns a status note hint for the given provider form stage.
+pub(super) fn provider_form_status_note(stage: &ProviderFormStage) -> String {
+    match stage {
+        ProviderFormStage::PickProvider => {
+            "\u{2191}\u{2193}\u{a0}navigate\u{a0}\u{a0}Tab/Enter\u{a0}select\u{a0}\u{a0}Esc\u{a0}cancel"
+                .into()
+        }
+        ProviderFormStage::EnterValue => {
+            "type value\u{a0}\u{a0}Enter\u{a0}confirm\u{a0}\u{a0}Esc\u{a0}back".into()
+        }
+    }
+}
+
+/// Builds a [`PickerListView`] for the two-stage provider form.
+///
+/// - Stage 1 (`PickProvider`): lists all selectable providers.
+/// - Stage 2 (`EnterValue`): the query box holds the staged (masked) value;
+///   the list shows only the selected provider as context.
+///
+/// Redacts credential-like patterns from `error` so raw provider responses are
+/// safe to persist in the transcript without hiding useful diagnostic context.
+///
+/// Redaction rules (applied in order, case-insensitive):
+/// - `Authorization: Bearer <token>` headers → header name preserved, token replaced
+/// - `sk-<token>` style API keys → replaced with `sk-[REDACTED]`
+/// - Any `Bearer <word>` token literal → token replaced
+///
+/// # Examples
+///
+/// ```ignore
+/// // Keys and bearer tokens are redacted before the error is persisted.
+/// ```
+pub(super) fn sanitize_error_for_display(error: &str) -> String {
+    redact_credentials(error)
+}
+
+/// Replaces credential-like substrings with placeholder text.
+fn redact_credentials(text: &str) -> String {
+    let mut result = String::with_capacity(text.len());
+    let chars: Vec<char> = text.chars().collect();
+    let len = chars.len();
+    let mut i = 0;
+
+    while i < len {
+        // Match "Bearer " (case-insensitive) and redact the following token.
+        if len.saturating_sub(i) >= 7 {
+            let candidate: String = chars[i..i + 7].iter().collect();
+            if candidate.eq_ignore_ascii_case("bearer ") {
+                result.push_str("Bearer [REDACTED]");
+                i += 7;
+                // Skip the token characters (non-whitespace run).
+                while i < len && !chars[i].is_whitespace() {
+                    i += 1;
+                }
+                continue;
+            }
+        }
+        // Match "sk-" key prefix and redact the following token.
+        if len.saturating_sub(i) >= 3 {
+            let candidate: String = chars[i..i + 3].iter().collect();
+            if candidate == "sk-" {
+                result.push_str("sk-[REDACTED]");
+                i += 3;
+                while i < len && !chars[i].is_whitespace() && chars[i] != '"' {
+                    i += 1;
+                }
+                continue;
+            }
+        }
+        // Match "Authorization:" header key and redact the value portion.
+        if len.saturating_sub(i) >= 14 {
+            let candidate: String = chars[i..i + 14].iter().collect();
+            if candidate.eq_ignore_ascii_case("authorization:") {
+                result.push_str("Authorization: [REDACTED]");
+                i += 14;
+                // Skip to end of line.
+                while i < len && chars[i] != '\n' {
+                    i += 1;
+                }
+                continue;
+            }
+        }
+        result.push(chars[i]);
+        i += 1;
+    }
+
+    result
+}
+
+pub(super) fn provider_form_picker_view(form: &ProviderFormState) -> PickerListView {
+    let kind_label = match form.kind {
+        ProviderFormKind::ApiKey => "API Key",
+        ProviderFormKind::ApiBase => "API Base URL",
+    };
+    match form.stage {
+        ProviderFormStage::PickProvider => PickerListView {
+            title: format!("{kind_label}: Select Provider"),
+            query: String::new(),
+            entries: form
+                .options
+                .iter()
+                .enumerate()
+                .map(|(i, opt)| PickerListEntry {
+                    label: opt.display_name.clone(),
+                    description: opt.provider_id.clone(),
+                    tag: None,
+                    selected: i == form.selected_index,
+                })
+                .collect(),
+            hint: provider_form_status_note(&form.stage),
+        },
+        ProviderFormStage::EnterValue => PickerListView {
+            title: format!("{kind_label}: {}", form.selected_display_name()),
+            // Show the masked value in the query box.
+            query: form.display_value(),
+            entries: form
+                .options
+                .get(form.selected_index)
+                .map(|opt| PickerListEntry {
+                    label: opt.display_name.clone(),
+                    description: opt.provider_id.clone(),
+                    tag: Some("selected".into()),
+                    selected: true,
+                })
+                .into_iter()
+                .collect(),
+            hint: provider_form_status_note(&form.stage),
+        },
+    }
 }

@@ -9,24 +9,52 @@ use std::{
 use clap::Parser;
 use wonder_of_u_agent::builtin_tool_registry;
 use wonder_of_u_core::{
-    CommandInvocation, CommandRegistry, CommandSpec, Result, SessionId, ToolSpec, WonderError,
+    AppState, CommandInvocation, CommandRegistry, CommandSpec, Result, SessionId, ToolResult,
+    ToolSpec, WonderError,
 };
+use wonder_of_u_tools::parse_worktree_runtime_action;
 
 mod advanced;
+pub(crate) mod agent_definitions;
 pub(crate) mod auth;
+pub(crate) mod copy;
+pub(crate) mod cost;
 mod doctor;
+pub(crate) mod env;
 mod extras;
 mod features;
+mod fleet;
+mod fleet_plan;
 mod help;
+pub(crate) mod hook_commands;
+pub(crate) mod hooks;
+pub(crate) mod import;
+pub(crate) mod keybinding_commands;
+pub(crate) mod keybindings;
 mod mcp;
+pub mod memory;
+pub(crate) mod output_style;
+mod plan_command;
 mod plugin;
+pub(crate) mod preferences;
+pub(crate) mod privacy_settings;
 pub(crate) mod project;
 pub(crate) mod prompt;
+pub(crate) mod review_workflow;
+pub mod rewind;
+pub(crate) mod search;
 mod session;
+mod setup;
 mod skills;
 mod status;
+mod summary;
+pub mod tag;
+mod task_commands;
 mod task_runtime;
+pub(crate) mod terminal_setup;
+pub(crate) mod theme;
 mod tui;
+pub mod vim;
 pub(crate) mod workflow;
 
 use advanced::{BridgeCommand, DebugCommand, DiagnosticsCommand, VoiceCommand};
@@ -39,36 +67,50 @@ use extras::{
     InitVerifiersCommand, InstallCommand, InstallGithubAppCommand, InstallSlackAppCommand,
     IssueCommand, MockLimitsCommand, OauthRefreshCommand, OnboardingCommand, PassesCommand,
     PerfIssueCommand, PrCommentsCommand, RateLimitOptionsCommand, RemoteEnvCommand,
-    RemoteSetupCommand, ResetLimitsCommand, RewindCommand, SandboxToggleCommand, ShareCommand,
-    StickersCommand, SummaryCommand, TeleportCommand, ThinkbackCommand, ThinkbackPlayCommand,
-    UltraplanCommand,
+    RemoteSetupCommand, ResetLimitsCommand, SandboxToggleCommand, ShareCommand, StickersCommand,
+    TeleportCommand, ThinkbackCommand, ThinkbackPlayCommand, UltraplanCommand, X402Command,
+};
+pub(crate) use extras::{
+    execute_help_command, execute_settings_command, execute_stats_command, execute_thinking_command,
 };
 use features::FeaturesCommand;
+use fleet::FleetCommand;
 use help::HelpCommand;
+use hook_commands::HooksCommand;
+use keybinding_commands::KeybindingsCommand;
 use mcp::McpCommand;
+use plan_command::PlanCommand;
 use plugin::{PluginCommand, ReloadPluginsCommand};
+use preferences::{
+    BriefCommand, ColorCommand, EffortCommand, FastCommand, OptimizeTonkenCommand, ThemeCommand,
+    VimCommand,
+};
+use privacy_settings::PrivacySettingsCommand;
 use project::{
     AddDirCommand, BranchCommand, ContextCommand, CopyCommand, DiffCommand, FilesCommand,
     InitCommand, MemoryCommand,
 };
 use prompt::PromptCommand;
+use review_workflow::{
+    CommitCommand, CommitPushPrCommand, ReviewCommand, SecurityReviewCommand, StatuslineCommand,
+};
+use rewind::RewindCommand;
 use session::{
     ClearCommand, CompactCommand, ExportCommand, RenameCommand, ResumeCommand, SessionCommand,
-    TagCommand,
 };
+use setup::SetupCommand;
 use skills::SkillsCommand;
 use status::{
     ChromeCommand, CostCommand, DesktopCommand, FeedbackCommand, IdeCommand, InsightsCommand,
     MobileCommand, OutputStyleCommand, ReleaseNotesCommand, StatsCommand, StatusCommand,
     UpgradeCommand, UsageCommand, VersionCommand,
 };
+use summary::SummaryCommand;
+use tag::TagCommand;
+use task_commands::{AgentsCommand, TasksCommand};
+use terminal_setup::TerminalSetupCommand;
 use tui::TuiCommand;
-use workflow::{
-    AgentsCommand, BriefCommand, ColorCommand, CommitCommand, CommitPushPrCommand, EffortCommand,
-    ExitCommand, FastCommand, HooksCommand, KeybindingsCommand, PermissionsCommand, PlanCommand,
-    PrivacySettingsCommand, ReviewCommand, SecurityReviewCommand, StatuslineCommand, TasksCommand,
-    TerminalSetupCommand, ThemeCommand, VimCommand,
-};
+use workflow::{ExitCommand, PermissionsCommand};
 
 /// Builds the registry
 pub fn registry(storage_dir: Option<PathBuf>) -> Result<CommandRegistry> {
@@ -131,6 +173,7 @@ pub fn registry(storage_dir: Option<PathBuf>) -> Result<CommandRegistry> {
         PrivacySettingsCommand::command_spec(),
         ColorCommand::command_spec(),
         BriefCommand::command_spec(),
+        OptimizeTonkenCommand::command_spec(),
         FastCommand::command_spec(),
         CommitCommand::command_spec(),
         CommitPushPrCommand::command_spec(),
@@ -151,6 +194,7 @@ pub fn registry(storage_dir: Option<PathBuf>) -> Result<CommandRegistry> {
         BtwCommand::command_spec(),
         AdvisorCommand::command_spec(),
         StickersCommand::command_spec(),
+        X402Command::command_spec(),
         RewindCommand::command_spec(),
         InitVerifiersCommand::command_spec(),
         ExtraUsageCommand::command_spec(),
@@ -179,6 +223,8 @@ pub fn registry(storage_dir: Option<PathBuf>) -> Result<CommandRegistry> {
         InstallSlackAppCommand::command_spec(),
         CreateMovedToPluginCommand::command_spec(),
         TuiCommand::command_spec(),
+        SetupCommand::command_spec(),
+        FleetCommand::command_spec(),
     ]
     .into();
 
@@ -250,6 +296,7 @@ pub fn registry(storage_dir: Option<PathBuf>) -> Result<CommandRegistry> {
     registry.register(Arc::new(PrivacySettingsCommand::new()))?;
     registry.register(Arc::new(ColorCommand::new()))?;
     registry.register(Arc::new(BriefCommand::new()))?;
+    registry.register(Arc::new(OptimizeTonkenCommand::new()))?;
     registry.register(Arc::new(FastCommand::new(storage_dir.clone())))?;
     registry.register(Arc::new(CommitCommand::new()))?;
     registry.register(Arc::new(CommitPushPrCommand::new()))?;
@@ -270,6 +317,7 @@ pub fn registry(storage_dir: Option<PathBuf>) -> Result<CommandRegistry> {
     registry.register(Arc::new(BtwCommand::new()))?;
     registry.register(Arc::new(AdvisorCommand::new(storage_dir.clone())))?;
     registry.register(Arc::new(StickersCommand::new()))?;
+    registry.register(Arc::new(X402Command::new()))?;
     registry.register(Arc::new(RewindCommand::new(storage_dir.clone())))?;
     registry.register(Arc::new(InitVerifiersCommand::new(Arc::clone(&tool_specs))))?;
     registry.register(Arc::new(ExtraUsageCommand::new()))?;
@@ -279,16 +327,16 @@ pub fn registry(storage_dir: Option<PathBuf>) -> Result<CommandRegistry> {
     registry.register(Arc::new(ResetLimitsCommand::new()))?;
     registry.register(Arc::new(OnboardingCommand::new()))?;
     registry.register(Arc::new(TeleportCommand::new()))?;
-    registry.register(Arc::new(RemoteEnvCommand::new()))?;
-    registry.register(Arc::new(RemoteSetupCommand::new()))?;
+    registry.register(Arc::new(RemoteEnvCommand::new(storage_dir.clone())))?;
+    registry.register(Arc::new(RemoteSetupCommand::new(storage_dir.clone())))?;
     registry.register(Arc::new(BridgeKickCommand::new()))?;
-    registry.register(Arc::new(SandboxToggleCommand::new()))?;
-    registry.register(Arc::new(UltraplanCommand::new()))?;
+    registry.register(Arc::new(SandboxToggleCommand::new(storage_dir.clone())))?;
+    registry.register(Arc::new(UltraplanCommand::new(storage_dir.clone())))?;
     registry.register(Arc::new(ThinkbackCommand::new()))?;
     registry.register(Arc::new(ThinkbackPlayCommand::new()))?;
     registry.register(Arc::new(AutofixPrCommand::new()))?;
     registry.register(Arc::new(PrCommentsCommand::new()))?;
-    registry.register(Arc::new(SummaryCommand::new()))?;
+    registry.register(Arc::new(SummaryCommand::new(storage_dir.clone())))?;
     registry.register(Arc::new(EnvCommand::new()))?;
     registry.register(Arc::new(OauthRefreshCommand::new(storage_dir.clone())))?;
     registry.register(Arc::new(IssueCommand::new()))?;
@@ -298,6 +346,8 @@ pub fn registry(storage_dir: Option<PathBuf>) -> Result<CommandRegistry> {
     registry.register(Arc::new(InstallSlackAppCommand::new()))?;
     registry.register(Arc::new(CreateMovedToPluginCommand::new()))?;
     registry.register(Arc::new(TuiCommand::new()))?;
+    registry.register(Arc::new(SetupCommand::new(storage_dir.clone())))?;
+    registry.register(Arc::new(FleetCommand::new(storage_dir.clone())))?;
     Ok(registry)
 }
 
@@ -363,8 +413,137 @@ pub(crate) fn detect_git_branch(cwd: &Path) -> Option<String> {
         .filter(|branch| branch != "HEAD")
 }
 
+pub(crate) fn apply_worktree_tool_result(
+    state: &mut AppState,
+    result: &ToolResult,
+) -> Result<bool> {
+    let Some(action) = parse_worktree_runtime_action(&result.metadata)? else {
+        return Ok(false);
+    };
+
+    std::env::set_current_dir(&action.cwd)?;
+    state.session.cwd = action.cwd.clone();
+    state.session.git_branch = detect_git_branch(&action.cwd).or_else(|| {
+        action
+            .session_state
+            .as_ref()
+            .and_then(|session| session.worktree_branch.clone())
+    });
+    state.session.worktree = action.session_state;
+    Ok(true)
+}
+
+pub(crate) fn open_browser(url: &str) {
+    let _ = try_open_browser(url);
+}
+
+pub(crate) fn try_open_browser(url: &str) -> bool {
+    if browser_launch_disabled() {
+        return false;
+    }
+
+    #[cfg(target_os = "macos")]
+    let command = ("open", vec![url]);
+    #[cfg(target_os = "linux")]
+    let command = ("xdg-open", vec![url]);
+    #[cfg(target_os = "windows")]
+    let command = ("cmd", vec!["/c", "start", "", url]);
+
+    #[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
+    {
+        ProcessCommand::new(command.0)
+            .args(command.1)
+            .spawn()
+            .is_ok()
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
+    {
+        let _ = url;
+        false
+    }
+}
+
+pub(crate) fn browser_launch_disabled() -> bool {
+    cfg!(test) || env_flag_enabled("WONDER_OF_U_NO_BROWSER")
+}
+
+fn env_flag_enabled(name: &str) -> bool {
+    std::env::var(name)
+        .map(|value| {
+            matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            )
+        })
+        .unwrap_or(false)
+}
+
 pub(crate) fn is_hidden_path(path: &Path) -> bool {
     path.file_name()
         .and_then(|name| name.to_str())
         .is_some_and(|name| name.starts_with('.'))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+
+    use wonder_of_u_core::{AppState, RuntimeWorktreeState, ToolResult, ToolUseId};
+    use wonder_of_u_test_support::unique_test_dir;
+
+    use super::{apply_worktree_tool_result, browser_launch_disabled, try_open_browser};
+
+    #[test]
+    fn shared_browser_launch_is_disabled_under_tests() {
+        assert!(
+            browser_launch_disabled(),
+            "tests must never spawn a real system browser"
+        );
+        assert!(!try_open_browser("https://example.invalid/browser-guard"));
+    }
+
+    #[test]
+    fn apply_worktree_tool_result_switches_session_state() {
+        let original_cwd = std::env::current_dir().expect("current dir");
+        let repo = unique_test_dir("commands-worktree-runtime");
+        let worktree = repo.join("worktree");
+        fs::create_dir_all(&worktree).expect("create worktree dir");
+
+        let mut state = AppState::new(repo.clone());
+        let result =
+            ToolResult::success(ToolUseId::new(), "entered").with_metadata(serde_json::json!({
+                "worktree_runtime_action": {
+                    "action": "enter",
+                    "cwd": worktree.clone(),
+                    "session_state": {
+                        "original_cwd": repo.clone(),
+                        "repository_root": repo.clone(),
+                        "worktree_path": worktree.clone(),
+                        "worktree_branch": "worktree-topic",
+                        "original_branch": "main",
+                        "original_head_commit": "abc123",
+                    }
+                }
+            }));
+
+        let changed =
+            apply_worktree_tool_result(&mut state, &result).expect("apply worktree action");
+
+        assert!(changed);
+        assert_eq!(state.session.cwd, worktree);
+        assert_eq!(
+            state.session.worktree,
+            Some(RuntimeWorktreeState {
+                original_cwd: repo.clone(),
+                repository_root: repo,
+                worktree_path: worktree.clone(),
+                worktree_branch: Some("worktree-topic".into()),
+                original_branch: Some("main".into()),
+                original_head_commit: Some("abc123".into()),
+                tmux_session_name: None,
+            })
+        );
+
+        std::env::set_current_dir(original_cwd).expect("restore cwd");
+    }
 }

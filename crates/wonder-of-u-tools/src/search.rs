@@ -400,10 +400,15 @@ mod tests {
         ToolContext {
             session_id: SessionId::new(),
             cwd,
+            session_worktree: None,
             permission_mode: PermissionMode::Default,
             additional_working_directories: Vec::new(),
+            provider: None,
+            model: None,
             permission_rules: Vec::new(),
             features: FeatureSet::first_release(),
+            bash_session_store: None,
+            fork_context: None,
         }
     }
 

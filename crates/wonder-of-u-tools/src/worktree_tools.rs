@@ -1,12 +1,17 @@
-//! Source-compatible worktree tool schemas with explicit unsupported execution.
-
-use std::path::PathBuf;
+use std::{
+    collections::hash_map::DefaultHasher,
+    fs,
+    hash::{Hash, Hasher},
+    path::{Path, PathBuf},
+    process::Command,
+};
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{Value, json};
 use wonder_of_u_core::{
-    Result, Tool, ToolContext, ToolKind, ToolResult, ToolSchema, ToolSpec, ToolUseId, WonderError,
+    Result, RuntimeWorktreeState, Tool, ToolContext, ToolKind, ToolResult, ToolSchema, ToolSpec,
+    ToolUseId, WonderError, get_current_branch, get_git_root,
 };
 
 use crate::{
@@ -14,74 +19,120 @@ use crate::{
 };
 
 const WORKTREE_NAME_MAX_LEN: usize = 64;
-const ENTER_WORKTREE_UNSUPPORTED: &str = "enter_worktree is not supported in wonder-of-u-tools because the Rust runtime does not yet expose session-scoped worktree creation or cwd switching; no git state was changed";
-const EXIT_WORKTREE_UNSUPPORTED: &str = "exit_worktree is not supported in wonder-of-u-tools because the Rust runtime does not yet expose EnterWorktree session state or cwd restoration; no git state was changed";
-/// Represents worktree session state
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct WorktreeSessionState {
-    /// Stores the original cwd
-    pub original_cwd: PathBuf,
-    /// Stores the repository root
-    pub repository_root: PathBuf,
-    /// Stores the worktree path
-    pub worktree_path: PathBuf,
-    /// Stores the worktree branch
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub worktree_branch: Option<String>,
-    /// Stores the original head commit
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub original_head_commit: Option<String>,
-    /// Stores the tmux session name
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub tmux_session_name: Option<String>,
+const WORKTREE_RUNTIME_ACTION_KEY: &str = "worktree_runtime_action";
+
+/// Represents persisted worktree session state.
+pub type WorktreeSessionState = RuntimeWorktreeState;
+
+/// Enumerates runtime actions that a controller can apply after a tool call.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WorktreeRuntimeActionKind {
+    /// Switches the session into a worktree.
+    Enter,
+    /// Restores the session to its original cwd.
+    Exit,
 }
 
-impl WorktreeSessionState {
-    /// Validates the value
-    pub fn validate(&self) -> Result<()> {
-        require_non_empty_path("worktree_session_state", "original_cwd", &self.original_cwd)?;
-        require_non_empty_path(
-            "worktree_session_state",
-            "repository_root",
-            &self.repository_root,
-        )?;
-        require_non_empty_path(
-            "worktree_session_state",
-            "worktree_path",
-            &self.worktree_path,
-        )?;
-        if self.original_cwd == self.worktree_path {
-            return Err(WonderError::validation(
-                "worktree_session_state requires `worktree_path` to differ from `original_cwd`",
-            ));
+/// Describes a session mutation that the runtime must apply explicitly.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WorktreeRuntimeAction {
+    /// Stores the runtime action kind.
+    pub action: WorktreeRuntimeActionKind,
+    /// Stores the cwd the session should switch to.
+    pub cwd: PathBuf,
+    /// Stores the next session worktree state.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_state: Option<WorktreeSessionState>,
+}
+
+impl WorktreeRuntimeAction {
+    fn validate(&self) -> Result<()> {
+        require_non_empty_path("worktree_runtime_action", "cwd", &self.cwd)?;
+        if let Some(state) = &self.session_state {
+            validate_worktree_session_state(state)?;
         }
-        if self.repository_root == self.worktree_path {
-            return Err(WonderError::validation(
-                "worktree_session_state requires `worktree_path` to differ from `repository_root`",
-            ));
+        match self.action {
+            WorktreeRuntimeActionKind::Enter if self.session_state.is_none() => Err(
+                WonderError::validation("worktree_runtime_action enter requires `session_state`"),
+            ),
+            WorktreeRuntimeActionKind::Exit if self.session_state.is_some() => {
+                Err(WonderError::validation(
+                    "worktree_runtime_action exit must not include `session_state`",
+                ))
+            }
+            _ => Ok(()),
         }
-        if let Some(branch) = &self.worktree_branch {
-            require_non_empty_text("worktree_session_state", "worktree_branch", branch)?;
-        }
-        if let Some(commit) = &self.original_head_commit {
-            require_non_empty_text("worktree_session_state", "original_head_commit", commit)?;
-        }
-        if let Some(tmux_session_name) = &self.tmux_session_name {
-            require_non_empty_text(
-                "worktree_session_state",
-                "tmux_session_name",
-                tmux_session_name,
-            )?;
-        }
-        Ok(())
     }
 }
-/// Represents enter worktree input
+
+/// Parses a structured worktree runtime action from tool-result metadata.
+pub fn parse_worktree_runtime_action(metadata: &Value) -> Result<Option<WorktreeRuntimeAction>> {
+    let Some(action) = metadata.get(WORKTREE_RUNTIME_ACTION_KEY) else {
+        return Ok(None);
+    };
+    let action =
+        serde_json::from_value::<WorktreeRuntimeAction>(action.clone()).map_err(|error| {
+            WonderError::validation(format!(
+                "invalid {WORKTREE_RUNTIME_ACTION_KEY} metadata: {error}"
+            ))
+        })?;
+    action.validate()?;
+    Ok(Some(action))
+}
+
+/// Validates worktree session state.
+pub fn validate_worktree_session_state(state: &WorktreeSessionState) -> Result<()> {
+    require_non_empty_path(
+        "worktree_session_state",
+        "original_cwd",
+        &state.original_cwd,
+    )?;
+    require_non_empty_path(
+        "worktree_session_state",
+        "repository_root",
+        &state.repository_root,
+    )?;
+    require_non_empty_path(
+        "worktree_session_state",
+        "worktree_path",
+        &state.worktree_path,
+    )?;
+    if state.original_cwd == state.worktree_path {
+        return Err(WonderError::validation(
+            "worktree_session_state requires `worktree_path` to differ from `original_cwd`",
+        ));
+    }
+    if state.repository_root == state.worktree_path {
+        return Err(WonderError::validation(
+            "worktree_session_state requires `worktree_path` to differ from `repository_root`",
+        ));
+    }
+    if let Some(branch) = &state.worktree_branch {
+        require_non_empty_text("worktree_session_state", "worktree_branch", branch)?;
+    }
+    if let Some(branch) = &state.original_branch {
+        require_non_empty_text("worktree_session_state", "original_branch", branch)?;
+    }
+    if let Some(commit) = &state.original_head_commit {
+        require_non_empty_text("worktree_session_state", "original_head_commit", commit)?;
+    }
+    if let Some(tmux_session_name) = &state.tmux_session_name {
+        require_non_empty_text(
+            "worktree_session_state",
+            "tmux_session_name",
+            tmux_session_name,
+        )?;
+    }
+    Ok(())
+}
+
+/// Represents enter worktree input.
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct EnterWorktreeInput {
-    /// Stores the name
+    /// Stores the requested worktree name.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
 }
@@ -94,27 +145,29 @@ impl EnterWorktreeInput {
         Ok(())
     }
 }
-/// Enumerates exit worktree action
+
+/// Enumerates exit worktree actions.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ExitWorktreeAction {
-    /// Represents keep
+    /// Leaves the worktree on disk.
     Keep,
-    /// Represents remove
+    /// Removes the worktree and branch.
     Remove,
 }
-/// Represents exit worktree input
+
+/// Represents exit worktree input.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ExitWorktreeInput {
-    /// Stores the action
+    /// Stores the requested action.
     pub action: ExitWorktreeAction,
+    /// Stores whether destructive removal was explicitly confirmed.
     #[serde(
         default,
         alias = "discardChanges",
         skip_serializing_if = "Option::is_none"
     )]
-    /// Stores the discard changes
     pub discard_changes: Option<bool>,
 }
 
@@ -123,19 +176,27 @@ impl ExitWorktreeInput {
         Ok(())
     }
 }
-/// Represents enter worktree tool
+
+/// Represents enter worktree tool.
 #[derive(Debug, Default)]
 pub struct EnterWorktreeTool;
-/// Represents exit worktree tool
+
+/// Represents exit worktree tool.
 #[derive(Debug, Default)]
 pub struct ExitWorktreeTool;
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+struct ChangeSummary {
+    changed_files: usize,
+    commits: usize,
+}
 
 #[async_trait]
 impl Tool for EnterWorktreeTool {
     fn spec(&self) -> ToolSpec {
         let mut spec = base_spec(
             "enter_worktree",
-            "Source-compatible EnterWorktree alias; runtime worktree switching is unsupported in wonder-of-u-tools",
+            "Create an isolated git worktree and request a session switch into it",
             ToolKind::Task,
         )
         .with_input_schema(
@@ -157,13 +218,54 @@ impl Tool for EnterWorktreeTool {
 
     async fn execute(
         &self,
-        _context: ToolContext,
-        _use_id: ToolUseId,
+        context: ToolContext,
+        use_id: ToolUseId,
         input: Value,
     ) -> Result<ToolResult> {
         let input = parse_input::<EnterWorktreeInput>("enter_worktree", &input)?;
         input.validate()?;
-        Err(WonderError::validation(ENTER_WORKTREE_UNSUPPORTED))
+
+        if context.session_worktree.is_some() {
+            return Ok(ToolResult::failure(
+                use_id,
+                "Already in an active EnterWorktree session. Exit the current worktree before creating another one.",
+            ));
+        }
+
+        let repository_root = match get_git_root(&context.cwd) {
+            Ok(root) => root,
+            Err(_) => {
+                return Ok(ToolResult::failure(
+                    use_id,
+                    "Cannot create a worktree outside a readable git repository. No git state was changed.",
+                ));
+            }
+        };
+
+        let slug = input
+            .name
+            .unwrap_or_else(|| default_worktree_slug(&context.session_id));
+        let (session_state, resumed) =
+            create_or_resume_worktree(&context.cwd, &repository_root, &slug)?;
+        let action = WorktreeRuntimeAction {
+            action: WorktreeRuntimeActionKind::Enter,
+            cwd: session_state.worktree_path.clone(),
+            session_state: Some(session_state.clone()),
+        };
+        let branch_info = session_state
+            .worktree_branch
+            .as_deref()
+            .map_or(String::new(), |branch| format!(" on branch {branch}"));
+        let verb = if resumed { "Resumed" } else { "Created" };
+
+        Ok(ToolResult::success(
+            use_id,
+            format!(
+                "{verb} worktree at {}{branch_info}. Apply the returned runtime action to switch the session into it.",
+                session_state.worktree_path.display()
+            ),
+        )
+        .with_metadata(worktree_runtime_metadata(&action)))
     }
 }
 
@@ -172,7 +274,7 @@ impl Tool for ExitWorktreeTool {
     fn spec(&self) -> ToolSpec {
         let mut spec = base_spec(
             "exit_worktree",
-            "Source-compatible ExitWorktree alias; runtime worktree session restoration is unsupported in wonder-of-u-tools",
+            "Exit an active EnterWorktree session and optionally remove the worktree",
             ToolKind::Task,
         )
         .with_input_schema(
@@ -206,13 +308,88 @@ impl Tool for ExitWorktreeTool {
 
     async fn execute(
         &self,
-        _context: ToolContext,
-        _use_id: ToolUseId,
+        context: ToolContext,
+        use_id: ToolUseId,
         input: Value,
     ) -> Result<ToolResult> {
         let input = parse_input::<ExitWorktreeInput>("exit_worktree", &input)?;
         input.validate()?;
-        Err(WonderError::validation(EXIT_WORKTREE_UNSUPPORTED))
+
+        let Some(session_state) = context.session_worktree.clone() else {
+            return Ok(ToolResult::failure(
+                use_id,
+                "No-op: there is no active EnterWorktree session to exit. No filesystem changes were made.",
+            ));
+        };
+        validate_worktree_session_state(&session_state)?;
+
+        let restore_cwd = choose_restore_cwd(&session_state);
+        if input.action == ExitWorktreeAction::Keep {
+            let action = WorktreeRuntimeAction {
+                action: WorktreeRuntimeActionKind::Exit,
+                cwd: restore_cwd.clone(),
+                session_state: None,
+            };
+            return Ok(ToolResult::success(
+                use_id,
+                format!(
+                    "Exited worktree. Your work is preserved at {}{}. Apply the returned runtime action to restore the session to {}.",
+                    session_state.worktree_path.display(),
+                    session_state.worktree_branch.as_deref().map_or(String::new(), |branch| {
+                        format!(" on branch {branch}")
+                    }),
+                    restore_cwd.display()
+                ),
+            )
+            .with_metadata(worktree_runtime_metadata(&action)));
+        }
+
+        let summary = count_worktree_changes(
+            &session_state.worktree_path,
+            session_state.original_head_commit.as_deref(),
+        )?;
+        if !input.discard_changes.unwrap_or(false) {
+            let Some(summary) = summary else {
+                return Ok(ToolResult::failure(
+                    use_id,
+                    format!(
+                        "Could not verify worktree state at {}. Refusing to remove without explicit confirmation. Re-invoke with discard_changes: true to proceed, or use action: \"keep\".",
+                        session_state.worktree_path.display()
+                    ),
+                ));
+            };
+            if summary.changed_files > 0 || summary.commits > 0 {
+                return Ok(ToolResult::failure(
+                    use_id,
+                    dirty_remove_message(&session_state, summary),
+                ));
+            }
+        }
+
+        let summary = summary.unwrap_or_default();
+        let remove_note = remove_worktree(
+            &session_state,
+            summary,
+            input.discard_changes.unwrap_or(false),
+        )?;
+        let action = WorktreeRuntimeAction {
+            action: WorktreeRuntimeActionKind::Exit,
+            cwd: restore_cwd.clone(),
+            session_state: None,
+        };
+        let discard_note = discarded_note(summary);
+        Ok(ToolResult::success(
+            use_id,
+            format!(
+                "Exited and removed worktree at {}.{discard_note}{} Apply the returned runtime action to restore the session to {}.",
+                session_state.worktree_path.display(),
+                remove_note
+                    .as_deref()
+                    .map_or(String::new(), |note| format!(" {note}")),
+                restore_cwd.display()
+            ),
+        )
+        .with_metadata(worktree_runtime_metadata(&action)))
     }
 }
 
@@ -225,9 +402,9 @@ fn validate_worktree_name(name: &str) -> Result<()> {
     }
 
     for segment in name.split('/') {
-        if segment.is_empty() {
+        if matches!(segment, "" | "." | "..") {
             return Err(WonderError::validation(
-                "enter_worktree name must not contain empty `/` segments",
+                "enter_worktree name must not contain empty, `.` or `..` path segments",
             ));
         }
         if !segment
@@ -241,6 +418,668 @@ fn validate_worktree_name(name: &str) -> Result<()> {
     }
 
     Ok(())
+}
+
+fn default_worktree_slug(session_id: &wonder_of_u_core::SessionId) -> String {
+    let raw = session_id.to_string();
+    let suffix = raw.split('-').next().unwrap_or(raw.as_str());
+    format!("session-{suffix}")
+}
+
+// ── Fleet-scoped public helpers ───────────────────────────────────────────────
+
+/// Derives a deterministic, filesystem-safe slug for a fleet agent worktree.
+///
+/// The slug is built from the first 8 characters of the fleet id and the first
+/// 8 characters of the request id, joined with a hyphen and prefixed with
+/// `fleet-`.  This keeps it short enough to avoid path-length issues on
+/// macOS/Linux (≤ 64 chars total) while remaining unique within a fleet run.
+///
+/// # Examples
+///
+/// ```
+/// use wonder_of_u_tools::fleet_agent_worktree_slug;
+/// let slug = fleet_agent_worktree_slug("abcdef01-xxxx", "12345678-yyyy");
+/// assert_eq!(slug, "fleet-abcdef01-12345678");
+/// ```
+#[must_use]
+pub fn fleet_agent_worktree_slug(fleet_id_str: &str, request_id: &str) -> String {
+    let fleet_prefix: String = fleet_id_str
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric())
+        .take(8)
+        .collect();
+    let req_prefix: String = request_id
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric())
+        .take(8)
+        .collect();
+    format!("fleet-{fleet_prefix}-{req_prefix}")
+}
+
+/// Full metadata returned when creating or resuming an agent git worktree.
+///
+/// Callers that need to persist worktree state for later cleanup (e.g. the
+/// task runtime) should use [`create_agent_worktree_info`] rather than the
+/// simpler `(path, branch)` overload.
+#[derive(Clone, Debug)]
+pub struct AgentWorktreeInfo {
+    /// Absolute filesystem path to the worktree.
+    pub worktree_path: PathBuf,
+    /// Git branch checked out inside the worktree.
+    pub branch: String,
+    /// HEAD commit hash in the main repository at worktree creation/resume
+    /// time.  Used during post-task cleanup to detect new commits made by the
+    /// agent.  `None` only if `git rev-parse HEAD` fails.
+    pub head_commit: Option<String>,
+}
+
+/// Creates or resumes a git worktree and returns full metadata for task
+/// tracking and post-task cleanup.
+///
+/// Unlike [`create_fleet_agent_worktree_with_branch`] this function surfaces
+/// the `head_commit` captured at creation time so the caller can later
+/// determine whether the agent made any new commits.
+///
+/// # Errors
+///
+/// Propagates validation, git, or filesystem errors.
+pub fn create_agent_worktree_info(
+    original_cwd: &Path,
+    repository_root: &Path,
+    slug: &str,
+    branch: Option<&str>,
+) -> wonder_of_u_core::Result<AgentWorktreeInfo> {
+    if let Some(b) = branch {
+        validate_worktree_branch_name(b)?;
+    }
+    let (state, _resumed) =
+        create_or_resume_worktree_with_branch(original_cwd, repository_root, slug, branch)?;
+    let branch = state
+        .worktree_branch
+        .clone()
+        .unwrap_or_else(|| branch.map_or_else(|| worktree_branch_name(slug), str::to_string));
+    Ok(AgentWorktreeInfo {
+        worktree_path: state.worktree_path,
+        branch,
+        head_commit: state.original_head_commit,
+    })
+}
+
+/// Outcome of attempting to clean up an agent worktree after task completion.
+#[derive(Clone, Debug, PartialEq)]
+pub enum AgentWorktreeCleanup {
+    /// Worktree was clean (no uncommitted files, no new commits) and has been
+    /// removed along with its branch.
+    Removed,
+    /// Worktree had uncommitted files or new commits and has been retained.
+    Retained {
+        /// Number of uncommitted files detected by `git status --porcelain`.
+        changed_files: usize,
+        /// Number of new commits on the worktree branch relative to
+        /// `head_commit`.  Zero when no reference commit was supplied.
+        commits: usize,
+    },
+    /// Worktree path no longer exists on disk; nothing to clean up.
+    AlreadyGone,
+}
+
+/// Attempts to remove an agent worktree after the associated task completes.
+///
+/// A worktree is considered "clean" when `git status --porcelain` reports no
+/// files **and** there are no new commits relative to `head_commit`.  Clean
+/// worktrees are removed (worktree + branch); dirty ones are retained so the
+/// agent's work is not lost.
+///
+/// When `head_commit` is `None` only uncommitted files are checked; the commit
+/// count is reported as zero regardless of what is on the branch.
+///
+/// Returns [`AgentWorktreeCleanup::AlreadyGone`] without touching git when
+/// the path does not exist on disk.
+pub fn try_cleanup_agent_worktree(
+    worktree_path: &Path,
+    head_commit: Option<&str>,
+) -> AgentWorktreeCleanup {
+    if !worktree_path.exists() {
+        return AgentWorktreeCleanup::AlreadyGone;
+    }
+
+    let repository_root = match get_git_root(worktree_path) {
+        Ok(root) => root,
+        // Path exists but isn't in a git repo — treat as gone.
+        Err(_) => return AgentWorktreeCleanup::AlreadyGone,
+    };
+
+    // Count uncommitted files via git status --porcelain.
+    let changed_files = match git_output(worktree_path, ["status", "--porcelain"]) {
+        Ok(out) if out.status.success() => String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .filter(|l| !l.trim().is_empty())
+            .count(),
+        // git failed — retain to be safe.
+        _ => {
+            return AgentWorktreeCleanup::Retained {
+                changed_files: 0,
+                commits: 0,
+            };
+        }
+    };
+
+    // Count new commits relative to the captured head (only when available).
+    let commits = if let Some(ref_commit) = head_commit {
+        let range = format!("{ref_commit}..HEAD");
+        match git_output(worktree_path, ["rev-list", "--count", range.as_str()]) {
+            Ok(out) if out.status.success() => String::from_utf8(out.stdout)
+                .unwrap_or_default()
+                .trim()
+                .parse::<usize>()
+                .unwrap_or(0),
+            _ => {
+                return AgentWorktreeCleanup::Retained {
+                    changed_files,
+                    commits: 0,
+                };
+            }
+        }
+    } else {
+        0
+    };
+
+    if changed_files > 0 || commits > 0 {
+        return AgentWorktreeCleanup::Retained {
+            changed_files,
+            commits,
+        };
+    }
+
+    // Worktree is clean — record the branch name before removing.
+    let branch = get_current_branch(worktree_path).ok();
+
+    // Remove the worktree directory.
+    if git_ok(
+        &repository_root,
+        [
+            "worktree",
+            "remove",
+            worktree_path.to_str().unwrap_or_default(),
+        ],
+    )
+    .is_err()
+    {
+        return AgentWorktreeCleanup::Retained {
+            changed_files: 0,
+            commits: 0,
+        };
+    }
+
+    // Delete the branch; failure is non-fatal (branch may have been merged or
+    // deleted already).
+    if let Some(b) = branch {
+        let _ = git_ok(&repository_root, ["branch", "-d", b.as_str()]);
+    }
+
+    AgentWorktreeCleanup::Removed
+}
+
+/// Creates or resumes a git worktree for a fleet agent member.
+///
+/// Delegates to the shared [`create_or_resume_worktree`] logic and returns
+/// `(worktree_path, branch_name)`.  Callers should pass the resolved `slug`
+/// from [`fleet_agent_worktree_slug`] or an explicit branch override.
+///
+/// # Errors
+///
+/// Propagates errors from git commands or filesystem operations.
+pub fn create_fleet_agent_worktree(
+    original_cwd: &Path,
+    repository_root: &Path,
+    slug: &str,
+) -> wonder_of_u_core::Result<(PathBuf, String)> {
+    create_fleet_agent_worktree_with_branch(original_cwd, repository_root, slug, None)
+}
+
+/// Creates or resumes a git worktree for a fleet agent member using an explicit
+/// branch name while keeping the worktree path derived from `slug`.
+///
+/// This is intended for user-supplied fleet branch names: the branch is used
+/// exactly as provided, while the slug remains a filesystem-safe stable path
+/// identifier for the fleet member.
+///
+/// # Errors
+///
+/// Propagates validation, git, or filesystem errors.
+pub fn create_fleet_agent_worktree_with_branch(
+    original_cwd: &Path,
+    repository_root: &Path,
+    slug: &str,
+    branch: Option<&str>,
+) -> wonder_of_u_core::Result<(PathBuf, String)> {
+    if let Some(branch) = branch {
+        validate_worktree_branch_name(branch)?;
+    }
+    let (state, _resumed) =
+        create_or_resume_worktree_with_branch(original_cwd, repository_root, slug, branch)?;
+    let branch = state
+        .worktree_branch
+        .unwrap_or_else(|| branch.map_or_else(|| worktree_branch_name(slug), str::to_string));
+    Ok((state.worktree_path, branch))
+}
+
+/// Validates an explicit worktree branch name supplied by the user.
+///
+/// Applies a minimal set of rules that git itself would reject on the branch
+/// name embedded in the slug:
+/// - Must not be empty.
+/// - Must not contain ASCII control characters, spaces, or `\`.
+/// - Must not start or end with `/` or `.`.
+/// - Must not contain `..` or `@{`.
+/// - Length must not exceed 255 bytes.
+///
+/// This is a subset of git's full ref-name rules; a stricter check happens
+/// when git actually creates the branch.
+pub fn validate_worktree_branch_name(name: &str) -> wonder_of_u_core::Result<()> {
+    use wonder_of_u_core::WonderError;
+    if name.is_empty() {
+        return Err(WonderError::validation(
+            "worktree branch name must not be empty",
+        ));
+    }
+    if name.len() > 255 {
+        return Err(WonderError::validation(
+            "worktree branch name must not exceed 255 bytes",
+        ));
+    }
+    if name.starts_with('/') || name.ends_with('/') {
+        return Err(WonderError::validation(
+            "worktree branch name must not start or end with '/'",
+        ));
+    }
+    if name.starts_with('.') || name.ends_with('.') {
+        return Err(WonderError::validation(
+            "worktree branch name must not start or end with '.'",
+        ));
+    }
+    if name.contains("..") || name.contains("@{") {
+        return Err(WonderError::validation(
+            "worktree branch name must not contain '..' or '@{'",
+        ));
+    }
+    for ch in name.chars() {
+        if ch.is_ascii_control() || ch == ' ' || ch == '\\' {
+            return Err(WonderError::validation(format!(
+                "worktree branch name contains invalid character {ch:?}"
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn flatten_slug(slug: &str) -> String {
+    slug.replace('/', "+")
+}
+
+fn worktree_branch_name(slug: &str) -> String {
+    format!("worktree-{}", flatten_slug(slug))
+}
+
+fn repository_namespace(repository_root: &Path) -> String {
+    let repo_name = repository_root
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or("repository");
+    let mut hasher = DefaultHasher::new();
+    repository_root.hash(&mut hasher);
+    format!("{repo_name}-{:016x}", hasher.finish())
+}
+
+fn worktrees_dir(repository_root: &Path) -> PathBuf {
+    let namespace = repository_namespace(repository_root);
+    repository_root.parent().map_or_else(
+        || {
+            repository_root
+                .join(".wonder-of-u-worktrees")
+                .join(&namespace)
+        },
+        |parent| parent.join(".wonder-of-u-worktrees").join(&namespace),
+    )
+}
+
+fn worktree_path_for(repository_root: &Path, slug: &str) -> PathBuf {
+    worktrees_dir(repository_root).join(flatten_slug(slug))
+}
+
+fn worktree_runtime_metadata(action: &WorktreeRuntimeAction) -> Value {
+    json!({
+        WORKTREE_RUNTIME_ACTION_KEY: action,
+    })
+}
+
+fn choose_restore_cwd(state: &WorktreeSessionState) -> PathBuf {
+    if state.original_cwd.is_dir() {
+        state.original_cwd.clone()
+    } else {
+        state.repository_root.clone()
+    }
+}
+
+fn create_or_resume_worktree(
+    original_cwd: &Path,
+    repository_root: &Path,
+    slug: &str,
+) -> Result<(WorktreeSessionState, bool)> {
+    create_or_resume_worktree_with_branch(original_cwd, repository_root, slug, None)
+}
+
+fn create_or_resume_worktree_with_branch(
+    original_cwd: &Path,
+    repository_root: &Path,
+    slug: &str,
+    branch_override: Option<&str>,
+) -> Result<(WorktreeSessionState, bool)> {
+    let worktree_path = worktree_path_for(repository_root, slug);
+    let worktree_branch =
+        branch_override.map_or_else(|| worktree_branch_name(slug), str::to_string);
+    let original_branch = get_current_branch(original_cwd).ok();
+    let original_head_commit = git_stdout(repository_root, ["rev-parse", "HEAD"])?;
+
+    fs::create_dir_all(worktrees_dir(repository_root))?;
+    if worktree_path.exists() {
+        if !registered_worktree_paths(repository_root)?
+            .contains(&canonicalize_or_existing(&worktree_path)?)
+        {
+            return Err(WonderError::validation(format!(
+                "refusing to reuse existing path {} because it is not a registered git worktree",
+                worktree_path.display()
+            )));
+        }
+        if let Ok(actual_branch) = get_current_branch(&worktree_path) {
+            if actual_branch != worktree_branch {
+                return Err(WonderError::validation(format!(
+                    "refusing to reuse worktree {} because it is on branch `{actual_branch}` instead of `{worktree_branch}`",
+                    worktree_path.display()
+                )));
+            }
+        }
+        return Ok((
+            WorktreeSessionState {
+                original_cwd: original_cwd.to_path_buf(),
+                repository_root: repository_root.to_path_buf(),
+                worktree_path: canonicalize_or_existing(&worktree_path)?,
+                worktree_branch: Some(worktree_branch),
+                original_branch,
+                original_head_commit: Some(original_head_commit),
+                tmux_session_name: None,
+            },
+            true,
+        ));
+    }
+
+    if git_branch_exists(repository_root, &worktree_branch)? {
+        return Err(WonderError::validation(format!(
+            "refusing to create worktree because branch `{worktree_branch}` already exists without a matching registered worktree"
+        )));
+    }
+
+    git_ok(
+        repository_root,
+        [
+            "worktree",
+            "add",
+            "-b",
+            worktree_branch.as_str(),
+            path_as_str(&worktree_path)?,
+            "HEAD",
+        ],
+    )?;
+    Ok((
+        WorktreeSessionState {
+            original_cwd: original_cwd.to_path_buf(),
+            repository_root: repository_root.to_path_buf(),
+            worktree_path: canonicalize_or_existing(&worktree_path)?,
+            worktree_branch: Some(worktree_branch),
+            original_branch,
+            original_head_commit: Some(original_head_commit),
+            tmux_session_name: None,
+        },
+        false,
+    ))
+}
+
+fn count_worktree_changes(
+    worktree_path: &Path,
+    original_head_commit: Option<&str>,
+) -> Result<Option<ChangeSummary>> {
+    let status = git_output(worktree_path, ["status", "--porcelain"])?;
+    if !status.status.success() {
+        return Ok(None);
+    }
+    let changed_files = String::from_utf8_lossy(&status.stdout)
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .count();
+
+    let Some(original_head_commit) = original_head_commit else {
+        return Ok(None);
+    };
+    let rev_list = git_output(
+        worktree_path,
+        [
+            "rev-list",
+            "--count",
+            &format!("{original_head_commit}..HEAD"),
+        ],
+    )?;
+    if !rev_list.status.success() {
+        return Ok(None);
+    }
+    let commits = String::from_utf8(rev_list.stdout)
+        .map_err(|error| {
+            WonderError::validation(format!("git output was not valid UTF-8: {error}"))
+        })?
+        .trim()
+        .parse::<usize>()
+        .unwrap_or(0);
+    Ok(Some(ChangeSummary {
+        changed_files,
+        commits,
+    }))
+}
+
+fn dirty_remove_message(state: &WorktreeSessionState, summary: ChangeSummary) -> String {
+    let mut parts = Vec::new();
+    if summary.changed_files > 0 {
+        parts.push(format!(
+            "{} uncommitted {}",
+            summary.changed_files,
+            if summary.changed_files == 1 {
+                "file"
+            } else {
+                "files"
+            }
+        ));
+    }
+    if summary.commits > 0 {
+        parts.push(format!(
+            "{} {} on {}",
+            summary.commits,
+            if summary.commits == 1 {
+                "commit"
+            } else {
+                "commits"
+            },
+            state
+                .worktree_branch
+                .as_deref()
+                .unwrap_or("the worktree branch")
+        ));
+    }
+    format!(
+        "Worktree has {}. Removing it will discard this work permanently. Confirm with the user, then re-invoke with discard_changes: true, or use action: \"keep\".",
+        parts.join(" and ")
+    )
+}
+
+fn discarded_note(summary: ChangeSummary) -> String {
+    let mut parts = Vec::new();
+    if summary.commits > 0 {
+        parts.push(format!(
+            "{} {}",
+            summary.commits,
+            if summary.commits == 1 {
+                "commit"
+            } else {
+                "commits"
+            }
+        ));
+    }
+    if summary.changed_files > 0 {
+        parts.push(format!(
+            "{} uncommitted {}",
+            summary.changed_files,
+            if summary.changed_files == 1 {
+                "file"
+            } else {
+                "files"
+            }
+        ));
+    }
+    if parts.is_empty() {
+        String::new()
+    } else {
+        format!(" Discarded {}.", parts.join(" and "))
+    }
+}
+
+fn remove_worktree(
+    state: &WorktreeSessionState,
+    summary: ChangeSummary,
+    discard_changes: bool,
+) -> Result<Option<String>> {
+    let remove_args = if discard_changes || summary.changed_files > 0 {
+        vec![
+            "worktree".to_string(),
+            "remove".to_string(),
+            "--force".to_string(),
+            state.worktree_path.display().to_string(),
+        ]
+    } else {
+        vec![
+            "worktree".to_string(),
+            "remove".to_string(),
+            state.worktree_path.display().to_string(),
+        ]
+    };
+    git_ok_owned(&state.repository_root, remove_args)?;
+
+    if let Some(branch) = &state.worktree_branch {
+        let delete_flag = if discard_changes || summary.commits > 0 {
+            "-D"
+        } else {
+            "-d"
+        };
+        let delete_output = git_output(&state.repository_root, ["branch", delete_flag, branch])?;
+        if !delete_output.status.success() {
+            return Ok(Some(format!(
+                "The worktree branch `{branch}` could not be deleted automatically: {}",
+                String::from_utf8_lossy(&delete_output.stderr).trim()
+            )));
+        }
+    }
+
+    Ok(None)
+}
+
+fn registered_worktree_paths(repository_root: &Path) -> Result<Vec<PathBuf>> {
+    let output = git_stdout(repository_root, ["worktree", "list", "--porcelain"])?;
+    let mut paths = Vec::new();
+    for line in output.lines() {
+        if let Some(path) = line.strip_prefix("worktree ") {
+            paths.push(canonicalize_or_existing(Path::new(path))?);
+        }
+    }
+    Ok(paths)
+}
+
+fn git_branch_exists(repository_root: &Path, branch: &str) -> Result<bool> {
+    let output = git_output(repository_root, ["branch", "--list", branch])?;
+    if !output.status.success() {
+        return Ok(false);
+    }
+    Ok(!String::from_utf8_lossy(&output.stdout).trim().is_empty())
+}
+
+fn git_stdout<S, I>(cwd: &Path, args: I) -> Result<String>
+where
+    S: AsRef<str>,
+    I: IntoIterator<Item = S>,
+{
+    let output = git_output(cwd, args)?;
+    if !output.status.success() {
+        return Err(WonderError::validation(format!(
+            "git command failed in {}: {}",
+            cwd.display(),
+            String::from_utf8_lossy(&output.stderr).trim()
+        )));
+    }
+    String::from_utf8(output.stdout)
+        .map(|stdout| stdout.trim().to_string())
+        .map_err(|error| {
+            WonderError::validation(format!("git output was not valid UTF-8: {error}"))
+        })
+}
+
+fn git_ok<S, I>(cwd: &Path, args: I) -> Result<()>
+where
+    S: AsRef<str>,
+    I: IntoIterator<Item = S>,
+{
+    let output = git_output(cwd, args)?;
+    if output.status.success() {
+        Ok(())
+    } else {
+        Err(WonderError::validation(format!(
+            "git command failed in {}: {}",
+            cwd.display(),
+            String::from_utf8_lossy(&output.stderr).trim()
+        )))
+    }
+}
+
+fn git_ok_owned(cwd: &Path, args: Vec<String>) -> Result<()> {
+    git_ok(cwd, args.iter().map(String::as_str))
+}
+
+fn git_output<S, I>(cwd: &Path, args: I) -> Result<std::process::Output>
+where
+    S: AsRef<str>,
+    I: IntoIterator<Item = S>,
+{
+    let args = args
+        .into_iter()
+        .map(|arg| arg.as_ref().to_string())
+        .collect::<Vec<_>>();
+    Command::new("git")
+        .args(&args)
+        .current_dir(cwd)
+        .output()
+        .map_err(WonderError::from)
+}
+
+fn path_as_str(path: &Path) -> Result<&str> {
+    path.to_str()
+        .ok_or_else(|| WonderError::validation("worktree path must be valid UTF-8"))
+}
+
+fn canonicalize_or_existing(path: &Path) -> Result<PathBuf> {
+    fs::canonicalize(path).or_else(|_| {
+        if path.is_absolute() {
+            Ok(path.to_path_buf())
+        } else {
+            std::env::current_dir()
+                .map(|cwd| cwd.join(path))
+                .map_err(WonderError::from)
+        }
+    })
 }
 
 #[cfg(test)]
@@ -261,10 +1100,15 @@ mod tests {
         ToolContext {
             session_id: SessionId::new(),
             cwd,
+            session_worktree: None,
             permission_mode: PermissionMode::Default,
             additional_working_directories: Vec::new(),
+            provider: None,
+            model: None,
             permission_rules: Vec::new(),
             features: FeatureSet::first_release(),
+            bash_session_store: None,
+            fork_context: None,
         }
     }
 
@@ -313,6 +1157,28 @@ mod tests {
             String::from_utf8_lossy(&output.stderr)
         );
         String::from_utf8_lossy(&output.stdout).into_owned()
+    }
+
+    fn parse_action(result: &ToolResult) -> WorktreeRuntimeAction {
+        parse_worktree_runtime_action(&result.metadata)
+            .expect("parse metadata")
+            .expect("runtime action metadata")
+    }
+
+    fn worktree_context(state: &WorktreeSessionState) -> ToolContext {
+        ToolContext {
+            session_id: SessionId::new(),
+            cwd: state.worktree_path.clone(),
+            session_worktree: Some(state.clone()),
+            permission_mode: PermissionMode::Default,
+            additional_working_directories: Vec::new(),
+            provider: None,
+            model: None,
+            permission_rules: Vec::new(),
+            features: FeatureSet::first_release(),
+            bash_session_store: None,
+            fork_context: None,
+        }
     }
 
     #[test]
@@ -370,15 +1236,15 @@ mod tests {
 
     #[test]
     fn worktree_session_state_validation_rejects_non_isolated_paths() {
-        let error = WorktreeSessionState {
+        let error = validate_worktree_session_state(&WorktreeSessionState {
             original_cwd: PathBuf::from("/workspace"),
             repository_root: PathBuf::from("/workspace"),
             worktree_path: PathBuf::from("/workspace"),
             worktree_branch: Some("topic".into()),
+            original_branch: Some("main".into()),
             original_head_commit: Some("abc1234".into()),
             tmux_session_name: None,
-        }
-        .validate()
+        })
         .expect_err("same worktree path");
 
         assert!(error.to_string().contains("worktree_path"));
@@ -396,69 +1262,411 @@ mod tests {
     }
 
     #[test]
-    fn enter_worktree_execution_is_explicitly_unsupported() {
-        let dir = unique_test_dir("tools-enter-worktree");
-        let error =
-            block_on(EnterWorktreeTool.execute(tool_context(dir), ToolUseId::new(), json!({})))
-                .expect_err("unsupported enter worktree");
-
-        assert!(error.to_string().contains("not supported"));
-        assert!(error.to_string().contains("no git state was changed"));
-    }
-
-    #[test]
-    fn exit_worktree_execution_is_explicitly_unsupported() {
-        let dir = unique_test_dir("tools-exit-worktree");
-        let error = block_on(ExitWorktreeTool.execute(
-            tool_context(dir),
+    fn enter_worktree_creates_git_worktree_and_runtime_action() {
+        let repo = init_git_repo("tools-enter-worktree-runtime");
+        let result = block_on(EnterWorktreeTool.execute(
+            tool_context(repo.clone()),
             ToolUseId::new(),
-            json!({ "action": "remove", "discard_changes": true }),
+            json!({ "name": "topic/demo" }),
         ))
-        .expect_err("unsupported exit worktree");
+        .expect("enter worktree");
 
-        assert!(error.to_string().contains("not supported"));
-        assert!(error.to_string().contains("no git state was changed"));
+        assert!(result.success, "{}", result.content);
+        let action = parse_action(&result);
+        let state = action.session_state.expect("session state");
+        assert_eq!(action.action, WorktreeRuntimeActionKind::Enter);
+        assert_eq!(action.cwd, state.worktree_path);
+        assert_eq!(state.original_cwd, repo);
+        assert!(state.worktree_path.exists());
+        assert_ne!(state.worktree_path, state.repository_root);
+        assert!(
+            run_git(&state.repository_root, ["worktree", "list", "--porcelain"])
+                .contains(state.worktree_path.to_string_lossy().as_ref())
+        );
+        assert!(
+            run_git(
+                &state.repository_root,
+                ["branch", "--list", "--format=%(refname:short)"]
+            )
+            .contains(state.worktree_branch.as_deref().expect("worktree branch"))
+        );
     }
 
     #[test]
-    fn enter_worktree_does_not_mutate_git_state_when_unsupported() {
-        let repo = init_git_repo("tools-enter-worktree-no-git-mutation");
-        let before_worktrees = run_git(&repo, ["worktree", "list", "--porcelain"]);
-        let before_branches = run_git(&repo, ["branch", "--list", "--format=%(refname:short)"]);
-
-        let error = block_on(EnterWorktreeTool.execute(
+    fn exit_worktree_keep_returns_restore_action_without_git_mutation() {
+        let repo = init_git_repo("tools-exit-worktree-keep");
+        let enter = block_on(EnterWorktreeTool.execute(
             tool_context(repo.clone()),
             ToolUseId::new(),
             json!({ "name": "topic" }),
         ))
-        .expect_err("unsupported enter worktree");
+        .expect("enter worktree");
+        let action = parse_action(&enter);
+        let state = action.session_state.expect("session state");
+        let before = run_git(&repo, ["worktree", "list", "--porcelain"]);
 
-        let after_worktrees = run_git(&repo, ["worktree", "list", "--porcelain"]);
-        let after_branches = run_git(&repo, ["branch", "--list", "--format=%(refname:short)"]);
+        let exit = block_on(ExitWorktreeTool.execute(
+            worktree_context(&state),
+            ToolUseId::new(),
+            json!({ "action": "keep" }),
+        ))
+        .expect("exit keep");
 
-        assert!(error.to_string().contains("no git state was changed"));
-        assert_eq!(before_worktrees, after_worktrees);
-        assert_eq!(before_branches, after_branches);
+        assert!(exit.success, "{}", exit.content);
+        let exit_action = parse_action(&exit);
+        assert_eq!(exit_action.action, WorktreeRuntimeActionKind::Exit);
+        assert_eq!(exit_action.cwd, repo);
+        assert!(exit_action.session_state.is_none());
+        assert_eq!(before, run_git(&repo, ["worktree", "list", "--porcelain"]));
     }
 
     #[test]
-    fn exit_worktree_does_not_mutate_git_state_when_unsupported() {
-        let repo = init_git_repo("tools-exit-worktree-no-git-mutation");
+    fn exit_worktree_remove_refuses_dirty_worktree_without_discard() {
+        let repo = init_git_repo("tools-exit-worktree-dirty-guard");
+        let enter = block_on(EnterWorktreeTool.execute(
+            tool_context(repo.clone()),
+            ToolUseId::new(),
+            json!({ "name": "topic" }),
+        ))
+        .expect("enter worktree");
+        let action = parse_action(&enter);
+        let state = action.session_state.expect("session state");
+        fs::write(state.worktree_path.join("dirty.txt"), "dirty\n").expect("write dirty file");
+        let before = run_git(&repo, ["worktree", "list", "--porcelain"]);
+
+        let exit = block_on(ExitWorktreeTool.execute(
+            worktree_context(&state),
+            ToolUseId::new(),
+            json!({ "action": "remove" }),
+        ))
+        .expect("exit remove");
+
+        assert!(!exit.success);
+        assert!(exit.content.contains("discard"));
+        assert_eq!(before, run_git(&repo, ["worktree", "list", "--porcelain"]));
+        assert!(state.worktree_path.exists());
+    }
+
+    #[test]
+    fn exit_worktree_remove_discards_confirmed_changes() {
+        let repo = init_git_repo("tools-exit-worktree-remove");
+        let enter = block_on(EnterWorktreeTool.execute(
+            tool_context(repo.clone()),
+            ToolUseId::new(),
+            json!({ "name": "topic" }),
+        ))
+        .expect("enter worktree");
+        let action = parse_action(&enter);
+        let state = action.session_state.expect("session state");
+        let branch = state.worktree_branch.clone().expect("worktree branch");
+        fs::write(state.worktree_path.join("dirty.txt"), "dirty\n").expect("write dirty file");
+
+        let exit = block_on(ExitWorktreeTool.execute(
+            worktree_context(&state),
+            ToolUseId::new(),
+            json!({ "action": "remove", "discard_changes": true }),
+        ))
+        .expect("exit remove");
+
+        assert!(exit.success, "{}", exit.content);
+        let exit_action = parse_action(&exit);
+        assert_eq!(exit_action.action, WorktreeRuntimeActionKind::Exit);
+        assert!(!state.worktree_path.exists());
+        assert!(
+            !run_git(&repo, ["worktree", "list", "--porcelain"])
+                .contains(state.worktree_path.to_string_lossy().as_ref())
+        );
+        assert!(
+            !run_git(&repo, ["branch", "--list", "--format=%(refname:short)"]).contains(&branch)
+        );
+    }
+
+    #[test]
+    fn exit_worktree_without_active_session_does_not_mutate_git_state() {
+        let repo = init_git_repo("tools-exit-worktree-no-session");
         let before_worktrees = run_git(&repo, ["worktree", "list", "--porcelain"]);
         let before_branches = run_git(&repo, ["branch", "--list", "--format=%(refname:short)"]);
 
-        let error = block_on(ExitWorktreeTool.execute(
+        let result = block_on(ExitWorktreeTool.execute(
             tool_context(repo.clone()),
             ToolUseId::new(),
             json!({ "action": "remove", "discard_changes": true }),
         ))
-        .expect_err("unsupported exit worktree");
+        .expect("exit no session");
 
-        let after_worktrees = run_git(&repo, ["worktree", "list", "--porcelain"]);
-        let after_branches = run_git(&repo, ["branch", "--list", "--format=%(refname:short)"]);
+        assert!(!result.success);
+        assert!(result.content.contains("No-op"));
+        assert_eq!(
+            before_worktrees,
+            run_git(&repo, ["worktree", "list", "--porcelain"])
+        );
+        assert_eq!(
+            before_branches,
+            run_git(&repo, ["branch", "--list", "--format=%(refname:short)"])
+        );
+    }
 
-        assert!(error.to_string().contains("no git state was changed"));
-        assert_eq!(before_worktrees, after_worktrees);
-        assert_eq!(before_branches, after_branches);
+    // ── Fleet helper tests ────────────────────────────────────────────────────
+
+    #[test]
+    fn fleet_agent_worktree_slug_is_deterministic() {
+        let slug1 = fleet_agent_worktree_slug(
+            "abcdef01-1234-5678-abcd-000000000000",
+            "12345678-aaaa-bbbb-cccc-dddddddddddd",
+        );
+        let slug2 = fleet_agent_worktree_slug(
+            "abcdef01-1234-5678-abcd-000000000000",
+            "12345678-aaaa-bbbb-cccc-dddddddddddd",
+        );
+        assert_eq!(slug1, slug2);
+        assert_eq!(slug1, "fleet-abcdef01-12345678");
+    }
+
+    #[test]
+    fn fleet_agent_worktree_slug_strips_hyphens_for_prefix() {
+        // Hyphens in UUIDs are filtered; only alphanumeric chars are kept.
+        let slug = fleet_agent_worktree_slug("----abcd1234", "----efgh5678");
+        assert_eq!(slug, "fleet-abcd1234-efgh5678");
+    }
+
+    #[test]
+    fn fleet_agent_worktree_slug_caps_at_8_chars_each() {
+        let slug = fleet_agent_worktree_slug("aabbccdd11223344", "xxyyzz00aabbccdd");
+        assert_eq!(slug, "fleet-aabbccdd-xxyyzz00");
+    }
+
+    #[test]
+    fn validate_worktree_branch_name_accepts_valid_names() {
+        for name in &["main", "feat/my-feature", "fix/issue-123", "release-1.2.3"] {
+            validate_worktree_branch_name(name)
+                .unwrap_or_else(|e| panic!("expected valid branch name {name:?}: {e}"));
+        }
+    }
+
+    #[test]
+    fn validate_worktree_branch_name_rejects_empty() {
+        let err = validate_worktree_branch_name("").unwrap_err();
+        assert!(err.to_string().contains("empty"), "got: {err}");
+    }
+
+    #[test]
+    fn validate_worktree_branch_name_rejects_leading_dot() {
+        let err = validate_worktree_branch_name(".hidden").unwrap_err();
+        assert!(err.to_string().contains("'.'"), "got: {err}");
+    }
+
+    #[test]
+    fn validate_worktree_branch_name_rejects_dotdot() {
+        let err = validate_worktree_branch_name("a..b").unwrap_err();
+        assert!(err.to_string().contains("'..'"), "got: {err}");
+    }
+
+    #[test]
+    fn validate_worktree_branch_name_rejects_space() {
+        let err = validate_worktree_branch_name("feat my feat").unwrap_err();
+        assert!(err.to_string().contains("invalid character"), "got: {err}");
+    }
+
+    #[test]
+    fn create_fleet_agent_worktree_creates_and_resumes() {
+        let repo = init_git_repo("tools-fleet-worktree-create");
+        let slug = fleet_agent_worktree_slug(
+            "aaaa0000-0000-0000-0000-000000000000",
+            "bbbb1111-1111-1111-1111-111111111111",
+        );
+
+        // First call: creates the worktree.
+        let (path1, branch1) =
+            create_fleet_agent_worktree(&repo, &repo, &slug).expect("create worktree");
+        assert!(path1.exists(), "worktree path should exist");
+        assert!(
+            branch1.contains("fleet-"),
+            "branch name should include slug: {branch1}"
+        );
+
+        // Second call: resumes the same worktree.
+        let (path2, branch2) =
+            create_fleet_agent_worktree(&repo, &repo, &slug).expect("resume worktree");
+        assert_eq!(path1, path2, "should resume at same path");
+        assert_eq!(branch1, branch2, "branch should be stable across resume");
+
+        // Confirm the branch is registered with git.
+        let worktree_list = run_git(&repo, ["worktree", "list", "--porcelain"]);
+        assert!(
+            worktree_list.contains(path1.to_string_lossy().as_ref()),
+            "worktree should be registered: {worktree_list}"
+        );
+    }
+
+    #[test]
+    fn create_fleet_agent_worktree_with_branch_preserves_explicit_branch() {
+        let repo = init_git_repo("tools-fleet-worktree-explicit-branch");
+        let slug = fleet_agent_worktree_slug(
+            "cccc2222-2222-2222-2222-222222222222",
+            "dddd3333-3333-3333-3333-333333333333",
+        );
+        let explicit_branch = "feat/fleet-member-explicit";
+
+        let (path, branch) =
+            create_fleet_agent_worktree_with_branch(&repo, &repo, &slug, Some(explicit_branch))
+                .expect("create explicit branch worktree");
+
+        assert!(path.exists(), "worktree path should exist");
+        assert_eq!(branch, explicit_branch);
+
+        let actual_branch = run_git(&path, ["branch", "--show-current"]);
+        assert_eq!(actual_branch.trim(), explicit_branch);
+
+        let (resumed_path, resumed_branch) =
+            create_fleet_agent_worktree_with_branch(&repo, &repo, &slug, Some(explicit_branch))
+                .expect("resume explicit branch worktree");
+        assert_eq!(resumed_path, path);
+        assert_eq!(resumed_branch, explicit_branch);
+    }
+
+    // ── create_agent_worktree_info ────────────────────────────────────────────
+
+    #[test]
+    fn create_agent_worktree_info_returns_head_commit() {
+        let repo = init_git_repo("wt-info-head-commit");
+        let info =
+            create_agent_worktree_info(&repo, &repo, "test-agent", None).expect("create info");
+
+        assert!(info.worktree_path.exists(), "worktree path should exist");
+        assert!(!info.branch.is_empty(), "branch should not be empty");
+        assert!(
+            info.head_commit.is_some(),
+            "head_commit must be captured at creation time"
+        );
+        // head_commit should be a valid git SHA (≥7 hex chars).
+        let sha = info.head_commit.as_deref().unwrap();
+        assert!(
+            sha.len() >= 7 && sha.chars().all(|c| c.is_ascii_hexdigit()),
+            "head_commit should look like a git SHA; got: {sha}"
+        );
+    }
+
+    #[test]
+    fn create_agent_worktree_info_branch_matches_worktree() {
+        let repo = init_git_repo("wt-info-branch-match");
+        let info =
+            create_agent_worktree_info(&repo, &repo, "test-agent-b", None).expect("create info");
+
+        // The branch checked out in the worktree must match what the struct reports.
+        let actual_branch = run_git(&info.worktree_path, ["branch", "--show-current"]);
+        assert_eq!(
+            actual_branch.trim(),
+            info.branch,
+            "reported branch must match the git worktree branch"
+        );
+    }
+
+    // ── try_cleanup_agent_worktree ─────────────────────────────────────────────
+
+    #[test]
+    fn try_cleanup_removes_clean_worktree() {
+        let repo = init_git_repo("wt-cleanup-clean");
+        let info = create_agent_worktree_info(&repo, &repo, "cleanup-clean", None).expect("create");
+
+        // Worktree is clean — no files, no commits.
+        let result = try_cleanup_agent_worktree(&info.worktree_path, info.head_commit.as_deref());
+
+        assert_eq!(
+            result,
+            AgentWorktreeCleanup::Removed,
+            "clean worktree should be removed"
+        );
+        assert!(
+            !info.worktree_path.exists(),
+            "worktree directory should be gone after removal"
+        );
+    }
+
+    #[test]
+    fn try_cleanup_retains_dirty_worktree_with_uncommitted_file() {
+        let repo = init_git_repo("wt-cleanup-dirty-file");
+        let info =
+            create_agent_worktree_info(&repo, &repo, "cleanup-dirty-file", None).expect("create");
+
+        // Leave an uncommitted file in the worktree.
+        std::fs::write(info.worktree_path.join("new_file.txt"), "hello\n")
+            .expect("write dirty file");
+
+        let result = try_cleanup_agent_worktree(&info.worktree_path, info.head_commit.as_deref());
+
+        assert!(
+            matches!(
+                result,
+                AgentWorktreeCleanup::Retained { changed_files, .. } if changed_files > 0
+            ),
+            "dirty worktree with uncommitted file should be retained; got: {result:?}"
+        );
+        assert!(
+            info.worktree_path.exists(),
+            "dirty worktree directory should still exist"
+        );
+    }
+
+    #[test]
+    fn try_cleanup_retains_worktree_with_new_commit() {
+        let repo = init_git_repo("wt-cleanup-new-commit");
+        let info =
+            create_agent_worktree_info(&repo, &repo, "cleanup-new-commit", None).expect("create");
+
+        // Make a commit inside the worktree.
+        std::fs::write(info.worktree_path.join("agent_work.txt"), "result\n")
+            .expect("write agent output");
+        run_git(&info.worktree_path, ["add", "agent_work.txt"]);
+        run_git(&info.worktree_path, ["commit", "-m", "agent made a commit"]);
+
+        let result = try_cleanup_agent_worktree(&info.worktree_path, info.head_commit.as_deref());
+
+        assert!(
+            matches!(
+                result,
+                AgentWorktreeCleanup::Retained { commits, .. } if commits > 0
+            ),
+            "worktree with new commits should be retained; got: {result:?}"
+        );
+        assert!(
+            info.worktree_path.exists(),
+            "worktree with new commits should still exist"
+        );
+    }
+
+    #[test]
+    fn try_cleanup_returns_already_gone_for_missing_path() {
+        let dir = unique_test_dir("wt-cleanup-already-gone");
+        let nonexistent = dir.join("does-not-exist");
+
+        let result = try_cleanup_agent_worktree(&nonexistent, Some("abc1234"));
+
+        assert_eq!(
+            result,
+            AgentWorktreeCleanup::AlreadyGone,
+            "non-existent path should return AlreadyGone"
+        );
+    }
+
+    #[test]
+    fn try_cleanup_retains_when_no_head_commit_and_uncommitted_files() {
+        let repo = init_git_repo("wt-cleanup-no-ref");
+        let info = create_agent_worktree_info(&repo, &repo, "cleanup-no-ref", None)
+            .expect("create worktree");
+
+        // Write a file but don't stage/commit it.
+        std::fs::write(info.worktree_path.join("pending.txt"), "pending\n")
+            .expect("write pending file");
+
+        // Pass None for head_commit — only uncommitted files are checked.
+        let result = try_cleanup_agent_worktree(&info.worktree_path, None);
+
+        assert!(
+            matches!(
+                result,
+                AgentWorktreeCleanup::Retained { changed_files, .. } if changed_files > 0
+            ),
+            "dirty worktree should be retained even without head_commit; got: {result:?}"
+        );
     }
 }

@@ -10,9 +10,11 @@ mod communication_tools;
 mod cron_remote;
 mod extended;
 mod files;
+mod fleet_tools;
 mod orchestration;
 mod plan_tool;
 mod search;
+mod shell_stall_watchdog;
 mod source_compat;
 mod special_tools;
 mod task_tools;
@@ -32,7 +34,10 @@ use serde_json::Value;
 use wonder_of_u_core::{FeatureFlag, Result, Tool, ToolKind, ToolRegistry, ToolSpec, WonderError};
 
 /// Re-exports items from `agent_tool`
-pub use agent_tool::{AgentInput, AgentTool};
+pub use agent_tool::{
+    AgentInput, AgentTool, build_fleet_member_request_with_catalog,
+    queue_fleet_member_request_with_catalog,
+};
 /// Re-exports items from `ask_user_tool`
 pub use ask_user_tool::{AskUserInput, AskUserTool};
 /// Re-exports items from `bash`
@@ -57,6 +62,8 @@ pub use files::{
     FileEditInput, FileEditTool, FileReadInput, FileReadTool, FileWriteInput, FileWriteMode,
     FileWriteTool,
 };
+/// Re-exports items from `fleet_tools`
+pub use fleet_tools::{FleetResultsInput, FleetResultsTool, FleetWaitInput, FleetWaitTool};
 /// Re-exports items from `orchestration`
 pub use orchestration::{
     BYTES_PER_TOKEN, DEFAULT_MAX_CONCURRENT_TOOL_USES, DEFAULT_MAX_RESULT_SIZE_CHARS,
@@ -74,6 +81,8 @@ pub use plan_tool::{
 };
 /// Re-exports items from `search`
 pub use search::{GlobEntryType, GlobInput, GlobTool, GrepInput, GrepTool};
+/// Re-exports items from `shell_stall_watchdog`
+pub use shell_stall_watchdog::looks_like_prompt;
 /// Re-exports items from `source_compat`
 pub use source_compat::{
     BriefInput, BriefTool, ConfigInput, ConfigTool, LspInput, LspTool, SkillInput, SkillTool,
@@ -95,7 +104,7 @@ pub use task_tools::{
     TaskUpdateStatus, TaskUpdateTool,
 };
 /// Re-exports items from `todo_tool`
-pub use todo_tool::{TodoAction, TodoInput, TodoTool};
+pub use todo_tool::{TodoAction, TodoInput, TodoTool, TodoWriteTool};
 /// Re-exports items from `web`
 pub use web::{WebFetchInput, WebFetchTool, WebSearchInput, WebSearchTool};
 /// Re-exports items from `wonder_of_u_mcp`
@@ -104,8 +113,12 @@ pub use wonder_of_u_mcp::{
 };
 /// Re-exports items from `worktree_tools`
 pub use worktree_tools::{
-    EnterWorktreeInput, EnterWorktreeTool, ExitWorktreeAction, ExitWorktreeInput, ExitWorktreeTool,
-    WorktreeSessionState,
+    AgentWorktreeCleanup, AgentWorktreeInfo, EnterWorktreeInput, EnterWorktreeTool,
+    ExitWorktreeAction, ExitWorktreeInput, ExitWorktreeTool, WorktreeRuntimeAction,
+    WorktreeRuntimeActionKind, WorktreeSessionState, create_agent_worktree_info,
+    create_fleet_agent_worktree, create_fleet_agent_worktree_with_branch,
+    fleet_agent_worktree_slug, parse_worktree_runtime_action, try_cleanup_agent_worktree,
+    validate_worktree_branch_name, validate_worktree_session_state,
 };
 /// Handles builtin tools
 #[must_use]
@@ -144,6 +157,7 @@ pub fn builtin_tools() -> Vec<Arc<dyn Tool>> {
         Arc::new(WebFetchTool),
         Arc::new(WebSearchTool),
         Arc::new(TodoTool),
+        Arc::new(TodoWriteTool),
         Arc::new(AskUserTool),
         Arc::new(BriefTool),
         Arc::new(PlanReadTool),
@@ -158,6 +172,8 @@ pub fn builtin_tools() -> Vec<Arc<dyn Tool>> {
         Arc::new(TaskStopTool),
         Arc::new(SkillTool),
         Arc::new(AgentTool),
+        Arc::new(FleetResultsTool),
+        Arc::new(FleetWaitTool),
         Arc::new(SendMessageTool),
         Arc::new(TeamCreateTool),
         Arc::new(TeamDeleteTool),
@@ -179,6 +195,27 @@ pub fn builtin_registry() -> Result<ToolRegistry> {
     let mut registry = ToolRegistry::new();
     for tool in builtin_tools() {
         registry.register(tool)?;
+    }
+    Ok(registry)
+}
+
+/// Builds the built-in registry and registers any MCP catalog tools discovered from
+/// enabled servers under `storage_root`.
+///
+/// Each enabled MCP server is contacted once to fetch its tool list.  Servers that fail
+/// to connect are silently skipped so a misconfigured server does not break the session.
+/// Discovered tools use namespaced names (e.g. `mcp__github__create_issue`) and therefore
+/// cannot shadow built-in tools.
+///
+/// If `storage_root` contains no MCP config, or if all servers are unreachable, the
+/// returned registry is identical to [`builtin_registry`].
+pub fn builtin_registry_with_mcp_catalog(storage_root: &Path) -> Result<ToolRegistry> {
+    let mut registry = builtin_registry()?;
+    if let Ok(config) = wonder_of_u_mcp::McpConfigStore::new(storage_root).read() {
+        for tool in wonder_of_u_mcp::discover_catalog_tools(&config) {
+            // Namespacing guarantees no collisions with built-ins; soft-fail just in case.
+            let _ = registry.register(Arc::new(tool));
+        }
     }
     Ok(registry)
 }
@@ -316,6 +353,7 @@ mod tests {
                 "web_fetch",
                 "web_search",
                 "todo",
+                "todo_write",
                 "ask_user",
                 "send_user_message",
                 "plan_read",
@@ -330,6 +368,8 @@ mod tests {
                 "task_stop",
                 "skill",
                 "agent",
+                "fleet_results",
+                "fleet_wait",
                 "send_message",
                 "team_create",
                 "team_delete",
@@ -542,8 +582,15 @@ mod tests {
         assert_eq!(list_peers.aliases, vec!["ListPeers".to_string()]);
 
         let todo = specs.get("todo").expect("todo");
-        assert_eq!(todo.aliases, vec!["TodoWrite".to_string()]);
+        assert!(todo.aliases.is_empty());
         assert!(has_property(todo, "todos"));
+
+        let todo_write = specs.get("todo_write").expect("todo_write");
+        assert_eq!(todo_write.aliases, vec!["TodoWrite".to_string()]);
+        assert_eq!(
+            required_properties(todo_write),
+            BTreeSet::from(["todos".into()])
+        );
 
         let ask_user = specs.get("ask_user").expect("ask_user");
         assert_eq!(ask_user.aliases, vec!["AskUserQuestion".to_string()]);
@@ -700,8 +747,32 @@ mod tests {
             .collect::<BTreeMap<_, _>>();
 
         assert_eq!(
+            feature_names(specs.get("todo_write").expect("todo_write")),
+            BTreeSet::from(["legacy-todo-write".to_string(), "tools".to_string()])
+        );
+        assert_eq!(
+            feature_names(specs.get("task_create").expect("task_create")),
+            BTreeSet::from(["todo-v2".to_string(), "tools".to_string()])
+        );
+        assert_eq!(
+            feature_names(specs.get("task_get").expect("task_get")),
+            BTreeSet::from(["todo-v2".to_string(), "tools".to_string()])
+        );
+        assert_eq!(
+            feature_names(specs.get("task_list").expect("task_list")),
+            BTreeSet::from(["todo-v2".to_string(), "tools".to_string()])
+        );
+        assert_eq!(
+            feature_names(specs.get("task_update").expect("task_update")),
+            BTreeSet::from(["todo-v2".to_string(), "tools".to_string()])
+        );
+        assert_eq!(
             feature_names(specs.get("web_fetch").expect("web_fetch")),
             BTreeSet::from(["tools".to_string(), "web-tools".to_string()])
+        );
+        assert_eq!(
+            feature_names(specs.get("todo").expect("todo")),
+            BTreeSet::from(["tools".to_string()])
         );
         assert_eq!(
             feature_names(specs.get("task_output").expect("task_output")),
@@ -754,7 +825,7 @@ mod tests {
     }
 
     #[test]
-    fn builtin_specs_gate_remote_trigger_until_feature_is_enabled() {
+    fn builtin_specs_gate_remote_trigger_and_todo_v2_tooling_until_features_are_enabled() {
         let registry = builtin_registry().expect("registry");
 
         let default_enabled = registry
@@ -762,17 +833,29 @@ mod tests {
             .into_iter()
             .map(|spec| spec.name)
             .collect::<BTreeSet<_>>();
+        assert!(default_enabled.contains("todo_write"));
+        assert!(!default_enabled.contains("task_create"));
+        assert!(!default_enabled.contains("task_get"));
+        assert!(!default_enabled.contains("task_list"));
+        assert!(!default_enabled.contains("task_update"));
         assert!(!default_enabled.contains("remote_trigger"));
         assert!(!default_enabled.contains("testing_permission"));
 
         let mut features = FeatureSet::first_release();
         features.enable(FeatureFlag::RemoteTriggers);
         features.enable(FeatureFlag::TestTools);
+        features.enable(FeatureFlag::TodoV2);
+        features.disable(FeatureFlag::LegacyTodoWrite);
         let enabled = registry
             .enabled_specs(&features)
             .into_iter()
             .map(|spec| spec.name)
             .collect::<BTreeSet<_>>();
+        assert!(!enabled.contains("todo_write"));
+        assert!(enabled.contains("task_create"));
+        assert!(enabled.contains("task_get"));
+        assert!(enabled.contains("task_list"));
+        assert!(enabled.contains("task_update"));
         assert!(enabled.contains("remote_trigger"));
         assert!(enabled.contains("testing_permission"));
     }
@@ -839,6 +922,16 @@ mod tests {
         let tungsten = specs.get("tungsten").expect("tungsten");
         assert!(tungsten.read_only);
         assert!(tungsten.concurrency_safe);
+
+        let mcp_resource_list = specs.get("mcp_resource_list").expect("mcp_resource_list");
+        assert_eq!(
+            mcp_resource_list.input_schema["x-mcp-resource-capability-dependent"],
+            serde_json::json!(true)
+        );
+        assert_eq!(
+            mcp_resource_list.input_schema["x-mcp-resource-dispatch"],
+            serde_json::json!("always_registered_runtime_checked")
+        );
     }
 
     fn has_property(spec: &ToolSpec, property: &str) -> bool {
@@ -879,5 +972,22 @@ mod tests {
             .map(|feature| serde_json::to_string(feature).expect("feature json"))
             .map(|feature| feature.trim_matches('"').to_string())
             .collect()
+    }
+
+    /// A nonexistent storage root must not panic; it should return only the
+    /// built-in tools because `McpConfigStore` will find no config file.
+    #[test]
+    fn builtin_registry_with_mcp_catalog_no_panic_for_missing_dir() {
+        let result = builtin_registry_with_mcp_catalog(Path::new("/no/such/storage/root"));
+        let registry = result.expect("registry should succeed even without mcp config");
+        // Every built-in should still be present.
+        assert!(
+            registry.resolve("bash").is_some(),
+            "bash tool must be present"
+        );
+        assert!(
+            registry.resolve("file_read").is_some(),
+            "file_read tool must be present"
+        );
     }
 }

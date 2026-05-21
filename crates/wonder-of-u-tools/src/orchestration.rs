@@ -8,6 +8,8 @@ use wonder_of_u_core::{
     ToolProgress, ToolRegistry, ToolSpec,
 };
 
+use crate::web::should_expose_web_search;
+
 /// Default per-tool inline result budget before a runtime should persist output.
 pub const DEFAULT_MAX_RESULT_SIZE_CHARS: usize = 50_000;
 /// Global token cap used to estimate oversized tool results.
@@ -65,6 +67,7 @@ pub fn filter_tool_specs(
         .filter(|spec| spec.is_enabled(features))
         .filter(|spec| tool_is_allowed(spec, allowed_tools))
         .filter(|spec| !context.is_some_and(|context| statically_denied_by_rule(spec, context)))
+        .filter(|spec| !context.is_some_and(|context| runtime_hidden(spec, context)))
         .collect()
 }
 
@@ -114,6 +117,11 @@ pub fn statically_denied_by_rule(spec: &ToolSpec, context: &ToolContext) -> bool
             reason: PermissionDecisionReason::Rule { .. }
         }
     )
+}
+
+#[must_use]
+fn runtime_hidden(spec: &ToolSpec, context: &ToolContext) -> bool {
+    spec.name == "web_search" && !should_expose_web_search(context)
 }
 
 /// Coarse concurrency class used by orchestration surfaces.
@@ -396,10 +404,15 @@ mod tests {
         ToolContext {
             session_id: SessionId::new(),
             cwd: PathBuf::from("/workspace"),
+            session_worktree: None,
             permission_mode: PermissionMode::Default,
             additional_working_directories: Vec::new(),
+            provider: None,
+            model: None,
             permission_rules: Vec::new(),
             features: FeatureSet::first_release(),
+            bash_session_store: None,
+            fork_context: None,
         }
     }
 

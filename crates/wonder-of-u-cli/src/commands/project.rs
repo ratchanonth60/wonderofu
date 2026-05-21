@@ -609,7 +609,10 @@ fn render_context_summary(state: &AppState) -> String {
             MessagePayload::System { .. }
             | MessagePayload::Progress { .. }
             | MessagePayload::HookResult { .. }
-            | MessagePayload::PlanApproval { .. } => {}
+            | MessagePayload::HookProgress { .. }
+            | MessagePayload::PlanApproval { .. }
+            | MessagePayload::ProviderError { .. }
+            | MessagePayload::TaskNotification { .. } => {}
         }
     }
     let running_tasks = state
@@ -1078,6 +1081,7 @@ mod tests {
             effort_level: None,
             brief_mode: false,
             fast_mode: false,
+            optimize_token_mode: false,
             session_tags: Vec::new(),
             additional_working_directories: Vec::new(),
         }

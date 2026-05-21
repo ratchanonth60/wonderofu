@@ -1,8 +1,40 @@
 //! Append-only session storage primitives.
+//!
+//! # Local-first design
+//!
+//! All storage in this crate is **local-only**.  There is no telemetry
+//! pipeline (no Datadog, no first-party event sink), no GrowthBook remote
+//! feature-flag evaluation, and no cloud upload/download backend.  Feature
+//! gates are resolved exclusively from the static [`wonder_of_u_core::FeatureSet`]
+//! compiled into the binary.  The [`SyncStatusReport`] reflects this honestly:
+//! its `analytics` and `experiments` surfaces are permanently `unsupported`.
 #![warn(missing_docs)]
 
 /// Provides memdir support
 pub mod memdir;
+
+/// Storage schema migration framework
+pub mod migrations;
+pub use migrations::{Migration, MigrationRunner, StorageVersionFile, default_migration_runner};
+
+/// TypeScript-upstream transcript importer (explicit one-shot migration path).
+///
+/// The normal [`TranscriptStore`] load path is never touched; all conversion
+/// happens through the explicit [`ts_import::import_ts_file`] /
+/// [`ts_import::inspect_ts_file`] entry points.
+pub mod ts_import;
+pub use ts_import::{
+    PasteRefWarning, SkipCategory, SkipReason, TsCapturedMetadata, TsImportReport, TsImportWarning,
+    TsLeafSummary, TsSkipReport, TsWarningCategory, import_ts_file, inspect_ts_file,
+};
+
+/// Per-session logical todo-v2 task list store.
+pub mod todo_task;
+pub use todo_task::TodoTaskStore;
+
+/// Local-first mailbox storage for team and agent inboxes.
+pub mod mailbox;
+pub use mailbox::MailboxStore;
 
 use std::{
     collections::BTreeMap,
@@ -14,11 +46,15 @@ use std::{
 };
 
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use sha2::{Digest, Sha256};
 use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 use wonder_of_u_core::{
-    AppState, CostState, MESSAGE_SCHEMA_VERSION, MessageEnvelope, MessageId, MessagePayload,
-    Result, SessionId, TaskId, TaskState, WonderError,
+    AGENT_TASK_RESULT_SCHEMA_VERSION, AgentTaskResult, AppState, CostState, FLEET_SCHEMA_VERSION,
+    FLEET_STEERING_SCHEMA_VERSION, FleetId, FleetMemberRequest, FleetRunState,
+    FleetSteeringMessage, MAILBOX_MESSAGE_SCHEMA_VERSION, MAILBOX_READ_INDEX_SCHEMA_VERSION,
+    MESSAGE_SCHEMA_VERSION, MailboxKind, MessageEnvelope, MessageId, MessagePayload, Result,
+    SessionId, TODO_TASK_LIST_SCHEMA_VERSION, TaskId, TaskState, TaskStatus, WonderError,
 };
 
 /// Schema version for storage
@@ -30,9 +66,15 @@ fn default_storage_schema_version() -> u16 {
     STORAGE_SCHEMA_VERSION
 }
 
-fn ensure_supported_schema(kind: &str, version: u16) -> Result<()> {
+pub(crate) fn ensure_supported_schema(kind: &str, version: u16) -> Result<()> {
     let supported = match kind {
         "message" => MESSAGE_SCHEMA_VERSION,
+        "fleet run" => FLEET_SCHEMA_VERSION,
+        "fleet steering" => FLEET_STEERING_SCHEMA_VERSION,
+        "agent task result" => AGENT_TASK_RESULT_SCHEMA_VERSION,
+        "todo task list" => TODO_TASK_LIST_SCHEMA_VERSION,
+        "mailbox message" => MAILBOX_MESSAGE_SCHEMA_VERSION,
+        "mailbox read index" => MAILBOX_READ_INDEX_SCHEMA_VERSION,
         _ => STORAGE_SCHEMA_VERSION,
     };
 
@@ -45,7 +87,32 @@ fn ensure_supported_schema(kind: &str, version: u16) -> Result<()> {
     )))
 }
 
-fn write_json_atomically<T: Serialize>(path: &Path, value: &T) -> Result<()> {
+fn transcript_parse_warning(
+    line: usize,
+    error: impl std::fmt::Display,
+    trailing: bool,
+) -> TranscriptWarning {
+    let message = if trailing {
+        format!("ignored corrupt trailing transcript line: {error}")
+    } else {
+        format!("ignored corrupt transcript line: {error}")
+    };
+
+    TranscriptWarning { line, message }
+}
+
+fn ensure_supported_transcript_schema(value: &Value) -> Result<()> {
+    let Some(schema_version) = value.get("schema_version") else {
+        return Ok(());
+    };
+    let Ok(schema_version) = serde_json::from_value::<u16>(schema_version.clone()) else {
+        return Ok(());
+    };
+
+    ensure_supported_schema("message", schema_version)
+}
+
+pub(crate) fn write_json_atomically<T: Serialize>(path: &Path, value: &T) -> Result<()> {
     let next_extension = match path.extension().and_then(OsStr::to_str) {
         Some(extension) => format!("{extension}.next"),
         None => "next".into(),
@@ -252,10 +319,139 @@ impl StoragePaths {
         self.task_heartbeat_dir()
             .join(format!("{task_id}.heartbeat"))
     }
+
+    /// Returns the directory where agent task result sidecars are stored.
+    #[must_use]
+    pub fn task_results_dir(&self) -> PathBuf {
+        self.tasks_dir().join("results")
+    }
+
+    /// Returns the path for an agent task result sidecar.
+    #[must_use]
+    pub fn task_result_path(&self, task_id: TaskId) -> PathBuf {
+        self.task_results_dir().join(format!("{task_id}.json"))
+    }
+
+    /// Returns the directory for per-session logical todo-v2 task lists.
+    #[must_use]
+    pub fn task_lists_dir(&self) -> PathBuf {
+        self.tasks_dir().join("lists")
+    }
+
+    /// Returns the path for a session's logical todo-v2 task list.
+    #[must_use]
+    pub fn task_list_path(&self, session_id: SessionId) -> PathBuf {
+        self.task_lists_dir().join(format!("{session_id}.json"))
+    }
     /// Handles paste path
     #[must_use]
     pub fn paste_path(&self, sha256: &str) -> PathBuf {
         self.pastes_dir().join(sha256)
+    }
+
+    // ── Fleet paths ───────────────────────────────────────────────────────────
+
+    /// Returns the root directory for fleet data.
+    #[must_use]
+    pub fn fleet_dir(&self) -> PathBuf {
+        self.base_dir.join("fleet")
+    }
+
+    /// Returns the directory where fleet run state files are stored.
+    #[must_use]
+    pub fn fleet_runs_dir(&self) -> PathBuf {
+        self.fleet_dir().join("runs")
+    }
+
+    /// Returns the directory where pending member request files are stored.
+    #[must_use]
+    pub fn fleet_pending_dir(&self) -> PathBuf {
+        self.fleet_dir().join("pending")
+    }
+
+    /// Returns the path for a fleet run state file.
+    #[must_use]
+    pub fn fleet_run_path(&self, fleet_id: wonder_of_u_core::FleetId) -> PathBuf {
+        self.fleet_runs_dir().join(format!("{fleet_id}.json"))
+    }
+
+    /// Returns the path for a pending fleet member request file.
+    #[must_use]
+    pub fn fleet_pending_path(&self, request_id: &str) -> PathBuf {
+        self.fleet_pending_path_for(None, request_id)
+    }
+
+    /// Returns the path for a pending fleet member request file.
+    ///
+    /// Fleet-scoped requests include the fleet id in the filename so separate
+    /// fleet plans can reuse human-readable member ids like `build` or `test`
+    /// without clobbering each other.
+    #[must_use]
+    pub fn fleet_pending_path_for(
+        &self,
+        fleet_id: Option<wonder_of_u_core::FleetId>,
+        request_id: &str,
+    ) -> PathBuf {
+        let file_name = match fleet_id {
+            Some(fleet_id) => format!("{fleet_id}-{request_id}.json"),
+            None => format!("{request_id}.json"),
+        };
+        self.fleet_pending_dir().join(file_name)
+    }
+
+    /// Returns the steering directory for a specific fleet run.
+    ///
+    /// Steering messages are stored at `fleet/steering/{fleet_id}/`.
+    #[must_use]
+    pub fn fleet_steering_dir(&self, fleet_id: wonder_of_u_core::FleetId) -> PathBuf {
+        self.fleet_dir().join("steering").join(fleet_id.to_string())
+    }
+
+    /// Returns the path for an individual steering message file.
+    ///
+    /// Stored at `fleet/steering/{fleet_id}/{steering_id}.json`.
+    #[must_use]
+    pub fn fleet_steering_path(
+        &self,
+        fleet_id: wonder_of_u_core::FleetId,
+        steering_id: &str,
+    ) -> PathBuf {
+        self.fleet_steering_dir(fleet_id)
+            .join(format!("{steering_id}.json"))
+    }
+
+    // ── Mailbox paths ─────────────────────────────────────────────────────────
+
+    /// Returns the root directory for all mailbox data.
+    ///
+    /// Layout: `{base_dir}/mailboxes/`
+    #[must_use]
+    pub fn mailboxes_dir(&self) -> PathBuf {
+        self.base_dir.join("mailboxes")
+    }
+
+    /// Returns the inbox directory for a specific `(kind, name)` pair.
+    ///
+    /// Layout: `{base_dir}/mailboxes/{kind}/{name}/`
+    #[must_use]
+    pub fn mailbox_inbox_dir(&self, kind: MailboxKind, name: &str) -> PathBuf {
+        self.mailboxes_dir().join(kind.dir_name()).join(name)
+    }
+
+    /// Returns the path of the append-only message log for an inbox.
+    ///
+    /// Layout: `{base_dir}/mailboxes/{kind}/{name}/inbox.jsonl`
+    #[must_use]
+    pub fn mailbox_inbox_log_path(&self, kind: MailboxKind, name: &str) -> PathBuf {
+        self.mailbox_inbox_dir(kind, name).join("inbox.jsonl")
+    }
+
+    /// Returns the path of the read-message index for an inbox.
+    ///
+    /// Layout: `{base_dir}/mailboxes/{kind}/{name}/inbox.read.json`
+    #[must_use]
+    pub fn mailbox_read_index_path(&self, kind: MailboxKind, name: &str) -> PathBuf {
+        self.mailbox_inbox_dir(kind, name).join("inbox.read.json")
     }
 }
 /// Stores transcript store
@@ -315,24 +511,38 @@ impl TranscriptStore {
         let mut warnings = Vec::new();
 
         for (index, line) in lines.iter().enumerate() {
+            let line_no = index + 1;
             if line.trim().is_empty() {
                 continue;
             }
 
-            match serde_json::from_str::<MessageEnvelope>(line) {
-                Ok(message) => {
-                    ensure_supported_schema("message", message.schema_version)?;
-                    messages.push(self.expand_paste_reference(message)?);
+            let value = match serde_json::from_str::<Value>(line) {
+                Ok(value) => value,
+                Err(error) => {
+                    warnings.push(transcript_parse_warning(
+                        line_no,
+                        error,
+                        line_no == lines.len(),
+                    ));
+                    continue;
                 }
-                Err(error) if index + 1 == lines.len() => {
-                    warnings.push(TranscriptWarning {
-                        line: index + 1,
-                        message: format!("ignored corrupt trailing transcript line: {error}"),
-                    });
-                    break;
+            };
+
+            ensure_supported_transcript_schema(&value)?;
+
+            let message = match serde_json::from_value::<MessageEnvelope>(value) {
+                Ok(message) => message,
+                Err(error) => {
+                    warnings.push(transcript_parse_warning(
+                        line_no,
+                        error,
+                        line_no == lines.len(),
+                    ));
+                    continue;
                 }
-                Err(error) => return Err(WonderError::Json(error)),
-            }
+            };
+
+            messages.push(self.expand_paste_reference(message)?);
         }
 
         Ok(LoadedTranscript { messages, warnings })
@@ -585,6 +795,16 @@ pub struct SyncStatusReport {
     pub remote_managed_settings: RemoteSurfaceStatus,
     /// Stores the team memory sync
     pub team_memory_sync: RemoteSurfaceStatus,
+    /// Analytics event sink status.
+    ///
+    /// Always `unsupported`: no Datadog or first-party event pipeline exists in
+    /// this Rust port; usage data stays local.
+    pub analytics: RemoteSurfaceStatus,
+    /// Remote experiment / feature-flag evaluation status.
+    ///
+    /// Always `unsupported`: GrowthBook remote evaluation is intentionally
+    /// absent.  Feature gates are resolved from the static `FeatureSet` only.
+    pub experiments: RemoteSurfaceStatus,
 }
 
 impl SyncStatusReport {
@@ -600,6 +820,14 @@ impl SyncStatusReport {
             team_memory_sync: RemoteSurfaceStatus::unsupported(
                 "team_memory_sync",
                 "repo-scoped cloud memory sync is unsupported; session memory remains local-only",
+            ),
+            analytics: RemoteSurfaceStatus::unsupported(
+                "analytics",
+                "no Datadog/first-party event sink; usage analytics are intentionally omitted in this Rust port",
+            ),
+            experiments: RemoteSurfaceStatus::unsupported(
+                "experiments",
+                "no GrowthBook remote feature evaluation; feature gates resolved from static FeatureSet only",
             ),
         }
     }
@@ -912,6 +1140,18 @@ fn session_memory_text(payload: &MessagePayload) -> Option<(SessionMemorySource,
         MessagePayload::HookResult { hook, output, .. } => {
             Some((SessionMemorySource::Tool, format!("{hook} {output}")))
         }
+        MessagePayload::HookProgress {
+            event,
+            tool_name,
+            hook_count,
+            success,
+        } => Some((
+            SessionMemorySource::System,
+            format!(
+                "{event} {hook_count} for {tool_name} {}",
+                if *success { "ok" } else { "error" }
+            ),
+        )),
         MessagePayload::CompactBoundary { summary } => {
             Some((SessionMemorySource::System, summary.clone()))
         }
@@ -933,6 +1173,10 @@ fn session_memory_text(payload: &MessagePayload) -> Option<(SessionMemorySource,
                 if *approved { "approved" } else { "rejected" }
             ),
         )),
+        // Provider errors are not searchable session memory; skip them.
+        MessagePayload::ProviderError { .. } => None,
+        // Task notification XML is structured for the model, not user memory search.
+        MessagePayload::TaskNotification { .. } => None,
     }
 }
 
@@ -1162,6 +1406,1011 @@ impl TaskStore {
             Err(error) if error.kind() == ErrorKind::NotFound => Ok(None),
             Err(error) => Err(error.into()),
         }
+    }
+
+    /// Deletes the known per-task artifact files (state JSON, log, heartbeat,
+    /// and exit marker).
+    ///
+    /// Only the four paths that [`StoragePaths`] explicitly knows about are
+    /// removed; no directory-wide or glob deletes are performed.  Missing
+    /// files are silently ignored so the call is safe to repeat.
+    ///
+    /// Returns the count of files that were actually deleted.
+    pub fn delete_task_artifacts(&self, task_id: TaskId) -> Result<usize> {
+        let paths = [
+            self.paths.task_state_path(task_id),
+            self.paths.task_log_path(task_id),
+            self.paths.task_heartbeat_path(task_id),
+            self.paths.task_exit_path(task_id),
+        ];
+        let mut deleted = 0usize;
+        for path in &paths {
+            match fs::remove_file(path) {
+                Ok(()) => deleted += 1,
+                Err(error) if error.kind() == ErrorKind::NotFound => {}
+                Err(error) => return Err(error.into()),
+            }
+        }
+        Ok(deleted)
+    }
+}
+
+// ── AgentTaskResultStore ──────────────────────────────────────────────────────
+
+/// Persistent store for agent task result sidecars.
+///
+/// Layout under the storage base directory:
+///
+/// ```text
+/// tasks/
+///   results/{task_id}.json   ← AgentTaskResult sidecars
+/// ```
+///
+/// Sidecars are written by the `prompt` command when it detects that it is
+/// running as a fleet agent subprocess (via `WONDER_OF_U_TASK_ID`).
+#[derive(Clone, Debug)]
+pub struct AgentTaskResultStore {
+    paths: StoragePaths,
+}
+
+impl AgentTaskResultStore {
+    /// Creates a new `AgentTaskResultStore` rooted at `base_dir`.
+    #[must_use]
+    pub fn new(base_dir: impl Into<PathBuf>) -> Self {
+        Self {
+            paths: StoragePaths::new(base_dir),
+        }
+    }
+
+    /// Returns the underlying path helper.
+    #[must_use]
+    pub fn paths(&self) -> &StoragePaths {
+        &self.paths
+    }
+
+    /// Ensures `tasks/results/` directory exists.
+    pub fn ensure_layout(&self) -> Result<()> {
+        fs::create_dir_all(self.paths.task_results_dir())?;
+        Ok(())
+    }
+
+    /// Atomically writes an [`AgentTaskResult`] sidecar.
+    pub fn write_result(&self, result: &AgentTaskResult) -> Result<()> {
+        self.ensure_layout()?;
+        write_json_atomically(&self.paths.task_result_path(result.task_id), result)
+    }
+
+    /// Reads an [`AgentTaskResult`] sidecar by task id.
+    ///
+    /// Returns `Err(not_found)` when no sidecar exists for `task_id`.
+    pub fn read_result(&self, task_id: TaskId) -> Result<AgentTaskResult> {
+        let path = self.paths.task_result_path(task_id);
+        if !path.exists() {
+            return Err(WonderError::not_found(
+                "agent task result",
+                task_id.to_string(),
+            ));
+        }
+        let result: AgentTaskResult = serde_json::from_str(&fs::read_to_string(path)?)?;
+        ensure_supported_schema("agent task result", result.schema_version)?;
+        Ok(result)
+    }
+
+    /// Lists all available agent task result sidecars, sorted by `finished_at`
+    /// descending.
+    ///
+    /// Returns an empty list when the results directory does not exist.
+    pub fn list_results(&self) -> Result<Vec<AgentTaskResult>> {
+        let dir = self.paths.task_results_dir();
+        match fs::read_dir(dir) {
+            Ok(entries) => {
+                let mut results = Vec::new();
+                for entry in entries {
+                    let entry = entry?;
+                    if !entry.file_type()?.is_file() {
+                        continue;
+                    }
+                    if entry.path().extension().and_then(OsStr::to_str) != Some("json") {
+                        continue;
+                    }
+                    let result: AgentTaskResult =
+                        serde_json::from_str(&fs::read_to_string(entry.path())?)?;
+                    ensure_supported_schema("agent task result", result.schema_version)?;
+                    results.push(result);
+                }
+                results.sort_by(|a, b| {
+                    b.finished_at
+                        .cmp(&a.finished_at)
+                        .then_with(|| a.task_id.cmp(&b.task_id))
+                });
+                Ok(results)
+            }
+            Err(error) if error.kind() == ErrorKind::NotFound => Ok(Vec::new()),
+            Err(error) => Err(error.into()),
+        }
+    }
+}
+
+// ── FleetInspector ────────────────────────────────────────────────────────────
+
+/// Classification of a single fleet member task's current state.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MemberObservationClass {
+    /// Task record missing or status is `Pending`.
+    Pending,
+    /// Task is actively running.
+    Running,
+    /// Task completed successfully.
+    Completed,
+    /// Task failed, was killed, or was cancelled.
+    Failed,
+}
+
+impl MemberObservationClass {
+    /// Returns `true` when this class represents a terminal state.
+    #[must_use]
+    pub const fn is_terminal(self) -> bool {
+        matches!(self, Self::Completed | Self::Failed)
+    }
+
+    /// Human-readable label.
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Pending => "pending",
+            Self::Running => "running",
+            Self::Completed => "completed",
+            Self::Failed => "failed",
+        }
+    }
+}
+
+/// Observation for a single fleet member task.
+#[derive(Clone, Debug)]
+pub struct FleetMemberObservation {
+    /// The member's task id.
+    pub task_id: TaskId,
+    /// Derived classification from the task status.
+    pub class: MemberObservationClass,
+    /// Live task state, if readable.
+    pub task: Option<TaskState>,
+    /// Result sidecar, if available.
+    pub result: Option<AgentTaskResult>,
+}
+
+/// Snapshot observation of a fleet run and all of its member tasks.
+#[derive(Clone, Debug)]
+pub struct FleetObservation {
+    /// The observed fleet id.
+    pub fleet_id: FleetId,
+    /// The fleet run state.
+    pub fleet: wonder_of_u_core::FleetRunState,
+    /// Per-member observations (in member_task_ids order).
+    pub members: Vec<FleetMemberObservation>,
+}
+
+impl FleetObservation {
+    /// Returns `true` when every member is in a terminal state.
+    #[must_use]
+    pub fn all_terminal(&self) -> bool {
+        self.members.iter().all(|m| m.class.is_terminal())
+    }
+
+    /// Counts members by class.
+    #[must_use]
+    pub fn count_by_class(&self, class: MemberObservationClass) -> usize {
+        self.members.iter().filter(|m| m.class == class).count()
+    }
+}
+
+/// Read-only inspector that correlates fleet runs, task states, and result
+/// sidecars into a single [`FleetObservation`].
+///
+/// Concurrency-safe: each call reads files independently; no shared state is
+/// held between calls.
+#[derive(Clone, Debug)]
+pub struct FleetInspector {
+    fleet_store: FleetStore,
+    task_store: TaskStore,
+    result_store: AgentTaskResultStore,
+}
+
+impl FleetInspector {
+    /// Creates a new `FleetInspector` rooted at `base_dir`.
+    #[must_use]
+    pub fn new(base_dir: impl Into<PathBuf>) -> Self {
+        let base_dir = base_dir.into();
+        Self {
+            fleet_store: FleetStore::new(&base_dir),
+            task_store: TaskStore::new(&base_dir),
+            result_store: AgentTaskResultStore::new(&base_dir),
+        }
+    }
+
+    /// Observes a fleet run: loads its [`FleetRunState`], then for each member
+    /// task id loads the [`TaskState`] and any available [`AgentTaskResult`]
+    /// sidecar.
+    ///
+    /// Individual task / result read failures are silenced — missing records
+    /// are represented as `None` in the observation so callers can still
+    /// inspect the members that are readable.
+    pub fn observe(&self, fleet_id: FleetId) -> Result<FleetObservation> {
+        let fleet = self.fleet_store.read_run(fleet_id)?;
+        let mut members = Vec::with_capacity(fleet.member_task_ids.len());
+        for &task_id in &fleet.member_task_ids {
+            let task = self.task_store.read_task(task_id).ok();
+            let result = self.result_store.read_result(task_id).ok();
+            let class = classify_member(task.as_ref());
+            members.push(FleetMemberObservation {
+                task_id,
+                class,
+                task,
+                result,
+            });
+        }
+        Ok(FleetObservation {
+            fleet_id,
+            fleet,
+            members,
+        })
+    }
+}
+
+/// Derives a [`MemberObservationClass`] from an optional [`TaskState`].
+fn classify_member(task: Option<&TaskState>) -> MemberObservationClass {
+    match task {
+        None => MemberObservationClass::Pending,
+        Some(t) => match t.status {
+            TaskStatus::Pending => MemberObservationClass::Pending,
+            TaskStatus::Running => MemberObservationClass::Running,
+            TaskStatus::Completed => MemberObservationClass::Completed,
+            TaskStatus::Failed | TaskStatus::Killed | TaskStatus::Cancelled => {
+                MemberObservationClass::Failed
+            }
+        },
+    }
+}
+
+/// Persistent store for fleet runs and pending member requests.
+///
+/// Layout under the storage base directory:
+///
+/// ```text
+/// fleet/
+///   runs/{fleet_id}.json        ← FleetRunState records
+///   pending/{request_id}.json   ← FleetMemberRequest records awaiting dispatch
+/// ```
+#[derive(Clone, Debug)]
+pub struct FleetStore {
+    paths: StoragePaths,
+}
+
+impl FleetStore {
+    /// Creates a new `FleetStore` rooted at `base_dir`.
+    #[must_use]
+    pub fn new(base_dir: impl Into<PathBuf>) -> Self {
+        Self {
+            paths: StoragePaths::new(base_dir),
+        }
+    }
+
+    /// Returns the underlying path helper.
+    #[must_use]
+    pub fn paths(&self) -> &StoragePaths {
+        &self.paths
+    }
+
+    /// Creates `fleet/runs/` and `fleet/pending/` if they do not exist.
+    pub fn ensure_layout(&self) -> Result<()> {
+        fs::create_dir_all(self.paths.fleet_runs_dir())?;
+        fs::create_dir_all(self.paths.fleet_pending_dir())?;
+        Ok(())
+    }
+
+    // ── Run CRUD ─────────────────────────────────────────────────────────────
+
+    /// Atomically writes a [`FleetRunState`] to disk.
+    pub fn write_run(&self, run: &FleetRunState) -> Result<()> {
+        self.ensure_layout()?;
+        write_json_atomically(&self.paths.fleet_run_path(run.id), run)
+    }
+
+    /// Reads a [`FleetRunState`] by id.
+    pub fn read_run(&self, fleet_id: FleetId) -> Result<FleetRunState> {
+        let path = self.paths.fleet_run_path(fleet_id);
+        if !path.exists() {
+            return Err(WonderError::not_found("fleet run", fleet_id.to_string()));
+        }
+        let run: FleetRunState = serde_json::from_str(&fs::read_to_string(path)?)?;
+        ensure_supported_schema("fleet run", run.schema_version)?;
+        Ok(run)
+    }
+
+    /// Lists all stored fleet runs, sorted by `started_at` descending.
+    ///
+    /// Returns an empty list when the runs directory does not exist.
+    pub fn list_runs(&self) -> Result<Vec<FleetRunState>> {
+        let dir = self.paths.fleet_runs_dir();
+        match fs::read_dir(dir) {
+            Ok(entries) => {
+                let mut runs = Vec::new();
+                for entry in entries {
+                    let entry = entry?;
+                    if !entry.file_type()?.is_file() {
+                        continue;
+                    }
+                    if entry.path().extension().and_then(OsStr::to_str) != Some("json") {
+                        continue;
+                    }
+                    let run: FleetRunState =
+                        serde_json::from_str(&fs::read_to_string(entry.path())?)?;
+                    ensure_supported_schema("fleet run", run.schema_version)?;
+                    runs.push(run);
+                }
+                runs.sort_by(|a, b| {
+                    b.started_at
+                        .cmp(&a.started_at)
+                        .then_with(|| a.id.cmp(&b.id))
+                });
+                Ok(runs)
+            }
+            Err(error) if error.kind() == ErrorKind::NotFound => Ok(Vec::new()),
+            Err(error) => Err(error.into()),
+        }
+    }
+
+    // ── Pending requests ──────────────────────────────────────────────────────
+
+    /// Atomically writes a [`FleetMemberRequest`] to `fleet/pending/`.
+    pub fn queue_member_request(&self, request: &FleetMemberRequest) -> Result<()> {
+        self.ensure_layout()?;
+        write_json_atomically(
+            &self
+                .paths
+                .fleet_pending_path_for(request.fleet_id, &request.id),
+            request,
+        )
+    }
+
+    /// Reads a single pending request by its id.
+    pub fn read_pending_request(&self, request_id: &str) -> Result<FleetMemberRequest> {
+        let path = self.paths.fleet_pending_path(request_id);
+        if !path.exists() {
+            return Err(WonderError::not_found("fleet pending request", request_id));
+        }
+        Ok(serde_json::from_str(&fs::read_to_string(path)?)?)
+    }
+
+    /// Reads a pending request using the request's fleet-scoped path.
+    pub fn read_pending_request_for(
+        &self,
+        request: &FleetMemberRequest,
+    ) -> Result<FleetMemberRequest> {
+        let path = self
+            .paths
+            .fleet_pending_path_for(request.fleet_id, &request.id);
+        if !path.exists() {
+            return Err(WonderError::not_found(
+                "fleet pending request",
+                request.id.clone(),
+            ));
+        }
+        Ok(serde_json::from_str(&fs::read_to_string(path)?)?)
+    }
+
+    /// Lists all pending requests, sorted by `queued_at` ascending (oldest
+    /// first so that `fleet dispatch` processes them in queue order).
+    ///
+    /// Returns an empty list when the pending directory does not exist.
+    pub fn list_pending_requests(&self) -> Result<Vec<FleetMemberRequest>> {
+        let dir = self.paths.fleet_pending_dir();
+        match fs::read_dir(dir) {
+            Ok(entries) => {
+                let mut requests = Vec::new();
+                for entry in entries {
+                    let entry = entry?;
+                    if !entry.file_type()?.is_file() {
+                        continue;
+                    }
+                    if entry.path().extension().and_then(OsStr::to_str) != Some("json") {
+                        continue;
+                    }
+                    let request: FleetMemberRequest =
+                        serde_json::from_str(&fs::read_to_string(entry.path())?)?;
+                    requests.push(request);
+                }
+                requests
+                    .sort_by(|a, b| a.queued_at.cmp(&b.queued_at).then_with(|| a.id.cmp(&b.id)));
+                Ok(requests)
+            }
+            Err(error) if error.kind() == ErrorKind::NotFound => Ok(Vec::new()),
+            Err(error) => Err(error.into()),
+        }
+    }
+
+    /// Deletes a pending request file after successful dispatch.
+    ///
+    /// Idempotent: if the file has already been removed this returns `Ok(())`.
+    pub fn delete_pending_request(&self, request_id: &str) -> Result<()> {
+        let path = self.paths.fleet_pending_path(request_id);
+        match fs::remove_file(&path) {
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(error.into()),
+        }
+    }
+
+    /// Deletes a pending request file using its fleet-scoped path.
+    ///
+    /// Idempotent: if the file has already been removed this returns `Ok(())`.
+    pub fn delete_pending_request_for(&self, request: &FleetMemberRequest) -> Result<()> {
+        let path = self
+            .paths
+            .fleet_pending_path_for(request.fleet_id, &request.id);
+        match fs::remove_file(&path) {
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(error.into()),
+        }
+    }
+
+    // ── Steering messages ─────────────────────────────────────────────────────
+
+    /// Atomically writes a [`FleetSteeringMessage`] to disk.
+    ///
+    /// Creates `fleet/steering/{fleet_id}/` if it does not exist.
+    pub fn write_steering_message(&self, msg: &FleetSteeringMessage) -> Result<()> {
+        let dir = self.paths.fleet_steering_dir(msg.fleet_id);
+        fs::create_dir_all(&dir)?;
+        write_json_atomically(&self.paths.fleet_steering_path(msg.fleet_id, &msg.id), msg)
+    }
+
+    /// Lists all steering messages for `fleet_id`, sorted by `queued_at`
+    /// ascending (oldest first).
+    ///
+    /// Returns an empty list when the directory does not exist.
+    pub fn list_steering_messages(&self, fleet_id: FleetId) -> Result<Vec<FleetSteeringMessage>> {
+        let dir = self.paths.fleet_steering_dir(fleet_id);
+        match fs::read_dir(&dir) {
+            Ok(entries) => {
+                let mut messages = Vec::new();
+                for entry in entries {
+                    let entry = entry?;
+                    if !entry.file_type()?.is_file() {
+                        continue;
+                    }
+                    if entry.path().extension().and_then(OsStr::to_str) != Some("json") {
+                        continue;
+                    }
+                    let msg: FleetSteeringMessage =
+                        serde_json::from_str(&fs::read_to_string(entry.path())?)?;
+                    ensure_supported_schema("fleet steering", msg.schema_version)?;
+                    messages.push(msg);
+                }
+                messages
+                    .sort_by(|a, b| a.queued_at.cmp(&b.queued_at).then_with(|| a.id.cmp(&b.id)));
+                Ok(messages)
+            }
+            Err(error) if error.kind() == ErrorKind::NotFound => Ok(Vec::new()),
+            Err(error) => Err(error.into()),
+        }
+    }
+}
+
+#[cfg(test)]
+mod fleet_store_tests {
+    use wonder_of_u_core::{FleetRunState, PermissionMode};
+    use wonder_of_u_test_support::unique_test_dir;
+
+    use super::*;
+
+    fn make_store(prefix: &str) -> FleetStore {
+        FleetStore::new(unique_test_dir(prefix))
+    }
+
+    #[test]
+    fn write_and_read_run() {
+        let store = make_store("fleet-write-read");
+        let run = FleetRunState::new("test fleet", PermissionMode::Default, None);
+        let id = run.id;
+        store.write_run(&run).expect("write");
+        let loaded = store.read_run(id).expect("read");
+        assert_eq!(loaded.id, id);
+        assert_eq!(loaded.description, "test fleet");
+    }
+
+    #[test]
+    fn list_runs_empty_when_dir_absent() {
+        let store = make_store("fleet-list-absent");
+        // Do not call ensure_layout so dirs never exist.
+        let runs = store.list_runs().expect("list");
+        assert!(runs.is_empty());
+    }
+
+    #[test]
+    fn list_runs_sorted_by_started_at_desc() {
+        let store = make_store("fleet-list-sorted");
+        for desc in ["alpha", "beta", "gamma"] {
+            let run = FleetRunState::new(desc, PermissionMode::Default, None);
+            store.write_run(&run).expect("write");
+        }
+        let runs = store.list_runs().expect("list");
+        assert_eq!(runs.len(), 3);
+        // Most recently started should come first.
+        for window in runs.windows(2) {
+            assert!(window[0].started_at >= window[1].started_at);
+        }
+    }
+
+    #[test]
+    fn queue_and_list_pending_requests() {
+        let store = make_store("fleet-pending-queue");
+        let req = FleetMemberRequest::new("do the thing");
+        let id = req.id.clone();
+        store.queue_member_request(&req).expect("queue");
+        let pending = store.list_pending_requests().expect("list");
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].id, id);
+        assert_eq!(pending[0].prompt, "do the thing");
+    }
+
+    #[test]
+    fn fleet_pending_requests_are_namespaced_by_fleet_id() {
+        let store = make_store("fleet-pending-namespaced");
+        let fleet_a = FleetId::new();
+        let fleet_b = FleetId::new();
+
+        let mut req_a = FleetMemberRequest::new("build a");
+        req_a.id = "build".into();
+        req_a.fleet_id = Some(fleet_a);
+        let mut req_b = FleetMemberRequest::new("build b");
+        req_b.id = "build".into();
+        req_b.fleet_id = Some(fleet_b);
+
+        store.queue_member_request(&req_a).expect("queue a");
+        store.queue_member_request(&req_b).expect("queue b");
+
+        let pending = store.list_pending_requests().expect("list");
+        assert_eq!(pending.len(), 2);
+        assert_eq!(
+            store
+                .read_pending_request_for(&req_a)
+                .expect("read a")
+                .prompt,
+            "build a"
+        );
+        assert_eq!(
+            store
+                .read_pending_request_for(&req_b)
+                .expect("read b")
+                .prompt,
+            "build b"
+        );
+
+        store
+            .delete_pending_request_for(&req_a)
+            .expect("delete only a");
+        assert!(store.read_pending_request_for(&req_a).is_err());
+        assert!(store.read_pending_request_for(&req_b).is_ok());
+    }
+
+    #[test]
+    fn list_pending_empty_when_dir_absent() {
+        let store = make_store("fleet-pending-absent");
+        let pending = store.list_pending_requests().expect("list");
+        assert!(pending.is_empty());
+    }
+
+    #[test]
+    fn delete_pending_request_removes_file() {
+        let store = make_store("fleet-pending-delete");
+        let req = FleetMemberRequest::new("ephemeral");
+        let id = req.id.clone();
+        store.queue_member_request(&req).expect("queue");
+        assert_eq!(store.list_pending_requests().expect("list").len(), 1);
+        store.delete_pending_request(&id).expect("delete");
+        assert!(store.list_pending_requests().expect("list").is_empty());
+    }
+
+    #[test]
+    fn delete_nonexistent_pending_request_is_idempotent() {
+        let store = make_store("fleet-pending-delete-idempotent");
+        store.ensure_layout().expect("layout");
+        // Should not error.
+        store
+            .delete_pending_request("00000000-0000-0000-0000-000000000000")
+            .expect("idempotent delete");
+    }
+
+    #[test]
+    fn read_missing_run_returns_not_found() {
+        let store = make_store("fleet-read-missing");
+        store.ensure_layout().expect("layout");
+        let fleet_id = FleetId::new();
+        let err = store.read_run(fleet_id).expect_err("missing");
+        assert!(err.to_string().contains("not found"));
+    }
+
+    // ── Steering message tests ────────────────────────────────────────────────
+
+    #[test]
+    fn write_and_list_steering_message() {
+        use wonder_of_u_core::FleetSteeringMessage;
+        let store = make_store("fleet-steering-write-list");
+        let fleet_id = FleetId::new();
+        let msg = FleetSteeringMessage::new(fleet_id, "focus on performance");
+        store.write_steering_message(&msg).expect("write");
+        let messages = store.list_steering_messages(fleet_id).expect("list");
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].id, msg.id);
+        assert_eq!(messages[0].prompt, "focus on performance");
+        assert_eq!(messages[0].fleet_id, fleet_id);
+    }
+
+    #[test]
+    fn list_steering_messages_empty_when_dir_absent() {
+        let store = make_store("fleet-steering-absent");
+        let fleet_id = FleetId::new();
+        // Directory never created; must return empty list, not an error.
+        let messages = store.list_steering_messages(fleet_id).expect("list");
+        assert!(messages.is_empty());
+    }
+
+    #[test]
+    fn list_steering_messages_sorted_by_queued_at_asc() {
+        use std::thread;
+        use std::time::Duration;
+        use wonder_of_u_core::FleetSteeringMessage;
+        let store = make_store("fleet-steering-sorted");
+        let fleet_id = FleetId::new();
+
+        // Write three messages with a small delay so queued_at differs.
+        for label in ["first", "second", "third"] {
+            let msg = FleetSteeringMessage::new(fleet_id, label);
+            store.write_steering_message(&msg).expect("write");
+            thread::sleep(Duration::from_millis(2));
+        }
+
+        let messages = store.list_steering_messages(fleet_id).expect("list");
+        assert_eq!(messages.len(), 3);
+        // Oldest first.
+        for window in messages.windows(2) {
+            assert!(
+                window[0].queued_at <= window[1].queued_at,
+                "expected ascending order"
+            );
+        }
+        assert_eq!(messages[0].prompt, "first");
+        assert_eq!(messages[2].prompt, "third");
+    }
+
+    #[test]
+    fn steering_messages_isolated_per_fleet() {
+        use wonder_of_u_core::FleetSteeringMessage;
+        let store = make_store("fleet-steering-isolated");
+        let fleet_a = FleetId::new();
+        let fleet_b = FleetId::new();
+
+        store
+            .write_steering_message(&FleetSteeringMessage::new(fleet_a, "steer A"))
+            .expect("write A");
+        store
+            .write_steering_message(&FleetSteeringMessage::new(fleet_b, "steer B"))
+            .expect("write B");
+
+        let for_a = store.list_steering_messages(fleet_a).expect("list A");
+        let for_b = store.list_steering_messages(fleet_b).expect("list B");
+
+        assert_eq!(for_a.len(), 1);
+        assert_eq!(for_a[0].prompt, "steer A");
+        assert_eq!(for_b.len(), 1);
+        assert_eq!(for_b[0].prompt, "steer B");
+    }
+}
+
+#[cfg(test)]
+mod agent_task_result_store_tests {
+    use time::OffsetDateTime;
+    use wonder_of_u_core::{AGENT_TASK_RESULT_SCHEMA_VERSION, AgentTaskResult, TaskId, TaskStatus};
+    use wonder_of_u_test_support::unique_test_dir;
+
+    use super::*;
+
+    fn make_store(prefix: &str) -> AgentTaskResultStore {
+        AgentTaskResultStore::new(unique_test_dir(prefix))
+    }
+
+    #[test]
+    fn write_and_read_result() {
+        let store = make_store("result-write-read");
+        let task_id = TaskId::new();
+        let result = AgentTaskResult {
+            schema_version: AGENT_TASK_RESULT_SCHEMA_VERSION,
+            task_id,
+            fleet_id: None,
+            fleet_request_id: Some("req-1".into()),
+            session_id: None,
+            status: TaskStatus::Completed,
+            output_excerpt: "summary of work".into(),
+            output_text: Some("full output text here".into()),
+            provider: Some("anthropic".into()),
+            model: None,
+            finished_at: OffsetDateTime::now_utc(),
+        };
+        store.write_result(&result).expect("write");
+        let loaded = store.read_result(task_id).expect("read");
+        assert_eq!(loaded.task_id, task_id);
+        assert_eq!(loaded.status, TaskStatus::Completed);
+        assert_eq!(loaded.fleet_request_id.as_deref(), Some("req-1"));
+        assert_eq!(loaded.output_text.as_deref(), Some("full output text here"));
+    }
+
+    #[test]
+    fn read_missing_result_returns_not_found() {
+        let store = make_store("result-missing");
+        store.ensure_layout().expect("layout");
+        let err = store.read_result(TaskId::new()).expect_err("missing");
+        assert!(err.to_string().contains("not found"));
+    }
+
+    #[test]
+    fn list_results_empty_when_dir_absent() {
+        let store = make_store("result-list-absent");
+        let results = store.list_results().expect("list");
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn list_results_sorted_by_finished_at_desc() {
+        let store = make_store("result-list-sorted");
+        for i in 0u32..3 {
+            let task_id = TaskId::new();
+            // Vary finished_at by sleeping a small amount — or use fixed offsets.
+            let finished_at = OffsetDateTime::from_unix_timestamp(1_700_000_000 + i64::from(i))
+                .expect("timestamp");
+            let r = AgentTaskResult {
+                schema_version: AGENT_TASK_RESULT_SCHEMA_VERSION,
+                task_id,
+                fleet_id: None,
+                fleet_request_id: None,
+                session_id: None,
+                status: TaskStatus::Completed,
+                output_excerpt: format!("result {i}"),
+                output_text: None,
+                provider: None,
+                model: None,
+                finished_at,
+            };
+            store.write_result(&r).expect("write");
+        }
+        let results = store.list_results().expect("list");
+        assert_eq!(results.len(), 3);
+        // Most recent first.
+        for window in results.windows(2) {
+            assert!(window[0].finished_at >= window[1].finished_at);
+        }
+    }
+
+    #[test]
+    fn list_results_rejects_unsupported_schema() {
+        let store = make_store("result-list-schema");
+        store.ensure_layout().expect("layout");
+        let task_id = TaskId::new();
+        let path = store.paths().task_result_path(task_id);
+        let result = AgentTaskResult {
+            schema_version: AGENT_TASK_RESULT_SCHEMA_VERSION,
+            task_id,
+            fleet_id: None,
+            fleet_request_id: None,
+            session_id: None,
+            status: TaskStatus::Completed,
+            output_excerpt: String::new(),
+            output_text: None,
+            provider: None,
+            model: None,
+            finished_at: OffsetDateTime::now_utc(),
+        };
+        let mut value = serde_json::to_value(&result).expect("result json");
+        value["schema_version"] = serde_json::json!(AGENT_TASK_RESULT_SCHEMA_VERSION + 1);
+        fs::write(path, value.to_string()).expect("write unsupported schema");
+
+        let err = store.list_results().expect_err("unsupported schema");
+        assert!(err.to_string().contains("unsupported"), "got: {err}");
+    }
+
+    #[test]
+    fn failed_result_round_trips() {
+        let store = make_store("result-failed");
+        let task_id = TaskId::new();
+        let result = AgentTaskResult {
+            schema_version: AGENT_TASK_RESULT_SCHEMA_VERSION,
+            task_id,
+            fleet_id: None,
+            fleet_request_id: None,
+            session_id: None,
+            status: TaskStatus::Failed,
+            output_excerpt: String::new(),
+            output_text: None,
+            provider: None,
+            model: None,
+            finished_at: OffsetDateTime::now_utc(),
+        };
+        store.write_result(&result).expect("write");
+        let loaded = store.read_result(task_id).expect("read");
+        assert_eq!(loaded.status, TaskStatus::Failed);
+    }
+}
+
+#[cfg(test)]
+mod fleet_inspector_tests {
+    use time::OffsetDateTime;
+    use wonder_of_u_core::{
+        AGENT_TASK_RESULT_SCHEMA_VERSION, AgentRuntime, AgentTaskResult, AgentTaskState, FleetId,
+        FleetRunState, PermissionMode, TaskId, TaskKind, TaskProgress, TaskState, TaskStatus,
+    };
+    use wonder_of_u_test_support::unique_test_dir;
+
+    use super::*;
+
+    fn setup(prefix: &str) -> (PathBuf, FleetInspector) {
+        let dir = unique_test_dir(prefix);
+        let inspector = FleetInspector::new(&dir);
+        (dir, inspector)
+    }
+
+    fn write_minimal_fleet(dir: &Path, fleet_id: FleetId, task_ids: &[TaskId]) {
+        let fleet_store = FleetStore::new(dir);
+        let mut run = FleetRunState::new("test fleet", PermissionMode::Default, None);
+        // Override the auto-generated id with the one we were given.
+        run.id = fleet_id;
+        run.member_task_ids = task_ids.to_vec();
+        fleet_store.write_run(&run).expect("write fleet");
+    }
+
+    fn write_task_with_status(dir: &Path, task_id: TaskId, status: TaskStatus) {
+        let task_store = TaskStore::new(dir);
+        let task = TaskState {
+            id: task_id,
+            kind: TaskKind::LocalAgent,
+            description: "test agent".into(),
+            status,
+            fleet_id: None,
+            fleet_request_id: None,
+            parent_id: None,
+            cwd: None,
+            command: None,
+            status_message: None,
+            pid: None,
+            process_identity: None,
+            last_heartbeat_at: None,
+            exit_code: None,
+            agent: Some(AgentTaskState {
+                name: "test".into(),
+                prompt: None,
+                provider: None,
+                model: None,
+                runtime: AgentRuntime::PromptSubprocess,
+            }),
+            remote: None,
+            output_log: None,
+            worktree_branch: None,
+            worktree_path: None,
+            worktree_head_commit: None,
+            progress: TaskProgress::default(),
+            started_at: OffsetDateTime::now_utc(),
+            finished_at: if status.is_terminal() {
+                Some(OffsetDateTime::now_utc())
+            } else {
+                None
+            },
+        };
+        task_store.write_task(&task).expect("write task");
+    }
+
+    fn write_result(dir: &Path, task_id: TaskId, status: TaskStatus) {
+        let result_store = AgentTaskResultStore::new(dir);
+        let result = AgentTaskResult {
+            schema_version: AGENT_TASK_RESULT_SCHEMA_VERSION,
+            task_id,
+            fleet_id: None,
+            fleet_request_id: None,
+            session_id: None,
+            status,
+            output_excerpt: "done".into(),
+            output_text: None,
+            provider: None,
+            model: None,
+            finished_at: OffsetDateTime::now_utc(),
+        };
+        result_store.write_result(&result).expect("write result");
+    }
+
+    #[test]
+    fn observe_pending_task_classified_pending() {
+        let (dir, inspector) = setup("inspector-pending");
+        let fleet_id = FleetId::new();
+        let task_id = TaskId::new();
+        write_minimal_fleet(&dir, fleet_id, &[task_id]);
+        write_task_with_status(&dir, task_id, TaskStatus::Pending);
+
+        let obs = inspector.observe(fleet_id).expect("observe");
+        assert_eq!(obs.members.len(), 1);
+        assert_eq!(obs.members[0].class, MemberObservationClass::Pending);
+    }
+
+    #[test]
+    fn observe_running_task_classified_running() {
+        let (dir, inspector) = setup("inspector-running");
+        let fleet_id = FleetId::new();
+        let task_id = TaskId::new();
+        write_minimal_fleet(&dir, fleet_id, &[task_id]);
+        write_task_with_status(&dir, task_id, TaskStatus::Running);
+
+        let obs = inspector.observe(fleet_id).expect("observe");
+        assert_eq!(obs.members[0].class, MemberObservationClass::Running);
+        assert!(!obs.all_terminal());
+    }
+
+    #[test]
+    fn observe_completed_task_with_result_sidecar() {
+        let (dir, inspector) = setup("inspector-completed");
+        let fleet_id = FleetId::new();
+        let task_id = TaskId::new();
+        write_minimal_fleet(&dir, fleet_id, &[task_id]);
+        write_task_with_status(&dir, task_id, TaskStatus::Completed);
+        write_result(&dir, task_id, TaskStatus::Completed);
+
+        let obs = inspector.observe(fleet_id).expect("observe");
+        assert_eq!(obs.members[0].class, MemberObservationClass::Completed);
+        assert!(obs.members[0].result.is_some());
+        assert!(obs.all_terminal());
+    }
+
+    #[test]
+    fn observe_failed_task_classified_failed() {
+        let (dir, inspector) = setup("inspector-failed");
+        let fleet_id = FleetId::new();
+        let task_id = TaskId::new();
+        write_minimal_fleet(&dir, fleet_id, &[task_id]);
+        write_task_with_status(&dir, task_id, TaskStatus::Failed);
+
+        let obs = inspector.observe(fleet_id).expect("observe");
+        assert_eq!(obs.members[0].class, MemberObservationClass::Failed);
+        assert!(obs.all_terminal());
+    }
+
+    #[test]
+    fn observe_missing_task_classified_pending() {
+        // Task id listed in fleet but no task file written yet.
+        let (dir, inspector) = setup("inspector-no-task");
+        let fleet_id = FleetId::new();
+        let task_id = TaskId::new();
+        write_minimal_fleet(&dir, fleet_id, &[task_id]);
+        // Do NOT write a task file.
+
+        let obs = inspector.observe(fleet_id).expect("observe");
+        assert_eq!(obs.members[0].class, MemberObservationClass::Pending);
+        assert!(obs.members[0].task.is_none());
+        assert!(obs.members[0].result.is_none());
+    }
+
+    #[test]
+    fn observe_count_by_class_aggregates_correctly() {
+        let (dir, inspector) = setup("inspector-counts");
+        let fleet_id = FleetId::new();
+        let t1 = TaskId::new();
+        let t2 = TaskId::new();
+        let t3 = TaskId::new();
+        write_minimal_fleet(&dir, fleet_id, &[t1, t2, t3]);
+        write_task_with_status(&dir, t1, TaskStatus::Completed);
+        write_task_with_status(&dir, t2, TaskStatus::Failed);
+        write_task_with_status(&dir, t3, TaskStatus::Running);
+
+        let obs = inspector.observe(fleet_id).expect("observe");
+        assert_eq!(obs.count_by_class(MemberObservationClass::Completed), 1);
+        assert_eq!(obs.count_by_class(MemberObservationClass::Failed), 1);
+        assert_eq!(obs.count_by_class(MemberObservationClass::Running), 1);
+        assert!(!obs.all_terminal());
     }
 }
 /// Stores paste store
@@ -1669,6 +2918,58 @@ mod tests {
     }
 
     #[test]
+    fn transcript_recovers_corrupt_middle_line_and_preserves_valid_tail() {
+        let dir = temp_dir();
+        let store = TranscriptStore::new(dir.path());
+        let session_id = SessionId::new();
+        let head = transcript_message(
+            session_id,
+            MessagePayload::UserText {
+                content: "before".into(),
+            },
+        );
+        let tail = transcript_message(
+            session_id,
+            MessagePayload::AssistantText {
+                content: "after".into(),
+            },
+        );
+
+        store.append_message(&head).expect("append head");
+        store.ensure_layout().expect("ensure layout");
+
+        let path = store.paths().transcript_path(session_id);
+        let mut file = OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .expect("open transcript");
+        serde_json::to_writer(
+            &mut file,
+            &serde_json::json!({
+                "id": "00000000-0000-0000-0000-000000000001",
+                "session_id": session_id,
+                "timestamp": "2024-01-02T03:04:05Z",
+                "payload": { "type": "user_text", "content": "ignored" }
+            }),
+        )
+        .expect("write malformed middle line");
+        file.write_all(b"\n").expect("newline after malformed line");
+        serde_json::to_writer(&mut file, &tail).expect("write tail");
+        file.write_all(b"\n").expect("newline after tail");
+
+        let loaded = store.load_session(session_id).expect("load session");
+
+        assert_eq!(loaded.messages, vec![head, tail]);
+        assert_eq!(loaded.warnings.len(), 1);
+        assert_eq!(loaded.warnings[0].line, 2);
+        assert!(
+            loaded.warnings[0]
+                .message
+                .contains("ignored corrupt transcript line")
+        );
+    }
+
+    #[test]
     fn load_rejects_unsupported_message_schema_version() {
         let dir = unique_test_dir("storage-message-schema");
         let store = TranscriptStore::new(&dir);
@@ -1835,6 +3136,93 @@ mod tests {
             .collect::<std::result::Result<Vec<_>, _>>()
             .expect("collect entries");
         assert!(entries.is_empty());
+    }
+
+    /// Analytics and experiments surfaces must always be `Unsupported` with
+    /// explicit reasons documenting the intentional absences (no Datadog event
+    /// sink, no GrowthBook remote evaluation).
+    #[test]
+    fn sync_status_report_analytics_and_experiments_are_unsupported() {
+        let dir = temp_dir();
+        let paths = StoragePaths::new(dir.path());
+
+        let report = SyncStatusReport::inspect(&paths);
+
+        assert_eq!(report.analytics.status, SyncSupport::Unsupported);
+        assert_eq!(report.analytics.service, "analytics");
+        assert!(!report.analytics.cloud_attempted);
+        assert!(
+            report.analytics.reason.contains("Datadog"),
+            "analytics reason should mention Datadog: {}",
+            report.analytics.reason
+        );
+
+        assert_eq!(report.experiments.status, SyncSupport::Unsupported);
+        assert_eq!(report.experiments.service, "experiments");
+        assert!(!report.experiments.cloud_attempted);
+        assert!(
+            report.experiments.reason.contains("GrowthBook"),
+            "experiments reason should mention GrowthBook: {}",
+            report.experiments.reason
+        );
+        assert!(
+            report.experiments.reason.contains("FeatureSet"),
+            "experiments reason should mention FeatureSet: {}",
+            report.experiments.reason
+        );
+    }
+
+    /// Documents the recovery boundary: malformed transcript lines are skipped,
+    /// but only lines with a parseable Rust schema version reach the explicit
+    /// schema-version guard.
+    #[test]
+    fn transcript_line_missing_schema_version_is_skipped_before_version_check() {
+        let dir = temp_dir();
+        let store = TranscriptStore::new(dir.path());
+        let session_id = SessionId::new();
+
+        // A valid-looking transcript line that simply omits `schema_version`.
+        // This simulates a TS/upstream transcript line that lacks the field.
+        let ts_shaped_line = serde_json::json!({
+            "id": "00000000-0000-0000-0000-000000000001",
+            "session_id": session_id,
+            "timestamp": "2024-01-02T03:04:05Z",
+            "payload": { "type": "user_text", "content": "hello" }
+        });
+
+        // A valid Rust transcript line that proves recovery continues past the
+        // malformed middle entry.
+        let sentinel = transcript_message(
+            session_id,
+            MessagePayload::UserText {
+                content: "sentinel".into(),
+            },
+        );
+
+        // Write directly to the transcript file, bypassing append_message so
+        // we can produce a line the encoder would never emit.
+        store.ensure_layout().expect("ensure layout");
+        let path = store.paths().transcript_path(session_id);
+        let mut file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+            .expect("open transcript");
+        serde_json::to_writer(&mut file, &ts_shaped_line).expect("write ts-shaped line");
+        file.write_all(b"\n").expect("newline after bad line");
+        serde_json::to_writer(&mut file, &sentinel).expect("write sentinel line");
+        file.write_all(b"\n").expect("newline after sentinel");
+
+        let loaded = store.load_session(session_id).expect("load session");
+
+        assert_eq!(loaded.messages, vec![sentinel]);
+        assert_eq!(loaded.warnings.len(), 1);
+        assert_eq!(loaded.warnings[0].line, 1);
+        assert!(
+            loaded.warnings[0]
+                .message
+                .contains("ignored corrupt transcript line")
+        );
     }
 
     #[test]
@@ -2139,6 +3527,21 @@ mod tests {
         assert_eq!(
             paths.plugin_settings_path(),
             PathBuf::from("/workspace/.wonder/config/plugins/settings.json")
+        );
+    }
+
+    #[test]
+    fn storage_paths_expose_task_lists_paths() {
+        let paths = StoragePaths::new("/workspace/.wonder");
+        let session_id = SessionId::new();
+
+        assert_eq!(
+            paths.task_lists_dir(),
+            PathBuf::from("/workspace/.wonder/tasks/lists")
+        );
+        assert_eq!(
+            paths.task_list_path(session_id),
+            PathBuf::from(format!("/workspace/.wonder/tasks/lists/{session_id}.json"))
         );
     }
 }

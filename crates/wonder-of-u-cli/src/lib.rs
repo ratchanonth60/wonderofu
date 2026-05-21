@@ -11,7 +11,7 @@ use std::{
 
 use clap::{Parser, Subcommand};
 use futures::executor::block_on;
-use wonder_of_u_agent::ProviderResolver;
+use wonder_of_u_agent::{ProviderResolver, SettingsStore};
 use wonder_of_u_core::{
     CommandContext, CommandInvocation, CommandOutput, CommandQuery, FeatureSet, PermissionMode,
     ProviderReadiness, Result, SessionId, WonderError, parse_slash_command,
@@ -53,6 +53,30 @@ pub enum Commands {
     Doctor,
     /// Summarize runtime and storage status.
     Status,
+    /// Show session cost and token usage.
+    Cost {
+        #[arg(long)]
+        /// Show cost for all sessions.
+        all: bool,
+    },
+    /// Show token usage (alias for cost).
+    Usage {
+        #[arg(long)]
+        /// Show cost for all sessions.
+        all: bool,
+    },
+    /// Get or set the assistant output rendering style.
+    OutputStyle {
+        #[command(subcommand)]
+        /// Stores the command
+        command: Option<OutputStyleCliCommand>,
+    },
+    /// Show or manage environment variables injected into agent context.
+    Env {
+        #[command(subcommand)]
+        /// Stores the command
+        command: Option<EnvCliCommand>,
+    },
     /// Inspect persisted provider settings and overrides.
     Config {
         #[command(subcommand)]
@@ -83,6 +107,20 @@ pub enum Commands {
         /// Stores the command
         command: Option<ModelCommand>,
     },
+    /// Get or set the UI theme.
+    Theme {
+        #[command(subcommand)]
+        /// Stores the command
+        command: Option<ThemeCommand>,
+    },
+    /// Get or set vim keybinding mode.
+    Vim {
+        #[command(subcommand)]
+        /// Stores the command
+        command: Option<VimCommand>,
+    },
+    /// Print the TUI keyboard shortcut reference.
+    Keybindings,
     /// Execute a non-interactive model prompt.
     Prompt {
         #[arg(long)]
@@ -150,6 +188,36 @@ pub enum Commands {
         /// Stores the session id
         session_id: String,
     },
+    /// Add or manage tags on persisted sessions.
+    Tag {
+        #[arg()]
+        /// Tag name to add or remove.
+        name: Option<String>,
+        #[arg(long)]
+        /// Stores the session id.
+        session: Option<String>,
+        #[arg(long)]
+        /// Remove the tag instead of adding it.
+        remove: bool,
+        #[arg(long)]
+        /// List all sessions grouped by tag.
+        list: bool,
+    },
+    /// Print a summary of a conversation session.
+    Summary {
+        #[arg(long)]
+        /// Stores the session id
+        session: Option<String>,
+        #[arg(long, default_value = "markdown")]
+        /// Stores the format
+        format: String,
+    },
+    /// Copy the last assistant response from a persisted session to the clipboard.
+    Copy {
+        #[arg(long)]
+        /// Stores the session id
+        session_id: Option<String>,
+    },
     /// Rename a persisted session.
     Rename {
         #[arg()]
@@ -182,6 +250,24 @@ pub enum Commands {
         #[arg(long, default_value_t = 8)]
         /// Stores the keep last
         keep_last: usize,
+    },
+    /// Rewind a session to remove recent message exchanges.
+    Rewind {
+        /// Session ID (defaults to most recent).
+        #[arg(long)]
+        session: Option<String>,
+        /// Number of exchanges to remove.
+        #[arg(long, short, default_value_t = 1)]
+        n: usize,
+        /// Skip the confirmation prompt.
+        #[arg(long, short)]
+        yes: bool,
+    },
+    /// Manage AI memory files (CLAUDE.md).
+    Memory {
+        #[command(subcommand)]
+        /// Stores the command
+        command: Option<MemoryCommand>,
     },
     /// List files beneath the current working directory.
     Files {
@@ -234,6 +320,22 @@ pub enum Commands {
         /// Stores the command
         command: Vec<String>,
     },
+    /// Import a TypeScript-upstream Claude Code transcript (JSONL) into Rust
+    /// storage schema.
+    ///
+    /// This is an explicit one-shot migration command.  The normal session load
+    /// path is never involved; strict Rust schema validation stays intact.
+    Import {
+        /// Path to the TS JSONL transcript file.
+        #[arg(long)]
+        source: PathBuf,
+        /// Parse and report without writing any data.
+        #[arg(long, default_value_t = false)]
+        dry_run: bool,
+        /// Override the session ID for all imported messages (UUID format).
+        #[arg(long)]
+        session_id: Option<String>,
+    },
 }
 /// Enumerates model command
 #[derive(Debug, Clone, Subcommand)]
@@ -248,6 +350,64 @@ pub enum ModelCommand {
         #[arg(long)]
         /// Stores the model
         model: String,
+    },
+}
+/// Enumerates theme command
+#[derive(Debug, Clone, Eq, PartialEq, Subcommand)]
+pub enum ThemeCommand {
+    /// Show current theme.
+    Show,
+    /// List available themes.
+    List,
+    /// Set the active theme.
+    Set {
+        #[arg()]
+        /// Stores the theme name
+        name: String,
+    },
+}
+/// Enumerates vim command
+#[derive(Debug, Clone, Eq, PartialEq, Subcommand)]
+pub enum VimCommand {
+    /// Show vim mode state.
+    Show,
+    /// Enable vim mode.
+    On,
+    /// Disable vim mode.
+    Off,
+    /// Toggle vim mode.
+    Toggle,
+}
+/// Enumerates output-style command
+#[derive(Debug, Clone, Eq, PartialEq, Subcommand)]
+pub enum OutputStyleCliCommand {
+    /// Show current output style.
+    Show,
+    /// List available output styles.
+    List,
+    /// Set the active output style.
+    Set {
+        #[arg()]
+        /// Stores the output style name
+        name: String,
+    },
+}
+/// Enumerates env command
+#[derive(Debug, Clone, Eq, PartialEq, Subcommand)]
+pub enum EnvCliCommand {
+    /// Show current environment configuration.
+    Show,
+    /// Persist an environment variable assignment.
+    Set {
+        #[arg()]
+        /// Stores the KEY=VALUE assignment
+        assignment: String,
+    },
+    /// Remove a persisted environment variable.
+    Unset {
+        #[arg()]
+        /// Stores the environment variable name
+        key: String,
     },
 }
 /// Enumerates config command
@@ -298,6 +458,18 @@ pub enum PluginCommand {
     List,
     /// Show detailed plugin readiness and trust information.
     Status,
+    /// Add a plugin directory to the configured discovery paths.
+    Install {
+        #[arg()]
+        /// Stores the plugin path
+        path: PathBuf,
+    },
+    /// Validate a plugin directory or manifest file.
+    Validate {
+        #[arg(default_value = ".")]
+        /// Stores the path
+        path: PathBuf,
+    },
     /// Persist a trust decision for a plugin id.
     Trust {
         #[arg()]
@@ -380,6 +552,16 @@ pub enum SessionCommand {
         /// Stores the limit
         limit: usize,
     },
+}
+/// Enumerates memory command
+#[derive(Debug, Clone, Eq, PartialEq, Subcommand)]
+pub enum MemoryCommand {
+    /// Show all memory file contents.
+    Show,
+    /// Open global memory file in $EDITOR.
+    Edit,
+    /// Print the path to the global memory file.
+    Path,
 }
 /// Enumerates permissions command
 #[derive(Debug, Clone, Subcommand)]
@@ -557,18 +739,145 @@ fn run_with_terminal_mode<W: Write>(
     writer: &mut W,
     interactive_terminal: bool,
 ) -> Result<()> {
-    let registry = commands::registry(cli.storage_dir.clone())?;
+    let storage_dir = cli.storage_dir.or_else(resolve_default_storage_dir);
     match launch_plan(cli.command, interactive_terminal)? {
+        LaunchPlan::Cost { all } => {
+            let rendered =
+                commands::cost::show(storage_dir.as_deref(), &std::env::current_dir()?, all)?;
+            writeln!(writer, "{rendered}")?;
+            Ok(())
+        }
+        LaunchPlan::OutputStyle { command } => {
+            let rendered = match command.unwrap_or(OutputStyleCliCommand::Show) {
+                OutputStyleCliCommand::Show => {
+                    commands::output_style::show(storage_dir.as_deref())?
+                }
+                OutputStyleCliCommand::List => commands::output_style::list(),
+                OutputStyleCliCommand::Set { name } => {
+                    commands::output_style::set(storage_dir.as_deref(), &name)?
+                }
+            };
+            writeln!(writer, "{rendered}")?;
+            Ok(())
+        }
+        LaunchPlan::Env { command } => {
+            let rendered = match command.unwrap_or(EnvCliCommand::Show) {
+                EnvCliCommand::Show => commands::env::show(storage_dir.as_deref())?,
+                EnvCliCommand::Set { assignment } => {
+                    let (key, value) = parse_env_assignment(&assignment)?;
+                    commands::env::set_var(storage_dir.as_deref(), key, value)?
+                }
+                EnvCliCommand::Unset { key } => {
+                    commands::env::unset_var(storage_dir.as_deref(), &key)?
+                }
+            };
+            writeln!(writer, "{rendered}")?;
+            Ok(())
+        }
+        LaunchPlan::Theme { command } => {
+            let rendered = match command.unwrap_or(ThemeCommand::Show) {
+                ThemeCommand::Show => commands::theme::show(storage_dir.as_deref())?,
+                ThemeCommand::List => commands::theme::list(),
+                ThemeCommand::Set { name } => commands::theme::set(storage_dir.as_deref(), &name)?,
+            };
+            writeln!(writer, "{rendered}")?;
+            Ok(())
+        }
+        LaunchPlan::Vim { command } => {
+            let storage_dir = storage_dir.ok_or_else(|| {
+                WonderError::validation(
+                    "vim command requires --storage-dir or HOME/XDG_CONFIG_HOME",
+                )
+            })?;
+            let rendered = match command.unwrap_or(VimCommand::Show) {
+                VimCommand::Show => commands::vim::show(&storage_dir)?,
+                VimCommand::On => commands::vim::set(&storage_dir, true)?,
+                VimCommand::Off => commands::vim::set(&storage_dir, false)?,
+                VimCommand::Toggle => commands::vim::toggle(&storage_dir)?,
+            };
+            writeln!(writer, "{rendered}")?;
+            Ok(())
+        }
+        LaunchPlan::Keybindings => {
+            writeln!(writer, "{}", commands::keybindings::show())?;
+            Ok(())
+        }
         LaunchPlan::Tui { session_id } => tui_runtime::run_tui(
             writer,
-            &registry,
-            cli.storage_dir.as_deref(),
+            &commands::registry(storage_dir.clone())?,
+            storage_dir.as_deref(),
             tui_runtime::TuiLaunchOptions { session_id },
         ),
-        LaunchPlan::Invocation(invocation) => {
-            run_registered_invocation(invocation, &registry, cli.storage_dir.as_deref(), writer)
+        LaunchPlan::Copy { session_id } => {
+            commands::copy::copy_last_response(storage_dir.as_deref(), session_id.as_deref())?;
+            writeln!(writer, "Copied last assistant response to clipboard")?;
+            Ok(())
+        }
+        LaunchPlan::Memory { command } => {
+            let storage_dir = storage_dir.ok_or_else(|| {
+                WonderError::validation(
+                    "memory command requires --storage-dir or HOME/XDG_CONFIG_HOME",
+                )
+            })?;
+            let cwd = std::env::current_dir()?;
+            match command.unwrap_or(MemoryCommand::Show) {
+                MemoryCommand::Show => {
+                    commands::memory::show_with_writer(&storage_dir, &cwd, writer)
+                }
+                MemoryCommand::Edit => commands::memory::edit(&storage_dir),
+                MemoryCommand::Path => commands::memory::path_cmd_with_writer(&storage_dir, writer),
+            }
+        }
+        LaunchPlan::Import {
+            source,
+            dry_run,
+            session_id,
+        } => {
+            use wonder_of_u_core::SessionId;
+            let override_session = session_id.as_deref().map(SessionId::parse).transpose()?;
+            commands::import::run_import(
+                &source,
+                storage_dir.as_deref(),
+                dry_run,
+                override_session,
+                writer,
+            )
+        }
+        LaunchPlan::Invocation(invocation) => run_registered_invocation(
+            invocation,
+            &commands::registry(storage_dir.clone())?,
+            storage_dir.as_deref(),
+            writer,
+        ),
+    }
+}
+
+/// Resolves the default storage directory from well-known environment variables.
+///
+/// Lookup order:
+/// 1. `WONDER_OF_U_STORAGE_DIR` — explicit override.
+/// 2. `XDG_CONFIG_HOME/wonder-of-u` — XDG Base Directory spec.
+/// 3. `HOME/.config/wonder-of-u` — POSIX fallback.
+///
+/// Returns `None` when none of the variables are set; callers that require a
+/// storage directory will surface a helpful error via [`wonder_of_u_agent::require_storage_dir`].
+fn resolve_default_storage_dir() -> Option<PathBuf> {
+    if let Ok(path) = std::env::var("WONDER_OF_U_STORAGE_DIR") {
+        if !path.is_empty() {
+            return Some(PathBuf::from(path));
         }
     }
+    if let Ok(path) = std::env::var("XDG_CONFIG_HOME") {
+        if !path.is_empty() {
+            return Some(PathBuf::from(path).join("wonder-of-u"));
+        }
+    }
+    if let Ok(path) = std::env::var("HOME") {
+        if !path.is_empty() {
+            return Some(PathBuf::from(path).join(".config").join("wonder-of-u"));
+        }
+    }
+    None
 }
 
 #[cfg(test)]
@@ -583,8 +892,37 @@ fn default_terminal_mode_for_run_from() -> bool {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum LaunchPlan {
-    Tui { session_id: Option<String> },
+    Cost {
+        all: bool,
+    },
+    OutputStyle {
+        command: Option<OutputStyleCliCommand>,
+    },
+    Env {
+        command: Option<EnvCliCommand>,
+    },
+    Theme {
+        command: Option<ThemeCommand>,
+    },
+    Vim {
+        command: Option<VimCommand>,
+    },
+    Keybindings,
+    Tui {
+        session_id: Option<String>,
+    },
+    Copy {
+        session_id: Option<String>,
+    },
     Invocation(CommandInvocation),
+    Memory {
+        command: Option<MemoryCommand>,
+    },
+    Import {
+        source: PathBuf,
+        dry_run: bool,
+        session_id: Option<String>,
+    },
 }
 
 fn terminal_is_interactive() -> bool {
@@ -595,7 +933,24 @@ fn launch_plan(command: Option<Commands>, interactive_terminal: bool) -> Result<
     match command {
         None if interactive_terminal => Ok(LaunchPlan::Tui { session_id: None }),
         None => Ok(LaunchPlan::Invocation(to_invocation(Commands::Doctor)?)),
+        Some(Commands::Cost { all } | Commands::Usage { all }) => Ok(LaunchPlan::Cost { all }),
+        Some(Commands::OutputStyle { command }) => Ok(LaunchPlan::OutputStyle { command }),
+        Some(Commands::Env { command }) => Ok(LaunchPlan::Env { command }),
+        Some(Commands::Theme { command }) => Ok(LaunchPlan::Theme { command }),
+        Some(Commands::Vim { command }) => Ok(LaunchPlan::Vim { command }),
+        Some(Commands::Keybindings) => Ok(LaunchPlan::Keybindings),
         Some(Commands::Tui { session_id }) => Ok(LaunchPlan::Tui { session_id }),
+        Some(Commands::Copy { session_id }) => Ok(LaunchPlan::Copy { session_id }),
+        Some(Commands::Memory { command }) => Ok(LaunchPlan::Memory { command }),
+        Some(Commands::Import {
+            source,
+            dry_run,
+            session_id,
+        }) => Ok(LaunchPlan::Import {
+            source,
+            dry_run,
+            session_id,
+        }),
         Some(Commands::Resume { session_id }) if interactive_terminal => Ok(LaunchPlan::Tui {
             session_id: Some(session_id),
         }),
@@ -613,6 +968,10 @@ fn run_registered_invocation<W: Write>(
         .load_report(storage_dir)?
         .readiness
         == ProviderReadiness::Ready;
+    let persisted_theme = match storage_dir {
+        Some(storage_dir) => SettingsStore::new(storage_dir).read()?.theme,
+        None => None,
+    };
     let context = CommandContext {
         session_id: SessionId::new(),
         cwd: std::env::current_dir()?,
@@ -620,11 +979,12 @@ fn run_registered_invocation<W: Write>(
         authenticated,
         interactive: false,
         permission_mode: PermissionMode::Default,
-        theme: None,
+        theme: persisted_theme,
         session_color: None,
         effort_level: None,
         brief_mode: false,
         fast_mode: false,
+        optimize_token_mode: false,
         session_tags: Vec::new(),
         additional_working_directories: Vec::new(),
     };
@@ -656,6 +1016,12 @@ fn render_command_output<W: Write>(output: CommandOutput, writer: &mut W) -> Res
     }
 }
 
+fn parse_env_assignment(assignment: &str) -> Result<(&str, &str)> {
+    assignment.split_once('=').ok_or_else(|| {
+        WonderError::validation("environment variable assignment must use KEY=VALUE syntax")
+    })
+}
+
 fn to_invocation(command: Commands) -> Result<CommandInvocation> {
     Ok(match command {
         Commands::Help { command } => {
@@ -666,6 +1032,9 @@ fn to_invocation(command: Commands) -> Result<CommandInvocation> {
         }
         Commands::Status => {
             commands::invocation_from_tokens("status", std::iter::empty::<String>())
+        }
+        Commands::Cost { .. } | Commands::Usage { .. } => {
+            unreachable!("cost and usage are handled directly by the top-level CLI")
         }
         Commands::Config { command } => match command.unwrap_or(ConfigCommand::Show) {
             ConfigCommand::Show => commands::invocation_from_tokens("config", ["show"]),
@@ -720,6 +1089,24 @@ fn to_invocation(command: Commands) -> Result<CommandInvocation> {
                 ],
             ),
         },
+        Commands::Theme { .. } => {
+            unreachable!("theme is handled directly by the top-level CLI")
+        }
+        Commands::Vim { .. } => {
+            unreachable!("vim is handled directly by the top-level CLI")
+        }
+        Commands::Keybindings => {
+            unreachable!("keybindings is handled directly by the top-level CLI")
+        }
+        Commands::Copy { .. } => {
+            unreachable!("copy is handled directly by the top-level CLI")
+        }
+        Commands::OutputStyle { .. } => {
+            unreachable!("output-style is handled directly by the top-level CLI")
+        }
+        Commands::Env { .. } => {
+            unreachable!("env is handled directly by the top-level CLI")
+        }
         Commands::Prompt {
             provider,
             model,
@@ -785,6 +1172,14 @@ fn to_invocation(command: Commands) -> Result<CommandInvocation> {
         Commands::Plugin { command } => match command.unwrap_or(PluginCommand::List) {
             PluginCommand::List => commands::invocation_from_tokens("plugin", ["list"]),
             PluginCommand::Status => commands::invocation_from_tokens("plugin", ["status"]),
+            PluginCommand::Install { path } => commands::invocation_from_tokens(
+                "plugin",
+                vec!["install".to_string(), path.to_string_lossy().into_owned()],
+            ),
+            PluginCommand::Validate { path } => commands::invocation_from_tokens(
+                "plugin",
+                vec!["validate".to_string(), path.to_string_lossy().into_owned()],
+            ),
             PluginCommand::Trust { plugin, state } => commands::invocation_from_tokens(
                 "plugin",
                 ["trust".into(), plugin, "--state".into(), state],
@@ -871,6 +1266,38 @@ fn to_invocation(command: Commands) -> Result<CommandInvocation> {
             }
         }
         Commands::Resume { session_id } => commands::invocation_from_tokens("resume", [session_id]),
+        Commands::Tag {
+            name,
+            session,
+            remove,
+            list,
+        } => {
+            let mut tokens = Vec::new();
+            if let Some(session) = session {
+                tokens.push("--session".into());
+                tokens.push(session);
+            }
+            if remove {
+                tokens.push("--remove".into());
+            }
+            if list {
+                tokens.push("--list".into());
+            }
+            if let Some(name) = name {
+                tokens.push(name);
+            }
+            commands::invocation_from_tokens("tag", tokens)
+        }
+        Commands::Summary { session, format } => {
+            let mut tokens = Vec::new();
+            if let Some(session) = session {
+                tokens.push("--session".into());
+                tokens.push(session);
+            }
+            tokens.push("--format".into());
+            tokens.push(format);
+            commands::invocation_from_tokens("summary", tokens)
+        }
         Commands::Rename { session_id, title } => {
             commands::invocation_from_tokens("rename", [session_id, title])
         }
@@ -892,6 +1319,24 @@ fn to_invocation(command: Commands) -> Result<CommandInvocation> {
             tokens.push("--keep-last".into());
             tokens.push(keep_last.to_string());
             commands::invocation_from_tokens("compact", tokens)
+        }
+        Commands::Rewind { session, n, yes } => {
+            let mut tokens = Vec::new();
+            if let Some(session) = session {
+                tokens.push("--session".into());
+                tokens.push(session);
+            }
+            tokens.push("--n".into());
+            tokens.push(n.to_string());
+            if yes {
+                tokens.push("--yes".into());
+            }
+            commands::invocation_from_tokens("rewind", tokens)
+        }
+        Commands::Memory { .. } => {
+            return Err(WonderError::validation(
+                "memory is handled directly and cannot be converted into a slash invocation",
+            ));
         }
         Commands::Files {
             path,
@@ -1091,6 +1536,9 @@ fn to_invocation(command: Commands) -> Result<CommandInvocation> {
         },
         Commands::Exit => commands::invocation_from_tokens("exit", std::iter::empty::<String>()),
         Commands::Slash { command } => invocation_from_slash_tokens(command)?,
+        // Import is handled directly by LaunchPlan::Import in run_with_terminal_mode and
+        // never reaches to_invocation.
+        Commands::Import { .. } => unreachable!("import is handled via LaunchPlan::Import"),
     })
 }
 
@@ -1122,9 +1570,14 @@ mod tests {
 
     use serde_json::{Value, json};
     use time::OffsetDateTime;
-    use wonder_of_u_core::{MessagePayload, SessionId, TaskState, TaskStatus};
+    use wonder_of_u_agent::SettingsStore;
+    use wonder_of_u_core::{
+        AppState, MessagePayload, SessionId, TaskState, TaskStatus, TokenUsage,
+    };
     use wonder_of_u_plugins::{PluginConfig, PluginConfigStore, PluginTrustDecision};
-    use wonder_of_u_storage::{CostStore, TaskStore, TranscriptStore};
+    use wonder_of_u_storage::{
+        CostStore, SessionCostLedger, SessionMetadata, TaskStore, TranscriptStore,
+    };
     use wonder_of_u_test_support::{EnvVarGuard, unique_test_dir};
 
     use super::*;
@@ -1377,6 +1830,60 @@ mod tests {
     }
 
     #[test]
+    fn cost_subcommand_uses_direct_launch_plan() {
+        let plan = launch_plan(Some(Commands::Cost { all: true }), false).expect("launch plan");
+
+        assert_eq!(plan, LaunchPlan::Cost { all: true });
+    }
+
+    #[test]
+    fn vim_subcommand_uses_direct_launch_plan() {
+        let plan = launch_plan(Some(Commands::Vim { command: None }), false).expect("launch plan");
+
+        assert_eq!(plan, LaunchPlan::Vim { command: None });
+    }
+
+    #[test]
+    fn output_style_subcommand_uses_direct_launch_plan() {
+        let plan =
+            launch_plan(Some(Commands::OutputStyle { command: None }), false).expect("launch plan");
+
+        assert_eq!(plan, LaunchPlan::OutputStyle { command: None });
+    }
+
+    #[test]
+    fn keybindings_subcommand_uses_direct_launch_plan() {
+        let plan = launch_plan(Some(Commands::Keybindings), false).expect("launch plan");
+
+        assert_eq!(plan, LaunchPlan::Keybindings);
+    }
+
+    #[test]
+    fn env_subcommand_uses_direct_launch_plan() {
+        let plan = launch_plan(Some(Commands::Env { command: None }), false).expect("launch plan");
+
+        assert_eq!(plan, LaunchPlan::Env { command: None });
+    }
+
+    #[test]
+    fn copy_subcommand_uses_direct_launch_plan() {
+        let plan = launch_plan(
+            Some(Commands::Copy {
+                session_id: Some("session-123".into()),
+            }),
+            false,
+        )
+        .expect("launch plan");
+
+        assert_eq!(
+            plan,
+            LaunchPlan::Copy {
+                session_id: Some("session-123".into()),
+            }
+        );
+    }
+
+    #[test]
     fn noninteractive_resume_keeps_summary_invocation() {
         let plan = launch_plan(
             Some(Commands::Resume {
@@ -1389,6 +1896,92 @@ mod tests {
         assert_eq!(
             plan,
             LaunchPlan::Invocation(commands::invocation_from_tokens("resume", ["abc-123"]))
+        );
+    }
+
+    #[test]
+    fn rewind_command_keeps_cli_flags_in_the_registry_invocation() {
+        let invocation = to_invocation(Commands::Rewind {
+            session: Some("abc-123".into()),
+            n: 3,
+            yes: true,
+        })
+        .expect("rewind invocation");
+
+        assert_eq!(
+            invocation,
+            commands::invocation_from_tokens(
+                "rewind",
+                ["--session", "abc-123", "--n", "3", "--yes"]
+            )
+        );
+    }
+
+    #[test]
+    fn memory_command_uses_direct_launch_plan() {
+        let plan =
+            launch_plan(Some(Commands::Memory { command: None }), false).expect("launch plan");
+
+        assert_eq!(plan, LaunchPlan::Memory { command: None });
+    }
+
+    #[test]
+    fn keybindings_command_prints_shortcut_reference() {
+        let mut output = Vec::new();
+
+        run_from(["wonder-of-u", "keybindings"], &mut output).expect("run keybindings");
+
+        let text = String::from_utf8(output).expect("utf8");
+        assert!(text.contains("## Keybindings"));
+        assert!(text.contains("Ctrl+C / Ctrl+D"));
+        assert!(text.contains("Enter: send message"));
+    }
+
+    #[test]
+    fn vim_command_reports_current_state() {
+        let dir = unique_test_dir("cli-vim-show");
+        let mut output = Vec::new();
+
+        run_from(
+            vec![
+                "wonder-of-u".to_string(),
+                "--storage-dir".to_string(),
+                dir.display().to_string(),
+                "vim".to_string(),
+            ],
+            &mut output,
+        )
+        .expect("run vim show");
+
+        let text = String::from_utf8(output).expect("utf8");
+        assert_eq!(text.trim(), "vim mode: on");
+    }
+
+    #[test]
+    fn vim_command_toggle_persists_state() {
+        let dir = unique_test_dir("cli-vim-toggle-command");
+        let mut output = Vec::new();
+
+        run_from(
+            vec![
+                "wonder-of-u".to_string(),
+                "--storage-dir".to_string(),
+                dir.display().to_string(),
+                "vim".to_string(),
+                "toggle".to_string(),
+            ],
+            &mut output,
+        )
+        .expect("run vim toggle");
+
+        let text = String::from_utf8(output).expect("utf8");
+        assert_eq!(text.trim(), "vim mode: off");
+        assert_eq!(
+            wonder_of_u_agent::SettingsStore::new(&dir)
+                .read()
+                .expect("read settings")
+                .vim_mode,
+            Some(false)
         );
     }
 
@@ -1432,7 +2025,297 @@ mod tests {
     }
 
     #[test]
+    fn memory_path_command_prints_global_memory_path() {
+        let storage_dir = unique_test_dir("cli-memory-path");
+        let mut output = Vec::new();
+
+        run_from(
+            vec![
+                "wonder-of-u".to_string(),
+                "--storage-dir".to_string(),
+                storage_dir.display().to_string(),
+                "memory".to_string(),
+                "path".to_string(),
+            ],
+            &mut output,
+        )
+        .expect("run memory path");
+
+        let text = String::from_utf8(output).expect("utf8");
+        assert_eq!(
+            text.trim(),
+            storage_dir.join("CLAUDE.md").display().to_string()
+        );
+    }
+
+    #[test]
+    fn theme_list_command_prints_available_themes() {
+        let mut output = Vec::new();
+
+        run_from(["wonder-of-u", "theme", "list"], &mut output).expect("run theme list");
+
+        let text = String::from_utf8(output).expect("utf8");
+        assert!(text.lines().any(|theme| theme == "default"));
+        assert!(text.lines().any(|theme| theme == "midnight"));
+    }
+
+    #[test]
+    fn theme_set_command_persists_theme() {
+        let dir = unique_test_dir("cli-theme-command-set");
+        let storage_dir = dir.to_string_lossy().into_owned();
+
+        let mut output = Vec::new();
+        run_from(
+            vec![
+                "wonder-of-u".to_string(),
+                "--storage-dir".to_string(),
+                storage_dir.clone(),
+                "theme".to_string(),
+                "set".to_string(),
+                "midnight".to_string(),
+            ],
+            &mut output,
+        )
+        .expect("run theme set");
+
+        let text = String::from_utf8(output).expect("utf8");
+        assert!(text.contains("theme=midnight"));
+        assert_eq!(
+            SettingsStore::new(&dir)
+                .read()
+                .expect("read settings")
+                .theme
+                .as_deref(),
+            Some("midnight")
+        );
+
+        let mut show_output = Vec::new();
+        run_from(
+            vec![
+                "wonder-of-u".to_string(),
+                "--storage-dir".to_string(),
+                storage_dir,
+                "theme".to_string(),
+            ],
+            &mut show_output,
+        )
+        .expect("run theme show");
+        let show_text = String::from_utf8(show_output).expect("utf8");
+        assert_eq!(show_text.trim(), "current_theme=midnight");
+    }
+
+    #[test]
+    fn theme_set_command_rejects_unknown_theme() {
+        let dir = unique_test_dir("cli-theme-command-invalid");
+        let storage_dir = dir.to_string_lossy().into_owned();
+
+        let error = run_from(
+            vec![
+                "wonder-of-u".to_string(),
+                "--storage-dir".to_string(),
+                storage_dir,
+                "theme".to_string(),
+                "set".to_string(),
+                "aurora".to_string(),
+            ],
+            &mut Vec::new(),
+        )
+        .expect_err("unknown theme should fail");
+
+        assert!(error.to_string().contains("unknown theme: aurora"));
+    }
+
+    #[test]
+    fn output_style_list_command_prints_available_styles() {
+        let mut output = Vec::new();
+
+        run_from(["wonder-of-u", "output-style", "list"], &mut output)
+            .expect("run output-style list");
+
+        assert_eq!(
+            String::from_utf8(output).expect("utf8").trim(),
+            "markdown\nplain\nraw"
+        );
+    }
+
+    #[test]
+    fn output_style_set_command_persists_style() {
+        let dir = unique_test_dir("cli-output-style-command-set");
+        let storage_dir = dir.to_string_lossy().into_owned();
+
+        let mut output = Vec::new();
+        run_from(
+            vec![
+                "wonder-of-u".to_string(),
+                "--storage-dir".to_string(),
+                storage_dir.clone(),
+                "output-style".to_string(),
+                "set".to_string(),
+                "raw".to_string(),
+            ],
+            &mut output,
+        )
+        .expect("run output-style set");
+
+        let text = String::from_utf8(output).expect("utf8");
+        assert!(text.contains("output_style=raw"));
+        assert_eq!(
+            wonder_of_u_agent::SettingsStore::new(&dir)
+                .read()
+                .expect("read settings")
+                .output_style
+                .as_deref(),
+            Some("raw")
+        );
+
+        let mut show_output = Vec::new();
+        run_from(
+            vec![
+                "wonder-of-u".to_string(),
+                "--storage-dir".to_string(),
+                storage_dir,
+                "output-style".to_string(),
+            ],
+            &mut show_output,
+        )
+        .expect("run output-style show");
+        let show_text = String::from_utf8(show_output).expect("utf8");
+        assert_eq!(show_text.trim(), "current_output_style=raw");
+    }
+
+    #[test]
+    fn output_style_set_command_rejects_unknown_style() {
+        let dir = unique_test_dir("cli-output-style-command-invalid");
+        let storage_dir = dir.to_string_lossy().into_owned();
+
+        let error = run_from(
+            vec![
+                "wonder-of-u".to_string(),
+                "--storage-dir".to_string(),
+                storage_dir,
+                "output-style".to_string(),
+                "set".to_string(),
+                "html".to_string(),
+            ],
+            &mut Vec::new(),
+        )
+        .expect_err("unknown output style should fail");
+
+        assert!(error.to_string().contains("unknown output style: html"));
+    }
+
+    #[test]
+    fn env_show_command_displays_persisted_and_system_values() {
+        let dir = unique_test_dir("cli-env-command-show");
+        let storage_dir = dir.to_string_lossy().into_owned();
+        let _provider = EnvVarGuard::set("WONDER_PROVIDER", "anthropic");
+        wonder_of_u_agent::SettingsStore::new(&dir)
+            .write(&wonder_of_u_agent::AgentSettings {
+                env_vars: std::collections::HashMap::from([(
+                    "WONDER_MODEL".into(),
+                    "sonnet".into(),
+                )]),
+                ..wonder_of_u_agent::AgentSettings::default()
+            })
+            .expect("write settings");
+
+        let mut output = Vec::new();
+        run_from(
+            vec![
+                "wonder-of-u".to_string(),
+                "--storage-dir".to_string(),
+                storage_dir,
+                "env".to_string(),
+            ],
+            &mut output,
+        )
+        .expect("run env show");
+
+        let text = String::from_utf8(output).expect("utf8");
+        assert!(text.contains("persisted.WONDER_MODEL=sonnet"));
+        assert!(text.contains("system.WONDER_PROVIDER=anthropic"));
+    }
+
+    #[test]
+    fn env_set_and_unset_commands_persist_changes() {
+        let dir = unique_test_dir("cli-env-command-set-unset");
+        let storage_dir = dir.to_string_lossy().into_owned();
+
+        let mut set_output = Vec::new();
+        run_from(
+            vec![
+                "wonder-of-u".to_string(),
+                "--storage-dir".to_string(),
+                storage_dir.clone(),
+                "env".to_string(),
+                "set".to_string(),
+                "FOO=bar".to_string(),
+            ],
+            &mut set_output,
+        )
+        .expect("run env set");
+
+        assert_eq!(
+            wonder_of_u_agent::SettingsStore::new(&dir)
+                .read()
+                .expect("read settings")
+                .env_vars
+                .get("FOO"),
+            Some(&"bar".to_string())
+        );
+
+        let mut unset_output = Vec::new();
+        run_from(
+            vec![
+                "wonder-of-u".to_string(),
+                "--storage-dir".to_string(),
+                storage_dir,
+                "env".to_string(),
+                "unset".to_string(),
+                "FOO".to_string(),
+            ],
+            &mut unset_output,
+        )
+        .expect("run env unset");
+
+        assert!(
+            !wonder_of_u_agent::SettingsStore::new(&dir)
+                .read()
+                .expect("read settings")
+                .env_vars
+                .contains_key("FOO")
+        );
+    }
+
+    #[test]
+    fn env_set_command_rejects_invalid_assignment() {
+        let dir = unique_test_dir("cli-env-command-invalid-assignment");
+        let storage_dir = dir.to_string_lossy().into_owned();
+
+        let error = run_from(
+            vec![
+                "wonder-of-u".to_string(),
+                "--storage-dir".to_string(),
+                storage_dir,
+                "env".to_string(),
+                "set".to_string(),
+                "BROKEN".to_string(),
+            ],
+            &mut Vec::new(),
+        )
+        .expect_err("invalid assignment");
+
+        assert!(
+            error
+                .to_string()
+                .contains("environment variable assignment must use KEY=VALUE syntax")
+        );
+    }
+
+    #[test]
     fn status_reports_storage_counts() {
+        let _api_key = EnvVarGuard::set("ANTHROPIC_API_KEY", "");
+        let _oai_key = EnvVarGuard::set("OPENAI_API_KEY", "");
         let dir = unique_test_dir("cli-status");
         let storage_dir = dir.to_string_lossy().into_owned();
 
@@ -1489,7 +2372,7 @@ mod tests {
         assert!(text.contains("settings_sync_cloud=unsupported"));
         assert!(text.contains("remote_managed_settings=deferred"));
         assert!(text.contains("team_memory_sync=unsupported"));
-        assert!(text.contains("skills=1"));
+        assert!(text.contains("skills=14"));
         assert!(text.contains("mcp_servers=0"));
         assert!(text.contains("active_tasks=0"));
         assert!(text.contains("terminal_tasks=1"));
@@ -1497,6 +2380,74 @@ mod tests {
         assert!(text.contains("tasks_reconciled_at="));
         assert!(text.contains("fresh_task_heartbeats=0"));
         assert!(text.contains("plugin_runtime=command_subprocess"));
+    }
+
+    #[test]
+    fn cost_and_usage_commands_render_human_readable_cost_summary() {
+        let dir = unique_test_dir("cli-cost-command");
+        let storage_dir = dir.to_string_lossy().into_owned();
+        let store = TranscriptStore::new(&dir);
+        let cost_store = CostStore::new(&dir);
+
+        let mut state = AppState::new(dir.join("workspace"));
+        fs::create_dir_all(&state.session.cwd).expect("create workspace");
+        state.record_cost_usage(
+            TokenUsage {
+                input_tokens: 12_345,
+                output_tokens: 3_456,
+                cache_creation_tokens: 567,
+                cache_read_tokens: 1_234,
+            },
+            Some(0.0842),
+        );
+        store
+            .write_metadata(&SessionMetadata::from_app_state(&state))
+            .expect("write metadata");
+        cost_store
+            .write_costs(&SessionCostLedger::from_app_state(&state))
+            .expect("write costs");
+
+        let _cwd_lock = CWD_TEST_LOCK.lock().expect("cwd lock");
+        let original_cwd = std::env::current_dir().expect("current dir");
+        std::env::set_current_dir(&state.session.cwd).expect("set current dir");
+
+        let mut cost_output = Vec::new();
+        let mut usage_output = Vec::new();
+        let result = (|| -> Result<()> {
+            run_from(
+                vec![
+                    "wonder-of-u".to_string(),
+                    "--storage-dir".to_string(),
+                    storage_dir.clone(),
+                    "cost".to_string(),
+                ],
+                &mut cost_output,
+            )?;
+            run_from(
+                vec![
+                    "wonder-of-u".to_string(),
+                    "--storage-dir".to_string(),
+                    storage_dir,
+                    "usage".to_string(),
+                ],
+                &mut usage_output,
+            )?;
+            Ok(())
+        })();
+        std::env::set_current_dir(&original_cwd).expect("restore current dir");
+        result.expect("run cost commands");
+
+        let cost_text = String::from_utf8(cost_output).expect("cost utf8");
+        let usage_text = String::from_utf8(usage_output).expect("usage utf8");
+
+        assert_eq!(cost_text, usage_text);
+        assert!(cost_text.contains(&format!("Session: {}", state.session.id)));
+        assert!(cost_text.contains("  Input tokens:   12,345"));
+        assert!(cost_text.contains("  Output tokens:  3,456"));
+        assert!(cost_text.contains("  Cache read:     1,234"));
+        assert!(cost_text.contains("  Cache write:    567"));
+        assert!(cost_text.contains("  Total cost:     $0.0842"));
+        assert!(cost_text.contains("All-time total:   $0.0842"));
     }
 
     #[test]
@@ -2226,7 +3177,7 @@ mod tests {
         .expect("reload plugins");
         let reload_text = String::from_utf8(reload_output).expect("utf8");
         assert!(reload_text.contains("plugins=1"));
-        assert!(reload_text.contains("skills=2"));
+        assert!(reload_text.contains("skills=15"));
 
         let mut slash_output = Vec::new();
         run_from(
@@ -2245,6 +3196,83 @@ mod tests {
         let slash_text = String::from_utf8(slash_output).expect("utf8");
         assert!(slash_text.contains("skill=release-check"));
         assert!(slash_text.contains("source=plugin:demo-plugin"));
+    }
+
+    #[test]
+    fn plugin_install_validate_and_list_accept_upstream_plugin_json() {
+        let dir = unique_test_dir("cli-plugin-install-upstream");
+        let storage_dir = dir.join("storage");
+        let storage_arg = storage_dir.to_string_lossy().into_owned();
+        let plugin_root = dir.join("upstream-plugin");
+        fs::create_dir_all(plugin_root.join("commands")).expect("commands dir");
+        fs::write(plugin_root.join("commands/run.txt"), "echo run").expect("command file");
+        fs::write(
+            plugin_root.join("plugin.json"),
+            serde_json::to_string_pretty(&json!({
+                "schema_version": 1,
+                "name": "upstream-plugin",
+                "version": "0.1.0",
+                "description": "upstream plugin",
+                "commands": [{
+                    "name": "upstream-run",
+                    "description": "Run plugin",
+                    "path": "commands/run.txt"
+                }]
+            }))
+            .expect("plugin manifest"),
+        )
+        .expect("write plugin manifest");
+
+        let mut validate_output = Vec::new();
+        run_from(
+            vec![
+                "wonder-of-u".to_string(),
+                "plugin".to_string(),
+                "validate".to_string(),
+                plugin_root.to_string_lossy().into_owned(),
+            ],
+            &mut validate_output,
+        )
+        .expect("validate plugin");
+        let validate_text = String::from_utf8(validate_output).expect("utf8");
+        assert!(validate_text.contains("valid=true"));
+        assert!(validate_text.contains("path="));
+        assert!(validate_text.contains("plugin.json"));
+        assert!(validate_text.contains("name=upstream-plugin"));
+
+        let mut install_output = Vec::new();
+        run_from(
+            vec![
+                "wonder-of-u".to_string(),
+                "--storage-dir".to_string(),
+                storage_arg.clone(),
+                "plugin".to_string(),
+                "install".to_string(),
+                plugin_root.to_string_lossy().into_owned(),
+            ],
+            &mut install_output,
+        )
+        .expect("install plugin");
+        let install_text = String::from_utf8(install_output).expect("utf8");
+        assert!(install_text.contains("installed=true"));
+        assert!(install_text.contains(&format!("path={}", plugin_root.display())));
+
+        let mut list_output = Vec::new();
+        run_from(
+            vec![
+                "wonder-of-u".to_string(),
+                "--storage-dir".to_string(),
+                storage_arg,
+                "plugin".to_string(),
+                "list".to_string(),
+            ],
+            &mut list_output,
+        )
+        .expect("list plugins");
+        let list_text = String::from_utf8(list_output).expect("utf8");
+        assert!(list_text.contains("plugins=1"));
+        assert!(list_text.contains("plugin[0]=upstream-plugin"));
+        assert!(list_text.contains("source=configured"));
     }
 
     #[test]
@@ -2424,11 +3452,13 @@ mod tests {
     fn registry_includes_commit_and_commit_push_pr_commands() {
         let mut registry = wonder_of_u_core::CommandRegistry::new();
         registry
-            .register(std::sync::Arc::new(commands::workflow::CommitCommand::new()))
+            .register(std::sync::Arc::new(
+                commands::review_workflow::CommitCommand::new(),
+            ))
             .expect("register commit");
         registry
             .register(std::sync::Arc::new(
-                commands::workflow::CommitPushPrCommand::new(),
+                commands::review_workflow::CommitPushPrCommand::new(),
             ))
             .expect("register commit-push-pr");
 
@@ -2663,6 +3693,76 @@ mod tests {
         assert!(exported.contains("\"transcript\""));
         assert!(exported.contains("\"resume\""));
         assert!(exported.contains("\"source\": \"snapshot\""));
+    }
+
+    #[test]
+    fn tag_command_round_trips_through_cli() {
+        let dir = unique_test_dir("cli-tag");
+        let storage_dir = dir.to_string_lossy().into_owned();
+
+        let mut created = Vec::new();
+        run_from(
+            vec![
+                "wonder-of-u".to_string(),
+                "--storage-dir".to_string(),
+                storage_dir.clone(),
+                "session".to_string(),
+                "new".to_string(),
+                "--title".to_string(),
+                "Tagged Session".to_string(),
+            ],
+            &mut created,
+        )
+        .expect("create session");
+        let created = String::from_utf8(created).expect("utf8");
+        let session_id = extract_value(&created, "session_id=").to_string();
+
+        let mut tagged = Vec::new();
+        run_from(
+            vec![
+                "wonder-of-u".to_string(),
+                "--storage-dir".to_string(),
+                storage_dir.clone(),
+                "tag".to_string(),
+                "bugfix".to_string(),
+            ],
+            &mut tagged,
+        )
+        .expect("tag session");
+        let tagged = String::from_utf8(tagged).expect("utf8");
+        assert!(tagged.contains(&format!("session_id={session_id}")));
+        assert!(tagged.contains("session_tags=bugfix"));
+
+        let mut listed = Vec::new();
+        run_from(
+            vec![
+                "wonder-of-u".to_string(),
+                "--storage-dir".to_string(),
+                storage_dir.clone(),
+                "session".to_string(),
+                "list".to_string(),
+            ],
+            &mut listed,
+        )
+        .expect("list sessions");
+        let listed = String::from_utf8(listed).expect("utf8");
+        assert!(listed.contains("session[0].tags=#bugfix"));
+
+        let mut tag_list = Vec::new();
+        run_from(
+            vec![
+                "wonder-of-u".to_string(),
+                "--storage-dir".to_string(),
+                storage_dir,
+                "tag".to_string(),
+                "--list".to_string(),
+            ],
+            &mut tag_list,
+        )
+        .expect("list tags");
+        let tag_list = String::from_utf8(tag_list).expect("utf8");
+        assert!(tag_list.contains("tag[0].name=bugfix"));
+        assert!(tag_list.contains(&format!("tag[0].session[0].id={session_id}")));
     }
 
     #[test]
@@ -3044,20 +4144,27 @@ mod tests {
         assert!(started.contains("status=running"));
         assert!(started.contains("pid="));
 
-        let mut shown = Vec::new();
-        run_from(
-            vec![
-                "wonder-of-u".to_string(),
-                "--storage-dir".to_string(),
-                storage_dir.clone(),
-                "agents".to_string(),
-                "show".to_string(),
-                agent_id.clone(),
-            ],
-            &mut shown,
-        )
-        .expect("show agent");
-        let shown = String::from_utf8(shown).expect("utf8");
+        let mut shown = String::new();
+        for _ in 0..20 {
+            let mut output = Vec::new();
+            run_from(
+                vec![
+                    "wonder-of-u".to_string(),
+                    "--storage-dir".to_string(),
+                    storage_dir.clone(),
+                    "agents".to_string(),
+                    "show".to_string(),
+                    agent_id.clone(),
+                ],
+                &mut output,
+            )
+            .expect("show agent");
+            shown = String::from_utf8(output).expect("utf8");
+            if shown.contains("agent cli args:") {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
         assert!(shown.contains("agent.runtime=prompt_subprocess"));
         assert!(shown.contains("agent.provider=openai"));
         assert!(shown.contains("status=running"));

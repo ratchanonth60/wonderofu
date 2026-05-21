@@ -12,15 +12,20 @@ use std::{
 
 use time::OffsetDateTime;
 use wonder_of_u_core::{
-    AgentRuntime, AgentTaskState, CommandContext, PermissionDecision, PermissionMode,
+    AgentRuntime, AgentTaskState, CommandContext, FleetId, PermissionDecision, PermissionMode,
     PermissionRequest, RemoteTaskMetadata, RemoteTaskState, RemoteTaskType, Result, TaskId,
     TaskKind, TaskState, TaskStatus, ToolPermissionContext, WonderError, resolve_path,
 };
 use wonder_of_u_storage::TaskStore;
+use wonder_of_u_tools::{AgentWorktreeCleanup, try_cleanup_agent_worktree};
 
 const HEARTBEAT_INTERVAL_SECS: u64 = 2;
 const STALE_HEARTBEAT_AFTER_SECS: i64 = 8;
 const CLI_BIN_OVERRIDE_ENV: &str = "WONDER_OF_U_CLI_BIN";
+
+/// Environment variable injected into every named agent subprocess so the
+/// subprocess can poll its own mailbox inbox at turn start.
+pub(crate) const WONDER_OF_U_AGENT_NAME_ENV: &str = "WONDER_OF_U_AGENT_NAME";
 
 #[derive(Clone, Debug)]
 pub(crate) struct TaskManager {
@@ -45,6 +50,42 @@ pub(crate) struct AgentTaskLaunch {
     pub provider: Option<String>,
     pub model: Option<String>,
     pub cwd: PathBuf,
+    pub fleet_id: Option<FleetId>,
+    /// Fleet member request id that triggered this launch.
+    pub fleet_request_id: Option<String>,
+    /// Parent agent task id (i.e. the task that queued this one via the `agent` tool).
+    pub parent_task_id: Option<TaskId>,
+    pub allowed_tools: Option<Vec<String>>,
+    /// Explicitly denied tool names for the spawned agent subprocess.
+    ///
+    /// Propagated from [`wonder_of_u_core::FleetMemberRequest::disallowed_tools`]
+    /// at dispatch time and forwarded as `--disallowed-tools` in the child
+    /// subprocess command so filtering is enforced, not only computed.
+    pub disallowed_tools: Vec<String>,
+    /// Git worktree branch the agent will run inside, if any.
+    pub worktree_branch: Option<String>,
+    /// Filesystem path to the git worktree the agent will run inside, if any.
+    ///
+    /// When set, the runtime stores the path in [`TaskState`] so it can
+    /// attempt post-task cleanup and surface the path in `/tasks show`.
+    pub worktree_path: Option<PathBuf>,
+    /// HEAD commit hash captured when the worktree was created.
+    ///
+    /// Forwarded to [`TaskState`] and used during post-task cleanup to detect
+    /// whether the agent made any new commits on the worktree branch.
+    pub worktree_head_commit: Option<String>,
+    /// Composed child system prompt forwarded from the parent session via fork-lite.
+    /// Passed as `--system <value>` in the child subprocess command when present.
+    pub system_prompt: Option<String>,
+    /// Depth of this fork (parent depth + 1), injected as `WONDER_OF_U_FORK_DEPTH`
+    /// env var in the child subprocess so recursive forks can be detected.
+    pub fork_depth: Option<u32>,
+    /// Pre-allocated task id from the tool layer.
+    ///
+    /// When `Some`, `start_agent_task` uses this id instead of generating a
+    /// fresh one.  This keeps output-path metadata emitted by `AgentTool`
+    /// consistent with the task record written to storage.
+    pub reserved_task_id: Option<TaskId>,
 }
 
 #[cfg_attr(not(test), allow(dead_code))]
@@ -101,6 +142,16 @@ pub(crate) enum TaskHeartbeatState {
     Fresh,
     Stale,
     Missing,
+}
+
+#[derive(Clone, Debug, Default)]
+pub(crate) struct TaskPruneReport {
+    /// Tasks that were successfully removed.
+    pub removed: Vec<TaskState>,
+    /// Active (non-terminal) tasks that were skipped.
+    pub skipped_active: Vec<TaskState>,
+    /// Terminal tasks skipped by a narrower prune filter.
+    pub skipped_terminal: Vec<TaskState>,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -163,7 +214,11 @@ impl TaskManager {
         let reconciled_at = OffsetDateTime::now_utc();
         let mut report = TaskReconcileReport::new(reconciled_at);
         for task in self.store.list_tasks()? {
-            let (task, outcome) = self.reconcile_task(task, reconciled_at)?;
+            let (mut task, outcome) = self.reconcile_task(task, reconciled_at)?;
+            // Attempt worktree cleanup after the task reaches a terminal state.
+            if outcome.finished {
+                self.maybe_cleanup_worktree(&mut task)?;
+            }
             if kind.is_some_and(|kind| task.kind != kind) {
                 continue;
             }
@@ -233,6 +288,7 @@ impl TaskManager {
             &log_path,
             &self.store.paths().task_exit_path(task.id),
             &self.store.paths().task_heartbeat_path(task.id),
+            &[],
         )?;
         let process_identity = capture_process_identity(pid)?;
 
@@ -249,7 +305,6 @@ impl TaskManager {
     /// Handles start agent task
     pub fn start_agent_task(&self, launch: AgentTaskLaunch) -> Result<TaskState> {
         ensure_directory(&launch.cwd)?;
-        let command = agent_prompt_command(self.storage_dir(), &launch)?;
         let description = launch
             .description
             .clone()
@@ -257,15 +312,28 @@ impl TaskManager {
         let mut task = TaskState::pending_agent(
             description,
             AgentTaskState::prompt_subprocess(
-                launch.name,
-                launch.prompt,
-                launch.provider,
-                launch.model,
+                launch.name.clone(),
+                launch.prompt.clone(),
+                launch.provider.clone(),
+                launch.model.clone(),
             ),
         );
+        // Use the pre-allocated task id when the tool layer provided one so
+        // that the output paths published in the ToolResult metadata stay
+        // stable and match the files written by the task subprocess.
+        if let Some(reserved_id) = launch.reserved_task_id {
+            task.id = reserved_id;
+        }
+        task.fleet_id = launch.fleet_id;
+        task.fleet_request_id = launch.fleet_request_id.clone();
+        task.parent_id = launch.parent_task_id;
         task.cwd = Some(launch.cwd.clone());
-        task.command = Some(command);
+        task.worktree_branch = launch.worktree_branch.clone();
+        task.worktree_path = launch.worktree_path.clone();
+        task.worktree_head_commit = launch.worktree_head_commit.clone();
         task.output_log = Some(self.store.paths().task_log_path(task.id));
+        // Build the subprocess command now that task.id is known (needed for env injection).
+        task.command = Some(agent_prompt_command(self.storage_dir(), &launch)?);
         self.store.write_task(&task)?;
         self.store
             .append_log(task.id, render_agent_task_header(&task))?;
@@ -274,12 +342,35 @@ impl TaskManager {
             .output_log
             .clone()
             .ok_or_else(|| WonderError::internal("task log path missing after initialization"))?;
+
+        // Inject fleet context env vars so the agent subprocess can write
+        // result sidecars and queue child requests with correct lineage.
+        let mut env_vars: Vec<(String, String)> =
+            vec![("WONDER_OF_U_TASK_ID".into(), task.id.to_string())];
+        if let Some(fleet_id) = launch.fleet_id {
+            env_vars.push(("WONDER_OF_U_FLEET_ID".into(), fleet_id.to_string()));
+        }
+        if let Some(ref req_id) = launch.fleet_request_id {
+            env_vars.push(("WONDER_OF_U_FLEET_REQUEST_ID".into(), req_id.clone()));
+        }
+        // Propagate fork depth so the child subprocess can enforce the
+        // recursive fork guard in AgentTool::execute().
+        if let Some(depth) = launch.fork_depth {
+            env_vars.push(("WONDER_OF_U_FORK_DEPTH".into(), depth.to_string()));
+        }
+        // Inject agent name so the child subprocess can locate its own mailbox
+        // inbox when polling for unread messages at turn start.
+        if !launch.name.is_empty() {
+            env_vars.push((WONDER_OF_U_AGENT_NAME_ENV.into(), launch.name.clone()));
+        }
+
         let pid = spawn_background_task(
             task.command.as_deref().unwrap_or_default(),
             task.cwd.as_deref().unwrap_or(self.storage_dir()),
             &log_path,
             &self.store.paths().task_exit_path(task.id),
             &self.store.paths().task_heartbeat_path(task.id),
+            &env_vars,
         )?;
         let process_identity = capture_process_identity(pid)?;
 
@@ -322,6 +413,59 @@ impl TaskManager {
                     }),
             )),
         }
+    }
+
+    /// Removes a single task's persisted artifacts (state, log, heartbeat, exit
+    /// files).
+    ///
+    /// * If the task is in a terminal state the artifacts are deleted and the
+    ///   task state snapshot is returned.
+    /// * If the task is still active (pending/running) the call returns an
+    ///   error *unless* `force` is `true`, in which case the artifacts are
+    ///   removed unconditionally.
+    pub fn remove_task(&self, task_id: TaskId, force: bool) -> Result<TaskState> {
+        // Reconcile so the state reflects any process exits since the last write.
+        let task = self.get_task(task_id)?;
+        if !task.status.is_terminal() && !force {
+            return Err(WonderError::validation(format!(
+                "task {} is still active (status={}); pass --force to remove it anyway",
+                task.id,
+                task_status_label(task.status),
+            )));
+        }
+        self.store.delete_task_artifacts(task_id)?;
+        Ok(task)
+    }
+
+    /// Removes all terminal tasks in bulk.
+    ///
+    /// When `completed_only` is `true` only `Completed` tasks are pruned;
+    /// otherwise every terminal status (Completed, Failed, Killed, Cancelled)
+    /// is pruned.  Active (Pending/Running) tasks are always skipped.
+    ///
+    /// Returns a [`TaskPruneReport`] with the removed and skipped lists so
+    /// callers can produce stable `key=value` output.
+    pub fn prune_tasks(&self, completed_only: bool) -> Result<TaskPruneReport> {
+        // Reconcile all tasks first so any that finished since the last
+        // heartbeat are marked terminal before we decide whether to remove them.
+        let report = self.reconcile_tasks(None)?;
+        let mut result = TaskPruneReport::default();
+        for task in report.tasks {
+            if task.status.is_terminal() {
+                let should_prune = !completed_only || task.status == TaskStatus::Completed;
+                if should_prune {
+                    self.store.delete_task_artifacts(task.id)?;
+                    result.removed.push(task);
+                } else {
+                    // Terminal but excluded by the completed-only filter.
+                    result.skipped_terminal.push(task);
+                }
+            } else {
+                // Active task – never touched.
+                result.skipped_active.push(task);
+            }
+        }
+        Ok(result)
     }
 
     fn stop_process_task(&self, mut task: TaskState, force: bool) -> Result<TaskState> {
@@ -569,6 +713,69 @@ impl TaskManager {
         )?;
         Ok(())
     }
+
+    /// Attempts to clean up the agent worktree associated with `task`.
+    ///
+    /// A clean worktree (no uncommitted files, no new commits) is removed and
+    /// its branch deleted.  A dirty worktree is retained; the path and change
+    /// summary are appended to the task's `status_message` so callers can
+    /// surface them in `/tasks show`.
+    ///
+    /// This is a best-effort operation: all git errors are logged but do not
+    /// propagate, ensuring they never block the primary reconcile flow.
+    fn maybe_cleanup_worktree(&self, task: &mut TaskState) -> Result<()> {
+        let Some(ref worktree_path) = task.worktree_path else {
+            return Ok(());
+        };
+        let worktree_path = worktree_path.clone();
+
+        match try_cleanup_agent_worktree(&worktree_path, task.worktree_head_commit.as_deref()) {
+            AgentWorktreeCleanup::Removed => {
+                self.store.append_log(
+                    task.id,
+                    format!(
+                        "[wonder-of-u worktree] cleanup=removed path={}\n",
+                        worktree_path.display()
+                    ),
+                )?;
+            }
+            AgentWorktreeCleanup::Retained {
+                changed_files,
+                commits,
+            } => {
+                let branch = task
+                    .worktree_branch
+                    .as_deref()
+                    .unwrap_or("unknown")
+                    .to_string();
+                let detail = format!(
+                    "worktree retained ({} uncommitted file(s), {} new commit(s) on branch \
+                     `{branch}`); path={}",
+                    changed_files,
+                    commits,
+                    worktree_path.display()
+                );
+                // Append to existing status_message so the task's primary exit
+                // status is not overwritten.
+                match task.status_message {
+                    Some(ref mut msg) => {
+                        msg.push_str(" — ");
+                        msg.push_str(&detail);
+                    }
+                    None => task.status_message = Some(detail.clone()),
+                }
+                self.store.write_task(task)?;
+                self.store.append_log(
+                    task.id,
+                    format!("[wonder-of-u worktree] cleanup=retained {detail}\n"),
+                )?;
+            }
+            AgentWorktreeCleanup::AlreadyGone => {
+                // Worktree already removed; nothing to do.
+            }
+        }
+        Ok(())
+    }
 }
 
 fn ensure_directory(path: &Path) -> Result<()> {
@@ -736,6 +943,22 @@ fn agent_prompt_command(storage_dir: &Path, launch: &AgentTaskLaunch) -> Result<
         tokens.push("--model".into());
         tokens.push(model.clone());
     }
+    if let Some(allowed_tools) = &launch.allowed_tools
+        && !allowed_tools.is_empty()
+    {
+        tokens.push("--allowed-tools".into());
+        tokens.push(allowed_tools.join(","));
+    }
+    // Propagate the deny-list so the child subprocess enforces tool restrictions.
+    if !launch.disallowed_tools.is_empty() {
+        tokens.push("--disallowed-tools".into());
+        tokens.push(launch.disallowed_tools.join(","));
+    }
+    // Pass the composed fork system prompt to the child subprocess.
+    if let Some(ref system_prompt) = launch.system_prompt {
+        tokens.push("--system".into());
+        tokens.push(system_prompt.clone());
+    }
     tokens.push(launch.prompt.clone());
     Ok(shell_words::join(tokens.iter().map(String::as_str)))
 }
@@ -795,6 +1018,7 @@ fn spawn_background_task(
     log_path: &Path,
     exit_path: &Path,
     heartbeat_path: &Path,
+    env_vars: &[(String, String)],
 ) -> Result<u32> {
     let stdout = OpenOptions::new()
         .create(true)
@@ -807,6 +1031,9 @@ fn spawn_background_task(
         .stdin(Stdio::null())
         .stdout(Stdio::from(stdout))
         .stderr(Stdio::from(stderr));
+    for (key, val) in env_vars {
+        child.env(key, val);
+    }
     Ok(child.spawn()?.id())
 }
 
@@ -843,7 +1070,16 @@ fn background_shell_command(
         .arg(shell_wrapper(command, exit_path, heartbeat_path));
     unsafe {
         child.pre_exec(|| {
-            if libc::setsid() == -1 {
+            // On macOS, setsid() places the child in a new session.  The
+            // parent process cannot send signals to a process group that
+            // belongs to a different session (EPERM), so we use setpgid
+            // instead, which creates a new process group within the same
+            // session and still lets kill(-pgid, signal) work.
+            #[cfg(target_os = "macos")]
+            let rc = libc::setpgid(0, 0);
+            #[cfg(not(target_os = "macos"))]
+            let rc = libc::setsid();
+            if rc == -1 {
                 Err(std::io::Error::last_os_error())
             } else {
                 Ok(())
@@ -918,7 +1154,7 @@ fn process_is_alive(pid: u32) -> Result<bool> {
     }
 }
 
-#[cfg(unix)]
+#[cfg(all(unix, not(target_os = "macos")))]
 fn process_is_zombie(pid: u32) -> bool {
     let Ok(stat) = std::fs::read_to_string(format!("/proc/{pid}/stat")) else {
         return false;
@@ -926,6 +1162,17 @@ fn process_is_zombie(pid: u32) -> bool {
     stat.rsplit_once(") ")
         .and_then(|(_, rest)| rest.split_whitespace().next())
         == Some("Z")
+}
+
+// On macOS /proc does not exist.  Use waitpid(WNOHANG) to detect (and reap)
+// zombie children.  When we are not the parent the call returns ECHILD;
+// in that case init/launchd reaps the zombie quickly so returning false is
+// safe — the next kill(pid, 0) poll will see ESRCH once it is gone.
+#[cfg(target_os = "macos")]
+fn process_is_zombie(pid: u32) -> bool {
+    unsafe {
+        libc::waitpid(pid as libc::pid_t, std::ptr::null_mut(), libc::WNOHANG) == pid as libc::pid_t
+    }
 }
 
 #[cfg(not(unix))]
@@ -1015,6 +1262,7 @@ mod tests {
             effort_level: None,
             brief_mode: false,
             fast_mode: false,
+            optimize_token_mode: false,
             session_tags: Vec::new(),
             additional_working_directories: Vec::new(),
         }
@@ -1082,6 +1330,7 @@ mod tests {
     #[test]
     fn manager_starts_prompt_subprocess_agent_tasks() {
         let dir = unique_test_dir("task-manager-agent");
+        let fleet_id = FleetId::new();
         let script = write_agent_script(
             &dir,
             "agent-run.sh",
@@ -1097,10 +1346,22 @@ mod tests {
                 provider: Some("openai".into()),
                 model: Some("gpt-4.1".into()),
                 cwd: dir.clone(),
+                fleet_id: Some(fleet_id),
+                fleet_request_id: None,
+                parent_task_id: None,
+                allowed_tools: Some(vec!["bash".into(), "file_read".into()]),
+                disallowed_tools: vec![],
+                worktree_branch: None,
+                worktree_path: None,
+                worktree_head_commit: None,
+                system_prompt: None,
+                fork_depth: None,
+                reserved_task_id: None,
             })
             .expect("start agent task");
 
         assert_eq!(task.kind, TaskKind::LocalAgent);
+        assert_eq!(task.fleet_id, Some(fleet_id));
         assert_eq!(task.status, TaskStatus::Running);
         assert_eq!(
             task.agent.as_ref().map(|agent| agent.runtime),
@@ -1120,6 +1381,11 @@ mod tests {
             task.command
                 .as_deref()
                 .is_some_and(|command| command.contains("--provider openai"))
+        );
+        assert!(
+            task.command
+                .as_deref()
+                .is_some_and(|command| command.contains("--allowed-tools bash,file_read"))
         );
 
         let mut final_task = manager.get_task(task.id).expect("agent snapshot");
@@ -1160,6 +1426,17 @@ mod tests {
                 provider: Some("openai".into()),
                 model: Some("gpt-4.1".into()),
                 cwd: dir.clone(),
+                fleet_id: None,
+                fleet_request_id: None,
+                parent_task_id: None,
+                allowed_tools: None,
+                disallowed_tools: vec![],
+                worktree_branch: None,
+                worktree_path: None,
+                worktree_head_commit: None,
+                system_prompt: None,
+                fork_depth: None,
+                reserved_task_id: None,
             })
             .expect("start agent task");
 
@@ -1324,5 +1601,385 @@ mod tests {
             fs::set_permissions(&path, permissions).expect("set agent script permissions");
         }
         path
+    }
+
+    /// When `AgentTaskLaunch.reserved_task_id` is set, `start_agent_task`
+    /// must create the task record using that id so output paths published in
+    /// the tool result metadata remain stable.
+    #[test]
+    fn start_agent_task_uses_reserved_task_id_when_provided() {
+        let dir = unique_test_dir("task-manager-reserved-id");
+        let script = write_agent_script(
+            &dir,
+            "agent-reserved.sh",
+            "printf 'stub ok\\n'\nsleep 0.1\n",
+        );
+        let _env = EnvVarGuard::set(CLI_BIN_OVERRIDE_ENV, script.into_os_string());
+
+        let reserved = TaskId::new();
+        let manager = TaskManager::new(&dir);
+        let task = manager
+            .start_agent_task(AgentTaskLaunch {
+                name: "reserved-id-task".into(),
+                description: Some("verifying reserved id".into()),
+                prompt: "test reserved task id".into(),
+                provider: None,
+                model: None,
+                cwd: dir.clone(),
+                fleet_id: None,
+                fleet_request_id: None,
+                parent_task_id: None,
+                allowed_tools: None,
+                disallowed_tools: vec![],
+                worktree_branch: None,
+                worktree_path: None,
+                worktree_head_commit: None,
+                system_prompt: None,
+                fork_depth: None,
+                reserved_task_id: Some(reserved),
+            })
+            .expect("start agent task with reserved id");
+
+        assert_eq!(
+            task.id, reserved,
+            "task.id must equal the pre-allocated reserved_task_id"
+        );
+        // The log path must also reference the reserved id.
+        let log = task.output_log.expect("output_log must be set");
+        assert!(
+            log.to_string_lossy().contains(&reserved.to_string()),
+            "output_log path must contain the reserved task id; log={}, id={}",
+            log.display(),
+            reserved
+        );
+    }
+
+    // ── remove_task / prune_tasks tests ──────────────────────────────────────
+
+    /// Helper: write a terminal shell task with a log and exit file into the
+    /// manager's store so we can test artifact cleanup without spawning a
+    /// real process.
+    fn seed_completed_task(manager: &TaskManager, label: &str) -> TaskState {
+        let dir = manager.storage_dir();
+        let mut task = TaskState::pending_shell(label, "true", dir);
+        task.mark_finished(TaskStatus::Completed, Some(0), Some("done".into()));
+        task.output_log = Some(manager.store.paths().task_log_path(task.id));
+        manager.store.write_task(&task).expect("write task");
+        manager
+            .store
+            .append_log(task.id, "output\n")
+            .expect("write log");
+        manager
+            .store
+            .write_exit_code(task.id, 0)
+            .expect("write exit code");
+        task
+    }
+
+    /// Helper: write a running shell task (no real process, pid points to the
+    /// test process so it appears alive to reconcile).
+    fn seed_running_task(manager: &TaskManager, label: &str) -> TaskState {
+        let dir = manager.storage_dir();
+        let mut task = TaskState::pending_shell(label, "sleep 999", dir);
+        task.status = TaskStatus::Running;
+        task.pid = Some(std::process::id()); // test process – always alive
+        task.output_log = Some(manager.store.paths().task_log_path(task.id));
+        manager.store.write_task(&task).expect("write task");
+        manager
+            .store
+            .append_log(task.id, "running\n")
+            .expect("write log");
+        task
+    }
+
+    #[test]
+    fn remove_completed_task_deletes_artifacts() {
+        let dir = unique_test_dir("task-remove-completed");
+        let manager = TaskManager::new(&dir);
+        let task = seed_completed_task(&manager, "cleanup-me");
+
+        let state_path = manager.store.paths().task_state_path(task.id);
+        let log_path = manager.store.paths().task_log_path(task.id);
+        assert!(state_path.exists(), "state file should exist before remove");
+        assert!(log_path.exists(), "log file should exist before remove");
+
+        let removed = manager
+            .remove_task(task.id, false)
+            .expect("remove completed task");
+        assert_eq!(removed.id, task.id);
+
+        assert!(
+            !state_path.exists(),
+            "state file should be gone after remove"
+        );
+        assert!(!log_path.exists(), "log file should be gone after remove");
+    }
+
+    #[test]
+    fn remove_running_task_rejected_without_force() {
+        let dir = unique_test_dir("task-remove-running-reject");
+        let manager = TaskManager::new(&dir);
+        let task = seed_running_task(&manager, "still-running");
+
+        let err = manager
+            .remove_task(task.id, false)
+            .expect_err("should reject active task");
+        assert!(
+            err.to_string().contains("still active"),
+            "error should mention active: {err}"
+        );
+
+        // The state file must still be present – nothing was deleted.
+        let state_path = manager.store.paths().task_state_path(task.id);
+        assert!(
+            state_path.exists(),
+            "state file must remain when remove is rejected"
+        );
+    }
+
+    #[test]
+    fn remove_running_task_succeeds_with_force() {
+        let dir = unique_test_dir("task-remove-running-force");
+        let manager = TaskManager::new(&dir);
+        let task = seed_running_task(&manager, "force-delete-me");
+
+        manager
+            .remove_task(task.id, true)
+            .expect("force remove should succeed");
+
+        let state_path = manager.store.paths().task_state_path(task.id);
+        assert!(
+            !state_path.exists(),
+            "state file should be gone after forced remove"
+        );
+    }
+
+    #[test]
+    fn prune_terminal_skips_running_tasks() {
+        let dir = unique_test_dir("task-prune-skips-running");
+        let manager = TaskManager::new(&dir);
+
+        let completed = seed_completed_task(&manager, "done-task");
+        let running = seed_running_task(&manager, "live-task");
+
+        let report = manager.prune_tasks(false).expect("prune all terminal");
+
+        assert_eq!(report.removed.len(), 1, "only the completed task removed");
+        assert_eq!(report.removed[0].id, completed.id);
+        assert_eq!(report.skipped_active.len(), 1, "running task skipped");
+        assert_eq!(report.skipped_active[0].id, running.id);
+
+        // Running task's state file must still be on disk.
+        let running_state = manager.store.paths().task_state_path(running.id);
+        assert!(
+            running_state.exists(),
+            "running task state must survive prune"
+        );
+    }
+
+    #[test]
+    fn prune_completed_only_leaves_failed_tasks() {
+        let dir = unique_test_dir("task-prune-completed-only");
+        let manager = TaskManager::new(&dir);
+
+        // Seed a completed task.
+        let completed = seed_completed_task(&manager, "ok-task");
+
+        // Seed a failed task by writing it directly.
+        let mut failed = TaskState::pending_shell("failed-task", "false", &dir);
+        failed.mark_finished(TaskStatus::Failed, Some(1), Some("error".into()));
+        failed.output_log = Some(manager.store.paths().task_log_path(failed.id));
+        manager
+            .store
+            .write_task(&failed)
+            .expect("write failed task");
+
+        let report = manager.prune_tasks(true).expect("prune completed only");
+
+        assert_eq!(report.removed.len(), 1);
+        assert_eq!(report.removed[0].id, completed.id);
+        // The failed task ends up in terminal-skipped because completed_only=true.
+        assert!(
+            report.skipped_terminal.iter().any(|t| t.id == failed.id),
+            "failed task should be in terminal skipped list under --completed"
+        );
+        assert!(report.skipped_active.is_empty());
+
+        let failed_state = manager.store.paths().task_state_path(failed.id);
+        assert!(
+            failed_state.exists(),
+            "failed task state must not be deleted under --completed"
+        );
+    }
+
+    /// `start_agent_task` stores `worktree_path` and `worktree_head_commit`
+    /// from `AgentTaskLaunch` into the persisted `TaskState`.
+    #[test]
+    fn start_agent_task_stores_worktree_fields() {
+        let dir = unique_test_dir("task-worktree-fields");
+        let script = write_agent_script(&dir, "agent-wt.sh", "printf 'done\\n'\n");
+        let _env = EnvVarGuard::set(CLI_BIN_OVERRIDE_ENV, script.into_os_string());
+        let manager = TaskManager::new(&dir);
+
+        let fake_worktree = dir.join("fake-worktree");
+        std::fs::create_dir_all(&fake_worktree).expect("create fake worktree dir");
+
+        let task = manager
+            .start_agent_task(AgentTaskLaunch {
+                name: "wt-agent".into(),
+                description: None,
+                prompt: "hello".into(),
+                provider: None,
+                model: None,
+                cwd: fake_worktree.clone(),
+                fleet_id: None,
+                fleet_request_id: None,
+                parent_task_id: None,
+                allowed_tools: None,
+                disallowed_tools: vec![],
+                worktree_branch: Some("worktree-wt-agent".into()),
+                worktree_path: Some(fake_worktree.clone()),
+                worktree_head_commit: Some("abc123".into()),
+                system_prompt: None,
+                fork_depth: None,
+                reserved_task_id: None,
+            })
+            .expect("start agent task");
+
+        assert_eq!(task.worktree_branch.as_deref(), Some("worktree-wt-agent"));
+        assert_eq!(task.worktree_path.as_deref(), Some(fake_worktree.as_path()));
+        assert_eq!(task.worktree_head_commit.as_deref(), Some("abc123"));
+
+        // Verify the fields are also persisted to disk.
+        let persisted = manager.store.read_task(task.id).expect("read task");
+        assert_eq!(
+            persisted.worktree_path.as_deref(),
+            Some(fake_worktree.as_path())
+        );
+        assert_eq!(persisted.worktree_head_commit.as_deref(), Some("abc123"));
+    }
+
+    /// `maybe_cleanup_worktree` returns `AlreadyGone` for a task with no
+    /// `worktree_path` and does not write to disk.
+    #[test]
+    fn maybe_cleanup_worktree_no_op_when_no_path() {
+        let dir = unique_test_dir("task-wt-cleanup-noop");
+        let manager = TaskManager::new(&dir);
+        let mut task = TaskState::pending("no worktree");
+        task.worktree_path = None;
+        manager.store.write_task(&task).expect("write task");
+
+        // Should not error and should not modify the task.
+        manager
+            .maybe_cleanup_worktree(&mut task)
+            .expect("no-op cleanup should not fail");
+        assert!(
+            task.status_message.is_none(),
+            "status_message should not change when no worktree is set"
+        );
+    }
+
+    /// When the worktree path doesn't exist on disk, `maybe_cleanup_worktree`
+    /// silently skips cleanup (AlreadyGone path).
+    #[test]
+    fn maybe_cleanup_worktree_skips_nonexistent_path() {
+        let dir = unique_test_dir("task-wt-cleanup-gone");
+        let manager = TaskManager::new(&dir);
+        let mut task = TaskState::pending("gone worktree");
+        task.worktree_path = Some(dir.join("does-not-exist"));
+        task.worktree_head_commit = Some("deadbeef".into());
+        manager.store.write_task(&task).expect("write task");
+
+        manager
+            .maybe_cleanup_worktree(&mut task)
+            .expect("cleanup of gone worktree should not fail");
+        // No change to status_message — the gone path is silently ignored.
+        assert!(
+            task.status_message.is_none(),
+            "status_message should not change when worktree is already gone"
+        );
+    }
+
+    // ── disallowed_tools subprocess propagation ───────────────────────────────
+
+    /// `disallowed_tools` must appear as `--disallowed-tools <csv>` in the
+    /// composed subprocess command string.
+    #[test]
+    fn disallowed_tools_appear_in_subprocess_command() {
+        let dir = unique_test_dir("task-disallowed-tools-cmd");
+        let script =
+            write_agent_script(&dir, "disallowed-echo.sh", "printf 'args: %s\\n' \"$*\"\n");
+        let _env = EnvVarGuard::set(CLI_BIN_OVERRIDE_ENV, script.into_os_string());
+        let manager = TaskManager::new(&dir);
+
+        let task = manager
+            .start_agent_task(AgentTaskLaunch {
+                name: "tester".into(),
+                description: None,
+                prompt: "do nothing".into(),
+                provider: None,
+                model: None,
+                cwd: dir.clone(),
+                fleet_id: None,
+                fleet_request_id: None,
+                parent_task_id: None,
+                allowed_tools: None,
+                disallowed_tools: vec!["computer_use".into(), "bash".into()],
+                worktree_branch: None,
+                worktree_path: None,
+                worktree_head_commit: None,
+                system_prompt: None,
+                fork_depth: None,
+                reserved_task_id: None,
+            })
+            .expect("start agent task");
+
+        let cmd = task.command.expect("command must be recorded");
+        assert!(
+            cmd.contains("--disallowed-tools"),
+            "command must include --disallowed-tools; got: {cmd}"
+        );
+        assert!(
+            cmd.contains("computer_use") && cmd.contains("bash"),
+            "command must list all disallowed tools; got: {cmd}"
+        );
+    }
+
+    /// When `disallowed_tools` is empty the `--disallowed-tools` flag must
+    /// **not** appear in the subprocess command (no spurious empty args).
+    #[test]
+    fn empty_disallowed_tools_omitted_from_subprocess_command() {
+        let dir = unique_test_dir("task-no-disallowed-tools-cmd");
+        let script = write_agent_script(&dir, "no-disallowed-echo.sh", "printf 'ok'\n");
+        let _env = EnvVarGuard::set(CLI_BIN_OVERRIDE_ENV, script.into_os_string());
+        let manager = TaskManager::new(&dir);
+
+        let task = manager
+            .start_agent_task(AgentTaskLaunch {
+                name: "clean".into(),
+                description: None,
+                prompt: "do nothing".into(),
+                provider: None,
+                model: None,
+                cwd: dir.clone(),
+                fleet_id: None,
+                fleet_request_id: None,
+                parent_task_id: None,
+                allowed_tools: None,
+                disallowed_tools: vec![],
+                worktree_branch: None,
+                worktree_path: None,
+                worktree_head_commit: None,
+                system_prompt: None,
+                fork_depth: None,
+                reserved_task_id: None,
+            })
+            .expect("start agent task");
+
+        let cmd = task.command.expect("command must be recorded");
+        assert!(
+            !cmd.contains("--disallowed-tools"),
+            "command must NOT include --disallowed-tools when list is empty; got: {cmd}"
+        );
     }
 }

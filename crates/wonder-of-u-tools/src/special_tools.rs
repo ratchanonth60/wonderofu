@@ -17,7 +17,7 @@ use wonder_of_u_core::{
     PermissionRuleBehavior, PermissionRuleSource, RemoteTaskState, RemoteTaskType, Result, Tool,
     ToolContext, ToolKind, ToolResult, ToolSpec, ToolUseId, WonderError, resolve_path,
 };
-use wonder_of_u_mcp::{McpConfigStore, McpServerConfig};
+use wonder_of_u_mcp::{CallToolResult, McpClient, McpConfigStore, McpServerConfig};
 
 use crate::{app_root, base_spec, parse_input, require_non_empty_path, require_non_empty_text};
 
@@ -28,8 +28,11 @@ const VERIFY_PLAN_RUNTIME_UNAVAILABLE: &str = "verify_plan_execution is unavaila
 const SEND_USER_FILE_RUNTIME_UNAVAILABLE: &str =
     "send_user_file is unavailable: file delivery is not implemented in wonder-of-u-tools";
 const SUGGEST_BACKGROUND_PR_RUNTIME_UNAVAILABLE: &str = "suggest_background_pr is unavailable: background PR suggestion workflows are not implemented in wonder-of-u-tools";
+/// Returned when `McpTool` is invoked without both `server` and `tool` fields.
+///
+/// Callers that provide both fields trigger live MCP dispatch instead.
 const MCP_TOOL_RUNTIME_UNAVAILABLE: &str =
-    "mcp is unavailable: dynamic MCP tool invocation is not implemented in wonder-of-u-tools";
+    "mcp: `server` and `tool` are required for live dispatch — source-compat stub returned";
 const MONITOR_RUNTIME_UNAVAILABLE: &str =
     "monitor is unavailable: runtime monitoring hooks are not implemented in wonder-of-u-tools";
 const SUBSCRIBE_PR_RUNTIME_UNAVAILABLE: &str = "subscribe_pr is unavailable: PR webhook subscriptions are not implemented in wonder-of-u-tools";
@@ -611,6 +614,7 @@ impl Tool for StructuredOutputTool {
         spec.input_schema = json!({
             "type": "object",
             "description": "structured JSON payload returned to the caller",
+            "properties": {},
             "additionalProperties": true
         });
         spec.read_only = true;
@@ -914,17 +918,32 @@ impl Tool for McpTool {
     ) -> Result<ToolResult> {
         let input = parse_input::<McpToolInput>("mcp", &input)?;
         input.validate()?;
-        unsupported_result(
-            use_id,
-            MCP_TOOL_RUNTIME_UNAVAILABLE,
-            json!({
-                "supported": false,
-                "tool": "mcp",
-                "server": input.server,
-                "tool_name": input.tool,
-                "arguments": input.arguments,
-            }),
-        )
+
+        match (&input.server, &input.tool) {
+            // Both fields present: attempt live MCP dispatch.
+            (Some(server_name), Some(tool_name)) => {
+                let storage_root = app_root()?;
+                dispatch_mcp_tool(
+                    use_id,
+                    server_name,
+                    tool_name,
+                    input.arguments,
+                    &storage_root,
+                )
+            }
+            // Missing one or both fields: return the source-compat stub.
+            _ => unsupported_result(
+                use_id,
+                MCP_TOOL_RUNTIME_UNAVAILABLE,
+                json!({
+                    "supported": false,
+                    "tool": "mcp",
+                    "server": input.server,
+                    "tool_name": input.tool,
+                    "arguments": input.arguments,
+                }),
+            ),
+        }
     }
 }
 
@@ -1496,6 +1515,95 @@ fn unsupported_result(use_id: ToolUseId, message: &str, metadata: Value) -> Resu
     Ok(result)
 }
 
+/// Dispatches a tool call to a named MCP server and returns a `ToolResult`.
+///
+/// Soft failures (server not configured, server disabled) are wrapped as `Ok(failure)`
+/// rather than `Err` so the tool loop can forward the error message to the model.
+/// Hard failures (I/O, protocol errors) propagate as `Err`.
+fn dispatch_mcp_tool(
+    use_id: ToolUseId,
+    server_name: &str,
+    tool_name: &str,
+    arguments: Value,
+    storage_root: &Path,
+) -> Result<ToolResult> {
+    let config = McpConfigStore::new(storage_root).read()?;
+
+    let Some(server) = config.server(server_name) else {
+        return Ok(make_dispatch_failure(
+            use_id,
+            server_name,
+            tool_name,
+            format!("mcp server `{server_name}` is not configured; add it with `mcp add`"),
+            "server_not_configured",
+        ));
+    };
+
+    if !server.enabled {
+        return Ok(make_dispatch_failure(
+            use_id,
+            server_name,
+            tool_name,
+            format!(
+                "mcp server `{server_name}` is disabled; enable it with `mcp enable {server_name}`"
+            ),
+            "server_disabled",
+        ));
+    }
+
+    let mut client = McpClient::connect(server, &config.client, &config.protocol_version)?;
+    let call_result = client.call_tool(tool_name, arguments)?;
+    let content = format_mcp_call_result(&call_result);
+
+    let mut result = if call_result.is_error {
+        ToolResult::failure(
+            use_id,
+            if content.is_empty() {
+                format!("mcp tool `{tool_name}` on `{server_name}` returned an error")
+            } else {
+                content
+            },
+        )
+    } else {
+        ToolResult::success(use_id, content)
+    };
+    result.metadata = json!({
+        "tool": "mcp",
+        "server": server_name,
+        "tool_name": tool_name,
+        "is_error": call_result.is_error,
+        "content_items": call_result.content.len(),
+    });
+    Ok(result)
+}
+
+fn make_dispatch_failure(
+    use_id: ToolUseId,
+    server_name: &str,
+    tool_name: &str,
+    message: String,
+    reason: &str,
+) -> ToolResult {
+    let mut result = ToolResult::failure(use_id, message);
+    result.metadata = json!({
+        "tool": "mcp",
+        "server": server_name,
+        "tool_name": tool_name,
+        "reason": reason,
+    });
+    result
+}
+
+/// Joins all `text`-typed content items from a `CallToolResult` into a single string.
+fn format_mcp_call_result(result: &CallToolResult) -> String {
+    result
+        .content
+        .iter()
+        .filter_map(|item| item.text.as_deref())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 fn trim_command_output(bytes: &[u8]) -> String {
     String::from_utf8_lossy(bytes)
         .trim_end_matches(['\r', '\n'])
@@ -1689,10 +1797,15 @@ mod tests {
         ToolContext {
             session_id: SessionId::new(),
             cwd: root,
+            session_worktree: None,
             permission_mode: PermissionMode::AcceptEdits,
             additional_working_directories: Vec::new(),
+            provider: None,
+            model: None,
             permission_rules: Vec::new(),
             features: FeatureSet::first_release(),
+            bash_session_store: None,
+            fork_context: None,
         }
     }
 
@@ -1785,16 +1898,16 @@ mod tests {
 
     #[test]
     fn dynamic_source_tools_return_explicit_unsupported_failures() {
-        let mcp = block_on(McpTool.execute(
-            tool_context(unique_test_dir("special-tools-mcp")),
+        // McpTool without server+tool → source-compat stub (no dispatch attempted).
+        let mcp_stub = block_on(McpTool.execute(
+            tool_context(unique_test_dir("special-tools-mcp-stub")),
             ToolUseId::new(),
-            json!({ "serverName": "demo", "toolName": "lookup", "arguments": { "q": "rust" } }),
+            json!({}),
         ))
-        .expect("execute");
-        assert!(!mcp.success);
-        assert!(mcp.content.contains(MCP_TOOL_RUNTIME_UNAVAILABLE));
-        assert_eq!(mcp.metadata["server"], "demo");
-        assert_eq!(mcp.metadata["tool_name"], "lookup");
+        .expect("execute stub");
+        assert!(!mcp_stub.success);
+        assert!(mcp_stub.content.contains("server"));
+        assert_eq!(mcp_stub.metadata["supported"], false);
 
         let workflow = block_on(WorkflowTool.execute(
             tool_context(unique_test_dir("special-tools-workflow")),
@@ -1818,6 +1931,78 @@ mod tests {
         assert!(push.content.contains("Work finished"));
         assert_eq!(push.metadata["title"], "Done");
         assert_eq!(push.metadata["message"], "Work finished");
+    }
+
+    // --- McpTool live dispatch tests ---
+
+    #[test]
+    fn mcp_tool_without_dispatch_fields_returns_stub() {
+        // Only `server` provided, no `tool` → falls through to stub.
+        let result = block_on(McpTool.execute(
+            tool_context(unique_test_dir("special-tools-mcp-only-server")),
+            ToolUseId::new(),
+            json!({ "server": "demo" }),
+        ))
+        .expect("execute");
+
+        assert!(!result.success);
+        assert_eq!(result.metadata["supported"], false);
+        assert!(result.content.contains("server"));
+    }
+
+    #[test]
+    fn dispatch_reports_server_not_configured() {
+        // Empty temp dir → no mcp.json → McpConfigStore returns default (zero servers).
+        let dir = unique_test_dir("special-tools-mcp-unconfigured");
+        let result = dispatch_mcp_tool(
+            ToolUseId::new(),
+            "unknown-server",
+            "some-tool",
+            serde_json::json!({ "arg": "value" }),
+            &dir,
+        )
+        .expect("dispatch returns Ok even for soft failures");
+
+        assert!(!result.success);
+        assert!(result.content.contains("unknown-server"));
+        assert_eq!(result.metadata["reason"], "server_not_configured");
+        assert_eq!(result.metadata["server"], "unknown-server");
+        assert_eq!(result.metadata["tool_name"], "some-tool");
+    }
+
+    #[test]
+    fn dispatch_reports_disabled_server() {
+        use std::collections::BTreeMap;
+
+        let dir = unique_test_dir("special-tools-mcp-disabled");
+        McpConfigStore::new(&dir)
+            .write(&wonder_of_u_mcp::McpConfig {
+                servers: vec![McpServerConfig {
+                    name: "demo".into(),
+                    command: "false".into(),
+                    args: vec![],
+                    env: BTreeMap::new(),
+                    enabled: false,
+                    cwd: None,
+                    protocol_version: None,
+                }],
+                ..Default::default()
+            })
+            .expect("write mcp config");
+
+        let result = dispatch_mcp_tool(
+            ToolUseId::new(),
+            "demo",
+            "echo",
+            serde_json::json!({ "text": "hello" }),
+            &dir,
+        )
+        .expect("dispatch returns Ok for disabled server");
+
+        assert!(!result.success);
+        assert!(result.content.contains("demo"));
+        assert_eq!(result.metadata["reason"], "server_disabled");
+        assert_eq!(result.metadata["server"], "demo");
     }
 
     #[test]

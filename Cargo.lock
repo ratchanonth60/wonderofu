@@ -97,6 +97,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "72b3254f16251a8381aa12e40e3c4d2f0199f8c6508fbecb9d91f575e0fbb8c6"
 
 [[package]]
+name = "bincode"
+version = "1.3.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b1f45e9417d87227c7a56d22e471c6206462cba514c7590c09aff4cf6d1ddcad"
+dependencies = [
+ "serde",
+]
+
+[[package]]
 name = "bitflags"
 version = "2.11.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -320,6 +329,7 @@ checksum = "9ed9a281f7bc9b7576e61468ba615a66a5c8cfdff42420a70aa82701a3b1e292"
 dependencies = [
  "block-buffer",
  "crypto-common",
+ "subtle",
 ]
 
 [[package]]
@@ -548,6 +558,21 @@ name = "heck"
 version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2304e00983f87ffb38b55b444b5e3b60a884b5d30c0fca7d82fe33449bbe55ea"
+
+[[package]]
+name = "hex"
+version = "0.4.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7f24254aa9a54b5c858eaee2f5bccdb46aaf0e486a595ed5fd8f86ba55232a70"
+
+[[package]]
+name = "hmac"
+version = "0.12.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6c49c37c09c17a53d937dfbb742eb3a961d65a994e6bcdcf37e7399d0cc8ab5e"
+dependencies = [
+ "digest",
+]
 
 [[package]]
 name = "icu_collections"
@@ -829,6 +854,28 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "384b8ab6d37215f3c5301a95a4accb5d64aa607f1fcb26a11b5303878451b4fe"
 
 [[package]]
+name = "onig"
+version = "6.5.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0cc3cbf698f9438986c11a880c90a6d04b9de27575afd28bbf45b154b6c709e2"
+dependencies = [
+ "bitflags",
+ "libc",
+ "once_cell",
+ "onig_sys",
+]
+
+[[package]]
+name = "onig_sys"
+version = "69.9.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1e68317604e77e53b85896388e1a803c1d21b74c899ec9e5e1112db90735edd7"
+dependencies = [
+ "cc",
+ "pkg-config",
+]
+
+[[package]]
 name = "parking_lot"
 version = "0.12.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -868,6 +915,12 @@ name = "pin-project-lite"
 version = "0.2.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a89322df9ebe1c1578d689c92318e070967d1042b512afbe49518723f4e6d5cd"
+
+[[package]]
+name = "pkg-config"
+version = "0.3.33"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "19f132c84eca552bf34cab8ec81f1c1dcc229b811638f9d283dceabe58c5569e"
 
 [[package]]
 name = "potential_utf"
@@ -1289,6 +1342,24 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn",
+]
+
+[[package]]
+name = "syntect"
+version = "5.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "656b45c05d95a5704399aeef6bd0ddec7b2b3531b7c9e900abbf7c4d2190c925"
+dependencies = [
+ "bincode",
+ "flate2",
+ "fnv",
+ "once_cell",
+ "onig",
+ "regex-syntax",
+ "serde",
+ "serde_derive",
+ "thiserror",
+ "walkdir",
 ]
 
 [[package]]
@@ -1874,11 +1945,15 @@ dependencies = [
 
 [[package]]
 name = "wonder-of-u-agent"
-version = "0.1.0"
+version = "0.1.3"
 dependencies = [
+ "hex",
+ "hmac",
  "percent-encoding",
  "serde",
  "serde_json",
+ "sha2",
+ "tempfile",
  "time",
  "ureq",
  "wonder-of-u-core",
@@ -1889,7 +1964,7 @@ dependencies = [
 
 [[package]]
 name = "wonder-of-u-cli"
-version = "0.1.0"
+version = "0.1.3"
 dependencies = [
  "async-trait",
  "clap",
@@ -1903,6 +1978,7 @@ dependencies = [
  "tempfile",
  "time",
  "tokio",
+ "unicode-segmentation",
  "walkdir",
  "wonder-of-u-agent",
  "wonder-of-u-core",
@@ -1917,10 +1993,11 @@ dependencies = [
 
 [[package]]
 name = "wonder-of-u-core"
-version = "0.1.0"
+version = "0.1.3"
 dependencies = [
  "async-trait",
  "futures",
+ "glob",
  "serde",
  "serde_json",
  "serde_yaml",
@@ -1928,11 +2005,12 @@ dependencies = [
  "thiserror",
  "time",
  "uuid",
+ "wonder-of-u-test-support",
 ]
 
 [[package]]
 name = "wonder-of-u-mcp"
-version = "0.1.0"
+version = "0.1.3"
 dependencies = [
  "async-trait",
  "serde",
@@ -1946,7 +2024,7 @@ dependencies = [
 
 [[package]]
 name = "wonder-of-u-plugins"
-version = "0.1.0"
+version = "0.1.3"
 dependencies = [
  "serde",
  "serde_json",
@@ -1957,7 +2035,7 @@ dependencies = [
 
 [[package]]
 name = "wonder-of-u-skills"
-version = "0.1.0"
+version = "0.1.3"
 dependencies = [
  "serde",
  "serde_json",
@@ -1969,27 +2047,28 @@ dependencies = [
 
 [[package]]
 name = "wonder-of-u-storage"
-version = "0.1.0"
+version = "0.1.3"
 dependencies = [
  "serde",
  "serde_json",
  "sha2",
  "tempfile",
  "time",
+ "uuid",
  "wonder-of-u-core",
  "wonder-of-u-test-support",
 ]
 
 [[package]]
 name = "wonder-of-u-test-support"
-version = "0.1.0"
+version = "0.1.3"
 dependencies = [
  "uuid",
 ]
 
 [[package]]
 name = "wonder-of-u-tools"
-version = "0.1.0"
+version = "0.1.3"
 dependencies = [
  "async-trait",
  "futures",
@@ -2011,10 +2090,13 @@ dependencies = [
 
 [[package]]
 name = "wonder-of-u-tui"
-version = "0.1.0"
+version = "0.1.3"
 dependencies = [
  "crossterm",
+ "ratatui",
  "serde_json",
+ "syntect",
+ "time",
  "unicode-segmentation",
  "unicode-width 0.2.0",
  "wonder-of-u-core",

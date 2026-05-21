@@ -55,9 +55,9 @@ cli/structuredIO.ts,cli,covered-by-rust-equivalent,cli/structuredIO
 cli/transports/HybridTransport.ts,cli,covered-by-rust-equivalent,cli/HybridTransport
 cli/transports/SSETransport.ts,cli,covered-by-rust-equivalent,cli/SSETransport
 cli/transports/SerialBatchEventUploader.ts,cli,covered-by-rust-equivalent,cli/SerialBatchEventUploader
-cli/transports/WebSocketTransport.ts,cli,covered-by-rust-equivalent,cli/WebSocketTransport
+cli/transports/WebSocketTransport.ts,cli,external-service-blocked,CCR-specific WebSocket transport (not general SSE); blocked by missing tokio-tungstenite dep + CCR backend — see docs/adr-remote-cloud-transport.md
 cli/transports/WorkerStateUploader.ts,cli,covered-by-rust-equivalent,cli/WorkerStateUploader
-cli/transports/ccrClient.ts,cli,covered-by-rust-equivalent,cli/ccrClient
+cli/transports/ccrClient.ts,cli,external-service-blocked,CCR worker/session protocol is not covered by the Rust build; remote transport remains unavailable
 cli/transports/transportUtils.ts,cli,covered-by-rust-equivalent,cli/transportUtils
 cli/update.ts,cli,covered-by-rust-equivalent,cli/update
 commands/add-dir/add-dir.tsx,command,covered-by-rust-equivalent,Rust command: add-dir
@@ -952,10 +952,10 @@ query/deps.ts,query,covered-by-rust-equivalent,wonder-of-u-core/src/query.rs
 query/stopHooks.ts,query,covered-by-rust-equivalent,query/stopHooks
 query/tokenBudget.ts,query,covered-by-rust-equivalent,query/tokenBudget
 query.ts,misc,covered-by-rust-equivalent,top-level query.ts
-remote/RemoteSessionManager.ts,external-remote,external-service-blocked,remote requires external runtime
-remote/SessionsWebSocket.ts,external-remote,external-service-blocked,remote requires external runtime
-remote/remotePermissionBridge.ts,external-remote,external-service-blocked,remote requires external runtime
-remote/sdkMessageAdapter.ts,external-remote,external-service-blocked,remote requires external runtime
+remote/RemoteSessionManager.ts,external-remote,external-service-blocked,blocked: CCR backend + OAuth infra absent — see docs/adr-remote-cloud-transport.md
+remote/SessionsWebSocket.ts,external-remote,external-service-blocked,blocked: CCR WebSocket + tokio-tungstenite dep absent — see docs/adr-remote-cloud-transport.md
+remote/remotePermissionBridge.ts,external-remote,external-service-blocked,blocked: CCR permission bridge requires live CCR session — see docs/adr-remote-cloud-transport.md
+remote/sdkMessageAdapter.ts,external-remote,external-service-blocked,blocked: CCR wire-protocol undocumented — see docs/adr-remote-cloud-transport.md
 replLauncher.tsx,misc,covered-by-rust-equivalent,top-level replLauncher.tsx
 schemas/hooks.ts,misc,covered-by-rust-equivalent,top-level schemas/hooks.ts
 screens/Doctor.tsx,screens,covered-by-rust-equivalent,screens/Doctor
@@ -972,15 +972,15 @@ services/PromptSuggestion/speculation.ts,services,covered-by-rust-equivalent,won
 services/SessionMemory/prompts.ts,services,covered-by-rust-equivalent,services/prompts
 services/SessionMemory/sessionMemory.ts,services,covered-by-rust-equivalent,services/sessionMemory
 services/SessionMemory/sessionMemoryUtils.ts,services,covered-by-rust-equivalent,services/sessionMemoryUtils
-services/analytics/config.ts,services,covered-by-rust-equivalent,services/config
-services/analytics/datadog.ts,services,external-service-blocked,Requires external proprietary service/platform
-services/analytics/firstPartyEventLogger.ts,services,covered-by-rust-equivalent,services/firstPartyEventLogger
-services/analytics/firstPartyEventLoggingExporter.ts,services,covered-by-rust-equivalent,services/firstPartyEventLoggingExporter
-services/analytics/growthbook.ts,services,external-service-blocked,Requires external proprietary service/platform
-services/analytics/index.ts,services,covered-by-rust-equivalent,services/index
-services/analytics/metadata.ts,services,covered-by-rust-equivalent,services/metadata
-services/analytics/sink.ts,services,external-service-blocked,Requires external proprietary service/platform
-services/analytics/sinkKillswitch.ts,services,external-service-blocked,Requires external proprietary service/platform
+services/analytics/config.ts,services,intentionally-omitted/local-first,intentionally omitted; local-first privacy rationale; see docs/adr/0001-telemetry-experiments-omission.md
+services/analytics/datadog.ts,services,external-service-blocked,external service dependency; no Rust port; see docs/adr/0001-telemetry-experiments-omission.md
+services/analytics/firstPartyEventLogger.ts,services,intentionally-omitted/local-first,intentionally omitted; local-first privacy rationale; see docs/adr/0001-telemetry-experiments-omission.md
+services/analytics/firstPartyEventLoggingExporter.ts,services,intentionally-omitted/local-first,intentionally omitted; local-first privacy rationale; see docs/adr/0001-telemetry-experiments-omission.md
+services/analytics/growthbook.ts,services,external-service-blocked,external service dependency; no Rust port; see docs/adr/0001-telemetry-experiments-omission.md
+services/analytics/index.ts,services,intentionally-omitted/local-first,intentionally omitted; local-first privacy rationale; see docs/adr/0001-telemetry-experiments-omission.md
+services/analytics/metadata.ts,services,intentionally-omitted/local-first,intentionally omitted; local-first privacy rationale; see docs/adr/0001-telemetry-experiments-omission.md
+services/analytics/sink.ts,services,external-service-blocked,external service dependency; no Rust port; see docs/adr/0001-telemetry-experiments-omission.md
+services/analytics/sinkKillswitch.ts,services,external-service-blocked,external service dependency; no Rust port; see docs/adr/0001-telemetry-experiments-omission.md
 services/api/adminRequests.ts,services,covered-by-rust-equivalent,services/adminRequests
 services/api/bootstrap.ts,services,external-service-blocked,Requires external proprietary service/platform
 services/api/claude.ts,services,covered-by-rust-equivalent,services/claude
@@ -1069,18 +1069,18 @@ services/policyLimits/types.ts,services,covered-by-rust-equivalent,services/type
 services/preventSleep.ts,services,covered-by-rust-equivalent,services/preventSleep
 services/rateLimitMessages.ts,services,covered-by-rust-equivalent,services/rateLimitMessages
 services/rateLimitMocking.ts,services,covered-by-rust-equivalent,services/rateLimitMocking
-services/remoteManagedSettings/index.ts,services,covered-by-rust-equivalent,services/index
-services/remoteManagedSettings/securityCheck.tsx,services,covered-by-rust-equivalent,services/securityCheck
-services/remoteManagedSettings/syncCache.ts,services,covered-by-rust-equivalent,services/syncCache
-services/remoteManagedSettings/syncCacheState.ts,services,covered-by-rust-equivalent,services/syncCacheState
-services/remoteManagedSettings/types.ts,services,covered-by-rust-equivalent,services/types
-services/settingsSync/index.ts,services,covered-by-rust-equivalent,services/index
-services/settingsSync/types.ts,services,covered-by-rust-equivalent,services/types
-services/teamMemorySync/index.ts,services,covered-by-rust-equivalent,services/index
-services/teamMemorySync/secretScanner.ts,services,covered-by-rust-equivalent,services/secretScanner
-services/teamMemorySync/teamMemSecretGuard.ts,services,covered-by-rust-equivalent,services/teamMemSecretGuard
-services/teamMemorySync/types.ts,services,covered-by-rust-equivalent,services/types
-services/teamMemorySync/watcher.ts,services,covered-by-rust-equivalent,wonder-of-u-storage memdir scan
+services/remoteManagedSettings/index.ts,services,defer-product-decision,remote managed settings remain deferred until a real policy backend exists in the Rust build
+services/remoteManagedSettings/securityCheck.tsx,services,defer-product-decision,remote managed settings remain deferred until a real policy backend exists in the Rust build
+services/remoteManagedSettings/syncCache.ts,services,defer-product-decision,remote managed settings remain deferred until a real policy backend exists in the Rust build
+services/remoteManagedSettings/syncCacheState.ts,services,defer-product-decision,remote managed settings remain deferred until a real policy backend exists in the Rust build
+services/remoteManagedSettings/types.ts,services,defer-product-decision,remote managed settings remain deferred until a real policy backend exists in the Rust build
+services/settingsSync/index.ts,services,defer-product-decision,only local settings persistence exists; cloud upload/download parity is unavailable in the Rust build
+services/settingsSync/types.ts,services,defer-product-decision,only local settings persistence exists; cloud upload/download parity is unavailable in the Rust build
+services/teamMemorySync/index.ts,services,defer-product-decision,team memory cloud sync is unsupported; session memory remains local-only in the Rust build
+services/teamMemorySync/secretScanner.ts,services,defer-product-decision,team memory cloud sync is unsupported; session memory remains local-only in the Rust build
+services/teamMemorySync/teamMemSecretGuard.ts,services,defer-product-decision,team memory cloud sync is unsupported; session memory remains local-only in the Rust build
+services/teamMemorySync/types.ts,services,defer-product-decision,team memory cloud sync is unsupported; session memory remains local-only in the Rust build
+services/teamMemorySync/watcher.ts,services,defer-product-decision,team memory cloud sync is unsupported; session memory remains local-only in the Rust build
 services/tips/tipHistory.ts,services,covered-by-rust-equivalent,services/tipHistory
 services/tips/tipRegistry.ts,services,covered-by-rust-equivalent,services/tipRegistry
 services/tips/tipScheduler.ts,services,covered-by-rust-equivalent,wonder-of-u-storage tips selection helpers
@@ -1322,7 +1322,7 @@ tools.ts,misc,covered-by-rust-equivalent,top-level tools.ts
 types/command.ts,types,covered-by-rust-equivalent,types/command
 types/generated/events_mono/claude_code/v1/claude_code_internal_event.ts,types,covered-by-rust-equivalent,types/claude_code_internal_event
 types/generated/events_mono/common/v1/auth.ts,types,covered-by-rust-equivalent,types/auth
-types/generated/events_mono/growthbook/v1/growthbook_experiment_event.ts,types,covered-by-rust-equivalent,types/growthbook_experiment_event
+types/generated/events_mono/growthbook/v1/growthbook_experiment_event.ts,types,intentionally-omitted/local-first,intentionally omitted; local-first privacy rationale; see docs/adr/0001-telemetry-experiments-omission.md
 types/generated/google/protobuf/timestamp.ts,types,covered-by-rust-equivalent,types/timestamp
 types/hooks.ts,types,covered-by-rust-equivalent,types/hooks
 types/ids.ts,types,covered-by-rust-equivalent,wonder-of-u-core/src/ids.rs
@@ -1492,7 +1492,7 @@ utils/extraUsage.ts,utils,covered-by-rust-equivalent,utils/extraUsage
 utils/fastMode.ts,utils,covered-by-rust-equivalent,utils/fastMode
 utils/file.ts,utils,covered-by-rust-equivalent,utils/file
 utils/fileHistory.ts,utils,covered-by-rust-equivalent,utils/fileHistory
-utils/fileOperationAnalytics.ts,utils,covered-by-rust-equivalent,utils/fileOperationAnalytics
+utils/fileOperationAnalytics.ts,utils,intentionally-omitted/local-first,intentionally omitted; local-first privacy rationale; see docs/adr/0001-telemetry-experiments-omission.md
 utils/filePersistence/filePersistence.ts,utils,covered-by-rust-equivalent,utils/filePersistence
 utils/filePersistence/outputsScanner.ts,utils,covered-by-rust-equivalent,utils/outputsScanner
 utils/fileRead.ts,utils,covered-by-rust-equivalent,utils/fileRead
@@ -1654,7 +1654,7 @@ utils/platform.ts,utils,covered-by-rust-equivalent,utils/platform
 utils/plugins/addDirPluginSettings.ts,utils,covered-by-rust-equivalent,utils/addDirPluginSettings
 utils/plugins/cacheUtils.ts,utils,covered-by-rust-equivalent,utils/cacheUtils
 utils/plugins/dependencyResolver.ts,utils,covered-by-rust-equivalent,utils/dependencyResolver
-utils/plugins/fetchTelemetry.ts,utils,covered-by-rust-equivalent,utils/fetchTelemetry
+utils/plugins/fetchTelemetry.ts,utils,intentionally-omitted/local-first,intentionally omitted; local-first privacy rationale; see docs/adr/0001-telemetry-experiments-omission.md
 utils/plugins/gitAvailability.ts,utils,covered-by-rust-equivalent,utils/gitAvailability
 utils/plugins/headlessPluginInstall.ts,utils,covered-by-rust-equivalent,utils/headlessPluginInstall
 utils/plugins/hintRecommendation.ts,utils,covered-by-rust-equivalent,utils/hintRecommendation
@@ -1842,16 +1842,16 @@ utils/teamMemoryOps.ts,utils,covered-by-rust-equivalent,utils/teamMemoryOps
 utils/teammate.ts,utils,covered-by-rust-equivalent,utils/teammate
 utils/teammateContext.ts,utils,covered-by-rust-equivalent,utils/teammateContext
 utils/teammateMailbox.ts,utils,covered-by-rust-equivalent,utils/teammateMailbox
-utils/telemetry/betaSessionTracing.ts,utils,covered-by-rust-equivalent,utils/betaSessionTracing
-utils/telemetry/bigqueryExporter.ts,utils,covered-by-rust-equivalent,utils/bigqueryExporter
-utils/telemetry/events.ts,utils,covered-by-rust-equivalent,utils/events
-utils/telemetry/instrumentation.ts,utils,external-service-blocked,Requires external proprietary service/platform
-utils/telemetry/logger.ts,utils,external-service-blocked,Requires external proprietary service/platform
-utils/telemetry/perfettoTracing.ts,utils,external-service-blocked,Requires external proprietary service/platform
-utils/telemetry/pluginTelemetry.ts,utils,covered-by-rust-equivalent,utils/pluginTelemetry
-utils/telemetry/sessionTracing.ts,utils,covered-by-rust-equivalent,utils/sessionTracing
-utils/telemetry/skillLoadedEvent.ts,utils,covered-by-rust-equivalent,utils/skillLoadedEvent
-utils/telemetryAttributes.ts,utils,covered-by-rust-equivalent,utils/telemetryAttributes
+utils/telemetry/betaSessionTracing.ts,utils,intentionally-omitted/local-first,intentionally omitted; local-first privacy rationale; see docs/adr/0001-telemetry-experiments-omission.md
+utils/telemetry/bigqueryExporter.ts,utils,intentionally-omitted/local-first,intentionally omitted; local-first privacy rationale; see docs/adr/0001-telemetry-experiments-omission.md
+utils/telemetry/events.ts,utils,intentionally-omitted/local-first,intentionally omitted; local-first privacy rationale; see docs/adr/0001-telemetry-experiments-omission.md
+utils/telemetry/instrumentation.ts,utils,external-service-blocked,external service dependency; no Rust port; see docs/adr/0001-telemetry-experiments-omission.md
+utils/telemetry/logger.ts,utils,external-service-blocked,external service dependency; no Rust port; see docs/adr/0001-telemetry-experiments-omission.md
+utils/telemetry/perfettoTracing.ts,utils,external-service-blocked,external service dependency; no Rust port; see docs/adr/0001-telemetry-experiments-omission.md
+utils/telemetry/pluginTelemetry.ts,utils,intentionally-omitted/local-first,intentionally omitted; local-first privacy rationale; see docs/adr/0001-telemetry-experiments-omission.md
+utils/telemetry/sessionTracing.ts,utils,intentionally-omitted/local-first,intentionally omitted; local-first privacy rationale; see docs/adr/0001-telemetry-experiments-omission.md
+utils/telemetry/skillLoadedEvent.ts,utils,intentionally-omitted/local-first,intentionally omitted; local-first privacy rationale; see docs/adr/0001-telemetry-experiments-omission.md
+utils/telemetryAttributes.ts,utils,intentionally-omitted/local-first,intentionally omitted; local-first privacy rationale; see docs/adr/0001-telemetry-experiments-omission.md
 utils/teleport/api.ts,utils,external-service-blocked,Requires external proprietary service/platform
 utils/teleport/environmentSelection.ts,utils,covered-by-rust-equivalent,utils/environmentSelection
 utils/teleport/environments.ts,utils,external-service-blocked,Requires external proprietary service/platform

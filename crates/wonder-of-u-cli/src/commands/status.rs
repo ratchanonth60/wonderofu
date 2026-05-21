@@ -3,7 +3,6 @@ use std::{
     fs,
     io::ErrorKind,
     path::{Path, PathBuf},
-    process::Command as ProcessCommand,
 };
 
 use async_trait::async_trait;
@@ -17,9 +16,9 @@ use wonder_of_u_mcp::{McpConfigStore, McpStatusReport};
 use wonder_of_u_storage::{STORAGE_SCHEMA_VERSION, SessionMetadata, TranscriptStore};
 use wonder_of_u_storage::{SessionMemoryIndexStore, SyncStatusReport};
 
-use super::git_command_output;
 use super::plugin::load_catalogs;
 use super::task_runtime::TaskManager;
+use super::{git_command_output, try_open_browser};
 
 /// Represents status command
 pub struct StatusCommand {
@@ -86,6 +85,83 @@ impl StatusCommand {
             "Show runtime, storage, MCP, plugin, skill, and task status",
             CommandKind::NonInteractive,
         )
+    }
+}
+
+fn provider_id_list(providers: &[wonder_of_u_agent::ProviderDescriptor]) -> String {
+    providers
+        .iter()
+        .map(|provider| provider.id.as_str())
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+fn provider_inventory_lines(report: &wonder_of_u_agent::ProviderStatusReport) -> Vec<String> {
+    let configured_ids: BTreeSet<&str> = report
+        .configured_providers
+        .iter()
+        .map(|provider| provider.id.as_str())
+        .collect();
+    let authenticated_ids: BTreeSet<&str> = report
+        .authenticated_providers
+        .iter()
+        .map(|provider| provider.id.as_str())
+        .collect();
+    let ready_ids: BTreeSet<&str> = report
+        .ready_providers
+        .iter()
+        .map(|provider| provider.id.as_str())
+        .collect();
+
+    let mut lines = vec![
+        format!(
+            "registered_providers={}",
+            provider_id_list(&report.available_providers)
+        ),
+        format!(
+            "configured_providers={}",
+            provider_id_list(&report.configured_providers)
+        ),
+        format!(
+            "authenticated_providers={}",
+            provider_id_list(&report.authenticated_providers)
+        ),
+        format!(
+            "ready_providers={}",
+            provider_id_list(&report.ready_providers)
+        ),
+    ];
+
+    for provider in &report.available_providers {
+        let mut hint = format!(
+            "provider_status[{}]=configured={};authenticated={};ready={};auth={}",
+            provider.id,
+            configured_ids.contains(provider.id.as_str()),
+            authenticated_ids.contains(provider.id.as_str()),
+            ready_ids.contains(provider.id.as_str()),
+            auth_kind_label(provider.auth_kind),
+        );
+        if let Some(env) = &provider.api_key_env {
+            hint.push_str(&format!(";api_key_env={env}"));
+        }
+        if let Some(env) = &provider.endpoint_env {
+            hint.push_str(&format!(";endpoint_env={env}"));
+        }
+        lines.push(hint);
+    }
+
+    lines
+}
+
+fn auth_kind_label(kind: wonder_of_u_core::AuthMaterialKind) -> &'static str {
+    match kind {
+        wonder_of_u_core::AuthMaterialKind::None => "none",
+        wonder_of_u_core::AuthMaterialKind::ApiKey => "api_key",
+        wonder_of_u_core::AuthMaterialKind::OAuth => "oauth",
+        wonder_of_u_core::AuthMaterialKind::AwsSigV4 => "aws_sigv4",
+        wonder_of_u_core::AuthMaterialKind::AwsBearer => "aws_bearer",
+        wonder_of_u_core::AuthMaterialKind::AwsProfile => "aws_profile",
+        wonder_of_u_core::AuthMaterialKind::GcpOAuth2 => "gcp_oauth2",
     }
 }
 
@@ -332,15 +408,7 @@ impl Command for StatusCommand {
         if let Some(source) = report.auth.source_label() {
             lines.push(format!("auth_source={source}"));
         }
-        lines.push(format!(
-            "available_providers={}",
-            report
-                .available_providers
-                .iter()
-                .map(|provider| provider.id.as_str())
-                .collect::<Vec<_>>()
-                .join(",")
-        ));
+        lines.extend(provider_inventory_lines(&report));
 
         let (_, plugins, skills) = load_catalogs(&context.cwd, self.storage_dir.as_deref())?;
         lines.push(format!("plugins={}", plugins.entries().len()));
@@ -406,12 +474,20 @@ impl Command for StatusCommand {
                     sync_status.settings_sync.cloud_attempted
                 ));
                 lines.push(format!(
+                    "settings_sync_reason={}",
+                    sync_status.settings_sync.reason
+                ));
+                lines.push(format!(
                     "remote_managed_settings={}",
                     sync_status.remote_managed_settings.status.label()
                 ));
                 lines.push(format!(
                     "remote_managed_settings_cloud_attempted={}",
                     sync_status.remote_managed_settings.cloud_attempted
+                ));
+                lines.push(format!(
+                    "remote_managed_settings_reason={}",
+                    sync_status.remote_managed_settings.reason
                 ));
                 lines.push(format!(
                     "team_memory_sync={}",
@@ -421,10 +497,30 @@ impl Command for StatusCommand {
                     "team_memory_sync_cloud_attempted={}",
                     sync_status.team_memory_sync.cloud_attempted
                 ));
+                lines.push(format!(
+                    "team_memory_sync_reason={}",
+                    sync_status.team_memory_sync.reason
+                ));
+                lines.push(format!(
+                    "analytics={}",
+                    sync_status.analytics.status.label()
+                ));
+                lines.push(format!(
+                    "experiments={}",
+                    sync_status.experiments.status.label()
+                ));
                 let mcp_store = McpConfigStore::new(storage_dir.clone());
-                let mcp_config = mcp_store.read()?;
+                let (mcp_config, project_config_path) =
+                    mcp_store.read_with_project(&context.cwd, None)?;
                 let mcp_report =
                     McpStatusReport::inspect(mcp_store.paths().mcp_servers_path(), &mcp_config);
+                lines.push(format!(
+                    "mcp_project_config={}",
+                    project_config_path
+                        .as_ref()
+                        .map(|path| path.display().to_string())
+                        .unwrap_or_else(|| "none".into())
+                ));
                 lines.push(format!("mcp_servers={}", mcp_report.servers.len()));
                 lines.push(format!("mcp_ready_servers={}", mcp_report.ready_count()));
                 lines.push(format!("mcp_error_servers={}", mcp_report.error_count()));
@@ -1313,28 +1409,6 @@ fn executable_on_path(name: &str) -> bool {
     std::env::split_paths(&paths).any(|path| path.join(name).is_file())
 }
 
-fn try_open_browser(url: &str) -> bool {
-    #[cfg(target_os = "macos")]
-    let command = ("open", vec![url]);
-    #[cfg(target_os = "linux")]
-    let command = ("xdg-open", vec![url]);
-    #[cfg(target_os = "windows")]
-    let command = ("cmd", vec!["/c", "start", "", url]);
-
-    #[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
-    {
-        ProcessCommand::new(command.0)
-            .args(command.1)
-            .spawn()
-            .is_ok()
-    }
-    #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
-    {
-        let _ = url;
-        false
-    }
-}
-
 fn detect_issues_url(cwd: &Path) -> Option<String> {
     git_command_output(cwd, &["config", "--get", "remote.origin.url"])
         .and_then(|remote| issues_url_from_remote(&remote))
@@ -1410,6 +1484,7 @@ fn count_files(path: impl AsRef<Path>, extension: Option<&str>) -> Result<usize>
 mod tests {
     use super::*;
     use futures::executor::block_on;
+    use wonder_of_u_agent::ProviderResolver;
     use wonder_of_u_core::{AppState, FeatureSet, PermissionMode, SessionId, TokenUsage};
     use wonder_of_u_storage::{SessionMetadata, SessionSnapshot};
     use wonder_of_u_test_support::unique_test_dir;
@@ -1427,6 +1502,7 @@ mod tests {
             effort_level: None,
             brief_mode: false,
             fast_mode: false,
+            optimize_token_mode: false,
             session_tags: Vec::new(),
             additional_working_directories: Vec::new(),
         }
@@ -1588,6 +1664,29 @@ mod tests {
     }
 
     #[test]
+    fn provider_inventory_lines_keep_registered_providers_distinct_from_ready_ones() {
+        let report = ProviderResolver::builtin()
+            .resolve_with_env(
+                &wonder_of_u_agent::AgentSettings::default(),
+                &wonder_of_u_agent::StoredCredentials::default(),
+                std::iter::empty::<(&str, String)>(),
+            )
+            .expect("resolve report");
+
+        let rendered = provider_inventory_lines(&report).join("\n");
+
+        assert!(rendered.contains("registered_providers="));
+        assert!(rendered.contains("ready_providers=local"));
+        assert!(rendered.contains("configured_providers="));
+        assert!(rendered.contains(
+            "provider_status[openai]=configured=false;authenticated=false;ready=false;auth=api_key"
+        ));
+        assert!(rendered.contains(
+            "provider_status[local]=configured=false;authenticated=false;ready=true;auth=none"
+        ));
+    }
+
+    #[test]
     fn release_notes_summary_reads_local_changelog() {
         let dir = unique_test_dir("status-release-notes-local");
         let nested = dir.join("nested/project");
@@ -1643,6 +1742,25 @@ mod tests {
     #[test]
     fn feedback_new_issue_url_encodes_draft() {
         assert_eq!(url_encode("TUI picker: off"), "TUI%20picker%3A%20off");
+    }
+
+    #[test]
+    fn upgrade_command_does_not_launch_browser_under_tests() {
+        let output = block_on(UpgradeCommand::new().execute(
+            command_context(Path::new("/workspace"), SessionId::new()),
+            CommandInvocation {
+                name: "upgrade".into(),
+                args: String::new(),
+                raw: "/upgrade".into(),
+            },
+        ))
+        .expect("run upgrade command");
+
+        let CommandOutput::Text(text) = output else {
+            panic!("expected text output");
+        };
+
+        assert!(text.contains("browser_launch_attempted=false"));
     }
 
     #[test]
@@ -1777,6 +1895,17 @@ mod tests {
         ));
         assert!(rendered.contains("focus on TUI workflow"));
         assert!(rendered.contains("\"Fix TUI parity\""));
+    }
+
+    #[test]
+    fn output_style_command_spec_is_hidden() {
+        // Claude Code reference behavior: /output-style is hidden so it does
+        // not surface in user-visible autocompletion or help listings.
+        let spec = OutputStyleCommand::command_spec();
+        assert!(
+            spec.hidden,
+            "/output-style CommandSpec must be hidden to match Claude Code reference behavior"
+        );
     }
 
     #[test]

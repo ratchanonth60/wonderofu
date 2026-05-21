@@ -149,7 +149,9 @@ pub struct Theme {
 impl Default for Theme {
     fn default() -> Self {
         Self {
-            background: TextStyle::default().bg(Color::Black).fg(Color::Grey),
+            // No explicit background colour: let the terminal emulator's own
+            // background show through (Ink/Claude Code visual parity).
+            background: TextStyle::default().fg(Color::Grey),
             border: TextStyle::default().fg(Color::DarkBlue),
             title: TextStyle::default().fg(Color::Blue).bold(),
             messages: TextStyle::default().fg(Color::White),
@@ -188,5 +190,21 @@ mod tests {
         assert_ne!(theme.messages.fg, theme.prompt.fg);
         assert_ne!(theme.status.fg, theme.footer.fg);
         assert!(theme.title.bold);
+    }
+
+    /// The default theme must not force an explicit background colour.
+    ///
+    /// Setting `background.bg` to Black or White produces an opaque rectangle
+    /// that clashes with translucent or custom-coloured terminal windows.  Ink
+    /// and Claude Code deliberately leave the background transparent so the
+    /// terminal emulator's own colour shows through.
+    #[test]
+    fn default_theme_background_is_transparent() {
+        let theme = Theme::default();
+        assert!(
+            theme.background.bg.is_none(),
+            "default theme must not set an explicit bg colour (got {:?})",
+            theme.background.bg,
+        );
     }
 }

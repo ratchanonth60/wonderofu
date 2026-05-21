@@ -80,6 +80,8 @@ id_type!(MessageId);
 id_type!(CommandId);
 id_type!(ToolUseId);
 id_type!(TaskId);
+id_type!(FleetId);
+id_type!(MailboxMessageId);
 
 #[cfg(test)]
 mod tests {

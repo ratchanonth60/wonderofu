@@ -27,8 +27,18 @@ pub enum Motion {
 pub enum EditAction {
     /// Represents move
     Move(Motion),
-    /// Represents insert newline
+    /// Inserts a newline — the controller interprets this as **submit**.
+    ///
+    /// Plain `Enter` maps to this action; use [`InsertLiteralNewline`] for
+    /// `Shift+Enter` multiline composition.
+    ///
+    /// [`InsertLiteralNewline`]: EditAction::InsertLiteralNewline
     InsertNewline,
+    /// Inserts a literal `\n` into the buffer without triggering submit.
+    ///
+    /// Only meaningful for multiline prompt buffers; single-line buffers
+    /// silently discard the character (see [`TextBuffer::insert_char`]).
+    InsertLiteralNewline,
     /// Represents backspace
     Backspace,
     /// Represents delete
@@ -79,6 +89,11 @@ impl TextBuffer {
     pub const fn cursor(&self) -> usize {
         self.cursor
     }
+    /// Handles char len
+    #[must_use]
+    pub fn char_len(&self) -> usize {
+        self.chars.len()
+    }
     /// Constant fn
     #[must_use]
     pub const fn is_multiline(&self) -> bool {
@@ -92,6 +107,12 @@ impl TextBuffer {
 
     /// Handles set cursor
     pub fn set_cursor(&mut self, cursor: usize) {
+        self.cursor = cursor.min(self.chars.len());
+    }
+
+    /// Replaces the full buffer content and restores the cursor.
+    pub fn replace_text(&mut self, text: impl AsRef<str>, cursor: usize) {
+        self.chars = text.as_ref().chars().collect();
         self.cursor = cursor.min(self.chars.len());
     }
 
@@ -112,11 +133,33 @@ impl TextBuffer {
         }
     }
 
+    /// Inserts text at an absolute character offset.
+    pub fn insert_text_at(&mut self, index: usize, text: &str) {
+        self.cursor = index.min(self.chars.len());
+        self.insert_text(text);
+    }
+
+    /// Returns the text in an absolute character range.
+    #[must_use]
+    pub fn range_text(&self, start: usize, end: usize) -> String {
+        let start = start.min(self.chars.len());
+        let end = end.min(self.chars.len());
+        if start >= end {
+            return String::new();
+        }
+
+        self.chars[start..end].iter().collect()
+    }
+
     /// Handles apply edit action
     pub fn apply_edit_action(&mut self, action: EditAction) {
         match action {
             EditAction::Move(motion) => self.move_caret(motion, 1),
-            EditAction::InsertNewline => self.insert_char('\n'),
+            // InsertNewline is intercepted by the controller as "submit";
+            // hitting it through the buffer directly still inserts '\n'.
+            EditAction::InsertNewline | EditAction::InsertLiteralNewline => {
+                self.insert_char('\n');
+            }
             EditAction::Backspace => {
                 self.backspace();
             }
@@ -254,6 +297,101 @@ impl TextBuffer {
             self.cursor = start.min(self.last_cursor());
         }
         true
+    }
+
+    /// Deletes an absolute character range and normalizes the cursor.
+    pub fn delete_span(&mut self, start: usize, end: usize) -> bool {
+        let start = start.min(self.chars.len());
+        let end = end.min(self.chars.len());
+        if start >= end {
+            return false;
+        }
+
+        self.delete_range(start, end);
+        if self.chars.is_empty() {
+            self.cursor = 0;
+        } else {
+            self.cursor = start.min(self.last_cursor());
+        }
+        true
+    }
+
+    /// Returns the deletion/yank range that would be affected by a normal-mode motion.
+    #[must_use]
+    pub fn normal_motion_range(&self, motion: Motion, count: usize) -> Option<(usize, usize)> {
+        self.motion_delete_range(motion, count)
+    }
+
+    /// Returns a range covering `count` complete lines from the current line.
+    #[must_use]
+    pub fn current_line_range(&self, count: usize) -> Option<(usize, usize)> {
+        if self.chars.is_empty() {
+            return None;
+        }
+
+        let start = self.line_start(self.normal_cursor());
+        let mut end = start;
+        for _ in 0..count.max(1) {
+            end = self.line_end(end);
+            if end < self.chars.len() {
+                end += 1;
+            } else {
+                break;
+            }
+        }
+        (start < end).then_some((start, end))
+    }
+
+    /// Returns the current line start.
+    #[must_use]
+    pub fn current_line_start(&self) -> usize {
+        self.line_start(self.normal_cursor_for_insert())
+    }
+
+    /// Returns the insertion point immediately after the current line.
+    #[must_use]
+    pub fn next_line_insertion_index(&self) -> usize {
+        let end = self.line_end(self.normal_cursor_for_insert());
+        if end < self.chars.len() {
+            end + 1
+        } else {
+            self.chars.len()
+        }
+    }
+
+    /// Finds a character from the normal cursor, excluding the current cell.
+    #[must_use]
+    pub fn find_char(&self, ch: char, forward: bool, count: usize) -> Option<usize> {
+        if self.chars.is_empty() {
+            return None;
+        }
+
+        let mut remaining = count.max(1);
+        if forward {
+            let mut index = self.normal_cursor().saturating_add(1);
+            while index < self.chars.len() {
+                if self.chars[index] == ch {
+                    remaining -= 1;
+                    if remaining == 0 {
+                        return Some(index);
+                    }
+                }
+                index += 1;
+            }
+        } else {
+            let mut index = self.normal_cursor();
+            while index > 0 {
+                index -= 1;
+                if self.chars[index] == ch {
+                    remaining -= 1;
+                    if remaining == 0 {
+                        return Some(index);
+                    }
+                }
+            }
+        }
+
+        None
     }
 
     fn motion_delete_range(&self, motion: Motion, count: usize) -> Option<(usize, usize)> {
@@ -533,6 +671,24 @@ mod tests {
         buffer.append_after_cursor();
         buffer.insert_text("A");
         assert_eq!(buffer.text(), "bAeta");
+    }
+
+    #[test]
+    fn insert_literal_newline_inserts_into_multiline_buffer() {
+        let mut buf = TextBuffer::new(true);
+        buf.insert_text("hello");
+        buf.apply_edit_action(EditAction::InsertLiteralNewline);
+        buf.insert_text("world");
+        assert_eq!(buf.text(), "hello\nworld");
+        assert_eq!(buf.cursor(), 11);
+    }
+
+    #[test]
+    fn insert_literal_newline_is_blocked_in_single_line_buffer() {
+        let mut buf = TextBuffer::new(false);
+        buf.insert_text("hello");
+        buf.apply_edit_action(EditAction::InsertLiteralNewline);
+        assert_eq!(buf.text(), "hello");
     }
 
     #[test]

@@ -194,8 +194,11 @@ impl ResumeCommand {
             "resume",
             "Resume a persisted session in the live shell when interactive, or show a summary",
             CommandKind::ResumeEntrypoint,
-        );
+        )
+        .with_argument_hint("[conversation id or search term]");
         spec.required_features = BTreeSet::from([FeatureFlag::SessionPersistence]);
+        // Upstream alias: /continue resolves to /resume.
+        spec.aliases = vec!["continue".into()];
         spec
     }
 }
@@ -227,102 +230,6 @@ impl Command for ResumeCommand {
             ),
         );
         Ok(CommandOutput::Text(lines.join("\n")))
-    }
-}
-
-/// Represents tag command
-pub struct TagCommand {
-    storage_dir: Option<PathBuf>,
-}
-
-impl TagCommand {
-    /// Constant fn
-    pub const fn new(storage_dir: Option<PathBuf>) -> Self {
-        Self { storage_dir }
-    }
-
-    /// Handles command spec
-    pub fn command_spec() -> CommandSpec {
-        let mut spec = CommandSpec::new(
-            "tag",
-            "Toggle a searchable tag on the current session",
-            CommandKind::Local,
-        );
-        spec.interactive_only = true;
-        spec
-    }
-
-    fn current_session_tags(&self, context: &CommandContext) -> Result<Vec<String>> {
-        let Some(storage_dir) = self.storage_dir.as_deref() else {
-            return Ok(context.session_tags.clone());
-        };
-        let store = TranscriptStore::new(storage_dir);
-        if let Some(snapshot) = store.read_snapshot_if_exists(context.session_id)? {
-            return Ok(snapshot.state.session.tags);
-        }
-        Ok(store.read_metadata(context.session_id)?.tags)
-    }
-
-    fn persist_session_tags(&self, session_id: SessionId, tags: &[String]) -> Result<()> {
-        let Some(storage_dir) = self.storage_dir.as_deref() else {
-            return Ok(());
-        };
-        let store = TranscriptStore::new(storage_dir);
-        let snapshot = store.read_snapshot(session_id)?;
-        let mut state = snapshot.state;
-        state.set_session_tags(tags.to_vec());
-        persist_session_state(
-            &store,
-            &state,
-            snapshot.transcript_message_count,
-            snapshot.transcript_warning_count,
-        )
-    }
-}
-
-#[async_trait]
-impl Command for TagCommand {
-    fn spec(&self) -> CommandSpec {
-        Self::command_spec()
-    }
-
-    async fn execute(
-        &self,
-        context: CommandContext,
-        invocation: CommandInvocation,
-    ) -> Result<CommandOutput> {
-        let raw = invocation.args.trim();
-        if raw.is_empty() || is_help_arg(raw) {
-            return Ok(CommandOutput::Text(tag_help_text()));
-        }
-
-        let tag = normalize_tag_name(raw)?;
-        let current_tags = self.current_session_tags(&context)?;
-        let current_tag = current_tags.first().cloned();
-
-        if current_tag.as_deref() == Some(tag.as_str()) && context.interactive {
-            return Ok(CommandOutput::Text(format!(
-                "tag_remove_confirmation={tag}\nstatus=confirm tag removal"
-            )));
-        }
-
-        let next_tags = if current_tag.as_deref() == Some(tag.as_str()) {
-            Vec::new()
-        } else {
-            vec![tag.clone()]
-        };
-        self.persist_session_tags(context.session_id, &next_tags)?;
-
-        let status = if next_tags.is_empty() {
-            format!("removed tag #{tag}")
-        } else {
-            format!("tagged session with #{tag}")
-        };
-
-        Ok(CommandOutput::Text(format!(
-            "session_tags={}\nstatus={status}",
-            next_tags.join(",")
-        )))
     }
 }
 
@@ -487,6 +394,10 @@ impl ClearCommand {
             CommandKind::Local,
         );
         spec.required_features = BTreeSet::from([FeatureFlag::SessionPersistence]);
+        // Upstream aliases: /reset and /new both resolve to /clear.
+        spec.aliases = vec!["reset".into(), "new".into()];
+        // immediate=true: /clear must not drain queued prompts after executing.
+        spec.immediate = true;
         spec
     }
 }
@@ -528,7 +439,7 @@ impl CompactCommand {
     pub fn command_spec() -> CommandSpec {
         let mut spec = CommandSpec::new(
             "compact",
-            "Persist a compacted resume view for the latest or specified session",
+            "Clear conversation history but keep a summary in context. Optional: /compact --instructions <hint for summarization>",
             CommandKind::Local,
         );
         spec.required_features = BTreeSet::from([FeatureFlag::SessionPersistence]);
@@ -542,6 +453,10 @@ struct CompactArgs {
     session_id: Option<String>,
     #[arg(long, default_value_t = 8)]
     keep_last: usize,
+    /// Optional hint passed to the summarization step, e.g.
+    /// `--instructions "focus on tool calls only"`.
+    #[arg(long)]
+    instructions: Option<String>,
 }
 
 #[async_trait]
@@ -560,6 +475,7 @@ impl Command for CompactCommand {
             args.session_id.as_deref(),
             args.keep_last,
             ViewAction::Compact,
+            args.instructions.as_deref(),
         )
     }
 }
@@ -571,7 +487,13 @@ impl ClearCommand {
         keep_last: usize,
         action: ViewAction,
     ) -> Result<CommandOutput> {
-        persist_view_state(&self.storage_dir, requested_session_id, keep_last, action)
+        persist_view_state(
+            &self.storage_dir,
+            requested_session_id,
+            keep_last,
+            action,
+            None,
+        )
     }
 }
 
@@ -581,8 +503,15 @@ impl CompactCommand {
         requested_session_id: Option<&str>,
         keep_last: usize,
         action: ViewAction,
+        custom_instructions: Option<&str>,
     ) -> Result<CommandOutput> {
-        persist_view_state(&self.storage_dir, requested_session_id, keep_last, action)
+        persist_view_state(
+            &self.storage_dir,
+            requested_session_id,
+            keep_last,
+            action,
+            custom_instructions,
+        )
     }
 }
 
@@ -606,13 +535,20 @@ fn persist_view_state(
     requested_session_id: Option<&str>,
     keep_last: usize,
     action: ViewAction,
+    custom_instructions: Option<&str>,
 ) -> Result<CommandOutput> {
     let (store, session_id) = resolve_session_target(storage_dir, requested_session_id)?;
     let restored = store.restore_session(session_id)?;
     let compacted_messages = restored.transcript.messages.len().saturating_sub(keep_last);
     let mut state = restored.state;
-    state.messages =
-        compacted_view_messages(&restored.transcript, session_id, keep_last, action, &state);
+    state.messages = compacted_view_messages(
+        &restored.transcript,
+        session_id,
+        keep_last,
+        action,
+        &state,
+        custom_instructions,
+    );
     state.input_mode = InputMode::Prompt;
     state.session.updated_at = time::OffsetDateTime::now_utc();
     persist_session_state(
@@ -634,6 +570,9 @@ fn persist_view_state(
         format!("status={}", session_status_text(&state)),
         format!("footer={}", session_footer_text(&state)),
     ];
+    if let Some(instructions) = custom_instructions {
+        lines.push(format!("custom_instructions={instructions}"));
+    }
     if let Some(summary) = state.messages.first().and_then(boundary_summary) {
         lines.push(format!("boundary_summary={summary}"));
     }
@@ -775,32 +714,6 @@ fn provider_selection(metadata: &SessionMetadata) -> String {
     }
 }
 
-fn is_help_arg(value: &str) -> bool {
-    matches!(value, "-h" | "--help" | "help" | "info")
-}
-
-fn normalize_tag_name(value: &str) -> Result<String> {
-    let normalized = value.trim();
-    if normalized.is_empty() {
-        return Err(WonderError::validation("tag name cannot be empty"));
-    }
-    Ok(normalized.into())
-}
-
-fn tag_help_text() -> String {
-    concat!(
-        "Usage: /tag <tag-name>\n\n",
-        "Toggle a searchable tag on the current session.\n",
-        "Run the same command again to remove the tag.\n",
-        "Tags are displayed after the branch name in /resume and can be searched later.\n\n",
-        "Examples:\n",
-        "  /tag bugfix\n",
-        "  /tag feature-auth\n",
-        "  /tag wip"
-    )
-    .into()
-}
-
 fn format_session_tags(tags: &[String]) -> String {
     tags.iter()
         .map(|tag| format!("#{tag}"))
@@ -849,6 +762,7 @@ fn compacted_view_messages(
     keep_last: usize,
     action: ViewAction,
     state: &AppState,
+    custom_instructions: Option<&str>,
 ) -> Vec<MessageEnvelope> {
     if transcript.messages.is_empty() {
         return Vec::new();
@@ -864,7 +778,7 @@ fn compacted_view_messages(
             MessageEnvelope::new(
                 session_id,
                 MessagePayload::CompactBoundary {
-                    summary: summarized_messages_summary(summarized, action),
+                    summary: summarized_messages_summary(summarized, action, custom_instructions),
                 },
             )
             .with_context(
@@ -882,7 +796,11 @@ fn compacted_view_messages(
     visible
 }
 
-fn summarized_messages_summary(messages: &[MessageEnvelope], action: ViewAction) -> String {
+fn summarized_messages_summary(
+    messages: &[MessageEnvelope],
+    action: ViewAction,
+    custom_instructions: Option<&str>,
+) -> String {
     let count = messages.len();
     let first_timestamp = messages
         .first()
@@ -899,12 +817,24 @@ fn summarized_messages_summary(messages: &[MessageEnvelope], action: ViewAction)
         .unwrap_or_else(|| "none".into());
 
     match action {
-        ViewAction::Clear => format!(
-            "Cleared the visible transcript and summarized {count} messages ({first_timestamp} -> {last_timestamp}; {counts}). Last summarized message: {last_message}"
-        ),
-        ViewAction::Compact => format!(
-            "Compacted {count} earlier messages ({first_timestamp} -> {last_timestamp}; {counts}). Last summarized message: {last_message}"
-        ),
+        ViewAction::Clear => {
+            let mut s = format!(
+                "Cleared the visible transcript and summarized {count} messages ({first_timestamp} -> {last_timestamp}; {counts}). Last summarized message: {last_message}"
+            );
+            if let Some(instructions) = custom_instructions {
+                s.push_str(&format!("\nSummarization instructions: {instructions}"));
+            }
+            s
+        }
+        ViewAction::Compact => {
+            let mut s = format!(
+                "Compacted {count} earlier messages ({first_timestamp} -> {last_timestamp}; {counts}). Last summarized message: {last_message}"
+            );
+            if let Some(instructions) = custom_instructions {
+                s.push_str(&format!("\nSummarization instructions: {instructions}"));
+            }
+            s
+        }
     }
 }
 
@@ -929,9 +859,12 @@ fn payload_distribution(messages: &[MessageEnvelope]) -> String {
             | MessagePayload::BashOutput { .. }
             | MessagePayload::HookResult { .. } => tool += 1,
             MessagePayload::Progress { .. }
+            | MessagePayload::HookProgress { .. }
             | MessagePayload::Task { .. }
             | MessagePayload::Permission { .. }
             | MessagePayload::PlanApproval { .. }
+            | MessagePayload::ProviderError { .. }
+            | MessagePayload::TaskNotification { .. }
             | MessagePayload::Command { .. } => progress += 1,
         }
     }
@@ -1027,6 +960,15 @@ fn message_summary(message: &MessageEnvelope) -> String {
             "hook {hook} {} {output}",
             if *success { "ok" } else { "error" }
         ),
+        MessagePayload::HookProgress {
+            event,
+            tool_name,
+            hook_count,
+            success,
+        } => format!(
+            "hook progress {event} {hook_count} for {tool_name} ({})",
+            if *success { "ok" } else { "error" }
+        ),
         MessagePayload::CompactBoundary { summary } => format!("summary {summary}"),
         MessagePayload::Task {
             status, message, ..
@@ -1040,108 +982,111 @@ fn message_summary(message: &MessageEnvelope) -> String {
             "plan {}: {summary}",
             if *approved { "approved" } else { "rejected" }
         ),
+        MessagePayload::ProviderError { kind, message } => {
+            format!("error[{kind}]: {message}")
+        }
+        MessagePayload::TaskNotification {
+            task_id,
+            xml_payload: _,
+        } => {
+            format!("task-notification {task_id}")
+        }
     }
 }
 
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
 #[cfg(test)]
 mod tests {
-    use std::path::Path;
+    use super::{CompactCommand, ResumeCommand, ViewAction, summarized_messages_summary};
+    use wonder_of_u_core::CommandSpec;
 
-    use futures::executor::block_on;
-    use wonder_of_u_core::{FeatureSet, PermissionMode};
-    use wonder_of_u_test_support::unique_test_dir;
+    // ── CompactCommand spec ──────────────────────────────────────────────────
 
-    use super::*;
-
-    fn command_context(cwd: &Path, session_id: SessionId) -> CommandContext {
-        CommandContext {
-            session_id,
-            cwd: cwd.to_path_buf(),
-            features: FeatureSet::first_release(),
-            authenticated: false,
-            interactive: true,
-            permission_mode: PermissionMode::Default,
-            theme: None,
-            session_color: None,
-            effort_level: None,
-            brief_mode: false,
-            fast_mode: false,
-            session_tags: Vec::new(),
-            additional_working_directories: Vec::new(),
-        }
+    #[test]
+    fn compact_spec_name_is_compact() {
+        let spec: CommandSpec = CompactCommand::command_spec();
+        assert_eq!(spec.name, "compact");
     }
 
     #[test]
-    fn tag_command_adds_session_tag_and_persists_metadata() {
-        let dir = unique_test_dir("session-tag-add");
-        let state = AppState::new(dir.clone());
-        let store = TranscriptStore::new(&dir);
-        persist_session_state(&store, &state, 0, 0).expect("persist initial session");
-
-        let output = block_on(TagCommand::new(Some(dir.clone())).execute(
-            command_context(&dir, state.session.id),
-            CommandInvocation {
-                name: "tag".into(),
-                args: "bugfix".into(),
-                raw: "/tag bugfix".into(),
-            },
-        ))
-        .expect("tag succeeds");
-
-        assert_eq!(
-            output,
-            CommandOutput::Text("session_tags=bugfix\nstatus=tagged session with #bugfix".into())
+    fn compact_spec_description_mentions_instructions() {
+        let spec = CompactCommand::command_spec();
+        assert!(
+            spec.description.contains("instructions") || spec.description.contains("hint"),
+            "compact description should mention custom instructions; got: {}",
+            spec.description
         );
-
-        let metadata = store
-            .read_metadata(state.session.id)
-            .expect("read tagged metadata");
-        let snapshot = store
-            .read_snapshot(state.session.id)
-            .expect("read tagged snapshot");
-        assert_eq!(metadata.tags, vec!["bugfix"]);
-        assert_eq!(snapshot.state.session.tags, vec!["bugfix"]);
-
-        let summary = resume_summary_lines(&RestoredSession {
-            metadata,
-            transcript: LoadedTranscript {
-                messages: Vec::new(),
-                warnings: Vec::new(),
-            },
-            state: snapshot.state,
-            resume_source: SessionResumeSource::Snapshot,
-        });
-        assert!(summary.iter().any(|line| line == "tags=#bugfix"));
     }
 
     #[test]
-    fn tag_command_prompts_before_removing_current_tag_interactively() {
-        let dir = unique_test_dir("session-tag-confirm");
-        let mut state = AppState::new(dir.clone());
-        state.set_session_tags(vec!["bugfix".into()]);
-        let store = TranscriptStore::new(&dir);
-        persist_session_state(&store, &state, 0, 0).expect("persist tagged session");
-
-        let output = block_on(TagCommand::new(Some(dir.clone())).execute(
-            command_context(&dir, state.session.id),
-            CommandInvocation {
-                name: "tag".into(),
-                args: "bugfix".into(),
-                raw: "/tag bugfix".into(),
-            },
-        ))
-        .expect("tag prompt succeeds");
-
-        assert_eq!(
-            output,
-            CommandOutput::Text(
-                "tag_remove_confirmation=bugfix\nstatus=confirm tag removal".into()
-            )
+    fn compact_spec_description_mentions_compact_or_history() {
+        let spec = CompactCommand::command_spec();
+        let desc = spec.description.to_lowercase();
+        assert!(
+            desc.contains("compact") || desc.contains("history"),
+            "compact description should mention compact/history; got: {}",
+            spec.description
         );
+    }
 
-        let metadata = store
-            .read_metadata(state.session.id)
-            .expect("read tagged metadata");
-        assert_eq!(metadata.tags, vec!["bugfix"]);
+    // ── summarized_messages_summary ─────────────────────────────────────────
+
+    #[test]
+    fn summarized_messages_summary_without_instructions() {
+        let summary = summarized_messages_summary(&[], ViewAction::Compact, None);
+        assert!(
+            summary.contains("Compacted"),
+            "summary without instructions must use Compact wording; got: {summary}"
+        );
+        assert!(
+            !summary.contains("Summarization instructions"),
+            "summary without instructions must not include instructions line; got: {summary}"
+        );
+    }
+
+    #[test]
+    fn summarized_messages_summary_with_instructions_includes_hint() {
+        let summary =
+            summarized_messages_summary(&[], ViewAction::Compact, Some("focus on tool calls only"));
+        assert!(
+            summary.contains("Summarization instructions: focus on tool calls only"),
+            "summary with instructions must include them; got: {summary}"
+        );
+    }
+
+    #[test]
+    fn summarized_messages_summary_clear_action_without_instructions() {
+        let summary = summarized_messages_summary(&[], ViewAction::Clear, None);
+        assert!(
+            summary.contains("Cleared"),
+            "clear summary must use Cleared wording; got: {summary}"
+        );
+        assert!(
+            !summary.contains("Summarization instructions"),
+            "clear without instructions must not include instructions line; got: {summary}"
+        );
+    }
+
+    #[test]
+    fn summarized_messages_summary_clear_action_with_instructions() {
+        let summary =
+            summarized_messages_summary(&[], ViewAction::Clear, Some("remove tool results"));
+        assert!(
+            summary.contains("Summarization instructions: remove tool results"),
+            "clear with instructions must include them; got: {summary}"
+        );
+    }
+
+    #[test]
+    fn resume_command_spec_carries_argument_hint() {
+        let spec = ResumeCommand::command_spec();
+        assert_eq!(
+            spec.argument_hint.as_deref(),
+            Some("[conversation id or search term]"),
+            "/resume spec should carry the argument hint"
+        );
     }
 }

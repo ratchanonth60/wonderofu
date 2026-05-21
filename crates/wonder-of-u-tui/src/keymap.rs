@@ -23,6 +23,16 @@ pub enum SystemAction {
     Redraw,
     /// Represents history search
     HistorySearch,
+    /// Represents opening the workspace search overlay.
+    OpenGlobalSearch,
+    /// Represents expanding or collapsing grouped tool output
+    ExpandToolOutput,
+    /// Open the model picker from the prompt.
+    OpenModelPicker,
+    /// Toggle extended-thinking mode from the prompt.
+    ToggleThinking,
+    /// Toggle fast model mode from the prompt.
+    ToggleFastMode,
 }
 /// Enumerates vim command
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -43,6 +53,26 @@ pub enum VimCommand {
     StartDelete,
     /// Represents start change
     StartChange,
+    /// Represents start yank
+    StartYank,
+    /// Represents paste after cursor
+    PasteAfter,
+    /// Represents paste before cursor
+    PasteBefore,
+    /// Represents undo
+    Undo,
+    /// Represents redo
+    Redo,
+    /// Represents enter visual mode
+    EnterVisualMode,
+    /// Represents find forward
+    FindForward,
+    /// Represents find backward
+    FindBackward,
+    /// Represents repeat find
+    RepeatFind,
+    /// Represents repeat find reverse
+    RepeatFindReverse,
     /// Represents cancel pending
     CancelPending,
 }
@@ -195,13 +225,25 @@ const NONE: KeyModifiers = KeyModifiers {
     alt: false,
 };
 
+const SHIFT: KeyModifiers = KeyModifiers {
+    shift: true,
+    control: false,
+    alt: false,
+};
+
 const CONTROL: KeyModifiers = KeyModifiers {
     shift: false,
     control: true,
     alt: false,
 };
 
-const RESERVED_BINDINGS: [KeyBinding; 4] = [
+const ALT: KeyModifiers = KeyModifiers {
+    shift: false,
+    control: false,
+    alt: true,
+};
+
+const RESERVED_BINDINGS: [KeyBinding; 5] = [
     KeyBinding {
         context: KeyBindingContext::Any,
         event: KeyEvent {
@@ -234,9 +276,17 @@ const RESERVED_BINDINGS: [KeyBinding; 4] = [
         },
         result: ResolvedKey::System(SystemAction::HistorySearch),
     },
+    KeyBinding {
+        context: KeyBindingContext::Any,
+        event: KeyEvent {
+            code: KeyCode::Char('f'),
+            modifiers: CONTROL,
+        },
+        result: ResolvedKey::System(SystemAction::OpenGlobalSearch),
+    },
 ];
 
-fn prompt_bindings(context: KeyBindingContext) -> [KeyBinding; 12] {
+fn prompt_bindings(context: KeyBindingContext) -> [KeyBinding; 17] {
     [
         bind(
             context,
@@ -310,10 +360,41 @@ fn prompt_bindings(context: KeyBindingContext) -> [KeyBinding; 12] {
             NONE,
             ResolvedKey::Edit(EditAction::InsertNewline),
         ),
+        // Shift+Enter inserts a literal newline for multiline composition.
+        bind(
+            context,
+            KeyCode::Enter,
+            SHIFT,
+            ResolvedKey::Edit(EditAction::InsertLiteralNewline),
+        ),
+        bind(
+            context,
+            KeyCode::Char('p'),
+            ALT,
+            ResolvedKey::System(SystemAction::OpenModelPicker),
+        ),
+        bind(
+            context,
+            KeyCode::Char('e'),
+            ALT,
+            ResolvedKey::System(SystemAction::ExpandToolOutput),
+        ),
+        bind(
+            context,
+            KeyCode::Char('t'),
+            ALT,
+            ResolvedKey::System(SystemAction::ToggleThinking),
+        ),
+        bind(
+            context,
+            KeyCode::Char('o'),
+            ALT,
+            ResolvedKey::System(SystemAction::ToggleFastMode),
+        ),
     ]
 }
 
-fn vim_normal_bindings() -> [KeyBinding; 15] {
+fn vim_normal_bindings() -> [KeyBinding; 25] {
     [
         bind(
             KeyBindingContext::VimNormal,
@@ -405,6 +486,66 @@ fn vim_normal_bindings() -> [KeyBinding; 15] {
             NONE,
             ResolvedKey::Vim(VimCommand::DeleteChar),
         ),
+        bind(
+            KeyBindingContext::VimNormal,
+            KeyCode::Char('y'),
+            NONE,
+            ResolvedKey::Vim(VimCommand::StartYank),
+        ),
+        bind(
+            KeyBindingContext::VimNormal,
+            KeyCode::Char('p'),
+            NONE,
+            ResolvedKey::Vim(VimCommand::PasteAfter),
+        ),
+        bind(
+            KeyBindingContext::VimNormal,
+            KeyCode::Char('P'),
+            NONE,
+            ResolvedKey::Vim(VimCommand::PasteBefore),
+        ),
+        bind(
+            KeyBindingContext::VimNormal,
+            KeyCode::Char('u'),
+            NONE,
+            ResolvedKey::Vim(VimCommand::Undo),
+        ),
+        bind(
+            KeyBindingContext::VimNormal,
+            KeyCode::Char('r'),
+            CONTROL,
+            ResolvedKey::Vim(VimCommand::Redo),
+        ),
+        bind(
+            KeyBindingContext::VimNormal,
+            KeyCode::Char('v'),
+            NONE,
+            ResolvedKey::Vim(VimCommand::EnterVisualMode),
+        ),
+        bind(
+            KeyBindingContext::VimNormal,
+            KeyCode::Char('f'),
+            NONE,
+            ResolvedKey::Vim(VimCommand::FindForward),
+        ),
+        bind(
+            KeyBindingContext::VimNormal,
+            KeyCode::Char('F'),
+            NONE,
+            ResolvedKey::Vim(VimCommand::FindBackward),
+        ),
+        bind(
+            KeyBindingContext::VimNormal,
+            KeyCode::Char(';'),
+            NONE,
+            ResolvedKey::Vim(VimCommand::RepeatFind),
+        ),
+        bind(
+            KeyBindingContext::VimNormal,
+            KeyCode::Char(','),
+            NONE,
+            ResolvedKey::Vim(VimCommand::RepeatFindReverse),
+        ),
     ]
 }
 
@@ -426,6 +567,37 @@ mod tests {
     use super::*;
 
     #[test]
+    fn shift_enter_resolves_to_insert_literal_newline_in_prompt_and_vim_insert() {
+        let resolver = KeyBindingResolver::new();
+        let shift_enter = KeyEvent {
+            code: KeyCode::Enter,
+            modifiers: KeyModifiers {
+                shift: true,
+                control: false,
+                alt: false,
+            },
+        };
+
+        assert_eq!(
+            resolver.resolve(KeyBindingContext::Prompt, shift_enter),
+            Some(ResolvedKey::Edit(EditAction::InsertLiteralNewline))
+        );
+        assert_eq!(
+            resolver.resolve(KeyBindingContext::VimInsert, shift_enter),
+            Some(ResolvedKey::Edit(EditAction::InsertLiteralNewline))
+        );
+        // Plain Enter still submits.
+        let plain_enter = KeyEvent {
+            code: KeyCode::Enter,
+            modifiers: NONE,
+        };
+        assert_eq!(
+            resolver.resolve(KeyBindingContext::Prompt, plain_enter),
+            Some(ResolvedKey::Edit(EditAction::InsertNewline))
+        );
+    }
+
+    #[test]
     fn resolver_maps_ctrl_bindings_and_printable_input() {
         let resolver = KeyBindingResolver::new();
 
@@ -443,11 +615,67 @@ mod tests {
             resolver.resolve(
                 KeyBindingContext::Prompt,
                 KeyEvent {
+                    code: KeyCode::Char('f'),
+                    modifiers: CONTROL,
+                }
+            ),
+            Some(ResolvedKey::System(SystemAction::OpenGlobalSearch))
+        );
+        assert_eq!(
+            resolver.resolve(
+                KeyBindingContext::Prompt,
+                KeyEvent {
                     code: KeyCode::Char('x'),
                     modifiers: NONE,
                 }
             ),
             Some(ResolvedKey::InsertChar('x'))
+        );
+    }
+
+    #[test]
+    fn resolver_maps_meta_prompt_hotkeys() {
+        let resolver = KeyBindingResolver::new();
+
+        assert_eq!(
+            resolver.resolve(
+                KeyBindingContext::Prompt,
+                KeyEvent {
+                    code: KeyCode::Char('p'),
+                    modifiers: ALT,
+                }
+            ),
+            Some(ResolvedKey::System(SystemAction::OpenModelPicker))
+        );
+        assert_eq!(
+            resolver.resolve(
+                KeyBindingContext::Prompt,
+                KeyEvent {
+                    code: KeyCode::Char('e'),
+                    modifiers: ALT,
+                }
+            ),
+            Some(ResolvedKey::System(SystemAction::ExpandToolOutput))
+        );
+        assert_eq!(
+            resolver.resolve(
+                KeyBindingContext::Prompt,
+                KeyEvent {
+                    code: KeyCode::Char('t'),
+                    modifiers: ALT,
+                }
+            ),
+            Some(ResolvedKey::System(SystemAction::ToggleThinking))
+        );
+        assert_eq!(
+            resolver.resolve(
+                KeyBindingContext::Prompt,
+                KeyEvent {
+                    code: KeyCode::Char('o'),
+                    modifiers: ALT,
+                }
+            ),
+            Some(ResolvedKey::System(SystemAction::ToggleFastMode))
         );
     }
 

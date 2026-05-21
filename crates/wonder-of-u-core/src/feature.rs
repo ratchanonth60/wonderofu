@@ -5,6 +5,14 @@ use serde::{Deserialize, Serialize};
 use crate::{Result, WonderError};
 
 /// Coarse feature switches used to filter commands, tools, and UI surfaces.
+///
+/// # Telemetry and remote experiments
+///
+/// This crate does **not** contain telemetry, analytics event emission, or
+/// remote experiment evaluation.  There is no Datadog sink, no first-party
+/// usage pipeline, and no GrowthBook SDK.  All feature gates are resolved
+/// statically from a [`FeatureSet`] value constructed at startup — no network
+/// calls are made to determine which features are enabled.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum FeatureFlag {
@@ -34,6 +42,14 @@ pub enum FeatureFlag {
     Agents,
     /// Represents background tasks
     BackgroundTasks,
+    /// Represents legacy source-compatible TodoWrite exposure.
+    LegacyTodoWrite,
+    /// Represents source-compatible todo-v2 task list tools.
+    TodoV2,
+    /// Native fleet/sub-agent multi-task orchestration.
+    ///
+    /// Enabled by default; no external service calls are required.
+    Fleet,
 }
 
 /// Deterministic set wrapper for serializable feature gates.
@@ -62,6 +78,8 @@ impl FeatureSet {
             FeatureFlag::Skills,
             FeatureFlag::Agents,
             FeatureFlag::BackgroundTasks,
+            FeatureFlag::LegacyTodoWrite,
+            FeatureFlag::Fleet,
         ]))
     }
 
@@ -118,6 +136,8 @@ mod tests {
         assert!(features.contains(FeatureFlag::SessionPersistence));
         assert!(features.contains(FeatureFlag::Permissions));
         assert!(features.contains(FeatureFlag::Agents));
+        assert!(features.contains(FeatureFlag::LegacyTodoWrite));
+        assert!(!features.contains(FeatureFlag::TodoV2));
     }
 
     #[test]

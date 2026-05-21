@@ -310,6 +310,48 @@ pub struct McpTool {
     )]
     /// Stores the output schema
     pub output_schema: Option<Value>,
+    /// Stores the tool annotations
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub annotations: Option<McpToolAnnotations>,
+    /// Stores arbitrary MCP tool metadata
+    #[serde(rename = "_meta", default, skip_serializing_if = "Option::is_none")]
+    pub meta: Option<BTreeMap<String, Value>>,
+}
+
+/// Represents MCP tool annotations.
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+pub struct McpToolAnnotations {
+    /// Stores the preferred display title
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    /// Stores the read only hint
+    #[serde(
+        rename = "readOnlyHint",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub read_only_hint: Option<bool>,
+    /// Stores the destructive hint
+    #[serde(
+        rename = "destructiveHint",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub destructive_hint: Option<bool>,
+    /// Stores the idempotent hint
+    #[serde(
+        rename = "idempotentHint",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub idempotent_hint: Option<bool>,
+    /// Stores the open world hint
+    #[serde(
+        rename = "openWorldHint",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub open_world_hint: Option<bool>,
 }
 /// Represents mcp resource
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
@@ -324,4 +366,52 @@ pub struct McpResource {
     /// Stores the mime type
     #[serde(rename = "mimeType", default, skip_serializing_if = "Option::is_none")]
     pub mime_type: Option<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::*;
+
+    #[test]
+    fn mcp_tool_deserializes_annotations_and_meta() {
+        let tool: McpTool = serde_json::from_value(json!({
+            "name": "Search",
+            "description": "Search remotely",
+            "inputSchema": {"type": "object"},
+            "annotations": {
+                "title": "Remote Search",
+                "readOnlyHint": true,
+                "destructiveHint": false,
+                "idempotentHint": true,
+                "openWorldHint": true
+            },
+            "_meta": {
+                "origin": "fake-server",
+                "version": 1
+            }
+        }))
+        .expect("tool");
+
+        let annotations = tool.annotations.expect("annotations");
+        assert_eq!(annotations.title.as_deref(), Some("Remote Search"));
+        assert_eq!(annotations.read_only_hint, Some(true));
+        assert_eq!(annotations.idempotent_hint, Some(true));
+        assert_eq!(annotations.open_world_hint, Some(true));
+        assert_eq!(tool.meta.expect("meta")["origin"], json!("fake-server"));
+    }
+
+    #[test]
+    fn mcp_tool_deserializes_without_optional_metadata_fields() {
+        let tool: McpTool = serde_json::from_value(json!({
+            "name": "Echo",
+            "description": "Echo text",
+            "inputSchema": {"type": "object"}
+        }))
+        .expect("tool");
+
+        assert!(tool.annotations.is_none());
+        assert!(tool.meta.is_none());
+    }
 }

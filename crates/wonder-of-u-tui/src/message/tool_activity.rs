@@ -922,6 +922,7 @@ mod tests {
                     use_id: use_id("00000000-0000-0000-0000-000000000001"),
                     input: Some(json!({ "command": "cargo test" })),
                     result: Some(RejectedToolMessageView::from_result("done", true)),
+                    elapsed_secs: None,
                 },
                 ToolCallView {
                     use_id: use_id("00000000-0000-0000-0000-000000000002"),
@@ -930,11 +931,13 @@ mod tests {
                         "Tool use rejected by the user",
                         false,
                     )),
+                    elapsed_secs: None,
                 },
                 ToolCallView {
                     use_id: use_id("00000000-0000-0000-0000-000000000003"),
                     input: Some(json!({ "command": "sleep 10" })),
                     result: None,
+                    elapsed_secs: None,
                 },
             ],
         };

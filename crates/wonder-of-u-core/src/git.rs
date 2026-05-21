@@ -179,7 +179,10 @@ mod tests {
         let repo = setup_repo();
 
         assert!(is_git_repo(repo.path()));
-        assert_eq!(get_git_root(repo.path()).unwrap(), repo.path());
+        assert_eq!(
+            get_git_root(repo.path()).unwrap(),
+            repo.path().canonicalize().unwrap()
+        );
         assert_eq!(get_current_branch(repo.path()).unwrap(), "test-branch");
         assert_eq!(
             read_gitignore(repo.path()).unwrap(),

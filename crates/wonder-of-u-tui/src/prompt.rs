@@ -322,12 +322,9 @@ impl PromptSuggestion {
         self
     }
 
-    fn matches_filter(&self, filter_terms: &[String]) -> bool {
-        if filter_terms.is_empty() {
-            return true;
-        }
-
-        let search_text = normalize_for_match(
+    fn match_score(&self, filter: &str) -> Option<i64> {
+        fuzzy_match_score(
+            filter,
             &[
                 self.id.as_str(),
                 self.display_text.as_str(),
@@ -337,11 +334,7 @@ impl PromptSuggestion {
                 &self.keywords.join(" "),
             ]
             .join(" "),
-        );
-
-        filter_terms
-            .iter()
-            .all(|term| search_text.contains(term.as_str()))
+        )
     }
 }
 
@@ -375,16 +368,26 @@ impl PromptSuggestionState {
     /// Handles filtered
     #[must_use]
     pub fn filtered(&self) -> Vec<&PromptSuggestion> {
-        let terms = self
-            .filter
-            .split_whitespace()
-            .map(normalize_for_match)
-            .filter(|term| !term.is_empty())
-            .collect::<Vec<_>>();
-
-        self.suggestions
+        let mut filtered = self
+            .suggestions
             .iter()
-            .filter(|suggestion| suggestion.matches_filter(&terms))
+            .enumerate()
+            .filter_map(|(index, suggestion)| {
+                suggestion
+                    .match_score(&self.filter)
+                    .map(|score| (index, score, suggestion))
+            })
+            .collect::<Vec<_>>();
+        filtered.sort_by(
+            |(left_index, left_score, _), (right_index, right_score, _)| {
+                right_score
+                    .cmp(left_score)
+                    .then_with(|| left_index.cmp(right_index))
+            },
+        );
+        filtered
+            .into_iter()
+            .map(|(_, _, suggestion)| suggestion)
             .collect()
     }
     /// Handles selected
@@ -478,6 +481,99 @@ fn count_label(count: usize, singular: &str, plural: &str) -> String {
 
 fn normalize_for_match(text: &str) -> String {
     text.to_lowercase()
+}
+
+fn normalized_filter_terms(filter: &str) -> Vec<String> {
+    filter
+        .split_whitespace()
+        .map(normalize_for_match)
+        .filter(|term| !term.is_empty())
+        .collect()
+}
+
+/// Returns a fuzzy-match score for `filter` against `text`.
+///
+/// Higher scores are better. The matcher prefers exact prefix matches, then
+/// exact substring matches, then fuzzy subsequence matches. Every whitespace-
+/// separated query term must match for the overall score to be returned.
+#[must_use]
+pub fn fuzzy_match_score(filter: &str, text: &str) -> Option<i64> {
+    let terms = normalized_filter_terms(filter);
+    if terms.is_empty() {
+        return Some(0);
+    }
+
+    let haystack = normalize_for_match(text);
+    terms.iter().try_fold(0_i64, |score, term| {
+        score_term(&haystack, term).map(|term_score| score + term_score)
+    })
+}
+
+fn score_term(haystack: &str, term: &str) -> Option<i64> {
+    if term.is_empty() {
+        return Some(0);
+    }
+
+    if haystack == term {
+        return Some(100_000);
+    }
+
+    if haystack.starts_with(term) {
+        return Some(90_000 - haystack.chars().count() as i64);
+    }
+
+    if let Some(index) = haystack.find(term) {
+        return Some(
+            75_000
+                - (index as i64 * 100)
+                - (haystack
+                    .chars()
+                    .count()
+                    .saturating_sub(term.chars().count()) as i64),
+        );
+    }
+
+    fuzzy_subsequence_score(haystack, term)
+}
+
+fn fuzzy_subsequence_score(haystack: &str, needle: &str) -> Option<i64> {
+    let haystack = haystack.chars().collect::<Vec<_>>();
+    let needle = needle.chars().collect::<Vec<_>>();
+    let mut search_start = 0usize;
+    let mut previous_index = None;
+    let mut score = 10_000_i64;
+
+    for ch in &needle {
+        let relative_index = haystack
+            .iter()
+            .enumerate()
+            .skip(search_start)
+            .find_map(|(index, candidate)| (*candidate == *ch).then_some(index))?;
+        if let Some(previous_index) = previous_index {
+            let gap = relative_index.saturating_sub(previous_index + 1);
+            if gap == 0 {
+                score += 150;
+            } else {
+                score -= gap as i64 * 10;
+            }
+        } else {
+            score -= relative_index as i64 * 25;
+        }
+
+        if relative_index == 0
+            || !haystack
+                .get(relative_index.saturating_sub(1))
+                .is_some_and(|value| value.is_alphanumeric())
+        {
+            score += 100;
+        }
+
+        previous_index = Some(relative_index);
+        search_start = relative_index + 1;
+    }
+
+    score -= haystack.len().saturating_sub(needle.len()) as i64;
+    Some(score)
 }
 
 fn queued_command_preview(command: &QueuedCommand, max_preview_chars: usize) -> String {
@@ -636,6 +732,52 @@ mod tests {
         assert_eq!(
             suggestions.selected().map(|item| item.id.as_str()),
             Some("command-theme")
+        );
+    }
+
+    #[test]
+    fn fuzzy_match_score_prefers_prefix_then_substring_then_subsequence() {
+        let prefix = fuzzy_match_score("the", "/theme").expect("prefix match");
+        let substring = fuzzy_match_score("heme", "/theme").expect("substring match");
+        let subsequence = fuzzy_match_score("thm", "/theme").expect("subsequence match");
+
+        assert!(prefix > substring);
+        assert!(substring > subsequence);
+        assert!(fuzzy_match_score("zzz", "/theme").is_none());
+    }
+
+    #[test]
+    fn suggestion_filtering_supports_fuzzy_abbreviations_and_ranking() {
+        let mut suggestions = PromptSuggestionState::new([
+            PromptSuggestion::new("command-theme", "/theme", "/theme")
+                .with_description("Switch the theme"),
+            PromptSuggestion::new("command-status", "/status", "/status"),
+            PromptSuggestion::new(
+                "command-terminal-setup",
+                "/terminal-setup",
+                "/terminal-setup",
+            ),
+        ]);
+
+        suggestions.set_filter("thm");
+        let filtered = suggestions.filtered();
+
+        assert_eq!(
+            filtered
+                .iter()
+                .map(|item| item.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["command-theme"]
+        );
+
+        suggestions.set_filter("st");
+        let filtered = suggestions.filtered();
+        assert_eq!(
+            filtered
+                .iter()
+                .map(|item| item.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["command-status", "command-terminal-setup", "command-theme"]
         );
     }
 

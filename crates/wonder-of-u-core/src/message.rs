@@ -102,6 +102,57 @@ impl MessageEnvelope {
             },
         )
     }
+
+    /// Creates a task-notification transcript entry.
+    ///
+    /// Embeds the rendered `<task-notification>` XML as a structured
+    /// model-facing message.  Use this when a background task reaches a
+    /// terminal state so the model can observe the outcome.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use wonder_of_u_core::{MessageEnvelope, SessionId, TaskId};
+    ///
+    /// let session_id = SessionId::new();
+    /// let task_id = TaskId::new();
+    /// let xml = "<task-notification><task-id>x</task-id><status>completed</status></task-notification>";
+    /// let envelope = MessageEnvelope::task_notification(session_id, task_id, xml);
+    /// ```
+    #[must_use]
+    pub fn task_notification(
+        session_id: SessionId,
+        task_id: TaskId,
+        xml_payload: impl Into<String>,
+    ) -> Self {
+        Self::new(
+            session_id,
+            MessagePayload::TaskNotification {
+                task_id,
+                xml_payload: xml_payload.into(),
+            },
+        )
+    }
+
+    /// Creates a hook progress transcript entry.
+    #[must_use]
+    pub fn hook_progress(
+        session_id: SessionId,
+        event: impl Into<String>,
+        tool_name: impl Into<String>,
+        hook_count: u32,
+        success: bool,
+    ) -> Self {
+        Self::new(
+            session_id,
+            MessagePayload::HookProgress {
+                event: event.into(),
+                tool_name: tool_name.into(),
+                hook_count,
+                success,
+            },
+        )
+    }
 }
 
 /// First-slice message variants. Later renderers can add display-specific data
@@ -197,6 +248,17 @@ pub enum MessagePayload {
         /// Stores the output
         output: String,
     },
+    /// Hook execution progress appended to the transcript when hooks fire.
+    HookProgress {
+        /// Stores the triggering hook event.
+        event: String,
+        /// Stores the tool that triggered the hook event.
+        tool_name: String,
+        /// Stores the number of hooks that ran.
+        hook_count: u32,
+        /// Stores whether every hook passed.
+        success: bool,
+    },
     /// Represents compact boundary
     CompactBoundary {
         /// Stores the summary
@@ -227,11 +289,55 @@ pub enum MessagePayload {
         /// Stores the approved
         approved: bool,
     },
+    /// A sanitized provider or runtime error persisted into the transcript.
+    ///
+    /// The `message` field contains display-safe text with credentials
+    /// already redacted. The `kind` field is a short machine-readable tag
+    /// (e.g. `"provider"`, `"runtime"`, `"timeout"`) that callers may use
+    /// for styling or filtering.
+    ProviderError {
+        /// Machine-readable error kind.
+        kind: String,
+        /// Sanitized, display-safe error message.
+        message: String,
+    },
+    /// Structured `<task-notification>` XML payload injected into the
+    /// model-facing session transcript when a background task reaches a
+    /// terminal state (completed / failed / killed / cancelled).
+    ///
+    /// `task_id` is a stable cross-reference key; `xml_payload` is the
+    /// full rendered XML produced by [`wonder_of_u_core::task_notification`].
+    /// Renderers that don't understand this variant should display the
+    /// `xml_payload` verbatim so the model still sees the notification.
+    TaskNotification {
+        /// Opaque identifier of the task that reached terminal state.
+        task_id: TaskId,
+        /// Full rendered `<task-notification>…</task-notification>` XML.
+        xml_payload: String,
+    },
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn provider_error_payload_round_trips_json() {
+        let session_id = SessionId::new();
+        let msg = MessageEnvelope::new(
+            session_id,
+            MessagePayload::ProviderError {
+                kind: "provider".into(),
+                message: "connection refused".into(),
+            },
+        );
+        let json = serde_json::to_string(&msg).expect("serialize");
+        let decoded: MessageEnvelope = serde_json::from_str(&json).expect("deserialize");
+        assert!(
+            matches!(&decoded.payload, MessagePayload::ProviderError { kind, message }
+                if kind == "provider" && message == "connection refused")
+        );
+    }
 
     #[test]
     fn message_envelope_json_round_trips() {

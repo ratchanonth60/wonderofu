@@ -11,6 +11,7 @@ keywords.workspace = true
 categories.workspace = true
 readme.workspace = true
 publish = false
+default-run = "wonder-of-u"
 
 [[bin]]
 name = "wonder-of-u"
@@ -26,6 +27,7 @@ serde.workspace = true
 serde_json.workspace = true
 shell-words.workspace = true
 time.workspace = true
+unicode-segmentation.workspace = true
 libc.workspace = true
 walkdir.workspace = true
 wonder-of-u-agent.workspace = true

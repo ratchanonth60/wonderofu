@@ -4,8 +4,8 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use wonder_of_u_core::{
-    FeatureFlag, Result, Tool, ToolContext, ToolKind, ToolResult, ToolSchema, ToolSpec, ToolUseId,
-    WonderError,
+    AgentMessageSpec, FeatureFlag, Result, Tool, ToolContext, ToolEffect, ToolKind, ToolResult,
+    ToolSchema, ToolSpec, ToolUseId, WonderError,
 };
 
 use crate::{base_spec, parse_input, require_non_empty_text};
@@ -230,7 +230,7 @@ impl Tool for SendMessageTool {
     fn spec(&self) -> ToolSpec {
         let mut spec = communication_spec(
             "send_message",
-            "Source-compatible SendMessage alias; runtime peer/team messaging transport is unsupported",
+            "Source-compatible SendMessage alias; team messages are persisted as advisory fleet steering records",
         )
         .with_input_schema(ToolSchema::object());
         spec.input_schema = json!({
@@ -315,20 +315,64 @@ impl Tool for SendMessageTool {
         let input = parse_input::<SendMessageInput>("send_message", &input)?;
         input.validate()?;
 
-        Ok(unsupported_result(
-            use_id,
-            "send_message",
-            COMMUNICATION_RUNTIME_UNAVAILABLE,
-            json!({
-                "supported": false,
-                "tool": "send_message",
-                "tool_family": "agent_communication",
-                "delivery_attempted": false,
-                "recipient": input.to,
-                "recipient_kind": recipient_kind(&input.to).as_str(),
-                "message_type": input.message.kind(),
-            }),
-        ))
+        let kind = recipient_kind(&input.to);
+        match kind {
+            // uds: and bridge: transports remain unsupported in this runtime.
+            RecipientKind::Uds | RecipientKind::Bridge => Ok(unsupported_result(
+                use_id,
+                "send_message",
+                COMMUNICATION_RUNTIME_UNAVAILABLE,
+                json!({
+                    "supported": false,
+                    "tool": "send_message",
+                    "tool_family": "agent_communication",
+                    "delivery_attempted": false,
+                    "live_delivery": false,
+                    "recipient": input.to,
+                    "recipient_kind": kind.as_str(),
+                    "message_type": input.message.kind(),
+                }),
+            )),
+
+            // Team recipients are persisted as advisory fleet steering messages.
+            // The CLI runtime converts the effect into a FleetSteeringMessage.
+            RecipientKind::Team => {
+                let content = match &input.message {
+                    SendMessagePayload::Text(text) => text.clone(),
+                    // Structured messages are serialised to JSON as the prompt body.
+                    SendMessagePayload::Structured(msg) => {
+                        serde_json::to_string(msg).unwrap_or_else(|_| format!("{msg:?}"))
+                    }
+                };
+                let message_kind = input.message.kind().to_owned();
+                let spec = AgentMessageSpec {
+                    to: input.to.clone(),
+                    summary: input.summary.clone(),
+                    content,
+                    message_kind: message_kind.clone(),
+                };
+                let mut result = ToolResult::success(
+                    use_id,
+                    "message queued as advisory fleet steering \
+                     (not live-delivered to any running task)",
+                );
+                result.metadata = json!({
+                    "supported": true,
+                    "tool": "send_message",
+                    "tool_family": "agent_communication",
+                    "delivery_attempted": false,
+                    "live_delivery": false,
+                    "delivery_note":
+                        "persisted as advisory fleet message; \
+                         not delivered to any running task",
+                    "recipient": input.to,
+                    "recipient_kind": kind.as_str(),
+                    "message_type": message_kind,
+                });
+                result.effects = vec![ToolEffect::SendAgentMessage(spec)];
+                Ok(result)
+            }
+        }
     }
 }
 /// Represents team create input
@@ -525,10 +569,15 @@ mod tests {
         ToolContext {
             session_id: SessionId::new(),
             cwd,
+            session_worktree: None,
             permission_mode: PermissionMode::Default,
             additional_working_directories: Vec::new(),
+            provider: None,
+            model: None,
             permission_rules: Vec::new(),
             features: FeatureSet::first_release(),
+            bash_session_store: None,
+            fork_context: None,
         }
     }
 
@@ -589,8 +638,8 @@ mod tests {
     }
 
     #[test]
-    fn send_message_execute_returns_unsupported_without_side_effects() {
-        let dir = unique_test_dir("tools-send-message-unsupported");
+    fn send_message_execute_team_returns_success_with_send_effect() {
+        let dir = unique_test_dir("tools-send-message-team-effect");
         let tool = SendMessageTool;
         let result = block_on(tool.execute(
             tool_context(dir.clone()),
@@ -603,12 +652,116 @@ mod tests {
         ))
         .expect("execute");
 
-        assert!(!result.success);
+        // Team recipients: success with a SendAgentMessage effect.
+        assert!(
+            result.success,
+            "team send should succeed; got: {}",
+            result.content
+        );
+        assert_eq!(result.effects.len(), 1, "should have one effect");
+        match &result.effects[0] {
+            ToolEffect::SendAgentMessage(spec) => {
+                assert_eq!(spec.to, "reviewer");
+                assert_eq!(spec.summary.as_deref(), Some("review request"));
+                assert_eq!(spec.content, "please check the patch");
+                assert_eq!(spec.message_kind, "text");
+            }
+            other => panic!("unexpected effect: {other:?}"),
+        }
+        // Result must be honest: no live delivery, not live_delivery=true.
+        assert_eq!(result.metadata["live_delivery"], false);
+        // No files written by the tool itself.
+        assert!(!dir.join("fleet").exists());
+    }
+
+    #[test]
+    fn send_message_execute_uds_returns_unsupported() {
+        let dir = unique_test_dir("tools-send-message-uds-unsupported");
+        let tool = SendMessageTool;
+        let result = block_on(tool.execute(
+            tool_context(dir.clone()),
+            ToolUseId::new(),
+            json!({
+                "to": "uds:/tmp/demo.sock",
+                "message": "hello",
+            }),
+        ))
+        .expect("execute");
+
+        assert!(!result.success, "uds send should remain unsupported");
         assert!(result.content.contains("send_message is unavailable"));
         assert_eq!(result.metadata["supported"], false);
         assert_eq!(result.metadata["delivery_attempted"], false);
-        assert!(!dir.join("teams").exists());
-        assert!(!dir.join("sessions").exists());
+        assert!(!dir.join("fleet").exists());
+    }
+
+    #[test]
+    fn send_message_execute_broadcast_returns_send_effect() {
+        let dir = unique_test_dir("tools-send-message-broadcast-effect");
+        let tool = SendMessageTool;
+        let result = block_on(tool.execute(
+            tool_context(dir.clone()),
+            ToolUseId::new(),
+            json!({
+                "to": "*",
+                "summary": "heads up",
+                "message": "pivoting to auth module",
+            }),
+        ))
+        .expect("execute");
+
+        assert!(
+            result.success,
+            "broadcast send should succeed; got: {}",
+            result.content
+        );
+        assert_eq!(result.effects.len(), 1);
+        match &result.effects[0] {
+            ToolEffect::SendAgentMessage(spec) => {
+                assert_eq!(spec.to, "*");
+                assert_eq!(spec.summary.as_deref(), Some("heads up"));
+            }
+            other => panic!("unexpected effect: {other:?}"),
+        }
+        assert_eq!(result.metadata["live_delivery"], false);
+    }
+
+    #[test]
+    fn send_message_execute_structured_team_returns_send_effect() {
+        let dir = unique_test_dir("tools-send-message-structured-effect");
+        let tool = SendMessageTool;
+        let result = block_on(tool.execute(
+            tool_context(dir.clone()),
+            ToolUseId::new(),
+            json!({
+                "to": "team-lead",
+                "message": {
+                    "type": "shutdown_response",
+                    "request_id": "req-42",
+                    "approve": true,
+                },
+            }),
+        ))
+        .expect("execute");
+
+        assert!(
+            result.success,
+            "structured send should succeed; got: {}",
+            result.content
+        );
+        assert_eq!(result.effects.len(), 1);
+        match &result.effects[0] {
+            ToolEffect::SendAgentMessage(spec) => {
+                assert_eq!(spec.message_kind, "shutdown_response");
+                // Content is the JSON serialisation of the structured message.
+                assert!(
+                    spec.content.contains("shutdown_response"),
+                    "got: {}",
+                    spec.content
+                );
+            }
+            other => panic!("unexpected effect: {other:?}"),
+        }
     }
 
     #[test]

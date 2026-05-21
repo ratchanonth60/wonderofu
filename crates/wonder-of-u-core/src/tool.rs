@@ -1,7 +1,7 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
     path::PathBuf,
-    sync::Arc,
+    sync::{Arc, Mutex},
 };
 
 use async_trait::async_trait;
@@ -9,8 +9,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 
 use crate::{
-    AdditionalWorkingDirectory, FeatureFlag, FeatureSet, PermissionDecision, PermissionMode,
-    PermissionRequest, PermissionRule, Result, SessionId, ToolPermissionContext, ToolUseId,
+    AdditionalWorkingDirectory, FeatureFlag, FeatureSet, FleetMemberRequest, ForkContextSnapshot,
+    PermissionDecision, PermissionMode, PermissionRequest, PermissionRule, Result,
+    RuntimeWorktreeState, SessionId, ShellSessionStore, TaskId, ToolPermissionContext, ToolUseId,
     WonderError, evaluate_permission,
 };
 /// Enumerates tool kind
@@ -286,14 +287,36 @@ pub struct ToolContext {
     pub session_id: SessionId,
     /// Stores the cwd
     pub cwd: PathBuf,
+    /// Stores active worktree session state when the runtime has switched into one.
+    pub session_worktree: Option<RuntimeWorktreeState>,
     /// Stores the permission mode
     pub permission_mode: PermissionMode,
     /// Stores the additional working directories
     pub additional_working_directories: Vec<AdditionalWorkingDirectory>,
+    /// Stores the selected provider, when the runtime has one.
+    pub provider: Option<String>,
+    /// Stores the selected model, when the runtime has one.
+    pub model: Option<String>,
     /// Stores the permission rules
     pub permission_rules: Vec<PermissionRule>,
     /// Stores the features
     pub features: FeatureSet,
+    /// Optional persistent bash session store shared across tool calls.
+    ///
+    /// When present, [`BashTool`] reuses the same bash process between calls,
+    /// preserving `$PWD`, environment variables, and shell functions.
+    /// When `None` the tool falls back to the one-shot subprocess behaviour.
+    pub bash_session_store: Option<Arc<Mutex<ShellSessionStore>>>,
+    /// Fork-lite context snapshot from the parent session.
+    ///
+    /// Populated by the CLI runtime when the current process is running inside
+    /// a prompt or TUI loop.  `None` for all other callers (tests, headless
+    /// tool calls without a session, etc.).
+    ///
+    /// The `agent` tool reads this field when `mode = "fork"` to embed the
+    /// snapshot in the [`FleetMemberRequest`] before launching the child
+    /// subprocess.  All other tools ignore it.
+    pub fork_context: Option<ForkContextSnapshot>,
 }
 
 impl ToolContext {
@@ -308,6 +331,109 @@ impl ToolContext {
         }
     }
 }
+/// Plain-data spec for launching an agent task, carried as a [`ToolEffect`].
+///
+/// Wraps a fully-constructed [`FleetMemberRequest`] — including the definition
+/// snapshot, lineage, allowed tools, and model override — so the runtime can
+/// start a real task without re-reading any files.
+///
+/// # Output paths
+///
+/// When `reserved_task_id` is `Some`, the runtime **must** use that id when
+/// creating the task record so the output paths published in the tool result
+/// metadata remain stable.  The paths are deterministic given the app-root
+/// and task-id:
+///
+/// | field | path |
+/// |---|---|
+/// | `output_log_path` | `tasks/logs/{task_id}.log` |
+/// | `result_path` | `tasks/results/{task_id}.json` |
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct AgentLaunchSpec {
+    /// The fully-constructed request ready for the runtime to convert into an
+    /// `AgentTaskLaunch` and pass to `TaskManager::start_agent_task`.
+    pub request: FleetMemberRequest,
+
+    /// Pre-allocated task id chosen at tool-call time.
+    ///
+    /// When present the runtime **must** use this id instead of generating a
+    /// fresh one so that the output paths published in the accompanying
+    /// `ToolResult::metadata` stay stable and can be consumed by the caller
+    /// before the task reaches a terminal state.
+    ///
+    /// `None` is serialized as absent for backward compatibility with runtimes
+    /// that predate this field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reserved_task_id: Option<TaskId>,
+}
+
+/// Plain-data spec carried by [`ToolEffect::SendAgentMessage`].
+///
+/// Produced by `SendMessageTool` for team-recipient calls.  The CLI runtime
+/// reads `WONDER_OF_U_FLEET_ID` and persists this as a
+/// [`FleetSteeringMessage`](crate::FleetSteeringMessage) with
+/// `source = SteeringSource::Agent`.
+///
+/// The tool layer never reads environment variables; all env access happens
+/// in the CLI effect processor.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct AgentMessageSpec {
+    /// Recipient: a bare team-member name or `"*"` for broadcast.
+    pub to: String,
+    /// 5–10 word preview supplied with plain-text messages.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
+    /// Full message text / prompt to persist as the steering instruction.
+    pub content: String,
+    /// Kind label (e.g. `"text"`, `"shutdown_request"`).
+    pub message_kind: String,
+}
+
+/// Typed side-effects that a tool may request from the calling runtime.
+///
+/// Effects are returned inside [`ToolResult::effects`] and processed **after**
+/// the tool result is received.  The tool itself never writes storage or spawns
+/// processes; it delegates those concerns to the runtime via this mechanism.
+///
+/// # Backward compatibility
+///
+/// [`ToolResult::effects`] defaults to an empty `Vec` and is omitted from JSON
+/// when empty, so older readers silently ignore it.
+// `LaunchAgentTask` carries a ~504-byte `AgentLaunchSpec`; boxing it would
+// add a heap allocation for every tool dispatch.  `ToolEffect` values are
+// short-lived (drained immediately in `process_tool_effects`) so the size
+// difference is acceptable.
+#[allow(clippy::large_enum_variant)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "type", content = "data", rename_all = "snake_case")]
+pub enum ToolEffect {
+    /// Request the runtime to launch a local agent task from the enclosed spec.
+    ///
+    /// The runtime **must** choose exactly one of:
+    /// - Direct launch: convert to `AgentTaskLaunch`, call `TaskManager::start_agent_task`.
+    /// - Pending queue fallback: write a [`FleetMemberRequest`] file via
+    ///   `FleetStore::queue_member_request` if direct launch is unavailable or fails.
+    ///
+    /// These two paths are mutually exclusive for a single invocation to prevent
+    /// duplicate tasks.
+    LaunchAgentTask(AgentLaunchSpec),
+
+    /// Request the runtime to persist a `send_message` call as an advisory
+    /// fleet steering message with `source = SteeringSource::Agent`.
+    ///
+    /// The runtime:
+    /// 1. Reads `WONDER_OF_U_FLEET_ID` from the environment.
+    /// 2. Validates the fleet exists and is not terminal.
+    /// 3. Writes a `FleetSteeringMessage` with `source = Agent`.
+    /// 4. Updates the result with `status = queued_advisory` and the steering id.
+    ///
+    /// If `WONDER_OF_U_FLEET_ID` is absent, the storage dir is not configured,
+    /// or the fleet is terminal/missing, the result is marked failed and
+    /// nothing is written.  This is **advisory routing only** — no live
+    /// delivery to any running subprocess is attempted.
+    SendAgentMessage(AgentMessageSpec),
+}
+
 /// Represents tool result
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ToolResult {
@@ -320,6 +446,12 @@ pub struct ToolResult {
     /// Stores the metadata
     #[serde(default)]
     pub metadata: Value,
+    /// Typed side-effects the runtime should process after receiving this result.
+    ///
+    /// Defaults to an empty `Vec` and is omitted from serialized JSON when
+    /// empty, preserving backward compatibility with older readers.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub effects: Vec<ToolEffect>,
 }
 
 impl ToolResult {
@@ -331,6 +463,7 @@ impl ToolResult {
             success: true,
             content: content.into(),
             metadata: Value::Null,
+            effects: Vec::new(),
         }
     }
     /// Handles failure
@@ -341,6 +474,7 @@ impl ToolResult {
             success: false,
             content: content.into(),
             metadata: Value::Null,
+            effects: Vec::new(),
         }
     }
 
@@ -348,6 +482,13 @@ impl ToolResult {
     #[must_use]
     pub fn with_metadata(mut self, metadata: Value) -> Self {
         self.metadata = metadata;
+        self
+    }
+
+    /// Attach typed side-effects the runtime should process after this result.
+    #[must_use]
+    pub fn with_effects(mut self, effects: Vec<ToolEffect>) -> Self {
+        self.effects = effects;
         self
     }
 }
@@ -646,10 +787,15 @@ mod tests {
         ToolContext {
             session_id: SessionId::new(),
             cwd: PathBuf::from("/workspace"),
+            session_worktree: None,
             permission_mode: PermissionMode::Default,
             additional_working_directories: Vec::new(),
+            provider: None,
+            model: None,
             permission_rules: Vec::new(),
             features: FeatureSet::first_release(),
+            bash_session_store: None,
+            fork_context: None,
         }
     }
 
@@ -836,5 +982,128 @@ mod tests {
 
         let error = spec.validate().expect_err("duplicate alias");
         assert!(error.to_string().contains("duplicate tool alias"));
+    }
+
+    // ── ToolResult.effects back-compat ────────────────────────────────────────
+
+    /// JSON from older binaries (before this field existed) must deserialize
+    /// with an empty effects Vec — the `#[serde(default)]` annotation handles
+    /// this, but an explicit test makes the contract visible.
+    #[test]
+    fn tool_result_effects_field_defaults_to_empty_on_legacy_json() {
+        let legacy_json = serde_json::json!({
+            "use_id": "0191e4a2-c54e-7000-8000-000000000001",
+            "success": true,
+            "content": "agent task queued for fleet dispatch: abc-123",
+            "metadata": { "request_id": "abc-123", "status": "pending_dispatch" }
+        });
+
+        let result: ToolResult =
+            serde_json::from_value(legacy_json).expect("deserialize legacy ToolResult");
+
+        assert!(
+            result.effects.is_empty(),
+            "expected empty effects from legacy JSON, got {:?}",
+            result.effects
+        );
+    }
+
+    /// A result with no effects must round-trip without the field in the JSON
+    /// output (the `skip_serializing_if` annotation keeps payloads compact).
+    #[test]
+    fn tool_result_with_no_effects_omits_field_from_serialized_json() {
+        let id = ToolUseId::new();
+        let result = ToolResult::success(id, "ok");
+        let json = serde_json::to_value(&result).expect("serialize");
+        assert!(
+            !json.as_object().unwrap().contains_key("effects"),
+            "effects field should be absent when empty, got: {json}"
+        );
+    }
+
+    /// Ensure a `ToolEffect::LaunchAgentTask` round-trips through serde
+    /// with the expected discriminant shape `{type: "launch_agent_task", data: ...}`.
+    #[test]
+    fn tool_effect_launch_agent_task_serde_round_trip() {
+        use crate::FleetMemberRequest;
+
+        let req = FleetMemberRequest::new("test prompt");
+        let spec = AgentLaunchSpec {
+            request: req.clone(),
+            reserved_task_id: None,
+        };
+        let effect = ToolEffect::LaunchAgentTask(spec);
+        let json = serde_json::to_value(&effect).expect("serialize effect");
+
+        assert_eq!(json["type"], "launch_agent_task");
+        assert!(json["data"].is_object());
+
+        let roundtripped: ToolEffect = serde_json::from_value(json).expect("deserialize effect");
+        assert_eq!(
+            roundtripped,
+            ToolEffect::LaunchAgentTask(AgentLaunchSpec {
+                request: req,
+                reserved_task_id: None,
+            })
+        );
+    }
+
+    /// `ToolEffect::SendAgentMessage` round-trips with the expected discriminant
+    /// shape `{type: "send_agent_message", data: {...}}`.
+    #[test]
+    fn tool_effect_send_agent_message_serde_round_trip() {
+        let spec = AgentMessageSpec {
+            to: "reviewer".into(),
+            summary: Some("review auth".into()),
+            content: "please review the auth module".into(),
+            message_kind: "text".into(),
+        };
+        let effect = ToolEffect::SendAgentMessage(spec.clone());
+        let json = serde_json::to_value(&effect).expect("serialize effect");
+
+        assert_eq!(json["type"], "send_agent_message");
+        assert!(json["data"].is_object());
+        assert_eq!(json["data"]["to"], "reviewer");
+        assert_eq!(json["data"]["message_kind"], "text");
+
+        let roundtripped: ToolEffect = serde_json::from_value(json).expect("deserialize effect");
+        assert_eq!(roundtripped, ToolEffect::SendAgentMessage(spec));
+    }
+
+    /// `AgentMessageSpec` with no summary omits the `summary` field from JSON.
+    #[test]
+    fn agent_message_spec_absent_summary_omitted_from_json() {
+        let spec = AgentMessageSpec {
+            to: "*".into(),
+            summary: None,
+            content: "broadcast update".into(),
+            message_kind: "text".into(),
+        };
+        let json = serde_json::to_string(&spec).expect("serialize");
+        assert!(
+            !json.contains("summary"),
+            "absent summary should be omitted: {json}"
+        );
+    }
+
+    /// Legacy `ToolResult` JSON (no `effects`) deserializes with empty effects,
+    /// and a result carrying `SendAgentMessage` round-trips correctly.
+    #[test]
+    fn tool_result_with_send_agent_message_effect_round_trips() {
+        let id = ToolUseId::new();
+        let spec = AgentMessageSpec {
+            to: "team-lead".into(),
+            summary: Some("status update".into()),
+            content: "milestone reached".into(),
+            message_kind: "text".into(),
+        };
+        let result = ToolResult::success(id, "queued")
+            .with_effects(vec![ToolEffect::SendAgentMessage(spec.clone())]);
+
+        let json = serde_json::to_value(&result).expect("serialize");
+        let decoded: ToolResult = serde_json::from_value(json).expect("deserialize");
+
+        assert_eq!(decoded.effects.len(), 1);
+        assert_eq!(decoded.effects[0], ToolEffect::SendAgentMessage(spec));
     }
 }

@@ -5,17 +5,18 @@ use wonder_of_u_core::{
     session_footer_text, session_status_text,
 };
 
+use crate::{prompt::PromptQueueView, style::TextStyle};
+
 mod rich;
 mod tool_activity;
-
-use crate::prompt::PromptQueueView;
 
 /// Re-exports items from `rich`
 pub use rich::{
     AttachmentKind, AttachmentSummaryView, FileEditReferenceView, GroupedToolCallView,
     MarkdownBlockView, MarkdownCodeBlockView, MarkdownSummaryView, RejectedToolMessageKind,
     RejectedToolMessageView, RichMessageView, SystemErrorKind, SystemErrorView, ThinkingBlockView,
-    ToolCallView, ToolResultStatus, TranscriptBoundaryView, rich_message_views,
+    ToolCallView, ToolResultStatus, TranscriptBoundaryView, highlight_code_block,
+    rich_message_views,
 };
 /// Re-exports items from `tool_activity`
 pub use tool_activity::{
@@ -41,6 +42,26 @@ pub enum MessageRole {
     /// Represents error
     Error,
 }
+/// Represents a styled message span.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MessageSpanView {
+    /// Stores the text
+    pub text: String,
+    /// Stores the optional style override
+    pub style: Option<TextStyle>,
+}
+
+impl MessageSpanView {
+    /// Creates a new value
+    #[must_use]
+    pub fn new(text: impl Into<String>, style: Option<TextStyle>) -> Self {
+        Self {
+            text: text.into(),
+            style,
+        }
+    }
+}
+
 /// Represents message line view
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct MessageLineView {
@@ -48,6 +69,8 @@ pub struct MessageLineView {
     pub text: String,
     /// Stores the role
     pub role: MessageRole,
+    /// Stores the optional styled spans
+    pub spans: Vec<MessageSpanView>,
 }
 
 impl MessageLineView {
@@ -57,7 +80,18 @@ impl MessageLineView {
         Self {
             text: text.into(),
             role,
+            spans: Vec::new(),
         }
+    }
+
+    /// Creates a line with styled spans.
+    #[must_use]
+    pub fn with_spans(role: MessageRole, spans: Vec<MessageSpanView>) -> Self {
+        let text = spans.iter().fold(String::new(), |mut text, span| {
+            text.push_str(&span.text);
+            text
+        });
+        Self { text, role, spans }
     }
 }
 /// Represents task panel view
@@ -80,6 +114,17 @@ pub struct HistorySearchView {
     pub match_index: usize,
     /// Stores the match total
     pub match_total: usize,
+}
+
+/// Describes a single workspace search hit.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct SearchMatch {
+    /// Relative file path for the match.
+    pub file: String,
+    /// One-based line number.
+    pub line: u32,
+    /// Full matched line text.
+    pub text: String,
 }
 
 /// Carries the computed preview for the currently highlighted picker option.
@@ -117,10 +162,20 @@ pub struct PickerListView {
 }
 
 /// Handles message lines
-pub fn message_lines(messages: &[MessageEnvelope]) -> Vec<MessageLineView> {
-    rich_message_views(messages)
+pub fn message_lines(messages: &[MessageEnvelope], expand_output: bool) -> Vec<MessageLineView> {
+    message_lines_for_width(messages, DEFAULT_MESSAGE_SUMMARY_WIDTH, expand_output)
+}
+
+/// Handles message lines for a specific summary width.
+#[must_use]
+pub fn message_lines_for_width(
+    messages: &[MessageEnvelope],
+    summary_width: usize,
+    expand_output: bool,
+) -> Vec<MessageLineView> {
+    rich_message_views(messages, expand_output)
         .into_iter()
-        .flat_map(|view| view.display_lines(DEFAULT_MESSAGE_SUMMARY_WIDTH))
+        .flat_map(|view| view.display_lines(summary_width.max(1), expand_output))
         .collect()
 }
 /// Handles status text
@@ -298,7 +353,11 @@ fn render_message(message: &MessageEnvelope, output: &mut Vec<MessageLineView>) 
                 MessageRole::User,
             ));
             if let Some(result) = result {
-                push_prefixed_lines(output, "result> ", result, MessageRole::Assistant);
+                if input.trim() == "/help" {
+                    push_prefixed_lines(output, "", result, MessageRole::System);
+                } else {
+                    push_prefixed_lines(output, "result> ", result, MessageRole::Assistant);
+                }
             }
         }
         MessagePayload::HookResult {
@@ -312,6 +371,19 @@ fn render_message(message: &MessageEnvelope, output: &mut Vec<MessageLineView>) 
                 MessageRole::Error
             };
             push_prefixed_lines(output, &format!("hook[{hook}]> "), result, role);
+        }
+        MessagePayload::HookProgress {
+            event,
+            tool_name,
+            hook_count,
+            success,
+        } => {
+            let icon = if *success { "⚙" } else { "⚠" };
+            let noun = if *hook_count == 1 { "hook" } else { "hooks" };
+            output.push(MessageLineView::new(
+                format!("{icon} {hook_count} {event} {noun} ran for {tool_name}"),
+                MessageRole::Progress,
+            ));
         }
         MessagePayload::CompactBoundary { summary } => {
             push_prefixed_lines(output, "summary> ", summary, MessageRole::System)
@@ -349,6 +421,20 @@ fn render_message(message: &MessageEnvelope, output: &mut Vec<MessageLineView>) 
                 MessageRole::Error
             },
         )),
+        MessagePayload::ProviderError { kind, message } => {
+            push_prefixed_lines(
+                output,
+                &format!("error[{kind}]> "),
+                message,
+                MessageRole::Error,
+            );
+        }
+        // Render the XML payload verbatim so the model transcript shows the
+        // full structured notification.  The `task>` prefix keeps it visually
+        // consistent with the existing Task variant.
+        MessagePayload::TaskNotification { xml_payload, .. } => {
+            push_prefixed_lines(output, "task> ", xml_payload, MessageRole::Progress);
+        }
     }
 }
 
@@ -412,6 +498,7 @@ const fn status_rank(status: TaskStatus) -> u8 {
 mod tests {
     use std::path::PathBuf;
 
+    use ::time::{Duration, OffsetDateTime};
     use wonder_of_u_core::{
         AppState, MessagePayload, QueuePlacement, SessionId, TaskState, TokenUsage, ToolUseId,
     };
@@ -423,13 +510,22 @@ mod tests {
         let session_id = SessionId::new();
         let use_id =
             ToolUseId::parse("00000000-0000-0000-0000-000000000001").expect("valid tool use id");
+        let mut assistant = MessageEnvelope::new(
+            session_id,
+            MessagePayload::AssistantText {
+                content: "line one\nline two".into(),
+            },
+        );
+        assistant.timestamp =
+            OffsetDateTime::UNIX_EPOCH + Duration::hours(12) + Duration::minutes(45);
         let messages = vec![
             MessageEnvelope::new(
                 session_id,
-                MessagePayload::AssistantText {
-                    content: "line one\nline two".into(),
+                MessagePayload::UserText {
+                    content: "review changes".into(),
                 },
             ),
+            assistant,
             MessageEnvelope::new(
                 session_id,
                 MessagePayload::ToolResult {
@@ -441,15 +537,30 @@ mod tests {
             ),
         ];
 
+        // Claude visual parity: user and assistant messages open with a "● " bullet.
+        // The timestamp line follows the first assistant content line.
+        // Tool/error rows use their own "● Tool(args)" + "  ⎿  detail" chrome.
         assert_eq!(
-            message_lines(&messages),
+            message_lines(&messages, false),
             vec![
-                MessageLineView::new("assistant> line one line two", MessageRole::Assistant),
-                MessageLineView::new("tools[bash]> 1 call", MessageRole::Tool),
-                MessageLineView::new(
-                    "  • #00000000 error · no input recorded → permission denied",
-                    MessageRole::Error,
+                MessageLineView::new("● review changes", MessageRole::User),
+                MessageLineView::new("● line one line two", MessageRole::Assistant),
+                MessageLineView::with_spans(
+                    MessageRole::System,
+                    vec![
+                        MessageSpanView::new(" ".repeat(72), None),
+                        MessageSpanView::new(
+                            "12:45 PM",
+                            Some(
+                                crate::style::TextStyle::default()
+                                    .fg(crate::style::Color::DarkGrey)
+                                    .dim(),
+                            ),
+                        ),
+                    ],
                 ),
+                MessageLineView::new("● Bash", MessageRole::Error,),
+                MessageLineView::new("  ⎿  permission denied", MessageRole::Error,),
             ]
         );
     }
@@ -533,7 +644,7 @@ mod tests {
         ];
 
         assert_eq!(
-            message_lines(&messages),
+            message_lines(&messages, false),
             vec![
                 MessageLineView::new("attachment> image diagram.png", MessageRole::User,),
                 MessageLineView::new("  file:///workspace/assets/diagram.png", MessageRole::User),
@@ -572,14 +683,29 @@ mod tests {
         ];
 
         assert_eq!(
-            message_lines(&messages),
+            message_lines(&messages, false),
             vec![
-                MessageLineView::new("tools[bash]> 1 call", MessageRole::Tool),
-                MessageLineView::new(
-                    "  • #00000000 ok · command=\"echo hi\" → done",
-                    MessageRole::Tool,
-                ),
+                MessageLineView::new("● Bash(echo hi)", MessageRole::Tool,),
+                MessageLineView::new("  ⎿  echo hi", MessageRole::System),
             ]
         );
+    }
+
+    #[test]
+    fn provider_error_renders_with_error_role_and_kind_prefix() {
+        let session_id = SessionId::new();
+        let messages = vec![MessageEnvelope::new(
+            session_id,
+            MessagePayload::ProviderError {
+                kind: "provider".into(),
+                message: "connection refused\nextra detail".into(),
+            },
+        )];
+
+        let lines = message_lines(&messages, false);
+        assert_eq!(lines.len(), 2);
+        assert_eq!(lines[0].role, MessageRole::Error);
+        assert!(lines[0].text.starts_with("error[provider]> "));
+        assert_eq!(lines[1].role, MessageRole::Error);
     }
 }

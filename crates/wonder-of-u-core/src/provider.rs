@@ -10,6 +10,21 @@ pub enum AuthMaterialKind {
     ApiKey,
     /// Represents o auth
     OAuth,
+    /// Represents AWS Signature Version 4 (used by Amazon Bedrock)
+    AwsSigV4,
+    /// Short-lived bearer token sourced from `AWS_BEARER_TOKEN_BEDROCK`.
+    ///
+    /// Highest-priority resolution path for Bedrock; no signing required.
+    AwsBearer,
+    /// Named AWS profile resolved from `~/.aws/credentials` (or
+    /// `AWS_SHARED_CREDENTIALS_FILE`).  Falls back to this when neither a
+    /// bearer token nor static SigV4 env vars are present.
+    AwsProfile,
+    /// Google Cloud OAuth 2 access token for Vertex AI.
+    ///
+    /// Requires `VERTEXAI_PROJECT`, `VERTEXAI_LOCATION`, and
+    /// `GOOGLE_APPLICATION_CREDENTIALS` to be set.
+    GcpOAuth2,
 }
 /// Enumerates auth status
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
@@ -120,6 +135,10 @@ impl AuthState {
             AuthMaterialKind::None => "none",
             AuthMaterialKind::ApiKey => "api_key",
             AuthMaterialKind::OAuth => "oauth",
+            AuthMaterialKind::AwsSigV4 => "aws_sig_v4",
+            AuthMaterialKind::AwsBearer => "aws_bearer",
+            AuthMaterialKind::AwsProfile => "aws_profile",
+            AuthMaterialKind::GcpOAuth2 => "gcp_oauth2",
         }
     }
     /// Constant fn
@@ -170,5 +189,28 @@ mod tests {
         assert_eq!(auth.kind_label(), "api_key");
         assert_eq!(auth.status_label(), "ready");
         assert_eq!(auth.source_label(), Some("environment"));
+    }
+
+    #[test]
+    fn all_auth_material_kind_labels_are_distinct_and_stable() {
+        // Ensures that every variant has a unique, stable serialisation label.
+        let cases = [
+            (AuthMaterialKind::None, "none"),
+            (AuthMaterialKind::ApiKey, "api_key"),
+            (AuthMaterialKind::OAuth, "oauth"),
+            (AuthMaterialKind::AwsSigV4, "aws_sig_v4"),
+            (AuthMaterialKind::AwsBearer, "aws_bearer"),
+            (AuthMaterialKind::AwsProfile, "aws_profile"),
+            (AuthMaterialKind::GcpOAuth2, "gcp_oauth2"),
+        ];
+        let labels: Vec<_> = cases.iter().map(|(_, label)| *label).collect();
+        // All labels must be unique.
+        let unique: std::collections::HashSet<_> = labels.iter().copied().collect();
+        assert_eq!(unique.len(), labels.len(), "duplicate kind labels detected");
+
+        for (kind, expected_label) in &cases {
+            let auth = AuthState::missing(*kind);
+            assert_eq!(auth.kind_label(), *expected_label, "mismatch for {kind:?}");
+        }
     }
 }

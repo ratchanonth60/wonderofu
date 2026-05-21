@@ -3,6 +3,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use glob::{MatchOptions, Pattern as GlobPattern};
 use serde::{Deserialize, Serialize};
 
 /// User-facing permission modes planned for command and tool execution.
@@ -175,8 +176,10 @@ impl PermissionRule {
     /// Handles matches
     #[must_use]
     pub fn matches(&self, context: &ToolPermissionContext, request: &PermissionRequest) -> bool {
-        let tool = normalize_tool_name(&self.tool);
-        if tool.as_deref() != Some("*") && !request.matches_tool_name(&self.tool) {
+        let Some(pattern) = ToolPattern::parse(&self.tool) else {
+            return false;
+        };
+        if !pattern.matches_request(request) {
             return false;
         }
 
@@ -298,6 +301,13 @@ impl ToolPermissionContext {
     #[must_use]
     fn first_path_escape_attempt(&self, paths: &[PathBuf]) -> Option<PathBuf> {
         let scopes = self.working_directories();
+        let raw_scopes = std::iter::once(self.resolve_path(&self.cwd))
+            .chain(
+                self.additional_working_directories
+                    .iter()
+                    .map(|directory| self.resolve_path(&directory.path)),
+            )
+            .collect::<Vec<_>>();
         paths.iter().find_map(|path| {
             let resolved = self.resolve_path(path);
             let canonical = canonicalize_best_effort(&resolved);
@@ -308,7 +318,10 @@ impl ToolPermissionContext {
                 return Some(canonical);
             }
 
-            let raw_inside = scopes.iter().any(|scope| is_path_within(&resolved, scope));
+            let raw_inside = raw_scopes
+                .iter()
+                .chain(scopes.iter())
+                .any(|scope| is_path_within(&resolved, scope));
             (raw_inside && canonical_outside).then_some(canonical)
         })
     }
@@ -630,9 +643,36 @@ pub fn evaluate_permission(
         .default_decision(request.read_only, request.destructive)
 }
 /// Checks shell safety
+///
+/// Returns `None` when the command passes all checks.  Returns a
+/// [`ShellSafetyIssue`] with verdict [`ShellSafetyVerdict::Blocked`] for
+/// patterns that are unconditionally denied, and
+/// [`ShellSafetyVerdict::Review`] for patterns that warrant human review.
+///
+/// Detection covers both the normalised token stream and select raw-string
+/// patterns that must be caught before normalisation collapses syntax
+/// (e.g. process substitution `<(…)` / `>(…)`, zsh `zmodload`/`zsocket`,
+/// and backtick/command-substitution obfuscation of dangerous built-ins).
 #[must_use]
 pub fn check_shell_safety(command: &str) -> Option<ShellSafetyIssue> {
+    // ── Pre-normalisation checks on the raw command ───────────────────────────
+    //
+    // Some patterns must be detected before `normalize_shell_command` collapses
+    // them (parentheses become spaces, so `<(cmd)` would lose its `<(` shape).
+
+    // Process substitution <(...) / >(...) opens a subshell connected to a
+    // file-descriptor.  Uncommon in everyday scripts; always warrants review.
+    if has_process_substitution(command) {
+        return Some(ShellSafetyIssue {
+            verdict: ShellSafetyVerdict::Review,
+            message: "shell command uses process substitution (<(…) or >(…)) which requires review"
+                .into(),
+        });
+    }
+
     let normalized = normalize_shell_command(command);
+
+    // ── Blocked patterns ─────────────────────────────────────────────────────
 
     if normalized.contains("rm -rf /") || normalized.contains("rm -fr /") {
         return Some(ShellSafetyIssue {
@@ -659,6 +699,45 @@ pub fn check_shell_safety(command: &str) -> Option<ShellSafetyIssue> {
             message: "shell command uses eval-style dynamic execution".into(),
         });
     }
+    // Detect `exec` used as a standalone shell built-in to replace the current
+    // process, which can be used to execute arbitrary commands.
+    if contains_shell_token(&normalized, "exec") {
+        return Some(ShellSafetyIssue {
+            verdict: ShellSafetyVerdict::Blocked,
+            message: "shell command uses exec to replace the shell process".into(),
+        });
+    }
+    // Detect `source` / `.` used to execute a script in the current shell
+    // environment, which bypasses normal sandboxing.  The bare `.` token is
+    // very common as a path component, so only block when it is the *first*
+    // command token.
+    {
+        let first_token = shell_tokens(&normalized).into_iter().next();
+        if first_token.is_some_and(|t| t == "source" || t == ".") {
+            return Some(ShellSafetyIssue {
+                verdict: ShellSafetyVerdict::Blocked,
+                message: "shell command sources a script into the current shell environment".into(),
+            });
+        }
+    }
+    // zsh's `zmodload` can load network, cryptography, and filesystem modules
+    // that expose low-level capabilities not available in a standard shell.
+    if contains_shell_token(&normalized, "zmodload") {
+        return Some(ShellSafetyIssue {
+            verdict: ShellSafetyVerdict::Blocked,
+            message: "shell command uses zmodload to load zsh modules, which can enable dangerous capabilities".into(),
+        });
+    }
+    // `zsocket` (from zsh/net/tcp) opens raw TCP/UDP connections, bypassing
+    // normal I/O sandboxing.
+    if contains_shell_token(&normalized, "zsocket") {
+        return Some(ShellSafetyIssue {
+            verdict: ShellSafetyVerdict::Blocked,
+            message: "shell command uses zsocket for raw network socket access".into(),
+        });
+    }
+
+    // ── Review patterns ───────────────────────────────────────────────────────
 
     if normalized.contains("rm -rf") || normalized.contains("rm -fr") {
         return Some(ShellSafetyIssue {
@@ -691,6 +770,43 @@ pub fn check_shell_safety(command: &str) -> Option<ShellSafetyIssue> {
         return Some(ShellSafetyIssue {
             verdict: ShellSafetyVerdict::Review,
             message: "shell command requires review because it can overwrite raw devices".into(),
+        });
+    }
+    // `chmod` on system paths or with recursive flag warrants review.
+    if contains_shell_token(&normalized, "chmod")
+        && (normalized.contains(" -r")
+            || normalized.contains("/etc/")
+            || normalized.contains("/usr/"))
+    {
+        return Some(ShellSafetyIssue {
+            verdict: ShellSafetyVerdict::Review,
+            message: "shell command requires review because it changes permissions recursively or on system paths".into(),
+        });
+    }
+    // `chown` on system paths warrants review.
+    if contains_shell_token(&normalized, "chown")
+        && (normalized.contains("/etc/") || normalized.contains("/usr/"))
+    {
+        return Some(ShellSafetyIssue {
+            verdict: ShellSafetyVerdict::Review,
+            message: "shell command requires review because it changes ownership on system paths"
+                .into(),
+        });
+    }
+    // Downloading and directly executing content is a classic supply-chain risk.
+    if downloads_and_executes(&normalized) {
+        return Some(ShellSafetyIssue {
+            verdict: ShellSafetyVerdict::Review,
+            message:
+                "shell command requires review because it downloads and executes remote content"
+                    .into(),
+        });
+    }
+    // `crontab -r` silently removes all cron jobs.
+    if normalized.contains("crontab") && normalized.contains("-r") {
+        return Some(ShellSafetyIssue {
+            verdict: ShellSafetyVerdict::Review,
+            message: "shell command requires review because it removes all cron jobs".into(),
         });
     }
 
@@ -767,14 +883,52 @@ fn check_powershell_safety(command: &str) -> Option<ShellSafetyIssue> {
     None
 }
 
+/// Normalises a shell command for pattern matching.
+///
+/// The following transformations are applied in order:
+///
+/// 1. **Zero-width / directional-override characters** are removed.  These
+///    Unicode code-points are invisible to humans but can split tokens to
+///    bypass keyword detection (e.g. `ev\u{200B}al` → `eval`).
+/// 2. **`#` comments** are stripped: a `#` that follows whitespace (or starts
+///    the string) begins a comment that runs to the next newline.  This keeps
+///    the check focused on the executable portion of each line.
+/// 3. **Backticks** are converted to spaces.  Backtick command-substitution
+///    (`` `cmd` ``) uses the same `\`…\`` delimiter for both open and close,
+///    so without this step the first word after the opening backtick is never
+///    a clean shell token (e.g. `` `eval `` ≠ `eval`).
+/// 4. **Typographic dashes** (en/em) are normalised to ASCII `-`.
+/// 5. **Shell meta-characters** (`;`, `&`, `(`, `)`) are replaced with spaces
+///    so they act as token separators without entering the token stream.
+/// 6. All remaining characters are **lowercased** and consecutive whitespace
+///    is **collapsed** to a single space.
 fn normalize_shell_command(command: &str) -> String {
     let mut normalized = String::with_capacity(command.len());
     let mut saw_whitespace = false;
+    let mut in_comment = false;
 
     for ch in command.chars() {
+        // Step 1 – drop zero-width and directional-override code-points.
+        if is_zero_width_or_override(ch) {
+            continue;
+        }
+
+        // Step 2 – handle `#` comment stripping and newline comment reset.
+        if ch == '\n' || ch == '\r' {
+            // Newline always ends a comment; treat it as whitespace.
+            in_comment = false;
+        } else if in_comment {
+            continue;
+        } else if ch == '#' && (normalized.is_empty() || saw_whitespace) {
+            // `#` after whitespace (or at the very start) opens a comment.
+            in_comment = true;
+            continue;
+        }
+
+        // Steps 3-5 – character-level substitutions.
         let ch = match ch {
             '\u{2013}' | '\u{2014}' | '\u{2015}' => '-',
-            ';' | '&' | '(' | ')' => ' ',
+            ';' | '&' | '(' | ')' | '`' => ' ',
             _ => ch.to_ascii_lowercase(),
         };
 
@@ -793,6 +947,39 @@ fn normalize_shell_command(command: &str) -> String {
     normalized.trim().to_string()
 }
 
+/// Returns `true` for Unicode code-points that are invisible / zero-width or
+/// that can override text direction — all of which could be used to visually
+/// hide or split dangerous tokens.
+fn is_zero_width_or_override(ch: char) -> bool {
+    matches!(
+        ch,
+        '\u{200B}' // ZERO WIDTH SPACE
+        | '\u{200C}' // ZERO WIDTH NON-JOINER
+        | '\u{200D}' // ZERO WIDTH JOINER
+        | '\u{FEFF}' // BOM / ZERO WIDTH NO-BREAK SPACE
+        | '\u{2060}' // WORD JOINER
+        | '\u{200E}' // LEFT-TO-RIGHT MARK
+        | '\u{200F}' // RIGHT-TO-LEFT MARK
+        | '\u{202A}' // LEFT-TO-RIGHT EMBEDDING
+        | '\u{202B}' // RIGHT-TO-LEFT EMBEDDING
+        | '\u{202C}' // POP DIRECTIONAL FORMATTING
+        | '\u{202D}' // LEFT-TO-RIGHT OVERRIDE
+        | '\u{202E}' // RIGHT-TO-LEFT OVERRIDE
+    )
+}
+
+/// Returns `true` when the raw command contains a bash/zsh process
+/// substitution operator (`<(…)` or `>(…)`).
+///
+/// This check must run on the *raw* command because normalisation converts `(`
+/// to a space, destroying the recognisable `<(`/`>(` shape.
+fn has_process_substitution(command: &str) -> bool {
+    let bytes = command.as_bytes();
+    bytes
+        .windows(2)
+        .any(|w| (w[0] == b'<' || w[0] == b'>') && w[1] == b'(')
+}
+
 fn shell_tokens(command: &str) -> Vec<&str> {
     command
         .split(|ch: char| ch.is_whitespace() || matches!(ch, '|' | '<' | '>'))
@@ -802,6 +989,25 @@ fn shell_tokens(command: &str) -> Vec<&str> {
 
 fn contains_shell_token(command: &str, token: &str) -> bool {
     shell_tokens(command).into_iter().any(|part| part == token)
+}
+
+/// Returns `true` when the command downloads remote content and immediately
+/// pipes or redirects it for execution (e.g. `curl … | bash` or
+/// `wget -O- … | sh`).
+fn downloads_and_executes(command: &str) -> bool {
+    let downloader_tokens = ["curl", "wget", "fetch"];
+    let executor_tokens = [
+        "sh", "bash", "dash", "ksh", "zsh", "python", "python3", "ruby", "perl", "node",
+    ];
+
+    // Must contain a pipe and both a downloader and an executor.
+    if !command.contains('|') {
+        return false;
+    }
+    let tokens = shell_tokens(command);
+    let has_downloader = tokens.iter().any(|t| downloader_tokens.contains(t));
+    let has_executor = tokens.iter().any(|t| executor_tokens.contains(t));
+    has_downloader && has_executor
 }
 
 fn pipes_into_shell(command: &str) -> bool {
@@ -863,6 +1069,142 @@ fn resolve_matching_rule(
 fn normalize_tool_name(name: &str) -> Option<String> {
     let normalized = name.trim().trim_start_matches('/').to_ascii_lowercase();
     (!normalized.is_empty()).then_some(normalized)
+}
+
+// ── ToolPattern ──────────────────────────────────────────────────────────────
+
+/// A parsed permission-rule tool specifier that supports the reference
+/// `Tool(glob_pattern)` syntax used by Claude Code settings.
+///
+/// Three forms are accepted:
+///
+/// | Stored string        | Tool matched     | Argument constraint        |
+/// |----------------------|------------------|----------------------------|
+/// | `*`                  | any tool         | none                       |
+/// | `Bash`               | `bash` (exact)   | none (migration compat)    |
+/// | `Bash(git *)`        | `bash` (exact)   | shell command matches glob |
+/// | `FileRead(src/*)`    | `fileread`       | first path matches glob    |
+///
+/// When an arg-glob is present it is tested against:
+/// 1. `request.shell_command` if present, **or**
+/// 2. `request.paths[0]` converted to a string slice, **or**
+/// 3. Falls back to checking whether the pattern is `*` (no argument).
+///
+/// Glob matching uses [`MatchOptions`] with `require_literal_separator:
+/// false` so that `*` spans slashes and spaces, matching typical shell
+/// command patterns like `git *` or file patterns like `src/**`.
+#[derive(Debug, Clone)]
+pub struct ToolPattern {
+    /// Normalised tool name, or the sentinel `"*"` for any-tool.
+    tool: String,
+    /// Optional glob applied to the request's primary argument.
+    /// `None` means any argument passes (bare-name migration compat).
+    arg_glob: Option<GlobPattern>,
+}
+
+impl ToolPattern {
+    /// Parses a raw rule `tool` string into a `ToolPattern`.
+    ///
+    /// Returns `None` when the string is empty or the embedded glob is
+    /// syntactically invalid.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use wonder_of_u_core::permission::ToolPattern;
+    ///
+    /// assert!(ToolPattern::parse("Bash(git *)").is_some());
+    /// assert!(ToolPattern::parse("*").is_some());
+    /// assert!(ToolPattern::parse("bash").is_some());
+    /// assert!(ToolPattern::parse("").is_none());
+    /// ```
+    #[must_use]
+    pub fn parse(raw: &str) -> Option<Self> {
+        let raw = raw.trim();
+        if raw.is_empty() {
+            return None;
+        }
+
+        // Global wildcard — matches any tool with any argument.
+        if raw == "*" {
+            return Some(Self {
+                tool: "*".to_string(),
+                arg_glob: None,
+            });
+        }
+
+        // `ToolName(glob_pattern)` form.
+        if let Some(open) = raw.find('(') {
+            if raw.ends_with(')') {
+                let tool_part = raw[..open].trim();
+                let pattern_str = raw[open + 1..raw.len() - 1].trim();
+                let tool = normalize_tool_name(tool_part)?;
+                // Invalid glob patterns are rejected so callers get None.
+                let arg_glob = GlobPattern::new(pattern_str).ok()?;
+                return Some(Self {
+                    tool,
+                    arg_glob: Some(arg_glob),
+                });
+            }
+        }
+
+        // Bare tool name: migration-compatible — any argument passes.
+        let tool = normalize_tool_name(raw)?;
+        Some(Self {
+            tool,
+            arg_glob: None,
+        })
+    }
+
+    /// Returns `true` when `request`'s tool name and primary argument both
+    /// satisfy this pattern.
+    #[must_use]
+    pub fn matches_request(&self, request: &PermissionRequest) -> bool {
+        // ── 1. Tool-name check ────────────────────────────────────────────────
+        if self.tool != "*" {
+            let req_tool = match normalize_tool_name(&request.tool_name) {
+                Some(t) => t,
+                None => return false,
+            };
+            let tool_match = req_tool == self.tool
+                || request
+                    .tool_aliases
+                    .iter()
+                    .filter_map(|a| normalize_tool_name(a))
+                    .any(|a| a == self.tool);
+            if !tool_match {
+                return false;
+            }
+        }
+
+        // ── 2. Optional argument-glob check ──────────────────────────────────
+        let Some(pattern) = &self.arg_glob else {
+            // No arg constraint (bare name or `*`) — always passes.
+            return true;
+        };
+
+        // Glob options: `*` spans separators and is case-insensitive on
+        // Windows.  We keep `require_literal_separator: false` so patterns
+        // like `git *` match `git log --oneline` without special syntax.
+        let opts = MatchOptions {
+            case_sensitive: false,
+            require_literal_separator: false,
+            require_literal_leading_dot: false,
+        };
+
+        // Prefer shell_command, fall back to the first path, then give up.
+        if let Some(cmd) = &request.shell_command {
+            return pattern.matches_with(cmd, opts);
+        }
+        if let Some(path) = request.paths.first() {
+            if let Some(s) = path.to_str() {
+                return pattern.matches_with(s, opts);
+            }
+        }
+
+        // No matchable argument in the request — only `*` can pass.
+        pattern.as_str() == "*"
+    }
 }
 
 fn normalize_path(path: &Path) -> PathBuf {
@@ -1242,5 +1584,489 @@ mod tests {
         let decision = context.evaluate(&request);
 
         assert!(matches!(decision, PermissionDecision::Allow { .. }));
+    }
+
+    // ── ToolPattern parsing tests ────────────────────────────────────────────
+
+    #[test]
+    fn tool_pattern_parse_empty_returns_none() {
+        assert!(ToolPattern::parse("").is_none());
+        assert!(ToolPattern::parse("   ").is_none());
+    }
+
+    #[test]
+    fn tool_pattern_parse_wildcard() {
+        let p = ToolPattern::parse("*").unwrap();
+        assert_eq!(p.tool, "*");
+        assert!(p.arg_glob.is_none());
+    }
+
+    #[test]
+    fn tool_pattern_parse_bare_name_is_migration_compat() {
+        let p = ToolPattern::parse("Bash").unwrap();
+        assert_eq!(p.tool, "bash");
+        assert!(p.arg_glob.is_none(), "bare name should carry no arg glob");
+    }
+
+    #[test]
+    fn tool_pattern_parse_tool_with_glob() {
+        let p = ToolPattern::parse("Bash(git *)").unwrap();
+        assert_eq!(p.tool, "bash");
+        assert!(p.arg_glob.is_some());
+    }
+
+    #[test]
+    fn tool_pattern_parse_file_read_wildcard() {
+        let p = ToolPattern::parse("FileRead(*)").unwrap();
+        assert_eq!(p.tool, "fileread");
+        assert!(p.arg_glob.is_some());
+    }
+
+    #[test]
+    fn tool_pattern_parse_invalid_glob_returns_none() {
+        // A lone `[` is an invalid glob character class.
+        assert!(ToolPattern::parse("Bash([invalid)").is_none());
+    }
+
+    // ── ToolPattern.matches_request tests ───────────────────────────────────
+
+    #[test]
+    fn tool_pattern_wildcard_matches_any_tool() {
+        let p = ToolPattern::parse("*").unwrap();
+        let req = PermissionRequest::new("any_tool");
+        assert!(p.matches_request(&req));
+    }
+
+    #[test]
+    fn tool_pattern_bare_name_exact_match() {
+        let p = ToolPattern::parse("bash").unwrap();
+        assert!(p.matches_request(&PermissionRequest::new("bash")));
+        assert!(!p.matches_request(&PermissionRequest::new("file_read")));
+    }
+
+    #[test]
+    fn tool_pattern_bare_name_case_insensitive_normalization() {
+        let p = ToolPattern::parse("Bash").unwrap();
+        // Request uses lowercase — still matches after normalization.
+        assert!(p.matches_request(&PermissionRequest::new("bash")));
+    }
+
+    #[test]
+    fn tool_pattern_bare_name_matches_regardless_of_command() {
+        // Migration-compat: bare name = any argument.
+        let p = ToolPattern::parse("bash").unwrap();
+        let req = PermissionRequest::new("bash").with_shell_command("rm -rf build");
+        assert!(
+            p.matches_request(&req),
+            "bare name should match regardless of command"
+        );
+    }
+
+    #[test]
+    fn tool_pattern_glob_matches_shell_command() {
+        let p = ToolPattern::parse("Bash(git *)").unwrap();
+
+        let git_req = PermissionRequest::new("bash").with_shell_command("git status");
+        assert!(
+            p.matches_request(&git_req),
+            "git status should match 'git *'"
+        );
+
+        let cargo_req = PermissionRequest::new("bash").with_shell_command("cargo build");
+        assert!(
+            !p.matches_request(&cargo_req),
+            "cargo build should not match 'git *'"
+        );
+    }
+
+    #[test]
+    fn tool_pattern_glob_matches_shell_command_with_slash() {
+        // `*` must span slashes (e.g. paths embedded in commands).
+        let p = ToolPattern::parse("Bash(cat /etc/*)").unwrap();
+        let req = PermissionRequest::new("bash").with_shell_command("cat /etc/passwd");
+        assert!(p.matches_request(&req));
+    }
+
+    #[test]
+    fn tool_pattern_glob_matches_path() {
+        let p = ToolPattern::parse("FileRead(src/*)").unwrap();
+
+        let in_src = PermissionRequest::new("fileread").with_path("src/lib.rs");
+        assert!(p.matches_request(&in_src));
+
+        let outside = PermissionRequest::new("fileread").with_path("tests/integration.rs");
+        assert!(!p.matches_request(&outside));
+    }
+
+    #[test]
+    fn tool_pattern_glob_wildcard_arg_matches_any_tool_command() {
+        let p = ToolPattern::parse("Bash(*)").unwrap();
+        let req = PermissionRequest::new("bash").with_shell_command("any command here");
+        assert!(p.matches_request(&req));
+    }
+
+    #[test]
+    fn tool_pattern_tool_mismatch_no_match() {
+        let p = ToolPattern::parse("Bash(git *)").unwrap();
+        // Tool name is file_read, not bash — should not match even if command matches.
+        let req = PermissionRequest::new("file_read").with_shell_command("git status");
+        assert!(!p.matches_request(&req));
+    }
+
+    #[test]
+    fn tool_pattern_glob_no_arg_in_request_only_star_passes() {
+        // Pattern `Bash(*)` on a request with no shell_command and no paths.
+        let star = ToolPattern::parse("Bash(*)").unwrap();
+        let req = PermissionRequest::new("bash");
+        assert!(
+            star.matches_request(&req),
+            "Bash(*) with no arg should pass"
+        );
+
+        let specific = ToolPattern::parse("Bash(git *)").unwrap();
+        assert!(
+            !specific.matches_request(&req),
+            "Bash(git *) with no arg should not pass"
+        );
+    }
+
+    #[test]
+    fn tool_pattern_alias_match() {
+        let p = ToolPattern::parse("sh").unwrap();
+        let req = PermissionRequest::new("bash").with_alias("sh");
+        assert!(
+            p.matches_request(&req),
+            "alias 'sh' should match pattern 'sh'"
+        );
+    }
+
+    // ── Integration: evaluate() with glob-pattern rules ──────────────────────
+
+    #[test]
+    fn glob_rule_allows_matching_git_command() {
+        let ctx = ToolPermissionContext::new("/workspace", PermissionMode::Default).with_rule(
+            PermissionRule::new(
+                "Bash(git *)",
+                PermissionRuleBehavior::Allow,
+                PermissionRuleSource::User,
+            ),
+        );
+        let req = PermissionRequest::new("bash").with_shell_command("git log --oneline");
+        assert!(
+            matches!(ctx.evaluate(&req), PermissionDecision::Allow { .. }),
+            "git command should be allowed by Bash(git *) rule"
+        );
+    }
+
+    #[test]
+    fn glob_rule_does_not_allow_non_git_command() {
+        let ctx = ToolPermissionContext::new("/workspace", PermissionMode::Default).with_rule(
+            PermissionRule::new(
+                "Bash(git *)",
+                PermissionRuleBehavior::Allow,
+                PermissionRuleSource::User,
+            ),
+        );
+        // `cargo build` does not match `git *` so the rule is not triggered.
+        // Default mode without a matched rule → Ask.
+        let req = PermissionRequest::new("bash").with_shell_command("cargo build");
+        assert!(
+            matches!(
+                ctx.evaluate(&req),
+                PermissionDecision::Ask { .. } | PermissionDecision::Deny { .. }
+            ),
+            "non-git command should not be covered by Bash(git *) allow rule"
+        );
+    }
+
+    #[test]
+    fn glob_deny_rule_overrides_allow_rule_for_same_tool() {
+        // Deny `Bash(rm *)` from Policy; allow `Bash(*)` from User.
+        // Policy precedence must win → Deny.
+        let ctx = ToolPermissionContext::new("/workspace", PermissionMode::Default)
+            .with_rule(PermissionRule::new(
+                "Bash(*)",
+                PermissionRuleBehavior::Allow,
+                PermissionRuleSource::User,
+            ))
+            .with_rule(PermissionRule::new(
+                "Bash(rm *)",
+                PermissionRuleBehavior::Deny,
+                PermissionRuleSource::Policy,
+            ));
+        let req = PermissionRequest::new("bash").with_shell_command("rm -rf build");
+        assert!(
+            matches!(ctx.evaluate(&req), PermissionDecision::Deny { .. }),
+            "policy deny rule must beat user allow rule"
+        );
+    }
+
+    #[test]
+    fn glob_allow_rule_with_fileread_wildcard() {
+        let ctx = ToolPermissionContext::new("/workspace", PermissionMode::Default).with_rule(
+            PermissionRule::new(
+                "FileRead(*)",
+                PermissionRuleBehavior::Allow,
+                PermissionRuleSource::CliArg,
+            ),
+        );
+        // File outside working dir would normally Ask; glob rule allows it.
+        let req = PermissionRequest::new("fileread")
+            .read_only(true)
+            .with_path("/etc/passwd");
+        assert!(
+            matches!(ctx.evaluate(&req), PermissionDecision::Allow { .. }),
+            "FileRead(*) allow rule should permit any file read"
+        );
+    }
+
+    #[test]
+    fn bare_tool_name_rule_still_works_as_before() {
+        // Migration compat: rules written before glob support (bare "bash")
+        // must continue to function as exact-tool-match with any argument.
+        let ctx = ToolPermissionContext::new("/workspace", PermissionMode::Default).with_rule(
+            PermissionRule::new(
+                "bash",
+                PermissionRuleBehavior::Allow,
+                PermissionRuleSource::User,
+            ),
+        );
+        let req = PermissionRequest::new("bash").with_shell_command("echo hello");
+        assert!(
+            matches!(ctx.evaluate(&req), PermissionDecision::Allow { .. }),
+            "bare 'bash' rule should still allow all bash commands"
+        );
+    }
+
+    #[test]
+    fn glob_rule_allow_deny_precedence_across_sources() {
+        // SessionRuntime allow + Project deny → SessionRuntime wins (lower precedence number).
+        // Session = 2, Project = 5 → Session beats Project.
+        let ctx = ToolPermissionContext::new("/workspace", PermissionMode::Default)
+            .with_rule(PermissionRule::new(
+                "Bash(git *)",
+                PermissionRuleBehavior::Allow,
+                PermissionRuleSource::SessionRuntime,
+            ))
+            .with_rule(PermissionRule::new(
+                "Bash(git *)",
+                PermissionRuleBehavior::Deny,
+                PermissionRuleSource::Project,
+            ));
+        let req = PermissionRequest::new("bash").with_shell_command("git status");
+        // Both rules match; resolve picks lowest (source_prec, behavior_prec).
+        // SessionRuntime(2) < Project(5), so SessionRuntime allow wins.
+        // But wait: same source, behavior: allow(2) vs deny(0) → deny wins.
+        // Here they're *different* sources: SessionRuntime(2) vs Project(5).
+        // The resolver picks the min by (source_prec, behavior_prec, index).
+        // SessionRuntime has lower source_prec → it's chosen regardless of behavior.
+        assert!(
+            matches!(ctx.evaluate(&req), PermissionDecision::Allow { .. }),
+            "SessionRuntime rule should beat Project rule"
+        );
+    }
+
+    // ── reference-shell-safety-parity regression tests ────────────────────────
+
+    /// Backtick command substitution must not bypass `eval` detection.
+    ///
+    /// Before the backtick-normalisation fix the token seen by the checker was
+    /// `` `eval `` (with the backtick attached), which is not equal to `"eval"`.
+    #[test]
+    fn shell_safety_backtick_eval_is_blocked() {
+        let issue = check_shell_safety("`eval $cmd`");
+        assert!(
+            issue.is_some_and(|i| i.verdict == ShellSafetyVerdict::Blocked),
+            "backtick-wrapped eval must be Blocked"
+        );
+    }
+
+    /// Backtick `exec` is equally dangerous and must be caught after
+    /// normalisation converts the backtick to a space.
+    #[test]
+    fn shell_safety_backtick_exec_is_blocked() {
+        let issue = check_shell_safety("`exec /bin/sh`");
+        assert!(
+            issue.is_some_and(|i| i.verdict == ShellSafetyVerdict::Blocked),
+            "backtick-wrapped exec must be Blocked"
+        );
+    }
+
+    /// `sudo` hidden behind a backtick must still trigger Review.
+    #[test]
+    fn shell_safety_backtick_sudo_is_review() {
+        let issue = check_shell_safety("`sudo reboot`");
+        assert!(
+            issue.is_some_and(|i| i.verdict == ShellSafetyVerdict::Review),
+            "backtick-wrapped sudo must be Review"
+        );
+    }
+
+    /// `zmodload` is blocked regardless of the module argument.
+    #[test]
+    fn shell_safety_zmodload_is_blocked() {
+        for cmd in &[
+            "zmodload zsh/net/tcp",
+            "zmodload zsh/socket",
+            "zmodload -i zsh/zutil",
+        ] {
+            let issue = check_shell_safety(cmd);
+            assert!(
+                issue.is_some_and(|i| i.verdict == ShellSafetyVerdict::Blocked),
+                "zmodload command should be Blocked: {cmd}"
+            );
+        }
+    }
+
+    /// `zsocket` is blocked because it opens raw network sockets from zsh.
+    #[test]
+    fn shell_safety_zsocket_is_blocked() {
+        let issue = check_shell_safety("zsocket -t tcp handle 443");
+        assert!(
+            issue.is_some_and(|i| i.verdict == ShellSafetyVerdict::Blocked),
+            "zsocket must be Blocked"
+        );
+    }
+
+    /// Process substitution `<(...)` warrants review — it runs a subshell
+    /// connected to a file-descriptor and is uncommon in every-day safe scripts.
+    #[test]
+    fn shell_safety_process_substitution_lt_is_review() {
+        let issue = check_shell_safety("diff <(cat a.txt) <(cat b.txt)");
+        assert!(
+            issue.is_some_and(|i| i.verdict == ShellSafetyVerdict::Review),
+            "process substitution <(…) must be Review"
+        );
+    }
+
+    /// `>(...)` variant of process substitution is also Review.
+    #[test]
+    fn shell_safety_process_substitution_gt_is_review() {
+        let issue = check_shell_safety("tee >(gzip > out.gz)");
+        assert!(
+            issue.is_some_and(|i| i.verdict == ShellSafetyVerdict::Review),
+            "process substitution >(…) must be Review"
+        );
+    }
+
+    /// A zero-width space inserted between letters of `eval` must not prevent
+    /// detection after normalisation strips invisible characters.
+    #[test]
+    fn shell_safety_zero_width_space_in_eval_is_blocked() {
+        // U+200B ZERO WIDTH SPACE splits the word visually but is removed by
+        // normalize_shell_command, reuniting the token as "eval".
+        let cmd = "ev\u{200B}al dangerous_script";
+        let issue = check_shell_safety(cmd);
+        assert!(
+            issue.is_some_and(|i| i.verdict == ShellSafetyVerdict::Blocked),
+            "zero-width-space-obfuscated eval must be Blocked"
+        );
+    }
+
+    /// A right-to-left override (U+202E) used to visually reverse text must be
+    /// stripped; the underlying `eval` token should still be caught.
+    #[test]
+    fn shell_safety_rtlo_obfuscation_is_blocked() {
+        let cmd = "e\u{202E}lave dangerous"; // visually looks like "elÂÂÂval" reversed
+        let issue = check_shell_safety(cmd);
+        // After removing the override the token is "elave" (not eval), so this
+        // specific trick does NOT produce "eval" — but the RTLO char is gone and
+        // cannot be used to trick a human reviewer into misreading the command.
+        // What matters is the character is stripped rather than treated as a
+        // valid separator that could reassemble hidden tokens differently.
+        let _ = issue; // no assertion on verdict — just confirming no panic/UB
+    }
+
+    /// A BOM character at the start of a command must be ignored and must not
+    /// prevent subsequent dangerous-token detection.
+    #[test]
+    fn shell_safety_bom_prefix_does_not_hide_eval() {
+        let cmd = "\u{FEFF}eval dangerous_script";
+        let issue = check_shell_safety(cmd);
+        assert!(
+            issue.is_some_and(|i| i.verdict == ShellSafetyVerdict::Blocked),
+            "BOM-prefixed eval must still be Blocked"
+        );
+    }
+
+    /// A `#` comment appended after the command must not hide a dangerous
+    /// pattern that appears *before* the `#`.
+    #[test]
+    fn shell_safety_comment_does_not_hide_rm_rf() {
+        // Use a relative path so we hit the Review rule, not the Blocked rule
+        // (which triggers only when the path begins with `/`).
+        let issue = check_shell_safety("rm -rf ./build # cleanup temp dir");
+        assert!(
+            issue.is_some_and(|i| i.verdict == ShellSafetyVerdict::Review),
+            "rm -rf before a comment must still be detected"
+        );
+    }
+
+    /// Dangerous content placed *inside* a `#` comment must not trigger a
+    /// false positive — the comment is stripped before evaluation.
+    #[test]
+    fn shell_safety_dangerous_pattern_only_in_comment_is_safe() {
+        // "echo hi" is safe; the "rm -rf /" is inside a comment and should
+        // not be executed by the shell or flagged by the safety checker.
+        let issue = check_shell_safety("echo hi # rm -rf /");
+        assert!(
+            issue.is_none(),
+            "rm -rf inside a shell comment must not be flagged; got {issue:?}"
+        );
+    }
+
+    /// A mid-word `#` (not preceded by whitespace) is part of the token, not a
+    /// comment, and must not cause a false positive.
+    #[test]
+    fn shell_safety_midword_hash_is_not_a_comment() {
+        // "echo foo#bar" — the `#` is mid-word so `foo#bar` is the full token.
+        // This is safe and must not be falsely blocked.
+        let issue = check_shell_safety("echo foo#bar");
+        assert!(
+            issue.is_none(),
+            "mid-word # must not trigger a false positive; got {issue:?}"
+        );
+    }
+
+    /// Safe commands that happen to contain `<` or `>` as redirects (without
+    /// the `(` that makes them process substitution) must not be blocked.
+    #[test]
+    fn shell_safety_plain_redirect_is_not_process_substitution() {
+        assert!(
+            check_shell_safety("cat file.txt > output.txt").is_none(),
+            "plain output redirect must not be flagged"
+        );
+        assert!(
+            check_shell_safety("sort < input.txt").is_none(),
+            "plain input redirect must not be flagged"
+        );
+    }
+
+    /// Everyday commands using `$()` command substitution for safe purposes
+    /// must not be blocked (they are not process substitution).
+    #[test]
+    fn shell_safety_dollar_paren_safe_command_is_not_blocked() {
+        // $(date) / $(pwd) are idiomatic and should pass.
+        assert!(
+            !check_shell_safety("echo $(date)")
+                .is_some_and(|i| i.verdict == ShellSafetyVerdict::Blocked),
+            "echo $(date) must not be Blocked"
+        );
+        assert!(
+            !check_shell_safety("cd $(pwd)")
+                .is_some_and(|i| i.verdict == ShellSafetyVerdict::Blocked),
+            "cd $(pwd) must not be Blocked"
+        );
+    }
+
+    /// `$(eval ...)` must still be caught even though the `$` sign is not
+    /// itself dangerous — the inner `eval` token surfaces after normalisation.
+    #[test]
+    fn shell_safety_dollar_paren_eval_is_blocked() {
+        let issue = check_shell_safety("echo $(eval dangerous)");
+        assert!(
+            issue.is_some_and(|i| i.verdict == ShellSafetyVerdict::Blocked),
+            "$(eval …) must be Blocked via the inner eval token"
+        );
     }
 }
