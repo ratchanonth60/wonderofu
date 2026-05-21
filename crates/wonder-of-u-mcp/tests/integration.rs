@@ -4,7 +4,8 @@ use serde_json::json;
 use tokio::time::timeout;
 use wonder_of_u_core::tool::Tool;
 use wonder_of_u_mcp::{
-    McpClient, McpClientIdentity, McpConfig, McpContent, McpServerConfig, discover_catalog_tools,
+    McpClient, McpClientIdentity, McpConfig, McpContent, McpServerConfig, McpSessionPool,
+    discover_catalog_tools,
 };
 
 fn fake_server_path() -> String {
@@ -166,6 +167,57 @@ async fn integration_mcp_rejects_oversized_message_before_allocation() {
         error.to_string().contains("exceeds maximum"),
         "unexpected error: {error}"
     );
+}
+
+#[tokio::test]
+async fn integration_mcp_expands_config_env_before_spawn() {
+    let config = fake_server_config_with_env(BTreeMap::from([
+        (
+            "WONDER_OF_U_FAKE_MCP_ECHO_ENV".into(),
+            "EXPANDED_TOKEN".into(),
+        ),
+        ("EXPANDED_TOKEN".into(), "prefix-${PATH_SUFFIX}".into()),
+    ]));
+    let _guard = wonder_of_u_test_support::EnvVarGuard::set("PATH_SUFFIX", "secret");
+    let mut client = McpClient::connect(&config, &McpClientIdentity::default(), "2024-11-05")
+        .expect("connect fake server");
+
+    let result = client
+        .call_tool("Echo Text", json!({ "text": "ignored" }))
+        .expect("call tool");
+    assert_eq!(
+        result.content[0].text.as_deref(),
+        Some("env EXPANDED_TOKEN: prefix-secret")
+    );
+}
+
+#[tokio::test]
+async fn integration_mcp_session_pool_reuses_server_process() {
+    let config = fake_server_config_with_env(BTreeMap::from([(
+        "WONDER_OF_U_FAKE_MCP_ECHO_PID".into(),
+        "1".into(),
+    )]));
+    let mut pool = McpSessionPool::new();
+
+    let first = pool
+        .with_client(
+            &config,
+            &McpClientIdentity::default(),
+            "2024-11-05",
+            |client| client.call_tool("Echo Text", json!({ "text": "first" })),
+        )
+        .expect("first call");
+    let second = pool
+        .with_client(
+            &config,
+            &McpClientIdentity::default(),
+            "2024-11-05",
+            |client| client.call_tool("Echo Text", json!({ "text": "second" })),
+        )
+        .expect("second call");
+
+    assert_eq!(pool.len(), 1);
+    assert_eq!(first.content[0].text, second.content[0].text);
 }
 
 // ── discover_catalog_tools + DynamicMcpTool ─────────────────────────────────

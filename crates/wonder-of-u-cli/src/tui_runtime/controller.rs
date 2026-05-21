@@ -398,7 +398,7 @@ impl<'a> TuiController<'a> {
         // Some terminals collapse modified Enter handling inconsistently even when
         // the keymap contains an explicit Shift+Enter binding, so keep a direct
         // multiline composition path here as a safety net.
-        if key.code == KeyCode::Enter && key.modifiers.shift && self.vim.mode() != VimMode::Normal {
+        if key.code == KeyCode::Enter && key.modifiers.shift && self.vim.mode() == VimMode::Insert {
             self.prompt
                 .apply_edit_action(EditAction::InsertLiteralNewline);
             self.turn_state = TurnState::EditingInput;
@@ -481,14 +481,14 @@ impl<'a> TuiController<'a> {
 
         let Some(resolved) = resolved else {
             return if self.vim_enabled
-                && (self.vim.mode() == VimMode::Normal || key.code == KeyCode::Esc)
+                && (self.vim.mode() != VimMode::Insert || key.code == KeyCode::Esc)
             {
                 self.handle_vim_key(key)
             } else {
                 Ok(())
             };
         };
-        if self.vim_enabled && (self.vim.mode() == VimMode::Normal || key.code == KeyCode::Esc) {
+        if self.vim_enabled && (self.vim.mode() != VimMode::Insert || key.code == KeyCode::Esc) {
             return self.handle_vim_key(key);
         }
 
@@ -575,6 +575,7 @@ impl<'a> TuiController<'a> {
             VimMode::Insert => "vim insert".into(),
             VimMode::Normal if self.vim.has_pending_operator() => "vim operator pending".into(),
             VimMode::Normal => "vim normal".into(),
+            VimMode::Visual => "vim visual".into(),
         });
         self.needs_render = true;
         Ok(())
@@ -1906,6 +1907,7 @@ impl<'a> TuiController<'a> {
             self.status_note = Some(match self.vim.mode() {
                 VimMode::Insert => "vim insert".into(),
                 VimMode::Normal => "vim normal".into(),
+                VimMode::Visual => "vim visual".into(),
             });
         } else if parse_insights_hint(text.as_deref().unwrap_or_default()) {
             self.status_note = Some("insights queued".into());
@@ -2042,7 +2044,7 @@ impl<'a> TuiController<'a> {
             self.vim_enabled = true;
             self.vim = VimState::new(match self.vim.mode() {
                 VimMode::Insert => VimMode::Normal,
-                VimMode::Normal => VimMode::Insert,
+                VimMode::Normal | VimMode::Visual => VimMode::Insert,
             });
         }
         if let Some(mode) = parse_vim_mode_hint(text) {
@@ -2712,6 +2714,7 @@ impl<'a> TuiController<'a> {
             match self.vim.mode() {
                 VimMode::Insert => " · vim:insert",
                 VimMode::Normal => " · vim:normal",
+                VimMode::Visual => " · vim:visual",
             }
         } else {
             ""
@@ -2812,9 +2815,13 @@ impl<'a> TuiController<'a> {
         let tool_context = self.tool_context();
         let next = SidebarPanelCache {
             tool_lines: tool_sidebar_lines(&tool_context, self.storage_dir.as_deref()),
-            mcp_lines: mcp_sidebar_lines(self.storage_dir.as_deref()),
+            mcp_lines: mcp_sidebar_lines(self.storage_dir.as_deref(), &self.state.session.cwd),
             lsp_lines: lsp_sidebar_lines(&self.state.session.cwd),
-            todo_lines: todo_sidebar_lines(&self.state.session.cwd),
+            todo_lines: todo_merged_sidebar_lines(
+                &self.state.session.cwd,
+                self.storage_dir.as_deref(),
+                self.state.session.id,
+            ),
         };
         if self.sidebar_cache == next {
             false
@@ -5180,14 +5187,17 @@ pub(super) fn tool_sidebar_lines(context: &ToolContext, storage_dir: Option<&Pat
 ///
 /// Reads `McpConfigStore` only during sidebar cache refreshes. Shows a concise
 /// enabled/total count plus one line per server name.
-pub(super) fn mcp_sidebar_lines(storage_dir: Option<&std::path::Path>) -> Vec<String> {
+pub(super) fn mcp_sidebar_lines(
+    storage_dir: Option<&std::path::Path>,
+    cwd: &std::path::Path,
+) -> Vec<String> {
     let Some(dir) = storage_dir else {
         return vec!["  mcp: no storage dir".into()];
     };
 
     let store = McpConfigStore::new(dir);
-    let config = match store.read() {
-        Ok(c) => c,
+    let config = match store.read_with_project(cwd, None) {
+        Ok((config, _)) => config,
         Err(e) => return vec![format!("⚠ mcp config unavailable: {e}")],
     };
 
@@ -5277,6 +5287,58 @@ pub(super) fn todo_sidebar_lines(cwd: &std::path::Path) -> Vec<String> {
     };
 
     parse_todo_lines(&content)
+}
+
+pub(super) fn todo_task_store_sidebar_lines(
+    storage_dir: &std::path::Path,
+    session_id: SessionId,
+) -> Option<Vec<String>> {
+    let store = TodoTaskStore::new(storage_dir);
+    let list = store.read_or_default(session_id).ok()?;
+    let mut visible: Vec<_> = list
+        .tasks
+        .values()
+        .filter(|entry| entry.status != TodoTaskStatus::Deleted)
+        .collect();
+    visible.sort_by_key(|entry| entry.created_at);
+
+    if visible.is_empty() {
+        return None;
+    }
+
+    let total = visible.len();
+    let shown = total.min(TODO_SIDEBAR_CAP);
+    let mut lines: Vec<String> = visible[..shown]
+        .iter()
+        .map(|entry| {
+            let label: String = entry.subject.chars().take(22).collect();
+            match entry.status {
+                TodoTaskStatus::Pending => format!("  {label}"),
+                TodoTaskStatus::InProgress => format!("▷ {label}"),
+                TodoTaskStatus::Completed => format!("✓ {label}"),
+                TodoTaskStatus::Deleted => unreachable!("deleted entries are filtered above"),
+            }
+        })
+        .collect();
+
+    let remaining = total.saturating_sub(shown);
+    if remaining > 0 {
+        lines.push(format!("  +{remaining} more"));
+    }
+    Some(lines)
+}
+
+pub(super) fn todo_merged_sidebar_lines(
+    cwd: &std::path::Path,
+    storage_dir: Option<&std::path::Path>,
+    session_id: SessionId,
+) -> Vec<String> {
+    if let Some(storage_dir) = storage_dir
+        && let Some(lines) = todo_task_store_sidebar_lines(storage_dir, session_id)
+    {
+        return lines;
+    }
+    todo_sidebar_lines(cwd)
 }
 
 /// Maximum number of todo items shown in the sidebar before `+N more` cap.

@@ -1051,6 +1051,7 @@ pub(super) fn parse_vim_mode_hint(text: &str) -> Option<VimMode> {
     {
         "insert" => Some(VimMode::Insert),
         "normal" => Some(VimMode::Normal),
+        "visual" => Some(VimMode::Visual),
         _ => None,
     }
 }

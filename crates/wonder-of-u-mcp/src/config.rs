@@ -1,5 +1,5 @@
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     ffi::OsStr,
     fs::{self, File},
     io::{BufWriter, Write},
@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use wonder_of_u_core::{Result, WonderError};
 use wonder_of_u_storage::StoragePaths;
 
-use crate::normalize_mcp_name;
+use crate::{ProjectMcpConfig, expand_env_value, normalize_mcp_name};
 
 /// Schema version for mcp config
 pub const MCP_CONFIG_SCHEMA_VERSION: u16 = 1;
@@ -119,6 +119,23 @@ impl McpServerConfig {
             format!("{} {}", self.command, self.args.join(" "))
         }
     }
+
+    /// Returns a copy with environment values expanded using `$VAR` and `${VAR}`.
+    pub fn with_expanded_env(
+        &self,
+        getenv: impl Fn(&str) -> Option<String>,
+    ) -> Result<McpServerConfig> {
+        let mut expanded = self.clone();
+        expanded.env = self
+            .env
+            .iter()
+            .map(|(key, value)| {
+                let context = format!("mcp server `{}` env `{key}`", self.name);
+                expand_env_value(value, &context, true, &getenv).map(|value| (key.clone(), value))
+            })
+            .collect::<Result<BTreeMap<_, _>>>()?;
+        Ok(expanded)
+    }
 }
 /// Represents mcp config
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -181,6 +198,20 @@ impl McpConfig {
     pub fn server(&self, name: &str) -> Option<&McpServerConfig> {
         self.servers.iter().find(|server| server.name == name)
     }
+
+    /// Merges project-level servers into this config, with project entries winning.
+    pub fn merge_project(&mut self, project_servers: Vec<McpServerConfig>) {
+        let project_names: BTreeSet<String> = project_servers
+            .iter()
+            .map(|server| normalize_mcp_name(&server.name))
+            .collect();
+        self.servers
+            .retain(|server| !project_names.contains(&normalize_mcp_name(&server.name)));
+
+        let mut merged = project_servers;
+        merged.append(&mut self.servers);
+        self.servers = merged;
+    }
 }
 /// Stores mcp config store
 #[derive(Clone, Debug)]
@@ -212,6 +243,22 @@ impl McpConfigStore {
         let config: McpConfig = serde_json::from_str(&fs::read_to_string(path)?)?;
         config.validate()?;
         Ok(config)
+    }
+
+    /// Reads global config and merges the nearest project `.mcp.json`, if present.
+    pub fn read_with_project(
+        &self,
+        cwd: &Path,
+        stop: Option<&Path>,
+    ) -> Result<(McpConfig, Option<PathBuf>)> {
+        let mut config = self.read()?;
+        let Some((project_path, project)) = ProjectMcpConfig::discover(cwd, stop)? else {
+            return Ok((config, None));
+        };
+        let project_dir = project_path.parent().unwrap_or(cwd);
+        config.merge_project(project.into_server_configs(project_dir));
+        config.validate()?;
+        Ok((config, Some(project_path)))
     }
 
     /// Handles write
@@ -303,5 +350,96 @@ mod tests {
 
         let error = config.validate().expect_err("duplicate names");
         assert!(error.to_string().contains("duplicate mcp server name"));
+    }
+
+    #[test]
+    fn server_config_expands_env_values_without_mutating_template() {
+        let server = McpServerConfig {
+            name: "demo".into(),
+            command: "demo-server".into(),
+            args: Vec::new(),
+            env: BTreeMap::from([("TOKEN".into(), "Bearer ${SECRET}".into())]),
+            enabled: true,
+            cwd: None,
+            protocol_version: None,
+        };
+
+        let expanded = server
+            .with_expanded_env(|name| (name == "SECRET").then(|| "secret".into()))
+            .expect("expand");
+        assert_eq!(expanded.env["TOKEN"], "Bearer secret");
+        assert_eq!(server.env["TOKEN"], "Bearer ${SECRET}");
+    }
+
+    #[test]
+    fn merge_project_server_wins_by_normalized_name() {
+        let mut config = McpConfig {
+            servers: vec![McpServerConfig {
+                name: "GitHub Tools".into(),
+                command: "global-server".into(),
+                args: Vec::new(),
+                env: BTreeMap::new(),
+                enabled: true,
+                cwd: None,
+                protocol_version: None,
+            }],
+            ..McpConfig::default()
+        };
+
+        config.merge_project(vec![McpServerConfig {
+            name: "github-tools".into(),
+            command: "project-server".into(),
+            args: Vec::new(),
+            env: BTreeMap::new(),
+            enabled: false,
+            cwd: None,
+            protocol_version: None,
+        }]);
+
+        assert_eq!(config.servers.len(), 1);
+        assert_eq!(config.servers[0].command, "project-server");
+        assert!(!config.servers[0].enabled);
+    }
+
+    #[test]
+    fn read_with_project_merges_nearest_project_config() {
+        let storage = unique_test_dir("mcp-read-with-project-storage");
+        let project = unique_test_dir("mcp-read-with-project-cwd");
+        let nested = project.join("nested");
+        fs::create_dir_all(&nested).expect("mkdir");
+        let store = McpConfigStore::new(&storage);
+        store
+            .write(&McpConfig {
+                servers: vec![McpServerConfig {
+                    name: "global".into(),
+                    command: "global-server".into(),
+                    args: Vec::new(),
+                    env: BTreeMap::new(),
+                    enabled: true,
+                    cwd: None,
+                    protocol_version: None,
+                }],
+                ..McpConfig::default()
+            })
+            .expect("write global");
+        fs::write(
+            project.join(".mcp.json"),
+            r#"{"mcpServers":{"project":{"command":"project-server","disabled":true}}}"#,
+        )
+        .expect("write project config");
+
+        let (merged, path) = store
+            .read_with_project(&nested, None)
+            .expect("read with project");
+        assert_eq!(path, Some(project.join(".mcp.json")));
+        assert_eq!(
+            merged
+                .servers
+                .iter()
+                .map(|server| server.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["project", "global"]
+        );
+        assert!(!merged.server("project").expect("project").enabled);
     }
 }

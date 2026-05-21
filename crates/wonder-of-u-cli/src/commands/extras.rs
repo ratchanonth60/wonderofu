@@ -267,6 +267,27 @@ impl StickersCommand {
     }
 }
 
+/// Represents x402 command
+pub struct X402Command;
+
+impl X402Command {
+    /// Constant fn
+    pub const fn new() -> Self {
+        Self
+    }
+
+    /// Handles command spec
+    pub fn command_spec() -> CommandSpec {
+        let mut spec = CommandSpec::new(
+            "x402",
+            "Show x402 payment integration status",
+            CommandKind::Local,
+        );
+        spec.hidden = true;
+        spec
+    }
+}
+
 /// Represents init verifiers command
 pub struct InitVerifiersCommand {
     tool_specs: Arc<[ToolSpec]>,
@@ -1062,6 +1083,21 @@ impl Command for StickersCommand {
         _invocation: CommandInvocation,
     ) -> Result<CommandOutput> {
         Ok(CommandOutput::Text(render_stickers().into()))
+    }
+}
+
+#[async_trait]
+impl Command for X402Command {
+    fn spec(&self) -> CommandSpec {
+        Self::command_spec()
+    }
+
+    async fn execute(
+        &self,
+        _context: CommandContext,
+        _invocation: CommandInvocation,
+    ) -> Result<CommandOutput> {
+        Ok(CommandOutput::Text(render_x402_status().into()))
     }
 }
 
@@ -1874,6 +1910,10 @@ fn random_btw_tip() -> &'static str {
 
 fn render_stickers() -> &'static str {
     "Claude stickers\n /\\_/\\\\\n( ^.^ )\n > ^ <\n\n(=^･ω･^=)\n  /|_|\\\\"
+}
+
+fn render_x402_status() -> &'static str {
+    "x402 payment integration is not available in this local-first Rust port.\nstatus=deferred\nscope=product-integration"
 }
 
 fn render_teleport(storage_dir: Option<&Path>, session_id: SessionId) -> Result<String> {
@@ -2908,6 +2948,26 @@ mod tests {
         };
 
         assert!(text.contains("Issue tracker: https://github.com/anthropics/claude-code/issues"));
+    }
+
+    #[test]
+    fn x402_command_reports_deferred_local_status() {
+        let output = block_on(X402Command::new().execute(
+            test_context(),
+            CommandInvocation {
+                name: "x402".into(),
+                args: String::new(),
+                raw: "/x402".into(),
+            },
+        ))
+        .expect("run x402 command");
+
+        let CommandOutput::Text(text) = output else {
+            panic!("expected text output");
+        };
+
+        assert!(text.contains("x402 payment integration is not available"));
+        assert!(text.contains("status=deferred"));
     }
 
     #[test]

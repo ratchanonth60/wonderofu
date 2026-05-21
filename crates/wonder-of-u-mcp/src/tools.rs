@@ -4,6 +4,7 @@ use std::{
     env,
     ffi::OsString,
     path::{Path, PathBuf},
+    sync::{Arc, Mutex},
 };
 
 use async_trait::async_trait;
@@ -16,7 +17,7 @@ use wonder_of_u_core::{
 
 use crate::{
     CallToolResult, McpCatalog, McpClient, McpConfigStore, McpResourceContents,
-    McpResourceRegistration, McpToolRegistration,
+    McpResourceRegistration, McpSessionPool, McpToolRegistration,
 };
 /// Represents mcp resource list input
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -137,7 +138,7 @@ impl Tool for McpResourceListTool {
 
     async fn execute(
         &self,
-        _context: ToolContext,
+        context: ToolContext,
         use_id: ToolUseId,
         input: Value,
     ) -> Result<ToolResult> {
@@ -146,7 +147,8 @@ impl Tool for McpResourceListTool {
         })?;
         input.validate()?;
 
-        let content = list_resources_in_storage(&storage_root()?, input.server.as_deref())?;
+        let content =
+            list_resources_in_storage(&storage_root()?, &context.cwd, input.server.as_deref())?;
         Ok(ToolResult::success(use_id, content))
     }
 }
@@ -200,7 +202,7 @@ impl Tool for McpResourceReadTool {
 
     async fn execute(
         &self,
-        _context: ToolContext,
+        context: ToolContext,
         use_id: ToolUseId,
         input: Value,
     ) -> Result<ToolResult> {
@@ -212,20 +214,26 @@ impl Tool for McpResourceReadTool {
         let root = storage_root()?;
         let content = match (&input.resource_name, &input.server, &input.uri) {
             // Direct read by server + URI (upstream ReadMcpResourceTool parity).
-            (None, Some(server), Some(uri)) => read_resource_by_server_uri(&root, server, uri)?,
+            (None, Some(server), Some(uri)) => {
+                read_resource_by_server_uri(&root, &context.cwd, server, uri)?
+            }
             // Catalog search by qualified name.
             _ => {
                 let name = input.resource_name.as_deref().expect("validated");
-                read_resource_in_storage(&root, name)?
+                read_resource_in_storage(&root, &context.cwd, name)?
             }
         };
         Ok(ToolResult::success(use_id, content))
     }
 }
 
-fn list_resources_in_storage(storage_root: &Path, server_filter: Option<&str>) -> Result<String> {
+fn list_resources_in_storage(
+    storage_root: &Path,
+    cwd: &Path,
+    server_filter: Option<&str>,
+) -> Result<String> {
     let store = McpConfigStore::new(storage_root);
-    let config = store.read()?;
+    let (config, _) = store.read_with_project(cwd, None)?;
     let mut lines = Vec::new();
 
     for server in config
@@ -246,9 +254,13 @@ fn list_resources_in_storage(storage_root: &Path, server_filter: Option<&str>) -
     })
 }
 
-fn read_resource_in_storage(storage_root: &Path, resource_name: &str) -> Result<String> {
+fn read_resource_in_storage(
+    storage_root: &Path,
+    cwd: &Path,
+    resource_name: &str,
+) -> Result<String> {
     let store = McpConfigStore::new(storage_root);
-    let config = store.read()?;
+    let (config, _) = store.read_with_project(cwd, None)?;
 
     for server in config.servers.iter().filter(|server| server.enabled) {
         let mut client = McpClient::connect(server, &config.client, &config.protocol_version)?;
@@ -268,11 +280,12 @@ fn read_resource_in_storage(storage_root: &Path, resource_name: &str) -> Result<
 /// callers skip the full catalog round-trip when they already know the resource address.
 fn read_resource_by_server_uri(
     storage_root: &Path,
+    cwd: &Path,
     server_name: &str,
     uri: &str,
 ) -> Result<String> {
     let store = McpConfigStore::new(storage_root);
-    let config = store.read()?;
+    let (config, _) = store.read_with_project(cwd, None)?;
 
     let server = config
         .server(server_name)
@@ -354,6 +367,7 @@ pub struct DynamicMcpTool {
     server_name: String,
     /// Raw tool name as the server advertised it (used in `tools/call`).
     raw_tool_name: String,
+    pool: Option<Arc<Mutex<McpSessionPool>>>,
 }
 
 impl DynamicMcpTool {
@@ -364,6 +378,21 @@ impl DynamicMcpTool {
             spec: registration.tool_spec(),
             server_name: registration.server_name.clone(),
             raw_tool_name: registration.tool.name.clone(),
+            pool: None,
+        }
+    }
+
+    /// Builds a `DynamicMcpTool` that reuses the provided session pool.
+    #[must_use]
+    pub fn from_registration_with_pool(
+        registration: &McpToolRegistration,
+        pool: Arc<Mutex<McpSessionPool>>,
+    ) -> Self {
+        Self {
+            spec: registration.tool_spec(),
+            server_name: registration.server_name.clone(),
+            raw_tool_name: registration.tool.name.clone(),
+            pool: Some(pool),
         }
     }
 
@@ -393,12 +422,13 @@ impl Tool for DynamicMcpTool {
 
     async fn execute(
         &self,
-        _context: ToolContext,
+        context: ToolContext,
         use_id: ToolUseId,
         input: Value,
     ) -> Result<ToolResult> {
         let storage_root = storage_root()?;
-        let config = McpConfigStore::new(&storage_root).read()?;
+        let (config, _) =
+            McpConfigStore::new(&storage_root).read_with_project(&context.cwd, None)?;
 
         let Some(server) = config.server(&self.server_name) else {
             return Ok(ToolResult::failure(
@@ -420,8 +450,16 @@ impl Tool for DynamicMcpTool {
             ));
         }
 
-        let mut client = McpClient::connect(server, &config.client, &config.protocol_version)?;
-        let call_result = client.call_tool(&self.raw_tool_name, input)?;
+        let call_result = if let Some(pool) = &self.pool {
+            pool.lock()
+                .map_err(|_| WonderError::internal("mcp session pool mutex poisoned"))?
+                .with_client(server, &config.client, &config.protocol_version, |client| {
+                    client.call_tool(&self.raw_tool_name, input.clone())
+                })?
+        } else {
+            let mut client = McpClient::connect(server, &config.client, &config.protocol_version)?;
+            client.call_tool(&self.raw_tool_name, input)?
+        };
         let content = format_call_result(&call_result);
 
         let mut result = if call_result.is_error {

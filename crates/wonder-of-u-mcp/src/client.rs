@@ -38,35 +38,39 @@ impl McpClient {
         fallback_protocol: &str,
     ) -> Result<Self> {
         config.validate()?;
-        let mut command = Command::new(&config.command);
+        let expanded_config = config.with_expanded_env(|key| std::env::var(key).ok())?;
+        let mut command = Command::new(&expanded_config.command);
         command
-            .args(&config.args)
+            .args(&expanded_config.args)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null());
-        if let Some(cwd) = &config.cwd {
+        if let Some(cwd) = &expanded_config.cwd {
             command.current_dir(cwd);
         }
-        command.envs(&config.env);
+        command.envs(&expanded_config.env);
 
         let mut child = command.spawn().map_err(|error| {
             WonderError::internal(format!(
                 "failed to spawn mcp server `{}`: {error}",
-                config.name
+                expanded_config.name
             ))
         })?;
         let stdin = child.stdin.take().ok_or_else(|| {
-            WonderError::internal(format!("mcp server `{}` did not expose stdin", config.name))
+            WonderError::internal(format!(
+                "mcp server `{}` did not expose stdin",
+                expanded_config.name
+            ))
         })?;
         let stdout = child.stdout.take().ok_or_else(|| {
             WonderError::internal(format!(
                 "mcp server `{}` did not expose stdout",
-                config.name
+                expanded_config.name
             ))
         })?;
 
         let mut client_instance = Self {
-            config: config.clone(),
+            config: expanded_config,
             child: Some(child),
             reader: Some(BufReader::new(stdout)),
             writer: Some(BufWriter::new(stdin)),

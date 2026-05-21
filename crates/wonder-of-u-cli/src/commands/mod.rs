@@ -68,7 +68,7 @@ use extras::{
     IssueCommand, MockLimitsCommand, OauthRefreshCommand, OnboardingCommand, PassesCommand,
     PerfIssueCommand, PrCommentsCommand, RateLimitOptionsCommand, RemoteEnvCommand,
     RemoteSetupCommand, ResetLimitsCommand, SandboxToggleCommand, ShareCommand, StickersCommand,
-    TeleportCommand, ThinkbackCommand, ThinkbackPlayCommand, UltraplanCommand,
+    TeleportCommand, ThinkbackCommand, ThinkbackPlayCommand, UltraplanCommand, X402Command,
 };
 pub(crate) use extras::{
     execute_help_command, execute_settings_command, execute_stats_command, execute_thinking_command,
@@ -194,6 +194,7 @@ pub fn registry(storage_dir: Option<PathBuf>) -> Result<CommandRegistry> {
         BtwCommand::command_spec(),
         AdvisorCommand::command_spec(),
         StickersCommand::command_spec(),
+        X402Command::command_spec(),
         RewindCommand::command_spec(),
         InitVerifiersCommand::command_spec(),
         ExtraUsageCommand::command_spec(),
@@ -316,6 +317,7 @@ pub fn registry(storage_dir: Option<PathBuf>) -> Result<CommandRegistry> {
     registry.register(Arc::new(BtwCommand::new()))?;
     registry.register(Arc::new(AdvisorCommand::new(storage_dir.clone())))?;
     registry.register(Arc::new(StickersCommand::new()))?;
+    registry.register(Arc::new(X402Command::new()))?;
     registry.register(Arc::new(RewindCommand::new(storage_dir.clone())))?;
     registry.register(Arc::new(InitVerifiersCommand::new(Arc::clone(&tool_specs))))?;
     registry.register(Arc::new(ExtraUsageCommand::new()))?;

@@ -13,8 +13,10 @@ use wonder_of_u_agent::{
 };
 use wonder_of_u_core::{
     AuthState, InputMode, MessageEnvelope, MessagePayload, PendingLocalToolCall,
-    PendingProviderToolCall, PendingToolApprovalState, PendingToolConversationRound, TokenUsage,
+    PendingProviderToolCall, PendingToolApprovalState, PendingToolConversationRound, TodoTaskEntry,
+    TodoTaskList, TodoTaskStatus, TokenUsage,
 };
+use wonder_of_u_storage::TodoTaskStore;
 use wonder_of_u_test_support::{EnvVarGuard, unique_test_dir};
 use wonder_of_u_tui::KeyModifiers;
 
@@ -2169,6 +2171,35 @@ fn controller_meta_p_opens_model_picker() {
         controller.dialog.as_ref(),
         Some(dialog) if dialog.title == "Model picker"
     ));
+}
+
+#[test]
+fn controller_meta_e_toggles_tool_output_expansion() {
+    let dir = unique_test_dir("tui-tool-output-meta-expand");
+    let registry = commands::registry(Some(dir.clone())).expect("registry");
+    let mut controller = TuiController::new(
+        test_context(&dir),
+        &registry,
+        Some(dir.as_path()),
+        TuiLaunchOptions { session_id: None },
+    )
+    .expect("controller");
+    controller.pending_setup_overlay = None;
+    controller.dialog = None;
+
+    send_prompt_key(&mut controller, alt_key('e'));
+    assert!(controller.expand_tool_output);
+    assert_eq!(
+        controller.status_note.as_deref(),
+        Some("tool output expanded")
+    );
+
+    send_prompt_key(&mut controller, alt_key('e'));
+    assert!(!controller.expand_tool_output);
+    assert_eq!(
+        controller.status_note.as_deref(),
+        Some("tool output collapsed")
+    );
 }
 
 #[test]
@@ -7493,9 +7524,146 @@ fn todo_sidebar_lines_reads_file() {
     assert_eq!(lines[1], "  pending");
 }
 
+fn write_todo_task_list(
+    dir: &std::path::Path,
+    session_id: SessionId,
+    tasks: impl IntoIterator<Item = TodoTaskEntry>,
+) {
+    let mut list = TodoTaskList::empty(session_id);
+    for task in tasks {
+        list.tasks.insert(task.task_id.clone(), task);
+    }
+    TodoTaskStore::new(dir)
+        .write(&list)
+        .expect("write todo list");
+}
+
+fn todo_task(id: &str, subject: &str, status: TodoTaskStatus) -> TodoTaskEntry {
+    let mut task = TodoTaskEntry::new(id, subject, subject);
+    task.status = status;
+    task
+}
+
+#[test]
+fn todo_task_store_sidebar_lines_empty_returns_none() {
+    let dir = unique_test_dir("todo-store-sidebar-empty");
+    let session_id = SessionId::new();
+
+    assert!(todo_task_store_sidebar_lines(&dir, session_id).is_none());
+}
+
+#[test]
+fn todo_task_store_sidebar_lines_all_deleted_returns_none() {
+    let dir = unique_test_dir("todo-store-sidebar-deleted");
+    let session_id = SessionId::new();
+    write_todo_task_list(
+        &dir,
+        session_id,
+        [todo_task("todo-1", "deleted", TodoTaskStatus::Deleted)],
+    );
+
+    assert!(todo_task_store_sidebar_lines(&dir, session_id).is_none());
+}
+
+#[test]
+fn todo_task_store_sidebar_lines_formats_statuses() {
+    let dir = unique_test_dir("todo-store-sidebar-statuses");
+    let session_id = SessionId::new();
+    write_todo_task_list(
+        &dir,
+        session_id,
+        [
+            todo_task("todo-1", "write tests", TodoTaskStatus::Pending),
+            todo_task("todo-2", "deploy", TodoTaskStatus::InProgress),
+            todo_task("todo-3", "done", TodoTaskStatus::Completed),
+            todo_task("todo-4", "hidden", TodoTaskStatus::Deleted),
+        ],
+    );
+
+    let lines = todo_task_store_sidebar_lines(&dir, session_id).expect("sidebar lines");
+    assert_eq!(lines, vec!["  write tests", "▷ deploy", "✓ done"]);
+}
+
+#[test]
+fn todo_task_store_sidebar_lines_caps_and_truncates() {
+    let dir = unique_test_dir("todo-store-sidebar-cap");
+    let session_id = SessionId::new();
+    let tasks = (1..=8).map(|index| {
+        todo_task(
+            &format!("todo-{index}"),
+            &format!("task {index} with a very long subject"),
+            TodoTaskStatus::Pending,
+        )
+    });
+    write_todo_task_list(&dir, session_id, tasks);
+
+    let lines = todo_task_store_sidebar_lines(&dir, session_id).expect("sidebar lines");
+    assert_eq!(lines.len(), 7, "expected 6 items + '+2 more' trailer");
+    assert_eq!(lines[6], "  +2 more");
+    let label = lines[0].trim_start();
+    assert!(label.chars().count() <= 22, "label too long: {label}");
+}
+
+#[test]
+fn todo_merged_sidebar_lines_prefers_store_over_markdown() {
+    let dir = unique_test_dir("todo-merged-prefers-store");
+    let session_id = SessionId::new();
+    std::fs::write(dir.join("todos.md"), "- [ ] markdown item\n").expect("write todos.md");
+    write_todo_task_list(
+        &dir,
+        session_id,
+        [todo_task("todo-1", "store item", TodoTaskStatus::Pending)],
+    );
+
+    let lines = todo_merged_sidebar_lines(&dir, Some(&dir), session_id);
+    assert_eq!(lines, vec!["  store item"]);
+}
+
+#[test]
+fn todo_merged_sidebar_lines_falls_back_to_markdown() {
+    let dir = unique_test_dir("todo-merged-fallback");
+    let session_id = SessionId::new();
+    std::fs::write(dir.join("todos.md"), "- [ ] markdown item\n").expect("write todos.md");
+
+    assert_eq!(
+        todo_merged_sidebar_lines(&dir, Some(&dir), session_id),
+        vec!["  markdown item"]
+    );
+    assert_eq!(
+        todo_merged_sidebar_lines(&dir, None, session_id),
+        vec!["  markdown item"]
+    );
+}
+
+#[test]
+fn todo_merged_sidebar_lines_all_deleted_falls_back_to_markdown() {
+    let dir = unique_test_dir("todo-merged-deleted-fallback");
+    let session_id = SessionId::new();
+    std::fs::write(dir.join("todos.md"), "- [ ] markdown item\n").expect("write todos.md");
+    write_todo_task_list(
+        &dir,
+        session_id,
+        [todo_task("todo-1", "deleted", TodoTaskStatus::Deleted)],
+    );
+
+    assert_eq!(
+        todo_merged_sidebar_lines(&dir, Some(&dir), session_id),
+        vec!["  markdown item"]
+    );
+}
+
+#[test]
+fn todo_merged_sidebar_lines_both_empty_returns_empty() {
+    let dir = unique_test_dir("todo-merged-empty");
+    let session_id = SessionId::new();
+
+    assert!(todo_merged_sidebar_lines(&dir, Some(&dir), session_id).is_empty());
+}
+
 #[test]
 fn mcp_sidebar_lines_no_storage_dir() {
-    let lines = mcp_sidebar_lines(None);
+    let dir = unique_test_dir("mcp-no-storage-cwd");
+    let lines = mcp_sidebar_lines(None, &dir);
     assert_eq!(lines.len(), 1);
     assert!(lines[0].contains("no storage dir"));
 }
@@ -7503,7 +7671,7 @@ fn mcp_sidebar_lines_no_storage_dir() {
 #[test]
 fn mcp_sidebar_lines_empty_config() {
     let dir = wonder_of_u_test_support::unique_test_dir("mcp-empty");
-    let lines = mcp_sidebar_lines(Some(&dir));
+    let lines = mcp_sidebar_lines(Some(&dir), &dir);
     assert_eq!(lines.len(), 1);
     assert!(
         lines[0].contains("no servers configured"),
@@ -7544,7 +7712,7 @@ fn mcp_sidebar_lines_with_servers() {
     };
     store.write(&config).expect("write mcp config");
 
-    let lines = mcp_sidebar_lines(Some(&dir));
+    let lines = mcp_sidebar_lines(Some(&dir), &dir);
     // First line: "N/M servers enabled"
     assert!(lines[0].contains("1/2"), "summary line: {:?}", lines[0]);
     assert!(

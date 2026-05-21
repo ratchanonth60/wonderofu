@@ -5,6 +5,8 @@ use wonder_of_u_mcp::{JsonRpcError, JsonRpcResponse};
 
 const EXIT_AFTER_ENV: &str = "WONDER_OF_U_FAKE_MCP_EXIT_AFTER";
 const OVERSIZE_ON_ENV: &str = "WONDER_OF_U_FAKE_MCP_OVERSIZE_ON";
+const ECHO_ENV_ENV: &str = "WONDER_OF_U_FAKE_MCP_ECHO_ENV";
+const ECHO_PID_ENV: &str = "WONDER_OF_U_FAKE_MCP_ECHO_PID";
 
 fn main() -> io::Result<()> {
     let stdin = io::stdin();
@@ -13,6 +15,8 @@ fn main() -> io::Result<()> {
     let mut writer = stdout.lock();
     let exit_after = std::env::var(EXIT_AFTER_ENV).ok();
     let oversize_on = std::env::var(OVERSIZE_ON_ENV).ok();
+    let echo_env = std::env::var(ECHO_ENV_ENV).ok();
+    let echo_pid = std::env::var(ECHO_PID_ENV).ok().as_deref() == Some("1");
 
     loop {
         let Some(message) = read_message(&mut reader)? else {
@@ -101,6 +105,16 @@ fn main() -> io::Result<()> {
                     .and_then(Value::as_str)
                     .unwrap_or_default();
                 if name == "Echo Text" {
+                    let text = if echo_pid {
+                        format!("pid: {}", std::process::id())
+                    } else if let Some(var) = &echo_env {
+                        format!(
+                            "env {var}: {}",
+                            std::env::var(var).unwrap_or_else(|_| "unset".into())
+                        )
+                    } else {
+                        format!("echoed: {echoed}")
+                    };
                     write_response(
                         &mut writer,
                         JsonRpcResponse {
@@ -109,7 +123,7 @@ fn main() -> io::Result<()> {
                             result: Some(json!({
                                 "content": [{
                                     "type": "text",
-                                    "text": format!("echoed: {echoed}")
+                                    "text": text
                                 }],
                                 "isError": false
                             })),

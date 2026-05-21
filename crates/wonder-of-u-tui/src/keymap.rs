@@ -53,6 +53,26 @@ pub enum VimCommand {
     StartDelete,
     /// Represents start change
     StartChange,
+    /// Represents start yank
+    StartYank,
+    /// Represents paste after cursor
+    PasteAfter,
+    /// Represents paste before cursor
+    PasteBefore,
+    /// Represents undo
+    Undo,
+    /// Represents redo
+    Redo,
+    /// Represents enter visual mode
+    EnterVisualMode,
+    /// Represents find forward
+    FindForward,
+    /// Represents find backward
+    FindBackward,
+    /// Represents repeat find
+    RepeatFind,
+    /// Represents repeat find reverse
+    RepeatFindReverse,
     /// Represents cancel pending
     CancelPending,
 }
@@ -266,7 +286,7 @@ const RESERVED_BINDINGS: [KeyBinding; 5] = [
     },
 ];
 
-fn prompt_bindings(context: KeyBindingContext) -> [KeyBinding; 16] {
+fn prompt_bindings(context: KeyBindingContext) -> [KeyBinding; 17] {
     [
         bind(
             context,
@@ -355,6 +375,12 @@ fn prompt_bindings(context: KeyBindingContext) -> [KeyBinding; 16] {
         ),
         bind(
             context,
+            KeyCode::Char('e'),
+            ALT,
+            ResolvedKey::System(SystemAction::ExpandToolOutput),
+        ),
+        bind(
+            context,
             KeyCode::Char('t'),
             ALT,
             ResolvedKey::System(SystemAction::ToggleThinking),
@@ -368,7 +394,7 @@ fn prompt_bindings(context: KeyBindingContext) -> [KeyBinding; 16] {
     ]
 }
 
-fn vim_normal_bindings() -> [KeyBinding; 15] {
+fn vim_normal_bindings() -> [KeyBinding; 25] {
     [
         bind(
             KeyBindingContext::VimNormal,
@@ -459,6 +485,66 @@ fn vim_normal_bindings() -> [KeyBinding; 15] {
             KeyCode::Char('x'),
             NONE,
             ResolvedKey::Vim(VimCommand::DeleteChar),
+        ),
+        bind(
+            KeyBindingContext::VimNormal,
+            KeyCode::Char('y'),
+            NONE,
+            ResolvedKey::Vim(VimCommand::StartYank),
+        ),
+        bind(
+            KeyBindingContext::VimNormal,
+            KeyCode::Char('p'),
+            NONE,
+            ResolvedKey::Vim(VimCommand::PasteAfter),
+        ),
+        bind(
+            KeyBindingContext::VimNormal,
+            KeyCode::Char('P'),
+            NONE,
+            ResolvedKey::Vim(VimCommand::PasteBefore),
+        ),
+        bind(
+            KeyBindingContext::VimNormal,
+            KeyCode::Char('u'),
+            NONE,
+            ResolvedKey::Vim(VimCommand::Undo),
+        ),
+        bind(
+            KeyBindingContext::VimNormal,
+            KeyCode::Char('r'),
+            CONTROL,
+            ResolvedKey::Vim(VimCommand::Redo),
+        ),
+        bind(
+            KeyBindingContext::VimNormal,
+            KeyCode::Char('v'),
+            NONE,
+            ResolvedKey::Vim(VimCommand::EnterVisualMode),
+        ),
+        bind(
+            KeyBindingContext::VimNormal,
+            KeyCode::Char('f'),
+            NONE,
+            ResolvedKey::Vim(VimCommand::FindForward),
+        ),
+        bind(
+            KeyBindingContext::VimNormal,
+            KeyCode::Char('F'),
+            NONE,
+            ResolvedKey::Vim(VimCommand::FindBackward),
+        ),
+        bind(
+            KeyBindingContext::VimNormal,
+            KeyCode::Char(';'),
+            NONE,
+            ResolvedKey::Vim(VimCommand::RepeatFind),
+        ),
+        bind(
+            KeyBindingContext::VimNormal,
+            KeyCode::Char(','),
+            NONE,
+            ResolvedKey::Vim(VimCommand::RepeatFindReverse),
         ),
     ]
 }
@@ -560,6 +646,16 @@ mod tests {
                 }
             ),
             Some(ResolvedKey::System(SystemAction::OpenModelPicker))
+        );
+        assert_eq!(
+            resolver.resolve(
+                KeyBindingContext::Prompt,
+                KeyEvent {
+                    code: KeyCode::Char('e'),
+                    modifiers: ALT,
+                }
+            ),
+            Some(ResolvedKey::System(SystemAction::ExpandToolOutput))
         );
         assert_eq!(
             resolver.resolve(

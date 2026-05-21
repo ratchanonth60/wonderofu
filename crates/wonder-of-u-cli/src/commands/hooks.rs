@@ -1,9 +1,9 @@
-//! Hook executor for PreToolUse/PostToolUse/PostToolUseFailure events.
+//! Hook executor for tool and lifecycle hook events.
 //!
 //! Reads `hooks.json` from the storage config directory and runs matching
 //! `Command`-type hooks via subprocess, injecting the hook context as JSON
 //! on the environment variable `CLAUDE_HOOK_INPUT`.  Prompt/Agent/Http hook
-//! types are not yet executed (they emit a no-op pass-through).
+//! types are surfaced as unsupported instead of silently succeeding.
 //!
 //! # Outcome
 //!
@@ -53,12 +53,18 @@ enum HookActionConfig {
     },
     Prompt {
         prompt: String,
+        #[serde(default, rename = "if", skip_serializing_if = "Option::is_none")]
+        condition: Option<String>,
     },
     Agent {
         prompt: String,
+        #[serde(default, rename = "if", skip_serializing_if = "Option::is_none")]
+        condition: Option<String>,
     },
     Http {
         url: String,
+        #[serde(default, rename = "if", skip_serializing_if = "Option::is_none")]
+        condition: Option<String>,
     },
 }
 
@@ -106,6 +112,16 @@ impl HookRunReport {
 pub const PRE_TOOL_USE: &str = "PreToolUse";
 pub const POST_TOOL_USE: &str = "PostToolUse";
 pub const POST_TOOL_USE_FAILURE: &str = "PostToolUseFailure";
+#[allow(dead_code)]
+pub const USER_PROMPT_SUBMIT: &str = "UserPromptSubmit";
+#[allow(dead_code)]
+pub const SESSION_START: &str = "SessionStart";
+#[allow(dead_code)]
+pub const STOP: &str = "Stop";
+#[allow(dead_code)]
+pub const TASK_CREATED: &str = "TaskCreated";
+#[allow(dead_code)]
+pub const AGENT_START: &str = "AgentStart";
 
 // ── Public API ───────────────────────────────────────────────────────────────
 
@@ -154,36 +170,106 @@ pub fn run_hooks(
     if let Some(response) = tool_response {
         hook_input["tool_response"] = response.clone();
     }
+    run_matching_hooks(matchers, tool_name, &hook_input, cwd)
+}
+
+/// Runs non-tool lifecycle hooks using a JSON payload.
+#[allow(dead_code)]
+pub fn run_lifecycle_hooks(
+    event: &str,
+    payload: &Value,
+    cwd: &Path,
+    storage_dir: Option<&Path>,
+) -> HookRunReport {
+    let config = match load_config(storage_dir) {
+        Ok(c) => c,
+        Err(_) => return HookRunReport::allow(),
+    };
+
+    if config.disable_all_hooks {
+        return HookRunReport::allow();
+    }
+
+    let matchers = match config.hooks.get(event) {
+        Some(m) => m,
+        None => return HookRunReport::allow(),
+    };
+
+    let hook_input = json!({
+        "hook_event_name": event,
+        "payload": payload,
+    });
+    let matcher_value = payload
+        .get("source")
+        .and_then(Value::as_str)
+        .unwrap_or(event);
+    run_matching_hooks(matchers, matcher_value, &hook_input, cwd)
+}
+
+fn run_matching_hooks(
+    matchers: &[HookMatcherConfig],
+    matcher_value: &str,
+    hook_input: &Value,
+    cwd: &Path,
+) -> HookRunReport {
     let hook_input_str = hook_input.to_string();
     let mut report = HookRunReport::allow();
 
     for matcher in matchers {
-        if !tool_name_matches(tool_name, matcher.matcher.as_deref()) {
+        if !tool_name_matches(matcher_value, matcher.matcher.as_deref()) {
             continue;
         }
         for action in &matcher.hooks {
-            if let HookActionConfig::Command { command, .. } = action {
-                report.hook_count = report.hook_count.saturating_add(1);
-                match exec_command_hook(command, &hook_input_str, cwd) {
-                    CommandHookOutcome::Passed { updated_input } => {
-                        // Last hook to emit updatedInput wins.
-                        if updated_input.is_some() {
-                            report.updated_input = updated_input;
-                        }
-                    }
-                    CommandHookOutcome::Failed => report.success = false,
-                    CommandHookOutcome::Block { reason } => {
-                        report.success = false;
-                        report.outcome = HookOutcome::Block { reason };
-                        return report;
-                    }
+            let condition = action.condition();
+            match condition_matches(condition, hook_input) {
+                Ok(true) => {}
+                Ok(false) => continue,
+                Err(_) => {
+                    report.success = false;
+                    continue;
                 }
             }
-            // Prompt/Agent/Http hooks are not yet executed.
+
+            match action {
+                HookActionConfig::Command { command, .. } => {
+                    report.hook_count = report.hook_count.saturating_add(1);
+                    match exec_command_hook(command, &hook_input_str, cwd) {
+                        CommandHookOutcome::Passed { updated_input } => {
+                            // Last hook to emit updatedInput wins.
+                            if updated_input.is_some() {
+                                report.updated_input = updated_input;
+                            }
+                        }
+                        CommandHookOutcome::Failed => report.success = false,
+                        CommandHookOutcome::Block { reason } => {
+                            report.success = false;
+                            report.outcome = HookOutcome::Block { reason };
+                            return report;
+                        }
+                    }
+                }
+                HookActionConfig::Prompt { .. }
+                | HookActionConfig::Agent { .. }
+                | HookActionConfig::Http { .. } => {
+                    report.hook_count = report.hook_count.saturating_add(1);
+                    report.success = false;
+                }
+            }
         }
     }
 
     report
+}
+
+impl HookActionConfig {
+    fn condition(&self) -> Option<&str> {
+        match self {
+            Self::Command { condition, .. }
+            | Self::Prompt { condition, .. }
+            | Self::Agent { condition, .. }
+            | Self::Http { condition, .. } => condition.as_deref(),
+        }
+    }
 }
 
 // ── Internal helpers ─────────────────────────────────────────────────────────
@@ -266,6 +352,72 @@ fn glob_match(name: &str, pattern: &str) -> bool {
         }
     }
     true
+}
+
+fn condition_matches(condition: Option<&str>, hook_input: &Value) -> Result<bool, String> {
+    let Some(condition) = condition.map(str::trim).filter(|value| !value.is_empty()) else {
+        return Ok(true);
+    };
+    if condition.eq_ignore_ascii_case("true") {
+        return Ok(true);
+    }
+    if condition.eq_ignore_ascii_case("false") {
+        return Ok(false);
+    }
+
+    for operator in ["==", "!="] {
+        if let Some((left, right)) = condition.split_once(operator) {
+            let left_value = resolve_condition_path(hook_input, left.trim())?;
+            let right_value = parse_condition_literal(right.trim())?;
+            return Ok(match operator {
+                "==" => left_value == right_value,
+                "!=" => left_value != right_value,
+                _ => unreachable!("operator list is exhaustive"),
+            });
+        }
+    }
+
+    Ok(resolve_condition_path(hook_input, condition)?
+        .as_bool()
+        .unwrap_or(false))
+}
+
+fn resolve_condition_path(input: &Value, path: &str) -> Result<Value, String> {
+    let path = path.trim();
+    if path.is_empty() {
+        return Err("empty hook condition path".into());
+    }
+    if path.starts_with('/') {
+        return input
+            .pointer(path)
+            .cloned()
+            .ok_or_else(|| format!("hook condition path `{path}` did not match"));
+    }
+    let Some(dot_path) = path.strip_prefix('.') else {
+        return parse_condition_literal(path);
+    };
+
+    let mut current = input;
+    for segment in dot_path.split('.') {
+        if segment.is_empty() {
+            return Err(format!("invalid hook condition path `{path}`"));
+        }
+        current = current
+            .get(segment)
+            .ok_or_else(|| format!("hook condition path `{path}` did not match"))?;
+    }
+    Ok(current.clone())
+}
+
+fn parse_condition_literal(value: &str) -> Result<Value, String> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return Err("empty hook condition literal".into());
+    }
+    if let Ok(value) = serde_json::from_str(trimmed) {
+        return Ok(value);
+    }
+    Ok(Value::String(trimmed.to_string()))
 }
 
 /// Execute a single command-type hook.
@@ -706,6 +858,124 @@ mod tests {
         assert_eq!(report.hook_count, 1);
         assert!(report.success);
         assert!(report.updated_input.is_none(), "no updatedInput expected");
+    }
+
+    #[test]
+    fn hook_condition_true_runs_matching_command() {
+        let dir = TempDir::new().unwrap();
+        let hooks_config = json!({
+            "hooks": {
+                "PreToolUse": [{
+                    "hooks": [{
+                        "type": "command",
+                        "if": ".tool_input.command == \"echo hi\"",
+                        "command": "true"
+                    }]
+                }]
+            }
+        });
+        write_hooks(dir.path(), &hooks_config.to_string());
+
+        let report = run_hooks(
+            PRE_TOOL_USE,
+            "bash",
+            &json!({"command": "echo hi"}),
+            None,
+            dir.path(),
+            Some(dir.path()),
+        );
+
+        assert_eq!(report.hook_count, 1);
+        assert!(report.success);
+    }
+
+    #[test]
+    fn hook_condition_false_skips_command() {
+        let dir = TempDir::new().unwrap();
+        let hooks_config = json!({
+            "hooks": {
+                "PreToolUse": [{
+                    "hooks": [{
+                        "type": "command",
+                        "if": ".tool_name == \"file_read\"",
+                        "command": "exit 2"
+                    }]
+                }]
+            }
+        });
+        write_hooks(dir.path(), &hooks_config.to_string());
+
+        let report = run_hooks(
+            PRE_TOOL_USE,
+            "bash",
+            &json!({"command": "echo hi"}),
+            None,
+            dir.path(),
+            Some(dir.path()),
+        );
+
+        assert_eq!(report.hook_count, 0);
+        assert!(report.success);
+    }
+
+    #[test]
+    fn unsupported_hook_actions_are_reported_as_failed() {
+        let dir = TempDir::new().unwrap();
+        let hooks_config = json!({
+            "hooks": {
+                "PreToolUse": [{
+                    "hooks": [{"type": "http", "url": "https://example.invalid/hook"}]
+                }]
+            }
+        });
+        write_hooks(dir.path(), &hooks_config.to_string());
+
+        let report = run_hooks(
+            PRE_TOOL_USE,
+            "bash",
+            &json!({}),
+            None,
+            dir.path(),
+            Some(dir.path()),
+        );
+
+        assert_eq!(report.outcome, HookOutcome::Allow);
+        assert_eq!(report.hook_count, 1);
+        assert!(!report.success);
+    }
+
+    #[test]
+    fn lifecycle_hooks_match_source_payload() {
+        let dir = TempDir::new().unwrap();
+        let out_file = dir.path().join("lifecycle.json");
+        let cmd = format!(
+            "printf '%s' \"$CLAUDE_HOOK_INPUT\" > '{}'",
+            out_file.display()
+        );
+        let hooks_config = json!({
+            "hooks": {
+                "SessionStart": [{
+                    "matcher": "resume",
+                    "hooks": [{"type": "command", "command": cmd}]
+                }]
+            }
+        });
+        write_hooks(dir.path(), &hooks_config.to_string());
+
+        let report = run_lifecycle_hooks(
+            SESSION_START,
+            &json!({"source": "resume"}),
+            dir.path(),
+            Some(dir.path()),
+        );
+
+        assert_eq!(report.hook_count, 1);
+        assert!(report.success);
+        let written: Value =
+            serde_json::from_str(&std::fs::read_to_string(out_file).expect("hook output"))
+                .expect("json");
+        assert_eq!(written["hook_event_name"], SESSION_START);
+        assert_eq!(written["payload"]["source"], "resume");
     }
 
     #[test]
