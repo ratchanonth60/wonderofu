@@ -1945,7 +1945,7 @@ dependencies = [
 
 [[package]]
 name = "wonder-of-u-agent"
-version = "0.1.0"
+version = "0.1.3"
 dependencies = [
  "hex",
  "hmac",
@@ -1964,7 +1964,7 @@ dependencies = [
 
 [[package]]
 name = "wonder-of-u-cli"
-version = "0.1.0"
+version = "0.1.3"
 dependencies = [
  "async-trait",
  "clap",
@@ -1993,7 +1993,7 @@ dependencies = [
 
 [[package]]
 name = "wonder-of-u-core"
-version = "0.1.0"
+version = "0.1.3"
 dependencies = [
  "async-trait",
  "futures",
@@ -2010,7 +2010,7 @@ dependencies = [
 
 [[package]]
 name = "wonder-of-u-mcp"
-version = "0.1.0"
+version = "0.1.3"
 dependencies = [
  "async-trait",
  "serde",
@@ -2024,7 +2024,7 @@ dependencies = [
 
 [[package]]
 name = "wonder-of-u-plugins"
-version = "0.1.0"
+version = "0.1.3"
 dependencies = [
  "serde",
  "serde_json",
@@ -2035,7 +2035,7 @@ dependencies = [
 
 [[package]]
 name = "wonder-of-u-skills"
-version = "0.1.0"
+version = "0.1.3"
 dependencies = [
  "serde",
  "serde_json",
@@ -2047,7 +2047,7 @@ dependencies = [
 
 [[package]]
 name = "wonder-of-u-storage"
-version = "0.1.0"
+version = "0.1.3"
 dependencies = [
  "serde",
  "serde_json",
@@ -2061,14 +2061,14 @@ dependencies = [
 
 [[package]]
 name = "wonder-of-u-test-support"
-version = "0.1.0"
+version = "0.1.3"
 dependencies = [
  "uuid",
 ]
 
 [[package]]
 name = "wonder-of-u-tools"
-version = "0.1.0"
+version = "0.1.3"
 dependencies = [
  "async-trait",
  "futures",
@@ -2090,7 +2090,7 @@ dependencies = [
 
 [[package]]
 name = "wonder-of-u-tui"
-version = "0.1.0"
+version = "0.1.3"
 dependencies = [
  "crossterm",
  "ratatui",
