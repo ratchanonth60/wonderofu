@@ -56,8 +56,19 @@ pub const MAX_SYSTEM_PROMPT_LEN: usize = 64 * 1024;
 /// Tools that must never be available to background (non-interactive) sub-agents.
 ///
 /// All agents dispatched by the Rust runtime are background tasks; interactive
-/// tools that block waiting for a human response are therefore always denied.
-pub const BACKGROUND_RESTRICTED_TOOLS: &[&str] = &["ask_user"];
+/// tools that block waiting for a human response, inspect/control sibling tasks,
+/// or recursively launch higher-level orchestration are therefore always denied.
+///
+/// Some entries also guard tools that already reject at execution time. Keeping
+/// them here prevents background agents from seeing or selecting them at all.
+pub const BACKGROUND_RESTRICTED_TOOLS: &[&str] = &[
+    "ask_user",
+    "enter_plan_mode",
+    "exit_plan_mode",
+    "task_output",
+    "task_stop",
+    "workflow",
+];
 
 // ── AgentToolFilter ───────────────────────────────────────────────────────────
 
@@ -1893,12 +1904,17 @@ mod tests {
     }
 
     #[test]
-    fn background_restricted_constant_is_non_empty() {
-        // Verify the constant lists ask_user — this is the primary guard against
-        // accidentally removing the interactive-tool restriction.
-        assert!(
-            BACKGROUND_RESTRICTED_TOOLS.contains(&"ask_user"),
-            "ask_user must be in BACKGROUND_RESTRICTED_TOOLS"
+    fn background_restricted_constant_matches_agent_deny_list() {
+        assert_eq!(
+            BACKGROUND_RESTRICTED_TOOLS,
+            &[
+                "ask_user",
+                "enter_plan_mode",
+                "exit_plan_mode",
+                "task_output",
+                "task_stop",
+                "workflow",
+            ]
         );
     }
 

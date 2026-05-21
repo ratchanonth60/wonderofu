@@ -251,10 +251,9 @@ fn read_resource_in_storage(storage_root: &Path, resource_name: &str) -> Result<
     let config = store.read()?;
 
     for server in config.servers.iter().filter(|server| server.enabled) {
-        let (_, catalog) =
-            McpClient::discover_server(server, &config.client, &config.protocol_version)?;
+        let mut client = McpClient::connect(server, &config.client, &config.protocol_version)?;
+        let catalog = client.discover_catalog()?;
         if let Some(resource) = find_resource(&catalog, resource_name) {
-            let mut client = McpClient::connect(server, &config.client, &config.protocol_version)?;
             let result = client.read_resource(&resource.resource.uri)?;
             return Ok(format_resource_contents(&result.contents));
         }

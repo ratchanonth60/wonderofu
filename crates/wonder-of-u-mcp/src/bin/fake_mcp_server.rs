@@ -4,6 +4,7 @@ use serde_json::{Value, json};
 use wonder_of_u_mcp::{JsonRpcError, JsonRpcResponse};
 
 const EXIT_AFTER_ENV: &str = "WONDER_OF_U_FAKE_MCP_EXIT_AFTER";
+const OVERSIZE_ON_ENV: &str = "WONDER_OF_U_FAKE_MCP_OVERSIZE_ON";
 
 fn main() -> io::Result<()> {
     let stdin = io::stdin();
@@ -11,6 +12,7 @@ fn main() -> io::Result<()> {
     let mut reader = BufReader::new(stdin.lock());
     let mut writer = stdout.lock();
     let exit_after = std::env::var(EXIT_AFTER_ENV).ok();
+    let oversize_on = std::env::var(OVERSIZE_ON_ENV).ok();
 
     loop {
         let Some(message) = read_message(&mut reader)? else {
@@ -46,6 +48,10 @@ fn main() -> io::Result<()> {
                 return Ok(());
             }
             "notifications/initialized" => {}
+            "tools/list" if oversize_on.as_deref() == Some("tools/list") => {
+                write!(writer, "Content-Length: 67108865\r\n\r\n")?;
+                writer.flush()?;
+            }
             "tools/list" => write_response(
                 &mut writer,
                 JsonRpcResponse {

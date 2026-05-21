@@ -540,6 +540,9 @@ fn format_resolved_key(result: ResolvedKey) -> String {
         ResolvedKey::System(SystemAction::ExpandToolOutput) => {
             "expand or collapse tool output".into()
         }
+        ResolvedKey::System(SystemAction::OpenModelPicker) => "open model picker".into(),
+        ResolvedKey::System(SystemAction::ToggleThinking) => "toggle thinking mode".into(),
+        ResolvedKey::System(SystemAction::ToggleFastMode) => "toggle fast mode".into(),
         ResolvedKey::Vim(command) => match command {
             TuiVimCommand::EnterInsertMode => "enter insert mode".into(),
             TuiVimCommand::EnterNormalMode => "enter normal mode".into(),
