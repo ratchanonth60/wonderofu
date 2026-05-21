@@ -1,8 +1,9 @@
 use super::*;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 /// Lines scrolled per single mouse-wheel notch in the transcript area.
 const MOUSE_SCROLL_LINES: i32 = 3;
+const SPINNER_PROGRESS_INTERVAL: Duration = Duration::from_millis(100);
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 #[allow(dead_code)]
@@ -13,6 +14,11 @@ pub(super) enum ActiveOverlay {
     ConfirmDialog,
     NoticeDialog,
     None,
+}
+
+enum StreamingCompletionEvent {
+    Delta(String),
+    Done(Result<wonder_of_u_agent::CompletionResponse>),
 }
 
 pub(super) struct TuiController<'a> {
@@ -1057,11 +1063,14 @@ impl<'a> TuiController<'a> {
             self.status_note = Some(format!("running tool {}", call.provider_call.tool_name));
             self.needs_render = true;
             before_blocking(self)?;
-            let result = match block_on(tool.execute(
-                context.clone(),
-                call.use_id,
-                call.provider_call.arguments.clone(),
-            )) {
+            let context = context.clone();
+            let arguments = call.provider_call.arguments.clone();
+            let use_id = call.use_id;
+            let result = match run_with_spinner_tick(
+                move || block_on(tool.execute(context, use_id, arguments)),
+                SPINNER_PROGRESS_INTERVAL,
+                || self.tick_loading_animation(before_blocking),
+            ) {
                 Ok(result) => result,
                 Err(error) => {
                     ToolResult::failure(call.use_id, format!("tool execution failed: {error}"))
@@ -1123,7 +1132,7 @@ impl<'a> TuiController<'a> {
     pub(super) fn continue_tool_loop_from_rounds<F>(
         &mut self,
         request_prompt: &str,
-        runtime: &ProviderRuntime,
+        _runtime: &ProviderRuntime,
         resolved: &wonder_of_u_agent::ResolvedProviderExecution,
         mut rounds: Vec<ToolConversationRound>,
         before_blocking: &mut F,
@@ -1150,17 +1159,20 @@ impl<'a> TuiController<'a> {
             self.needs_render = true;
             before_blocking(self)?;
 
-            let response = runtime.complete_with_tool_use(
-                resolved,
-                &ToolUseRequest {
-                    prompt: request_prompt.to_string(),
-                    system_prompt: self.state.effective_system_prompt(None),
-                    max_output_tokens: None,
-                    temperature: None,
-                    tools: provider_tools.clone(),
-                    rounds: rounds.clone(),
-                    effort_level: self.state.effort_level.clone(),
-                },
+            let resolved = resolved.clone();
+            let request = ToolUseRequest {
+                prompt: request_prompt.to_string(),
+                system_prompt: self.state.effective_system_prompt(None),
+                max_output_tokens: None,
+                temperature: None,
+                tools: provider_tools.clone(),
+                rounds: rounds.clone(),
+                effort_level: self.state.effort_level.clone(),
+            };
+            let response = run_with_spinner_tick(
+                move || ProviderRuntime::new().complete_with_tool_use(&resolved, &request),
+                SPINNER_PROGRESS_INTERVAL,
+                || self.tick_loading_animation(before_blocking),
             )?;
 
             match response {
@@ -1399,15 +1411,20 @@ impl<'a> TuiController<'a> {
         on_progress(self)?;
 
         let response = if streaming {
-            runtime.complete_streaming(&resolved, &request, |delta| {
-                append_streamed_text(&mut self.state, assistant_index, delta)?;
-                self.turn_state = TurnState::StreamingResponse;
-                self.status_note = Some(format!("streaming {} response", resolved.provider_id()));
-                self.needs_render = true;
-                on_progress(self)
-            })?
+            self.complete_streaming_with_progress(
+                &resolved,
+                request.clone(),
+                assistant_index,
+                on_progress,
+            )?
         } else {
-            let response = runtime.complete(&resolved, &request)?;
+            let resolved = resolved.clone();
+            let request = request.clone();
+            let response = run_with_spinner_tick(
+                move || ProviderRuntime::new().complete(&resolved, &request),
+                SPINNER_PROGRESS_INTERVAL,
+                || self.tick_loading_animation(on_progress),
+            )?;
             set_assistant_message_content(&mut self.state, assistant_index, &response.output_text)?;
             response
         };
@@ -1435,11 +1452,56 @@ impl<'a> TuiController<'a> {
         Ok(())
     }
 
+    fn complete_streaming_with_progress<F>(
+        &mut self,
+        resolved: &wonder_of_u_agent::ResolvedProviderExecution,
+        request: CompletionRequest,
+        assistant_index: usize,
+        on_progress: &mut F,
+    ) -> Result<wonder_of_u_agent::CompletionResponse>
+    where
+        F: FnMut(&Self) -> Result<()>,
+    {
+        let provider_id = resolved.provider_id().to_string();
+        let resolved = resolved.clone();
+        let (tx, rx) = mpsc::channel::<StreamingCompletionEvent>();
+        std::thread::spawn(move || {
+            let runtime = ProviderRuntime::new();
+            let delta_tx = tx.clone();
+            let result = runtime.complete_streaming(&resolved, &request, move |delta| {
+                delta_tx
+                    .send(StreamingCompletionEvent::Delta(delta.to_string()))
+                    .map_err(|_| WonderError::internal("streaming receiver dropped"))
+            });
+            let _ = tx.send(StreamingCompletionEvent::Done(result));
+        });
+
+        loop {
+            match rx.recv_timeout(SPINNER_PROGRESS_INTERVAL) {
+                Ok(StreamingCompletionEvent::Delta(delta)) => {
+                    append_streamed_text(&mut self.state, assistant_index, &delta)?;
+                    self.turn_state = TurnState::StreamingResponse;
+                    self.status_note = Some(format!("streaming {provider_id} response"));
+                    self.tick_loading_animation(on_progress)?;
+                }
+                Ok(StreamingCompletionEvent::Done(result)) => return result,
+                Err(mpsc::RecvTimeoutError::Timeout) => {
+                    self.tick_loading_animation(on_progress)?;
+                }
+                Err(mpsc::RecvTimeoutError::Disconnected) => {
+                    return Err(WonderError::internal(
+                        "streaming provider worker exited before returning a result",
+                    ));
+                }
+            }
+        }
+    }
+
     pub(super) fn execute_tool_loop_submission<F>(
         &mut self,
         input: &str,
         request_prompt: &str,
-        runtime: &ProviderRuntime,
+        _runtime: &ProviderRuntime,
         resolved: &wonder_of_u_agent::ResolvedProviderExecution,
         on_progress: &mut F,
     ) -> Result<()>
@@ -1482,17 +1544,20 @@ impl<'a> TuiController<'a> {
             self.needs_render = true;
             on_progress(self)?;
 
-            let response = runtime.complete_with_tool_use(
-                resolved,
-                &ToolUseRequest {
-                    prompt: request_prompt.to_string(),
-                    system_prompt: system_prompt.clone(),
-                    max_output_tokens: None,
-                    temperature: None,
-                    tools: provider_tools.clone(),
-                    rounds: rounds.clone(),
-                    effort_level: self.state.effort_level.clone(),
-                },
+            let resolved = resolved.clone();
+            let request = ToolUseRequest {
+                prompt: request_prompt.to_string(),
+                system_prompt: system_prompt.clone(),
+                max_output_tokens: None,
+                temperature: None,
+                tools: provider_tools.clone(),
+                rounds: rounds.clone(),
+                effort_level: self.state.effort_level.clone(),
+            };
+            let response = run_with_spinner_tick(
+                move || ProviderRuntime::new().complete_with_tool_use(&resolved, &request),
+                SPINNER_PROGRESS_INTERVAL,
+                || self.tick_loading_animation(on_progress),
             )?;
 
             match response {
@@ -2413,11 +2478,26 @@ impl<'a> TuiController<'a> {
         self.status_note = Some(format!("running tool {}", call.tool_name));
         self.needs_render = true;
         on_progress(self)?;
-        let result = match block_on(tool.execute(context.clone(), use_id, call.arguments.clone())) {
+        let context = context.clone();
+        let arguments = call.arguments.clone();
+        let result = match run_with_spinner_tick(
+            move || block_on(tool.execute(context, use_id, arguments)),
+            SPINNER_PROGRESS_INTERVAL,
+            || self.tick_loading_animation(on_progress),
+        ) {
             Ok(result) => result,
             Err(error) => ToolResult::failure(use_id, format!("tool execution failed: {error}")),
         };
         self.finalize_tool_result(Vec::new(), call, result, on_progress)
+    }
+
+    fn tick_loading_animation<F>(&mut self, on_progress: &mut F) -> Result<()>
+    where
+        F: FnMut(&Self) -> Result<()>,
+    {
+        self.loading_frame = self.loading_frame.wrapping_add(1);
+        self.needs_render = true;
+        on_progress(self)
     }
 
     pub(super) fn finalize_tool_result<F>(

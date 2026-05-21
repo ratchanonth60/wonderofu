@@ -1,5 +1,31 @@
 use super::*;
 
+pub(super) fn run_with_spinner_tick<T>(
+    work: impl FnOnce() -> Result<T> + Send + 'static,
+    interval: Duration,
+    mut on_tick: impl FnMut() -> Result<()>,
+) -> Result<T>
+where
+    T: Send + 'static,
+{
+    let (tx, rx) = mpsc::channel::<Result<T>>();
+    std::thread::spawn(move || {
+        let _ = tx.send(work());
+    });
+
+    loop {
+        match rx.recv_timeout(interval) {
+            Ok(result) => return result,
+            Err(mpsc::RecvTimeoutError::Timeout) => on_tick()?,
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                return Err(WonderError::internal(
+                    "background worker exited before returning a result",
+                ));
+            }
+        }
+    }
+}
+
 pub(super) fn command_output_text(output: CommandOutput) -> (Option<String>, bool) {
     match output {
         CommandOutput::Text(text)
@@ -1432,9 +1458,17 @@ pub(super) fn overlay_closed_status(title: &str) -> String {
 #[cfg(test)]
 #[allow(clippy::items_after_test_module)]
 mod tests {
+    use std::{
+        sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        },
+        time::Duration,
+    };
+
     use wonder_of_u_tui::TextBuffer;
 
-    use super::{filtered_picker_indices, theme_for_state};
+    use super::{filtered_picker_indices, run_with_spinner_tick, theme_for_state};
 
     /// All named themes must leave `background.bg = None` so the terminal
     /// emulator's own background colour shows through (Ink/Claude Code parity).
@@ -1490,6 +1524,31 @@ mod tests {
         let filtered = filtered_picker_indices(&query, &options, |option| option.to_string());
 
         assert_eq!(filtered, vec![0, 1]);
+    }
+
+    #[test]
+    fn spinner_tick_helper_reports_progress_while_worker_blocks() {
+        let ticks = Arc::new(AtomicUsize::new(0));
+        let tick_counter = Arc::clone(&ticks);
+
+        let result = run_with_spinner_tick(
+            || {
+                std::thread::sleep(Duration::from_millis(220));
+                Ok("done")
+            },
+            Duration::from_millis(50),
+            || {
+                tick_counter.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            },
+        )
+        .expect("worker result");
+
+        assert_eq!(result, "done");
+        assert!(
+            ticks.load(Ordering::SeqCst) >= 2,
+            "blocking worker should allow repeated spinner ticks"
+        );
     }
 }
 
