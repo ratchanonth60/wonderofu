@@ -510,9 +510,17 @@ impl Command for StatusCommand {
                     sync_status.experiments.status.label()
                 ));
                 let mcp_store = McpConfigStore::new(storage_dir.clone());
-                let mcp_config = mcp_store.read()?;
+                let (mcp_config, project_config_path) =
+                    mcp_store.read_with_project(&context.cwd, None)?;
                 let mcp_report =
                     McpStatusReport::inspect(mcp_store.paths().mcp_servers_path(), &mcp_config);
+                lines.push(format!(
+                    "mcp_project_config={}",
+                    project_config_path
+                        .as_ref()
+                        .map(|path| path.display().to_string())
+                        .unwrap_or_else(|| "none".into())
+                ));
                 lines.push(format!("mcp_servers={}", mcp_report.servers.len()));
                 lines.push(format!("mcp_ready_servers={}", mcp_report.ready_count()));
                 lines.push(format!("mcp_error_servers={}", mcp_report.error_count()));

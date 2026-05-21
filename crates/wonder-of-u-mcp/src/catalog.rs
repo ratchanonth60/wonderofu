@@ -1,7 +1,11 @@
+use std::sync::{Arc, Mutex};
+
 use serde_json::Value;
 use wonder_of_u_core::{ToolKind, ToolSource, ToolSpec};
 
-use crate::{McpConfig, McpResource, McpTool, build_mcp_resource_name, build_mcp_tool_name};
+use crate::{
+    McpConfig, McpResource, McpSessionPool, McpTool, build_mcp_resource_name, build_mcp_tool_name,
+};
 /// Stores mcp catalog
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct McpCatalog {
@@ -174,6 +178,7 @@ impl McpResourceRegistration {
 pub fn discover_catalog_tools(config: &McpConfig) -> Vec<crate::DynamicMcpTool> {
     use crate::{DynamicMcpTool, McpClient};
 
+    let pool = Arc::new(Mutex::new(McpSessionPool::new()));
     config
         .servers
         .iter()
@@ -183,7 +188,9 @@ pub fn discover_catalog_tools(config: &McpConfig) -> Vec<crate::DynamicMcpTool> 
                 Ok((_, catalog)) => catalog
                     .tools
                     .iter()
-                    .map(DynamicMcpTool::from_registration)
+                    .map(|registration| {
+                        DynamicMcpTool::from_registration_with_pool(registration, Arc::clone(&pool))
+                    })
                     .collect::<Vec<_>>(),
                 // Skip unreachable or misconfigured servers.
                 Err(_) => Vec::new(),

@@ -7662,7 +7662,8 @@ fn todo_merged_sidebar_lines_both_empty_returns_empty() {
 
 #[test]
 fn mcp_sidebar_lines_no_storage_dir() {
-    let lines = mcp_sidebar_lines(None);
+    let dir = unique_test_dir("mcp-no-storage-cwd");
+    let lines = mcp_sidebar_lines(None, &dir);
     assert_eq!(lines.len(), 1);
     assert!(lines[0].contains("no storage dir"));
 }
@@ -7670,7 +7671,7 @@ fn mcp_sidebar_lines_no_storage_dir() {
 #[test]
 fn mcp_sidebar_lines_empty_config() {
     let dir = wonder_of_u_test_support::unique_test_dir("mcp-empty");
-    let lines = mcp_sidebar_lines(Some(&dir));
+    let lines = mcp_sidebar_lines(Some(&dir), &dir);
     assert_eq!(lines.len(), 1);
     assert!(
         lines[0].contains("no servers configured"),
@@ -7711,7 +7712,7 @@ fn mcp_sidebar_lines_with_servers() {
     };
     store.write(&config).expect("write mcp config");
 
-    let lines = mcp_sidebar_lines(Some(&dir));
+    let lines = mcp_sidebar_lines(Some(&dir), &dir);
     // First line: "N/M servers enabled"
     assert!(lines[0].contains("1/2"), "summary line: {:?}", lines[0]);
     assert!(

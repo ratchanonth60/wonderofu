@@ -4,7 +4,10 @@
 mod catalog;
 mod client;
 mod config;
+mod env_expand;
 mod names;
+mod project_config;
+mod session_pool;
 mod status;
 mod tools;
 mod types;
@@ -20,8 +23,14 @@ pub use config::{
     DEFAULT_MCP_PROTOCOL_VERSION, MCP_CONFIG_SCHEMA_VERSION, McpClientIdentity, McpConfig,
     McpConfigStore, McpServerConfig,
 };
+/// Re-exports items from `env_expand`
+pub use env_expand::expand_env_value;
 /// Re-exports items from `names`
 pub use names::{build_mcp_resource_name, build_mcp_tool_name, normalize_mcp_name};
+/// Re-exports items from `project_config`
+pub use project_config::{ProjectMcpConfig, ProjectMcpServerEntry};
+/// Re-exports items from `session_pool`
+pub use session_pool::McpSessionPool;
 /// Re-exports items from `status`
 pub use status::{McpServerState, McpServerStatus, McpStatusReport};
 /// Re-exports items from `tools`

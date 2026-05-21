@@ -2812,7 +2812,7 @@ impl<'a> TuiController<'a> {
         let tool_context = self.tool_context();
         let next = SidebarPanelCache {
             tool_lines: tool_sidebar_lines(&tool_context, self.storage_dir.as_deref()),
-            mcp_lines: mcp_sidebar_lines(self.storage_dir.as_deref()),
+            mcp_lines: mcp_sidebar_lines(self.storage_dir.as_deref(), &self.state.session.cwd),
             lsp_lines: lsp_sidebar_lines(&self.state.session.cwd),
             todo_lines: todo_merged_sidebar_lines(
                 &self.state.session.cwd,
@@ -5184,14 +5184,17 @@ pub(super) fn tool_sidebar_lines(context: &ToolContext, storage_dir: Option<&Pat
 ///
 /// Reads `McpConfigStore` only during sidebar cache refreshes. Shows a concise
 /// enabled/total count plus one line per server name.
-pub(super) fn mcp_sidebar_lines(storage_dir: Option<&std::path::Path>) -> Vec<String> {
+pub(super) fn mcp_sidebar_lines(
+    storage_dir: Option<&std::path::Path>,
+    cwd: &std::path::Path,
+) -> Vec<String> {
     let Some(dir) = storage_dir else {
         return vec!["  mcp: no storage dir".into()];
     };
 
     let store = McpConfigStore::new(dir);
-    let config = match store.read() {
-        Ok(c) => c,
+    let config = match store.read_with_project(cwd, None) {
+        Ok((config, _)) => config,
         Err(e) => return vec![format!("⚠ mcp config unavailable: {e}")],
     };
 

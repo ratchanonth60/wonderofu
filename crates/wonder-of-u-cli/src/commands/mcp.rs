@@ -62,13 +62,13 @@ impl Command for McpCommand {
 
     async fn execute(
         &self,
-        _context: CommandContext,
+        context: CommandContext,
         invocation: CommandInvocation,
     ) -> Result<CommandOutput> {
         let args = parse_command_args::<McpArgs>("mcp", &invocation)?;
         match args.command.unwrap_or(McpSubcommand::Show) {
-            McpSubcommand::Show => self.show(),
-            McpSubcommand::Status => self.status(),
+            McpSubcommand::Show => self.show(&context),
+            McpSubcommand::Status => self.status(&context),
             McpSubcommand::Enable(args) => self.set_enabled(&args.server, true),
             McpSubcommand::Disable(args) => self.set_enabled(&args.server, false),
         }
@@ -76,12 +76,19 @@ impl Command for McpCommand {
 }
 
 impl McpCommand {
-    fn show(&self) -> Result<CommandOutput> {
+    fn show(&self, context: &CommandContext) -> Result<CommandOutput> {
         let storage_dir = require_storage_dir(self.storage_dir.clone())?;
         let store = McpConfigStore::new(&storage_dir);
-        let config = store.read()?;
+        let (config, project_config_path) = store.read_with_project(&context.cwd, None)?;
         let mut lines = vec![
             format!("config_path={}", store.paths().mcp_servers_path().display()),
+            format!(
+                "project_config_path={}",
+                project_config_path
+                    .as_ref()
+                    .map(|path| path.display().to_string())
+                    .unwrap_or_else(|| "none".into())
+            ),
             format!("schema_version={}", config.schema_version),
             format!("protocol_version={}", config.protocol_version),
             format!("client_name={}", config.client.name),
@@ -103,13 +110,20 @@ impl McpCommand {
         Ok(CommandOutput::Text(lines.join("\n")))
     }
 
-    fn status(&self) -> Result<CommandOutput> {
+    fn status(&self, context: &CommandContext) -> Result<CommandOutput> {
         let storage_dir = require_storage_dir(self.storage_dir.clone())?;
         let store = McpConfigStore::new(&storage_dir);
-        let config = store.read()?;
+        let (config, project_config_path) = store.read_with_project(&context.cwd, None)?;
         let report = McpStatusReport::inspect(store.paths().mcp_servers_path(), &config);
         let mut lines = vec![
             format!("config_path={}", report.config_path.display()),
+            format!(
+                "project_config_path={}",
+                project_config_path
+                    .as_ref()
+                    .map(|path| path.display().to_string())
+                    .unwrap_or_else(|| "none".into())
+            ),
             format!("servers={}", report.servers.len()),
             format!("ready_servers={}", report.ready_count()),
             format!("error_servers={}", report.error_count()),
