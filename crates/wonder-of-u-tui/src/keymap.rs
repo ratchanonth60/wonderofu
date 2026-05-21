@@ -266,7 +266,7 @@ const RESERVED_BINDINGS: [KeyBinding; 5] = [
     },
 ];
 
-fn prompt_bindings(context: KeyBindingContext) -> [KeyBinding; 16] {
+fn prompt_bindings(context: KeyBindingContext) -> [KeyBinding; 17] {
     [
         bind(
             context,
@@ -352,6 +352,12 @@ fn prompt_bindings(context: KeyBindingContext) -> [KeyBinding; 16] {
             KeyCode::Char('p'),
             ALT,
             ResolvedKey::System(SystemAction::OpenModelPicker),
+        ),
+        bind(
+            context,
+            KeyCode::Char('e'),
+            ALT,
+            ResolvedKey::System(SystemAction::ExpandToolOutput),
         ),
         bind(
             context,
@@ -560,6 +566,16 @@ mod tests {
                 }
             ),
             Some(ResolvedKey::System(SystemAction::OpenModelPicker))
+        );
+        assert_eq!(
+            resolver.resolve(
+                KeyBindingContext::Prompt,
+                KeyEvent {
+                    code: KeyCode::Char('e'),
+                    modifiers: ALT,
+                }
+            ),
+            Some(ResolvedKey::System(SystemAction::ExpandToolOutput))
         );
         assert_eq!(
             resolver.resolve(

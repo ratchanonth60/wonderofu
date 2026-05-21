@@ -2172,6 +2172,35 @@ fn controller_meta_p_opens_model_picker() {
 }
 
 #[test]
+fn controller_meta_e_toggles_tool_output_expansion() {
+    let dir = unique_test_dir("tui-tool-output-meta-expand");
+    let registry = commands::registry(Some(dir.clone())).expect("registry");
+    let mut controller = TuiController::new(
+        test_context(&dir),
+        &registry,
+        Some(dir.as_path()),
+        TuiLaunchOptions { session_id: None },
+    )
+    .expect("controller");
+    controller.pending_setup_overlay = None;
+    controller.dialog = None;
+
+    send_prompt_key(&mut controller, alt_key('e'));
+    assert!(controller.expand_tool_output);
+    assert_eq!(
+        controller.status_note.as_deref(),
+        Some("tool output expanded")
+    );
+
+    send_prompt_key(&mut controller, alt_key('e'));
+    assert!(!controller.expand_tool_output);
+    assert_eq!(
+        controller.status_note.as_deref(),
+        Some("tool output collapsed")
+    );
+}
+
+#[test]
 fn controller_shows_usage_notice_dialog() {
     let dir = unique_test_dir("tui-usage-notice");
     let registry = commands::registry(Some(dir.clone())).expect("registry");

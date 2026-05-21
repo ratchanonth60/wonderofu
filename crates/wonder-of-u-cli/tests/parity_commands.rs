@@ -91,6 +91,7 @@ const CLAUDE_LEAK_COMMANDS: &[&str] = &[
     "skills",
     "stats",
     "status",
+    "statusline",
     "stickers",
     "summary",
     "tag",
@@ -106,6 +107,7 @@ const CLAUDE_LEAK_COMMANDS: &[&str] = &[
     "version",
     "vim",
     "voice",
+    "x402",
 ];
 
 fn registry_names() -> HashSet<String> {

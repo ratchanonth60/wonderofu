@@ -392,6 +392,17 @@ where
 
 // ─── ProviderRuntime ──────────────────────────────────────────────────────────
 
+fn wire_protocol_supports_tool_use(protocol: WireProtocol) -> bool {
+    matches!(
+        protocol,
+        WireProtocol::OpenAiCompat
+            | WireProtocol::AnthropicCompat
+            | WireProtocol::Copilot
+            | WireProtocol::BedrockAnthropic
+            | WireProtocol::AzureOpenAi
+    )
+}
+
 /// Represents provider runtime
 pub struct ProviderRuntime {
     resolver: ProviderResolver,
@@ -515,7 +526,7 @@ impl ProviderRuntime {
     }
 
     /// Returns whether the provider identified by `provider_id` supports tool
-    /// use via the OpenAI function-calling schema.
+    /// use in the runtime.
     ///
     /// Looks up the provider's [`WireProtocol`] from the registry; unknown
     /// provider IDs return `false`.
@@ -524,13 +535,7 @@ impl ProviderRuntime {
         self.resolver
             .registry()
             .get(provider_id)
-            .map(|desc| {
-                matches!(
-                    desc.wire_protocol,
-                    WireProtocol::OpenAiCompat | WireProtocol::AzureOpenAi
-                )
-            })
-            .unwrap_or(false)
+            .is_some_and(|desc| wire_protocol_supports_tool_use(desc.wire_protocol))
     }
 
     /// Returns whether tool use is supported for the given resolved provider.
@@ -539,14 +544,7 @@ impl ProviderRuntime {
     /// support tool use.
     #[must_use]
     pub fn supports_tool_use_for(&self, resolved: &ResolvedProviderExecution) -> bool {
-        matches!(
-            resolved.provider().wire_protocol,
-            WireProtocol::OpenAiCompat
-                | WireProtocol::AnthropicCompat
-                | WireProtocol::Copilot
-                | WireProtocol::BedrockAnthropic
-                | WireProtocol::AzureOpenAi
-        )
+        wire_protocol_supports_tool_use(resolved.provider().wire_protocol)
     }
 
     /// Handles complete streaming.
@@ -2986,6 +2984,34 @@ mod tests {
         let runtime = ProviderRuntime::new();
         assert!(runtime.supports_streaming("azure"));
         assert!(runtime.supports_tool_use("azure"));
+    }
+
+    #[test]
+    fn string_tool_use_helper_matches_resolved_runtime_protocols() {
+        let runtime = ProviderRuntime::new();
+        let cases = [
+            ("openai", resolved_provider("openai", Some("gpt-4.1"))),
+            (
+                "anthropic",
+                resolved_provider("anthropic", Some("claude-3-7-sonnet-latest")),
+            ),
+            (
+                "copilot",
+                resolved_oauth_provider("copilot", Some("gpt-4.1")),
+            ),
+            ("bedrock", resolved_bedrock_provider(None)),
+            ("azure", resolved_azure_provider(None)),
+            ("local", resolved_local_provider(Some("llama3.2"))),
+            ("groq", resolved_provider("groq", Some("llama-3.3-70b"))),
+        ];
+
+        for (provider_id, resolved) in cases {
+            assert_eq!(
+                runtime.supports_tool_use(provider_id),
+                runtime.supports_tool_use_for(&resolved),
+                "string helper and resolved helper should agree for {provider_id}"
+            );
+        }
     }
 
     #[test]

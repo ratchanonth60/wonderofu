@@ -433,6 +433,9 @@ fn parse_system_action(value: &str) -> std::result::Result<SystemAction, String>
         "history_search" => Ok(SystemAction::HistorySearch),
         "open_global_search" => Ok(SystemAction::OpenGlobalSearch),
         "expand_tool_output" => Ok(SystemAction::ExpandToolOutput),
+        "open_model_picker" => Ok(SystemAction::OpenModelPicker),
+        "toggle_thinking" => Ok(SystemAction::ToggleThinking),
+        "toggle_fast_mode" => Ok(SystemAction::ToggleFastMode),
         other => Err(format!("unknown system action `{other}`")),
     }
 }
@@ -600,6 +603,7 @@ mod tests {
         assert!(rendered.contains("### Dialogs and pickers"));
         assert!(rendered.contains("### Vim normal"));
         assert!(rendered.contains("Ctrl-R"));
+        assert!(rendered.contains("Alt-E"));
         assert!(rendered.contains("d{motion} / c{motion}"));
     }
 
