@@ -624,7 +624,7 @@ impl Tool for SkillTool {
     fn spec(&self) -> ToolSpec {
         let mut spec = base_spec(
             "skill",
-            "Inspect bundled, local, and plugin-provided skill metadata",
+            "Compose bundled, local, and plugin-provided skill instructions for execution",
             ToolKind::Skill,
         )
         .with_input_schema(
@@ -676,14 +676,6 @@ impl Tool for SkillTool {
             return Ok(result);
         };
 
-        let prompt_excerpt = skill
-            .prompt
-            .lines()
-            .find(|line| !line.trim().is_empty())
-            .unwrap_or("-")
-            .chars()
-            .take(120)
-            .collect::<String>();
         let allowed_tools = if skill.manifest.allowed_tools.is_empty() {
             "-".to_string()
         } else {
@@ -694,28 +686,40 @@ impl Tool for SkillTool {
             .as_ref()
             .map(|command| command.name.as_str())
             .unwrap_or("-");
+        let args = input.args.as_deref().unwrap_or("");
+        let invocation_prompt = compose_skill_tool_prompt(skill, args);
+        let prompt_excerpt = invocation_prompt
+            .lines()
+            .find(|line| !line.trim().is_empty())
+            .unwrap_or("-")
+            .chars()
+            .take(120)
+            .collect::<String>();
 
         let mut result = ToolResult::success(
             use_id,
             [
-                "status=metadata_only".into(),
+                "status=prompt_composition".into(),
                 format!("skill={}", skill.manifest.name),
                 format!("source={}", skill.source.label()),
                 format!("trust={}", skill.trust.label()),
                 format!("allowed_tools={allowed_tools}"),
                 format!("slash_command={slash_command}"),
                 format!("prompt_excerpt={prompt_excerpt}"),
-                "note=skill execution is intentionally unsupported in wonder-of-u-tools; this result only exposes catalog metadata".into(),
+                "prompt:".into(),
+                invocation_prompt,
+                "note=skill runtime composed the executable prompt for the active model; automatic nested provider invocation remains in CLI `skills run`".into(),
             ]
             .join("\n"),
         );
         result.metadata = json!({
             "success": true,
             "tool": "skill",
-            "mode": "metadata_only",
-            "execution_supported": false,
+            "mode": "prompt_composition",
+            "execution_supported": true,
+            "nested_provider_invocation": false,
             "skill": skill.manifest.name.clone(),
-            "args": input.args,
+            "args": args,
             "source": skill.source.label(),
             "trust": skill.trust.label(),
             "allowed_tools": skill.manifest.allowed_tools.clone(),
@@ -723,6 +727,39 @@ impl Tool for SkillTool {
         });
         Ok(result)
     }
+}
+
+fn compose_skill_tool_prompt(skill: &SkillRegistration, args: &str) -> String {
+    let allowed_tools = if skill.manifest.allowed_tools.is_empty() {
+        "-".to_string()
+    } else {
+        skill.manifest.allowed_tools.join(",")
+    };
+    let slash_command = skill
+        .command_spec
+        .as_ref()
+        .map(|command| command.name.as_str())
+        .unwrap_or("-");
+    format!(
+        concat!(
+            "Run skill: {name}\n",
+            "Description: {description}\n",
+            "Source: {source}\n",
+            "Allowed tools: {allowed_tools}\n",
+            "Slash command: {slash_command}\n\n",
+            "Skill instructions:\n",
+            "{instructions}\n\n",
+            "Skill arguments:\n",
+            "{args}\n"
+        ),
+        name = skill.manifest.name,
+        description = skill.manifest.description,
+        source = skill.source.label(),
+        allowed_tools = allowed_tools,
+        slash_command = slash_command,
+        instructions = skill.prompt,
+        args = if args.trim().is_empty() { "-" } else { args },
+    )
 }
 
 #[async_trait]
@@ -1361,9 +1398,11 @@ mod tests {
         .expect("execute");
 
         assert!(result.success);
-        assert!(result.content.contains("status=metadata_only"));
+        assert!(result.content.contains("status=prompt_composition"));
         assert!(result.content.contains("slash_command=review"));
-        assert_eq!(result.metadata["execution_supported"], false);
+        assert!(result.content.contains("Skill arguments:\n123"));
+        assert_eq!(result.metadata["execution_supported"], true);
+        assert_eq!(result.metadata["nested_provider_invocation"], false);
         assert_eq!(result.metadata["skill"], "review");
     }
 
@@ -1442,11 +1481,12 @@ mod tests {
         // args must be in metadata so callers can log/audit the invocation.
         assert_eq!(result.metadata["args"], "some context");
         assert_eq!(result.metadata["skill"], "summarize");
-        assert_eq!(result.metadata["execution_supported"], false);
+        assert_eq!(result.metadata["execution_supported"], true);
+        assert!(result.content.contains("Skill arguments:\nsome context"));
     }
 
     #[test]
-    fn skill_execution_unsupported_note_present_in_content() {
+    fn skill_execution_prompt_present_in_content() {
         let dir = unique_test_dir("tools-skill-note");
         let skill_dir = dir.join(".wonder/skills/lint");
         fs::create_dir_all(&skill_dir).expect("skill dir");
@@ -1472,19 +1512,22 @@ mod tests {
 
         assert!(result.success);
         assert!(
-            result.content.contains("status=metadata_only"),
-            "content should contain status=metadata_only; got: {}",
+            result.content.contains("status=prompt_composition"),
+            "content should contain status=prompt_composition; got: {}",
             result.content
         );
         assert!(
-            result.content.contains("note="),
-            "content should contain a note= line; got: {}",
+            result
+                .content
+                .contains("Skill instructions:\nCheck code style."),
+            "content should contain the skill prompt; got: {}",
             result.content
         );
-        // The note must explicitly flag that execution is unsupported here.
         assert!(
-            result.content.contains("unsupported"),
-            "note should mention unsupported; got: {}",
+            result
+                .content
+                .contains("automatic nested provider invocation remains in CLI"),
+            "note should mention nested invocation boundary; got: {}",
             result.content
         );
     }
