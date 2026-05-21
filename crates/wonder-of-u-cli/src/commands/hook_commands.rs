@@ -189,7 +189,7 @@ fn render_hooks_summary(storage_dir: Option<&Path>, tool_specs: &[ToolSpec]) -> 
         path.display()
     ));
     lines.push(
-        "Note: hook execution is not yet wired into the Rust runtime; this command currently provides config parity only."
+        "Note: Command hooks are active for PreToolUse/PostToolUse/PostToolUseFailure, with basic `if` condition support. Prompt/Agent/Http hooks are parsed but reported as unsupported by the executor."
             .into(),
     );
     Ok(lines.join("\n"))
@@ -391,7 +391,8 @@ mod tests {
         assert!(rendered.contains("events=2"));
         assert!(rendered.contains("PreToolUse"));
         assert!(rendered.contains("Notification"));
-        assert!(rendered.contains("config parity only"));
+        assert!(rendered.contains("Command hooks are active"));
+        assert!(rendered.contains("Prompt/Agent/Http hooks are parsed"));
     }
 
     #[test]
