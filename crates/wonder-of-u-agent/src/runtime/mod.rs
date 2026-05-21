@@ -400,6 +400,8 @@ fn wire_protocol_supports_tool_use(protocol: WireProtocol) -> bool {
             | WireProtocol::Copilot
             | WireProtocol::BedrockAnthropic
             | WireProtocol::AzureOpenAi
+            | WireProtocol::GeminiNative
+            | WireProtocol::VertexGemini
     )
 }
 
@@ -647,8 +649,16 @@ impl ProviderRuntime {
                 let http_response = self.transport.execute(&http_request)?;
                 azure::parse_azure_tool_use_response(resolved, &http_response.body)
             }
-            WireProtocol::GeminiNative => Err(gemini::gemini_tool_use_unsupported()),
-            WireProtocol::VertexGemini => Err(vertex::vertex_tool_use_unsupported()),
+            WireProtocol::GeminiNative => {
+                let http_request = gemini::build_gemini_tool_use_request(resolved, request)?;
+                let http_response = self.transport.execute(&http_request)?;
+                gemini::parse_gemini_tool_use_response(resolved, &http_response.body)
+            }
+            WireProtocol::VertexGemini => {
+                let http_request = vertex::build_vertex_tool_use_request(resolved, request)?;
+                let http_response = self.transport.execute(&http_request)?;
+                vertex::parse_vertex_tool_use_response(resolved, &http_response.body)
+            }
             proto => Err(WonderError::validation(format!(
                 "wire protocol `{proto:?}` tool-use is not supported"
             ))),
@@ -2685,22 +2695,177 @@ mod tests {
     }
 
     #[test]
-    fn gemini_tool_use_returns_validation_error() {
-        let runtime = ProviderRuntime::with_transport(Arc::new(RecordingTransport::default()));
+    fn gemini_tool_use_builds_request_and_returns_tool_calls() {
+        let transport = RecordingTransport::with_json_body(serde_json::json!({
+            "candidates": [{
+                "content": {
+                    "parts": [{
+                        "functionCall": {
+                            "name": "get_weather",
+                            "args": {"location": "London"}
+                        }
+                    }],
+                    "role": "model"
+                },
+                "finishReason": "STOP"
+            }],
+            "usageMetadata": {
+                "promptTokenCount": 10,
+                "candidatesTokenCount": 5
+            }
+        }));
+        let runtime = ProviderRuntime::with_transport(transport.clone() as Arc<dyn HttpTransport>);
         let resolved = resolved_gemini_provider(None);
 
-        let err = runtime
+        let response = runtime
             .complete_with_tool_use(
                 &resolved,
                 &ToolUseRequest {
                     prompt: "use a tool".into(),
+                    tools: vec![ProviderToolSpec {
+                        name: "get_weather".into(),
+                        description: "Get weather".into(),
+                        input_schema: serde_json::json!({
+                            "type": "object",
+                            "properties": {"location": {"type": "string"}}
+                        }),
+                    }],
                     ..ToolUseRequest::default()
                 },
             )
-            .expect_err("gemini tool use should fail");
-        assert!(
-            err.to_string().contains("gemini_native"),
-            "error should mention protocol: {err}"
+            .expect("gemini tool use");
+        let recorded = transport.take_request();
+        let body: serde_json::Value = serde_json::from_str(&recorded.body).expect("request json");
+
+        assert!(recorded.url.contains(":generateContent"));
+        assert!(recorded.url.contains("key=gemini-secret"));
+        assert_eq!(
+            body.pointer("/tools/0/functionDeclarations/0/name")
+                .and_then(serde_json::Value::as_str),
+            Some("get_weather")
+        );
+        assert_eq!(
+            body.pointer("/tool_config/function_calling_config/mode")
+                .and_then(serde_json::Value::as_str),
+            Some("AUTO")
+        );
+
+        match response {
+            ToolUseResponse::ToolCalls(batch) => {
+                assert_eq!(batch.calls.len(), 1);
+                assert_eq!(batch.calls[0].call_id, "gemini-call-0");
+                assert_eq!(batch.calls[0].tool_name, "get_weather");
+                assert_eq!(batch.calls[0].arguments["location"], "London");
+                assert_eq!(batch.usage.input_tokens, 10);
+                assert_eq!(batch.usage.output_tokens, 5);
+            }
+            other => panic!("expected tool calls, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn gemini_tool_use_returns_final_text_when_no_function_call() {
+        let transport = RecordingTransport::with_json_body(serde_json::json!({
+            "candidates": [{
+                "content": {
+                    "parts": [{"text": "All done"}],
+                    "role": "model"
+                },
+                "finishReason": "STOP"
+            }],
+            "usageMetadata": {
+                "promptTokenCount": 3,
+                "candidatesTokenCount": 2
+            }
+        }));
+        let runtime = ProviderRuntime::with_transport(transport as Arc<dyn HttpTransport>);
+        let resolved = resolved_gemini_provider(Some("gemini-2.0-flash"));
+
+        let response = runtime
+            .complete_with_tool_use(
+                &resolved,
+                &ToolUseRequest {
+                    prompt: "finish".into(),
+                    ..ToolUseRequest::default()
+                },
+            )
+            .expect("gemini final text");
+
+        match response {
+            ToolUseResponse::Final(final_response) => {
+                assert_eq!(final_response.output_text, "All done");
+                assert_eq!(final_response.stop_reason.as_deref(), Some("STOP"));
+                assert_eq!(final_response.usage.input_tokens, 3);
+                assert_eq!(final_response.usage.output_tokens, 2);
+            }
+            other => panic!("expected final text, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn gemini_tool_use_includes_prior_rounds_as_contents() {
+        let transport = RecordingTransport::with_json_body(serde_json::json!({
+            "candidates": [{
+                "content": {"parts": [{"text": "Done"}], "role": "model"},
+                "finishReason": "STOP"
+            }]
+        }));
+        let runtime = ProviderRuntime::with_transport(transport.clone() as Arc<dyn HttpTransport>);
+        let resolved = resolved_gemini_provider(Some("gemini-2.0-flash"));
+
+        runtime
+            .complete_with_tool_use(
+                &resolved,
+                &ToolUseRequest {
+                    prompt: "Summarize".into(),
+                    tools: vec![ProviderToolSpec {
+                        name: "file_read".into(),
+                        description: "Read a file".into(),
+                        input_schema: serde_json::json!({"type": "object"}),
+                    }],
+                    rounds: vec![ToolConversationRound {
+                        assistant_text: Some("Reading first.".into()),
+                        calls: vec![ProviderToolCall {
+                            call_id: "gemini-call-0".into(),
+                            tool_name: "file_read".into(),
+                            arguments: serde_json::json!({"path": "README.md"}),
+                        }],
+                        results: vec![ProviderToolResultMessage {
+                            call_id: "gemini-call-0".into(),
+                            content: "README contents".into(),
+                        }],
+                    }],
+                    ..ToolUseRequest::default()
+                },
+            )
+            .expect("gemini request with rounds");
+        let recorded = transport.take_request();
+        let body: serde_json::Value = serde_json::from_str(&recorded.body).expect("request json");
+
+        assert_eq!(
+            body.pointer("/contents/0/role")
+                .and_then(serde_json::Value::as_str),
+            Some("user")
+        );
+        assert_eq!(
+            body.pointer("/contents/1/parts/0/text")
+                .and_then(serde_json::Value::as_str),
+            Some("Reading first.")
+        );
+        assert_eq!(
+            body.pointer("/contents/1/parts/1/functionCall/name")
+                .and_then(serde_json::Value::as_str),
+            Some("file_read")
+        );
+        assert_eq!(
+            body.pointer("/contents/2/parts/0/functionResponse/name")
+                .and_then(serde_json::Value::as_str),
+            Some("file_read")
+        );
+        assert_eq!(
+            body.pointer("/contents/2/parts/0/functionResponse/response/output")
+                .and_then(serde_json::Value::as_str),
+            Some("README contents")
         );
     }
 
@@ -2791,6 +2956,60 @@ mod tests {
         assert_eq!(response.output_text, "Vertex reply");
         assert_eq!(response.usage.input_tokens, 8);
         assert_eq!(response.usage.output_tokens, 4);
+    }
+
+    #[test]
+    fn vertex_tool_use_builds_request_with_bearer_auth() {
+        let transport = RecordingTransport::with_json_body(serde_json::json!({
+            "candidates": [{
+                "content": {
+                    "parts": [{
+                        "functionCall": {
+                            "name": "lookup",
+                            "args": {"id": 7}
+                        }
+                    }],
+                    "role": "model"
+                },
+                "finishReason": "STOP"
+            }]
+        }));
+        let runtime = ProviderRuntime::with_transport(transport.clone() as Arc<dyn HttpTransport>);
+        let resolved = resolved_vertex_provider(Some("gemini-2.0-flash"));
+
+        let response = runtime
+            .complete_with_tool_use(
+                &resolved,
+                &ToolUseRequest {
+                    prompt: "lookup".into(),
+                    tools: vec![ProviderToolSpec {
+                        name: "lookup".into(),
+                        description: "Lookup by id".into(),
+                        input_schema: serde_json::json!({"type": "object"}),
+                    }],
+                    ..ToolUseRequest::default()
+                },
+            )
+            .expect("vertex tool use");
+        let recorded = transport.take_request();
+
+        assert!(
+            recorded
+                .url
+                .contains("us-central1-aiplatform.googleapis.com")
+        );
+        assert!(recorded.url.contains(":generateContent"));
+        assert_eq!(
+            recorded.headers.get("authorization").map(String::as_str),
+            Some("Bearer gcp-oauth-token")
+        );
+        match response {
+            ToolUseResponse::ToolCalls(batch) => {
+                assert_eq!(batch.calls[0].tool_name, "lookup");
+                assert_eq!(batch.calls[0].arguments["id"], 7);
+            }
+            other => panic!("expected tool calls, got {other:?}"),
+        }
     }
 
     #[test]
@@ -3003,6 +3222,8 @@ mod tests {
             ("azure", resolved_azure_provider(None)),
             ("local", resolved_local_provider(Some("llama3.2"))),
             ("groq", resolved_provider("groq", Some("llama-3.3-70b"))),
+            ("gemini", resolved_gemini_provider(Some("gemini-2.0-flash"))),
+            ("vertex", resolved_vertex_provider(Some("gemini-2.0-flash"))),
         ];
 
         for (provider_id, resolved) in cases {
@@ -3015,15 +3236,12 @@ mod tests {
     }
 
     #[test]
-    fn gemini_and_vertex_support_streaming_but_not_tool_use() {
+    fn gemini_and_vertex_support_streaming_and_tool_use() {
         let runtime = ProviderRuntime::new();
-        // Streaming is now supported for both native Gemini protocols.
         assert!(runtime.supports_streaming("gemini"));
         assert!(runtime.supports_streaming("vertex"));
-        // Tool-use remains unsupported (function-calling schema translation not
-        // yet implemented for these protocols).
-        assert!(!runtime.supports_tool_use("gemini"));
-        assert!(!runtime.supports_tool_use("vertex"));
+        assert!(runtime.supports_tool_use("gemini"));
+        assert!(runtime.supports_tool_use("vertex"));
     }
 
     // ── provider-matrix-tests: protocol dispatch per family ───────────────────

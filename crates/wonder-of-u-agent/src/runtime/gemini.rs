@@ -5,8 +5,7 @@
 //! * **Non-streaming** – `…/models/{model}:generateContent`
 //! * **Streaming** – `…/models/{model}:streamGenerateContent?alt=sse`
 //!
-//! The API key is passed as the `key` query parameter.  Tool-use is not yet
-//! supported; callers receive a descriptive `validation` error.
+//! The API key is passed as the `key` query parameter.
 
 use std::{collections::BTreeMap, io::BufReader};
 
@@ -17,7 +16,8 @@ use wonder_of_u_core::{Result, TokenUsage, WonderError};
 use crate::ResolvedProviderExecution;
 
 use super::{
-    CompletionRequest, CompletionResponse, HttpRequest, StreamingHttpResponse, consume_sse,
+    CompletionRequest, CompletionResponse, HttpRequest, ProviderToolCall, ProviderToolSpec,
+    StreamingHttpResponse, ToolCallBatchResponse, ToolUseRequest, ToolUseResponse, consume_sse,
     context_window_for_model,
 };
 
@@ -46,6 +46,32 @@ pub(super) fn build_gemini_stream_request(
     request: &CompletionRequest,
 ) -> Result<HttpRequest> {
     build_gemini_request_internal(resolved, request, true)
+}
+
+/// Builds a non-streaming tool-use `generateContent` request for Gemini.
+pub(super) fn build_gemini_tool_use_request(
+    resolved: &ResolvedProviderExecution,
+    request: &ToolUseRequest,
+) -> Result<HttpRequest> {
+    let api_key = resolved.api_key()?;
+    let model_encoded = utf8_percent_encode(resolved.model(), NON_ALPHANUMERIC).to_string();
+    let url = format!(
+        "{}/v1beta/models/{}:generateContent?key={}",
+        resolved.api_base().trim_end_matches('/'),
+        model_encoded,
+        api_key,
+    );
+    let body = build_gemini_tool_use_body(request);
+
+    Ok(HttpRequest {
+        method: "POST".into(),
+        url,
+        headers: BTreeMap::from([
+            ("accept".into(), "application/json".into()),
+            ("content-type".into(), "application/json".into()),
+        ]),
+        body: serde_json::to_string(&body)?,
+    })
 }
 
 fn build_gemini_request_internal(
@@ -128,6 +154,98 @@ pub(super) fn build_generate_content_body(
     body
 }
 
+pub(super) fn build_gemini_tool_use_body(request: &ToolUseRequest) -> Value {
+    let mut contents = build_gemini_tool_use_contents(request);
+    let completion = CompletionRequest {
+        prompt: request.prompt.clone(),
+        system_prompt: request.system_prompt.clone(),
+        max_output_tokens: request.max_output_tokens,
+        temperature: request.temperature,
+        effort_level: request.effort_level.clone(),
+    };
+    let mut body = build_generate_content_body(&completion, &mut contents);
+    let body_map = body
+        .as_object_mut()
+        .expect("generate_content body is an object");
+    if !request.tools.is_empty() {
+        body_map.insert(
+            "tools".into(),
+            Value::Array(vec![build_gemini_function_declarations(&request.tools)]),
+        );
+        body_map.insert(
+            "tool_config".into(),
+            json!({"function_calling_config": {"mode": "AUTO"}}),
+        );
+    }
+    body
+}
+
+pub(super) fn build_gemini_tool_use_contents(request: &ToolUseRequest) -> Vec<Value> {
+    let mut contents = vec![json!({
+        "role": "user",
+        "parts": [{"text": request.prompt.as_str()}],
+    })];
+
+    for round in &request.rounds {
+        let mut model_parts = Vec::new();
+        if let Some(text) = round
+            .assistant_text
+            .as_deref()
+            .filter(|text| !text.is_empty())
+        {
+            model_parts.push(json!({"text": text}));
+        }
+        for call in &round.calls {
+            model_parts.push(json!({
+                "functionCall": {
+                    "name": call.tool_name,
+                    "args": call.arguments,
+                }
+            }));
+        }
+        if !model_parts.is_empty() {
+            contents.push(json!({"role": "model", "parts": model_parts}));
+        }
+
+        let response_parts: Vec<Value> = round
+            .results
+            .iter()
+            .filter_map(|result| {
+                let call = round
+                    .calls
+                    .iter()
+                    .find(|call| call.call_id == result.call_id)?;
+                Some(json!({
+                    "functionResponse": {
+                        "name": call.tool_name,
+                        "response": {"output": result.content},
+                    }
+                }))
+            })
+            .collect();
+        if !response_parts.is_empty() {
+            contents.push(json!({"role": "user", "parts": response_parts}));
+        }
+    }
+
+    contents
+}
+
+pub(super) fn build_gemini_function_declarations(tools: &[ProviderToolSpec]) -> Value {
+    json!({
+        "functionDeclarations": tools
+            .iter()
+            .map(|tool| {
+                json!({
+                    "name": tool.name,
+                    "description": tool.description,
+                    "parameters": tool.input_schema,
+                })
+            })
+            .collect::<Vec<_>>()
+    })
+}
+
 // ─── Response parsers ─────────────────────────────────────────────────────────
 
 /// Parses a `generateContent` JSON response into a [`CompletionResponse`].
@@ -186,6 +304,80 @@ pub(super) fn parse_gemini_response(
             ..TokenUsage::default()
         },
     })
+}
+
+/// Parses a Gemini function-calling response.
+pub(super) fn parse_gemini_tool_use_response(
+    resolved: &ResolvedProviderExecution,
+    body: &str,
+) -> Result<ToolUseResponse> {
+    let json: Value = serde_json::from_str(body)
+        .map_err(|e| WonderError::validation(format!("invalid Gemini response JSON: {e}")))?;
+    if let Some(err_msg) = json.pointer("/error/message").and_then(Value::as_str) {
+        return Err(WonderError::validation(format!(
+            "Gemini API error: {err_msg}"
+        )));
+    }
+
+    let parts = json
+        .pointer("/candidates/0/content/parts")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let output_text = parts
+        .iter()
+        .filter_map(|part| part.get("text").and_then(Value::as_str))
+        .collect::<String>();
+    let calls: Vec<ProviderToolCall> = parts
+        .iter()
+        .filter_map(|part| part.get("functionCall"))
+        .enumerate()
+        .map(|(index, call)| ProviderToolCall {
+            call_id: format!("gemini-call-{index}"),
+            tool_name: call
+                .get("name")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string(),
+            arguments: call.get("args").cloned().unwrap_or_else(|| json!({})),
+        })
+        .filter(|call| !call.tool_name.is_empty())
+        .collect();
+
+    let stop_reason = json
+        .pointer("/candidates/0/finishReason")
+        .and_then(Value::as_str)
+        .map(ToString::to_string);
+    let usage = TokenUsage {
+        input_tokens: json
+            .pointer("/usageMetadata/promptTokenCount")
+            .and_then(Value::as_u64)
+            .unwrap_or(0),
+        output_tokens: json
+            .pointer("/usageMetadata/candidatesTokenCount")
+            .and_then(Value::as_u64)
+            .unwrap_or(0),
+        ..TokenUsage::default()
+    };
+
+    if calls.is_empty() {
+        return Ok(ToolUseResponse::Final(CompletionResponse {
+            provider: resolved.provider_id().to_string(),
+            model: resolved.model().to_string(),
+            context_window_size: Some(context_window_for_model(resolved.model())),
+            output_text,
+            stop_reason,
+            usage,
+        }));
+    }
+
+    Ok(ToolUseResponse::ToolCalls(ToolCallBatchResponse {
+        assistant_text: (!output_text.is_empty()).then_some(output_text),
+        calls,
+        context_window_size: Some(context_window_for_model(resolved.model())),
+        stop_reason,
+        usage,
+    }))
 }
 
 /// Parses a `streamGenerateContent` SSE response into a [`CompletionResponse`].
@@ -276,16 +468,4 @@ where
             ..TokenUsage::default()
         },
     })
-}
-
-/// Tool-use is not yet supported for the Gemini native protocol.
-///
-/// Returns a descriptive validation error so callers can surface a clear
-/// message.  Function-calling schema translation is non-trivial; use a
-/// provider with `open_ai_compat` or `anthropic_compat` for tool use.
-pub(super) fn gemini_tool_use_unsupported() -> WonderError {
-    WonderError::validation(
-        "tool-use is not yet supported for the `gemini_native` wire protocol; \
-         use a provider with `open_ai_compat` or `anthropic_compat` for tool use",
-    )
 }
