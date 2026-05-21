@@ -2814,7 +2814,11 @@ impl<'a> TuiController<'a> {
             tool_lines: tool_sidebar_lines(&tool_context, self.storage_dir.as_deref()),
             mcp_lines: mcp_sidebar_lines(self.storage_dir.as_deref()),
             lsp_lines: lsp_sidebar_lines(&self.state.session.cwd),
-            todo_lines: todo_sidebar_lines(&self.state.session.cwd),
+            todo_lines: todo_merged_sidebar_lines(
+                &self.state.session.cwd,
+                self.storage_dir.as_deref(),
+                self.state.session.id,
+            ),
         };
         if self.sidebar_cache == next {
             false
@@ -5277,6 +5281,58 @@ pub(super) fn todo_sidebar_lines(cwd: &std::path::Path) -> Vec<String> {
     };
 
     parse_todo_lines(&content)
+}
+
+pub(super) fn todo_task_store_sidebar_lines(
+    storage_dir: &std::path::Path,
+    session_id: SessionId,
+) -> Option<Vec<String>> {
+    let store = TodoTaskStore::new(storage_dir);
+    let list = store.read_or_default(session_id).ok()?;
+    let mut visible: Vec<_> = list
+        .tasks
+        .values()
+        .filter(|entry| entry.status != TodoTaskStatus::Deleted)
+        .collect();
+    visible.sort_by_key(|entry| entry.created_at);
+
+    if visible.is_empty() {
+        return None;
+    }
+
+    let total = visible.len();
+    let shown = total.min(TODO_SIDEBAR_CAP);
+    let mut lines: Vec<String> = visible[..shown]
+        .iter()
+        .map(|entry| {
+            let label: String = entry.subject.chars().take(22).collect();
+            match entry.status {
+                TodoTaskStatus::Pending => format!("  {label}"),
+                TodoTaskStatus::InProgress => format!("▷ {label}"),
+                TodoTaskStatus::Completed => format!("✓ {label}"),
+                TodoTaskStatus::Deleted => unreachable!("deleted entries are filtered above"),
+            }
+        })
+        .collect();
+
+    let remaining = total.saturating_sub(shown);
+    if remaining > 0 {
+        lines.push(format!("  +{remaining} more"));
+    }
+    Some(lines)
+}
+
+pub(super) fn todo_merged_sidebar_lines(
+    cwd: &std::path::Path,
+    storage_dir: Option<&std::path::Path>,
+    session_id: SessionId,
+) -> Vec<String> {
+    if let Some(storage_dir) = storage_dir
+        && let Some(lines) = todo_task_store_sidebar_lines(storage_dir, session_id)
+    {
+        return lines;
+    }
+    todo_sidebar_lines(cwd)
 }
 
 /// Maximum number of todo items shown in the sidebar before `+N more` cap.

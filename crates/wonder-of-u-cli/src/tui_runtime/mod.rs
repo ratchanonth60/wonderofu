@@ -34,11 +34,11 @@ use wonder_of_u_core::{
     MessagePayload, PendingLocalToolCall, PendingProviderToolCall, PendingProviderToolResult,
     PendingToolApprovalState, PendingToolConversationRound, PermissionDecision, PermissionMode,
     PermissionRequest, PermissionRuleSource, ProviderReadiness, QueuePlacement, Result, SessionId,
-    TaskState, TaskStatus, ToolContext, ToolKind, ToolQuery, ToolResult, ToolSource, ToolUseId,
-    WonderError, parse_slash_command, payload_from_task_state,
+    TaskState, TaskStatus, TodoTaskStatus, ToolContext, ToolKind, ToolQuery, ToolResult,
+    ToolSource, ToolUseId, WonderError, parse_slash_command, payload_from_task_state,
 };
 use wonder_of_u_mcp::McpConfigStore;
-use wonder_of_u_storage::{TaskStore, TranscriptStore};
+use wonder_of_u_storage::{TaskStore, TodoTaskStore, TranscriptStore};
 use wonder_of_u_tools::provider_tool_specs;
 use wonder_of_u_tui::{
     CrosstermEventSource, DialogActionView, DialogView, EditAction, EventLoop,
