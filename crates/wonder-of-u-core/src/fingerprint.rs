@@ -8,7 +8,7 @@ use sha2::{Digest, Sha256};
 pub fn fingerprint_str(input: &str) -> String {
     let mut hasher = Sha256::new();
     hasher.update(input.as_bytes());
-    format!("{:x}", hasher.finalize())
+    hasher.finalize().iter().map(|b| format!("{b:02x}")).collect()
 }
 
 /// Returns the SHA-256 fingerprint for a serializable value using canonical JSON.

@@ -917,11 +917,11 @@ impl SessionMemoryIndex {
             }
 
             indexed_message_count += 1;
-            let key = format!(
-                "{}:{:x}",
-                source.label(),
-                Sha256::digest(normalized.as_bytes())
-            );
+            let digest: String = Sha256::digest(normalized.as_bytes())
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect();
+            let key = format!("{}:{}", source.label(), digest);
             let summary = truncate_memory_summary(&normalized, 160);
 
             if let Some(entry) = entries.get_mut(&key) {
@@ -2462,7 +2462,7 @@ impl PasteStore {
         }
 
         self.ensure_layout()?;
-        let sha256 = format!("{:x}", Sha256::digest(content));
+        let sha256: String = Sha256::digest(content).iter().map(|b| format!("{b:02x}")).collect();
         let path = self.paths.paste_path(&sha256);
         if !path.exists() {
             let mut file = File::create(&path)?;

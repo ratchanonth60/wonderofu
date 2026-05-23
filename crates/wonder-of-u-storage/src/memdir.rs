@@ -258,7 +258,7 @@ fn sanitize_component(input: &str, fallback: &str) -> String {
         return sanitized;
     }
 
-    let hash = format!("{:x}", Sha256::digest(input.as_bytes()));
+    let hash: String = Sha256::digest(input.as_bytes()).iter().map(|b| format!("{b:02x}")).collect();
     format!(
         "{}-{}",
         &sanitized[..MAX_COMPONENT_LEN],
