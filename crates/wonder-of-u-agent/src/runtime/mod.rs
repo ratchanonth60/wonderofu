@@ -208,50 +208,48 @@ struct UreqTransport {
 
 impl Default for UreqTransport {
     fn default() -> Self {
+        let config = ureq::Agent::config_builder()
+            .timeout_global(Some(Duration::from_secs(60)))
+            .http_status_as_error(false)
+            .build();
         Self {
-            agent: ureq::AgentBuilder::new()
-                .timeout(Duration::from_secs(60))
-                .build(),
+            agent: config.new_agent(),
         }
     }
 }
 
 impl HttpTransport for UreqTransport {
     fn execute(&self, request: &HttpRequest) -> Result<HttpResponse> {
-        match send_ureq_request(&self.agent, request) {
-            Ok(response) => read_http_response(response),
-            Err(error) => match *error {
-                ureq::Error::Status(status, response) => {
-                    let body = response.into_string().unwrap_or_default();
-                    Err(WonderError::validation(format!(
-                        "provider HTTP request failed with status {status}: {}",
-                        provider_error_message(&body)
-                    )))
-                }
-                ureq::Error::Transport(error) => Err(WonderError::validation(format!(
-                    "provider request failed: {error}"
-                ))),
-            },
+        let mut response = send_ureq_request(&self.agent, request)
+            .map_err(|e| WonderError::validation(format!("provider request failed: {e}")))?;
+        let status = response.status().as_u16();
+        let body = response.body_mut().read_to_string().map_err(|e| {
+            WonderError::validation(format!("invalid provider response body: {e}"))
+        })?;
+        if status >= 400 {
+            Err(WonderError::validation(format!(
+                "provider HTTP request failed with status {status}: {}",
+                provider_error_message(&body)
+            )))
+        } else {
+            Ok(HttpResponse { status, body })
         }
     }
 
     fn execute_stream(&self, request: &HttpRequest) -> Result<StreamingHttpResponse> {
-        match send_ureq_request(&self.agent, request) {
-            Ok(response) => Ok(StreamingHttpResponse {
-                reader: Box::new(response.into_reader()),
-            }),
-            Err(error) => match *error {
-                ureq::Error::Status(status, response) => {
-                    let body = response.into_string().unwrap_or_default();
-                    Err(WonderError::validation(format!(
-                        "provider HTTP request failed with status {status}: {}",
-                        provider_error_message(&body)
-                    )))
-                }
-                ureq::Error::Transport(error) => Err(WonderError::validation(format!(
-                    "provider request failed: {error}"
-                ))),
-            },
+        let response = send_ureq_request(&self.agent, request)
+            .map_err(|e| WonderError::validation(format!("provider request failed: {e}")))?;
+        let status = response.status().as_u16();
+        if status >= 400 {
+            let body = response.into_body().read_to_string().unwrap_or_default();
+            Err(WonderError::validation(format!(
+                "provider HTTP request failed with status {status}: {}",
+                provider_error_message(&body)
+            )))
+        } else {
+            Ok(StreamingHttpResponse {
+                reader: Box::new(response.into_body().into_reader()),
+            })
         }
     }
 }
@@ -259,24 +257,15 @@ impl HttpTransport for UreqTransport {
 fn send_ureq_request(
     agent: &ureq::Agent,
     request: &HttpRequest,
-) -> std::result::Result<ureq::Response, Box<ureq::Error>> {
-    let mut transport = agent.request(request.method.as_str(), request.url.as_str());
+) -> std::result::Result<ureq::http::Response<ureq::Body>, ureq::Error> {
+    let mut builder = ureq::http::Request::builder()
+        .method(request.method.as_str())
+        .uri(request.url.as_str());
     for (name, value) in &request.headers {
-        transport = transport.set(name, value);
+        builder = builder.header(name.as_str(), value.as_str());
     }
-    if request.body.is_empty() && request.method.eq_ignore_ascii_case("GET") {
-        transport.call().map_err(Box::new)
-    } else {
-        transport.send_string(&request.body).map_err(Box::new)
-    }
-}
-
-fn read_http_response(response: ureq::Response) -> Result<HttpResponse> {
-    let status = response.status();
-    let body = response.into_string().map_err(|error| {
-        WonderError::validation(format!("invalid provider response body: {error}"))
-    })?;
-    Ok(HttpResponse { status, body })
+    let http_req = builder.body(request.body.as_str()).expect("valid HTTP request");
+    agent.run(http_req)
 }
 
 // ─── Shared helpers (used across sub-modules) ─────────────────────────────────
