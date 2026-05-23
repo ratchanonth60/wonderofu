@@ -1,15 +1,15 @@
 [workspace]
 members = [
-    "crates/wonder-of-u-agent",
-    "crates/wonder-of-u-cli",
-    "crates/wonder-of-u-core",
-    "crates/wonder-of-u-mcp",
-    "crates/wonder-of-u-plugins",
-    "crates/wonder-of-u-skills",
-    "crates/wonder-of-u-storage",
-    "crates/wonder-of-u-test-support",
-    "crates/wonder-of-u-tools",
-    "crates/wonder-of-u-tui",
+  "crates/wonder-of-u-agent",
+  "crates/wonder-of-u-cli",
+  "crates/wonder-of-u-core",
+  "crates/wonder-of-u-mcp",
+  "crates/wonder-of-u-plugins",
+  "crates/wonder-of-u-skills",
+  "crates/wonder-of-u-storage",
+  "crates/wonder-of-u-test-support",
+  "crates/wonder-of-u-tools",
+  "crates/wonder-of-u-tui",
 ]
 resolver = "3"
 default-members = ["crates/wonder-of-u-cli"]
@@ -29,17 +29,22 @@ readme = "README.md"
 futures = "0.3"
 async-trait = "0.1"
 clap = { version = "4", features = ["derive"] }
-crossterm = "0.28"
-ratatui = "0.29"
+crossterm = "0.29"
+ratatui = "0.30"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 serde_yaml = "0.9"
 percent-encoding = "2"
-sha2 = "0.10"
-hmac = "0.12"
+sha2 = "0.11"
+hmac = "0.13"
 hex = "0.4"
 thiserror = "2"
-time = { version = "0.3", features = ["serde", "serde-well-known", "formatting", "parsing"] }
+time = { version = "0.3", features = [
+  "serde",
+  "serde-well-known",
+  "formatting",
+  "parsing",
+] }
 uuid = { version = "1", features = ["v4", "serde"] }
 glob = "0.3"
 regex = "1"
@@ -49,7 +54,7 @@ wait-timeout = "0.2"
 walkdir = "2"
 shell-words = "1"
 libc = "0.2"
-ureq = "2"
+ureq = "3"
 
 wonder-of-u-core = { path = "crates/wonder-of-u-core" }
 wonder-of-u-agent = { path = "crates/wonder-of-u-agent" }
