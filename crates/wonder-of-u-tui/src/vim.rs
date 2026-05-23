@@ -55,6 +55,8 @@ pub struct VimState {
     motion_count: Option<usize>,
     pending_operator: Option<PendingOperator>,
     pending_find: Option<FindDirection>,
+    /// `Some(true)` = inner (i), `Some(false)` = around (a); set after operator + i/a
+    pending_text_object: Option<bool>,
     register: VimRegister,
     undo_stack: Vec<BufferSnapshot>,
     redo_stack: Vec<BufferSnapshot>,
@@ -78,6 +80,7 @@ impl VimState {
             motion_count: None,
             pending_operator: None,
             pending_find: None,
+            pending_text_object: None,
             register: VimRegister {
                 text: String::new(),
                 linewise: false,
@@ -334,6 +337,56 @@ impl VimState {
             }
         }
 
+        // Text object second key: object type char follows i/a
+        if let Some(is_inner) = self.pending_text_object.take() {
+            if let KeyCode::Char(ch) = event.code {
+                let chars: Vec<char> = buffer.text().chars().collect();
+                let cursor = if chars.is_empty() { 0 } else { buffer.cursor().min(chars.len() - 1) };
+                if let Some((start, end)) = find_text_object(&chars, cursor, ch, is_inner) {
+                    let operator = self.pending_operator.take()?;
+                    let result = match operator {
+                        PendingOperator::Yank => {
+                            self.register.text = buffer.range_text(start, end);
+                            self.register.linewise = false;
+                            VimHandleResult::default()
+                        }
+                        PendingOperator::Delete | PendingOperator::Change => {
+                            self.register.text = buffer.range_text(start, end);
+                            self.register.linewise = false;
+                            self.push_undo(buffer);
+                            if buffer.delete_span(start, end) {
+                                self.redo_stack.clear();
+                            }
+                            if matches!(operator, PendingOperator::Change) {
+                                self.mode = VimMode::Insert;
+                                VimHandleResult { system: None, mode_changed: true }
+                            } else {
+                                VimHandleResult::default()
+                            }
+                        }
+                    };
+                    self.prefix_count = None;
+                    self.motion_count = None;
+                    return Some(result);
+                }
+            }
+            self.clear_pending();
+            return Some(VimHandleResult::default());
+        }
+
+        // Text object first key: i = inner, a = around
+        match event.code {
+            KeyCode::Char('i') => {
+                self.pending_text_object = Some(true);
+                return Some(VimHandleResult::default());
+            }
+            KeyCode::Char('a') => {
+                self.pending_text_object = Some(false);
+                return Some(VimHandleResult::default());
+            }
+            _ => {}
+        }
+
         let motion = operator_motion(event)?;
         let count = self.take_operator_count();
         let operator = self.pending_operator.take()?;
@@ -447,6 +500,33 @@ impl VimState {
         resolver: &KeyBindingResolver,
         event: KeyEvent,
     ) -> VimHandleResult {
+        // Text object second key: set selection to object range
+        if let Some(is_inner) = self.pending_text_object.take() {
+            if let KeyCode::Char(ch) = event.code {
+                let chars: Vec<char> = buffer.text().chars().collect();
+                let cursor = if chars.is_empty() { 0 } else { buffer.cursor().min(chars.len() - 1) };
+                if let Some((start, end)) = find_text_object(&chars, cursor, ch, is_inner) {
+                    self.visual_anchor = Some(start);
+                    let visual_end = end.saturating_sub(1).min(chars.len().saturating_sub(1));
+                    buffer.set_cursor(visual_end);
+                }
+            }
+            return VimHandleResult::default();
+        }
+
+        // Text object first key: i = inner, a = around (before resolver so i/a don't exit visual)
+        match event.code {
+            KeyCode::Char('i') => {
+                self.pending_text_object = Some(true);
+                return VimHandleResult::default();
+            }
+            KeyCode::Char('a') => {
+                self.pending_text_object = Some(false);
+                return VimHandleResult::default();
+            }
+            _ => {}
+        }
+
         match resolver.resolve(KeyBindingContext::VimNormal, event) {
             Some(ResolvedKey::Edit(EditAction::Move(motion))) => {
                 buffer.move_normal(motion, self.take_prefix_count());
@@ -709,6 +789,7 @@ impl VimState {
         self.motion_count = None;
         self.pending_operator = None;
         self.pending_find = None;
+        self.pending_text_object = None;
     }
 }
 
@@ -752,6 +833,176 @@ fn line_motion(event: KeyEvent) -> Option<Motion> {
         KeyCode::Char('0') => Some(Motion::LineStart),
         KeyCode::Char('$') => Some(Motion::LineEnd),
         _ => None,
+    }
+}
+
+/// Finds the byte range [start, end) for a vim text object.
+///
+/// `obj_type`: w W " ' ` ( ) b [ ] { } B < >
+/// `is_inner`: true for `i`, false for `a`
+fn find_text_object(chars: &[char], cursor: usize, obj_type: char, is_inner: bool) -> Option<(usize, usize)> {
+    match obj_type {
+        'w' => find_word_object(chars, cursor, is_inner, |ch| ch.is_alphanumeric() || ch == '_'),
+        'W' => find_word_object(chars, cursor, is_inner, |ch| !ch.is_whitespace() && ch != '\n'),
+        '"' | '\'' | '`' => find_quote_object(chars, cursor, obj_type, is_inner),
+        '(' | ')' | 'b' => find_bracket_object(chars, cursor, '(', ')', is_inner),
+        '[' | ']' => find_bracket_object(chars, cursor, '[', ']', is_inner),
+        '{' | '}' | 'B' => find_bracket_object(chars, cursor, '{', '}', is_inner),
+        '<' | '>' => find_bracket_object(chars, cursor, '<', '>', is_inner),
+        _ => None,
+    }
+}
+
+fn find_word_object(
+    chars: &[char],
+    cursor: usize,
+    is_inner: bool,
+    is_word: impl Fn(char) -> bool,
+) -> Option<(usize, usize)> {
+    if chars.is_empty() {
+        return None;
+    }
+    let cursor = cursor.min(chars.len() - 1);
+    let is_ws = |ch: char| ch.is_whitespace();
+
+    let mut start = cursor;
+    let mut end = cursor;
+
+    if is_word(chars[cursor]) {
+        while start > 0 && is_word(chars[start - 1]) {
+            start -= 1;
+        }
+        while end < chars.len() && is_word(chars[end]) {
+            end += 1;
+        }
+    } else if is_ws(chars[cursor]) {
+        while start > 0 && is_ws(chars[start - 1]) {
+            start -= 1;
+        }
+        while end < chars.len() && is_ws(chars[end]) {
+            end += 1;
+        }
+        return Some((start, end));
+    } else {
+        // punctuation run
+        while start > 0 && !is_word(chars[start - 1]) && !is_ws(chars[start - 1]) {
+            start -= 1;
+        }
+        while end < chars.len() && !is_word(chars[end]) && !is_ws(chars[end]) {
+            end += 1;
+        }
+    }
+
+    if !is_inner {
+        // Include trailing whitespace, or leading if no trailing
+        if end < chars.len() && is_ws(chars[end]) {
+            while end < chars.len() && is_ws(chars[end]) {
+                end += 1;
+            }
+        } else if start > 0 && is_ws(chars[start - 1]) {
+            while start > 0 && is_ws(chars[start - 1]) {
+                start -= 1;
+            }
+        }
+    }
+
+    if start < end { Some((start, end)) } else { None }
+}
+
+fn find_quote_object(
+    chars: &[char],
+    cursor: usize,
+    quote: char,
+    is_inner: bool,
+) -> Option<(usize, usize)> {
+    // Restrict to current line
+    let line_start = chars[..cursor]
+        .iter()
+        .rposition(|&ch| ch == '\n')
+        .map(|p| p + 1)
+        .unwrap_or(0);
+    let line_end = chars[cursor..]
+        .iter()
+        .position(|&ch| ch == '\n')
+        .map(|p| p + cursor)
+        .unwrap_or(chars.len());
+
+    let line = &chars[line_start..line_end];
+    let pos_in_line = cursor - line_start;
+
+    let positions: Vec<usize> = line
+        .iter()
+        .enumerate()
+        .filter(|&(_, ch)| *ch == quote)
+        .map(|(i, _)| i)
+        .collect();
+
+    // Pair quotes 0-1, 2-3, 4-5, …
+    let mut i = 0;
+    while i + 1 < positions.len() {
+        let qs = positions[i];
+        let qe = positions[i + 1];
+        if qs <= pos_in_line && pos_in_line <= qe {
+            return if is_inner {
+                Some((line_start + qs + 1, line_start + qe))
+            } else {
+                Some((line_start + qs, line_start + qe + 1))
+            };
+        }
+        i += 2;
+    }
+
+    None
+}
+
+fn find_bracket_object(
+    chars: &[char],
+    cursor: usize,
+    open: char,
+    close: char,
+    is_inner: bool,
+) -> Option<(usize, usize)> {
+    // Scan backwards from cursor to find enclosing open bracket
+    let mut depth = 0usize;
+    let mut start = None;
+    let mut i = cursor;
+    loop {
+        if chars[i] == close && i != cursor {
+            depth += 1;
+        } else if chars[i] == open {
+            if depth == 0 {
+                start = Some(i);
+                break;
+            }
+            depth -= 1;
+        }
+        if i == 0 {
+            break;
+        }
+        i -= 1;
+    }
+    let start = start?;
+
+    // Scan forward from start+1 to find matching close bracket
+    depth = 0;
+    let mut end = None;
+    for (j, &ch) in chars.iter().enumerate().skip(start + 1) {
+        if ch == open {
+            depth += 1;
+        } else if ch == close {
+            if depth == 0 {
+                end = Some(j);
+                break;
+            }
+            depth -= 1;
+        }
+    }
+    let end = end?;
+
+    if is_inner {
+        Some((start + 1, end))
+    } else {
+        Some((start, end + 1))
     }
 }
 
@@ -1014,5 +1265,110 @@ mod tests {
             code: KeyCode::Char(ch),
             modifiers: NONE,
         }
+    }
+
+    // --- text object tests ---
+
+    #[test]
+    fn diw_deletes_inner_word() {
+        let resolver = KeyBindingResolver::new();
+        let mut buffer = TextBuffer::from_text("hello world", true);
+        let mut vim = VimState::new(VimMode::Normal);
+        buffer.set_cursor(1); // inside "hello"
+
+        vim.handle_key(&mut buffer, &resolver, key('d'));
+        vim.handle_key(&mut buffer, &resolver, key('i'));
+        vim.handle_key(&mut buffer, &resolver, key('w'));
+
+        assert_eq!(buffer.text(), " world");
+        assert_eq!(vim.mode(), VimMode::Normal);
+    }
+
+    #[test]
+    fn daw_deletes_word_and_trailing_space() {
+        let resolver = KeyBindingResolver::new();
+        let mut buffer = TextBuffer::from_text("hello world", true);
+        let mut vim = VimState::new(VimMode::Normal);
+        buffer.set_cursor(1); // inside "hello"
+
+        vim.handle_key(&mut buffer, &resolver, key('d'));
+        vim.handle_key(&mut buffer, &resolver, key('a'));
+        vim.handle_key(&mut buffer, &resolver, key('w'));
+
+        assert_eq!(buffer.text(), "world");
+    }
+
+    #[test]
+    fn ci_quote_changes_inner_quoted_string() {
+        let resolver = KeyBindingResolver::new();
+        let mut buffer = TextBuffer::from_text(r#"say "hello" now"#, true);
+        let mut vim = VimState::new(VimMode::Normal);
+        buffer.set_cursor(6); // inside "hello"
+
+        vim.handle_key(&mut buffer, &resolver, key('c'));
+        vim.handle_key(&mut buffer, &resolver, key('i'));
+        vim.handle_key(&mut buffer, &resolver, key('"'));
+
+        assert_eq!(vim.mode(), VimMode::Insert);
+        assert_eq!(buffer.text(), r#"say "" now"#);
+    }
+
+    #[test]
+    fn da_paren_deletes_including_brackets() {
+        let resolver = KeyBindingResolver::new();
+        let mut buffer = TextBuffer::from_text("fn foo(bar)", true);
+        let mut vim = VimState::new(VimMode::Normal);
+        buffer.set_cursor(8); // inside (bar)
+
+        vim.handle_key(&mut buffer, &resolver, key('d'));
+        vim.handle_key(&mut buffer, &resolver, key('a'));
+        vim.handle_key(&mut buffer, &resolver, key('('));
+
+        assert_eq!(buffer.text(), "fn foo");
+    }
+
+    #[test]
+    fn yi_bracket_yanks_inner_content() {
+        let resolver = KeyBindingResolver::new();
+        let mut buffer = TextBuffer::from_text("[alpha]", true);
+        let mut vim = VimState::new(VimMode::Normal);
+        buffer.set_cursor(2);
+
+        vim.handle_key(&mut buffer, &resolver, key('y'));
+        vim.handle_key(&mut buffer, &resolver, key('i'));
+        vim.handle_key(&mut buffer, &resolver, key('['));
+
+        assert_eq!(vim.register.text, "alpha");
+        assert_eq!(buffer.text(), "[alpha]"); // unchanged
+    }
+
+    #[test]
+    fn visual_iw_selects_inner_word() {
+        let resolver = KeyBindingResolver::new();
+        let mut buffer = TextBuffer::from_text("foo bar baz", true);
+        let mut vim = VimState::new(VimMode::Normal);
+        buffer.set_cursor(5); // inside "bar"
+
+        vim.handle_key(&mut buffer, &resolver, key('v'));
+        vim.handle_key(&mut buffer, &resolver, key('i'));
+        vim.handle_key(&mut buffer, &resolver, key('w'));
+
+        let (start, end) = vim.visual_range(&buffer).unwrap();
+        assert_eq!(&buffer.text()[start..end], "bar");
+    }
+
+    #[test]
+    fn text_object_unknown_type_clears_pending() {
+        let resolver = KeyBindingResolver::new();
+        let mut buffer = TextBuffer::from_text("hello", true);
+        let mut vim = VimState::new(VimMode::Normal);
+
+        vim.handle_key(&mut buffer, &resolver, key('d'));
+        vim.handle_key(&mut buffer, &resolver, key('i'));
+        vim.handle_key(&mut buffer, &resolver, key('z')); // unknown object type
+
+        // pending state cleared, text unchanged
+        assert!(!vim.has_pending_operator());
+        assert_eq!(buffer.text(), "hello");
     }
 }
