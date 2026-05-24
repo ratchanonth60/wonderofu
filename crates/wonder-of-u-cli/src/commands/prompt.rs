@@ -2864,4 +2864,55 @@ mod tests {
             "unread count must be zero after first poll"
         );
     }
+
+    #[test]
+    fn try_write_session_link_writes_session_id_atomically() {
+        let dir = unique_test_dir("session_link_test");
+        let state = AppState::new(dir.clone());
+        let session_id = state.session.id;
+        let task_id = TaskId::new();
+
+        let _guard = EnvVarGuard::set("WONDER_OF_U_TASK_ID", task_id.to_string());
+
+        try_write_session_link(Some(dir.as_path()), &state)
+            .expect("try_write_session_link should succeed");
+
+        let paths = StoragePaths::new(dir.as_path());
+        let link_path = paths.task_session_link_path(task_id);
+        assert!(link_path.exists(), "session_link file must be created");
+
+        let contents = std::fs::read_to_string(&link_path).expect("read session_link file");
+        assert_eq!(
+            contents.trim(),
+            session_id.to_string(),
+            "session_link must contain the session id"
+        );
+
+        // Temp file must be cleaned up (atomic rename).
+        let pending = link_path.with_extension("session_link.next");
+        assert!(
+            !pending.exists(),
+            ".next temp file must not remain after rename"
+        );
+    }
+
+    #[test]
+    fn try_write_session_link_noop_without_env_var() {
+        let dir = unique_test_dir("session_link_noop");
+        let state = AppState::new(dir.clone());
+
+        // Ensure the env var is absent.
+        let _guard = EnvVarGuard::remove("WONDER_OF_U_TASK_ID");
+
+        try_write_session_link(Some(dir.as_path()), &state)
+            .expect("should succeed silently with no env var");
+
+        // No results dir should have been created.
+        let paths = StoragePaths::new(dir.as_path());
+        let results_dir = paths.task_results_dir();
+        assert!(
+            !results_dir.exists(),
+            "results dir must not be created when env var absent"
+        );
+    }
 }

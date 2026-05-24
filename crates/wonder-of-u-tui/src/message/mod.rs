@@ -230,6 +230,12 @@ pub fn task_panel_view(app: &AppState) -> Option<TaskPanelView> {
                     if let Some(agent) = &task.agent {
                         text.push_str(&format!(" • {}", agent_runtime_label(agent.runtime)));
                     }
+                    // Show live progress summary when the agent is actively running.
+                    if task.status == TaskStatus::Running {
+                        if let Some(summary) = &task.agent_summary {
+                            text.push_str(&format!(" — {summary}"));
+                        }
+                    }
                 }
                 TaskKind::RemoteAgent => {}
             }
