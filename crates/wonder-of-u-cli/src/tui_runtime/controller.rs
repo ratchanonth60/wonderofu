@@ -1,6 +1,8 @@
 use super::*;
 use std::time::{Duration, Instant};
 
+use crate::commands::task_runtime::TaskManager;
+
 /// Lines scrolled per single mouse-wheel notch in the transcript area.
 const MOUSE_SCROLL_LINES: i32 = 3;
 const SPINNER_PROGRESS_INTERVAL: Duration = Duration::from_millis(100);
@@ -88,6 +90,11 @@ pub(super) struct TuiController<'a> {
     /// or `BypassPermissions`) rather than always falling back to `Default`.
     /// Cleared whenever the session leaves plan mode.
     pub(super) pre_plan_permission_mode: Option<PermissionMode>,
+    /// Lazily-initialised task manager used for agent-summary generation.
+    ///
+    /// Kept on the controller so that the internal `Arc<Mutex<...>>` timing
+    /// state survives across TUI ticks.  `None` when no `storage_dir` is set.
+    pub(super) task_manager: Option<TaskManager>,
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -266,6 +273,7 @@ impl<'a> TuiController<'a> {
             expand_tool_output: false,
             sidebar_cache: SidebarPanelCache::default(),
             pre_plan_permission_mode: None,
+            task_manager: storage_dir.map(TaskManager::new),
         };
         controller.hydrate_initial_settings()?;
         controller.refresh_runtime_state()?;
@@ -343,6 +351,11 @@ impl<'a> TuiController<'a> {
                 self.needs_render |= self.refresh_global_search_if_ready()?;
                 if self.refresh_runtime_state()? {
                     self.needs_render = true;
+                }
+                // Fire background agent-summary generation for running agent tasks.
+                // Errors are silently ignored — summaries are best-effort display hints.
+                if let Some(tm) = &self.task_manager {
+                    tm.tick_agent_summaries(self.state.provider.clone(), self.state.model.clone());
                 }
                 if self.refresh_sidebar_panel_cache() {
                     self.needs_render = true;
