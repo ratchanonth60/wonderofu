@@ -79,6 +79,29 @@ impl ProviderDescriptor {
     pub fn model(&self, model_id: &str) -> Option<&ModelDescriptor> {
         self.models.iter().find(|model| model.id == model_id)
     }
+    /// Returns the provider's canonical id for a configured model string.
+    ///
+    /// This keeps older settings compatible when they use unversioned Claude
+    /// family aliases or another provider's punctuation variant.
+    #[must_use]
+    pub fn canonical_model_id(&self, model_id: &str) -> String {
+        if self.model(model_id).is_some() {
+            return model_id.to_string();
+        }
+
+        let normalized = normalized_model_id(model_id);
+        if let Some(model) = self
+            .models
+            .iter()
+            .find(|candidate| normalized_model_id(&candidate.id) == normalized)
+        {
+            return model.id.clone();
+        }
+
+        latest_claude_family_model(self, &normalized)
+            .map(|model| model.id.clone())
+            .unwrap_or_else(|| model_id.to_string())
+    }
     /// Handles preferred fast model
     #[must_use]
     pub fn preferred_fast_model(&self) -> Option<&ModelDescriptor> {
@@ -1167,6 +1190,8 @@ impl ProviderResolver {
             };
         }
 
+        configured = provider.canonical_model_id(&configured);
+
         if provider.strict_model_validation {
             // Reject model ids not listed in the provider's model catalogue.
             provider.model(&configured).ok_or_else(|| {
@@ -1714,6 +1739,35 @@ fn is_fast_model_id(model_id: &str) -> bool {
     normalized.contains("mini") || normalized.contains("haiku")
 }
 
+fn normalized_model_id(model_id: &str) -> String {
+    model_id
+        .chars()
+        .filter(|ch| ch.is_ascii_alphanumeric())
+        .map(|ch| ch.to_ascii_lowercase())
+        .collect()
+}
+
+fn latest_claude_family_model<'a>(
+    provider: &'a ProviderDescriptor,
+    requested_model_id: &str,
+) -> Option<&'a ModelDescriptor> {
+    let family = match requested_model_id {
+        "claudesonnet4" | "anthropicclaudesonnet4" => "claudesonnet4",
+        "claudeopus4" | "anthropicclaudeopus4" => "claudeopus4",
+        "claudehaiku4" | "anthropicclaudehaiku4" => "claudehaiku4",
+        _ => return None,
+    };
+
+    provider
+        .models
+        .iter()
+        .filter(|candidate| {
+            let normalized_candidate = normalized_model_id(&candidate.id);
+            normalized_candidate.contains(family) && normalized_candidate != family
+        })
+        .max_by(|left, right| left.id.cmp(&right.id))
+}
+
 fn oauth_access_token_expired(expires_at: Option<OffsetDateTime>) -> bool {
     expires_at.is_some_and(|value| value <= OffsetDateTime::now_utc())
 }
@@ -1946,6 +2000,27 @@ mod tests {
     }
 
     #[test]
+    fn resolver_accepts_legacy_copilot_claude_alias() {
+        let resolver = ProviderResolver::builtin();
+        let settings = AgentSettings {
+            selected_provider: Some("copilot".into()),
+            selected_model: Some("claude-sonnet-4".into()),
+            ..AgentSettings::default()
+        };
+
+        let report = resolver
+            .resolve_with_env(
+                &settings,
+                &StoredCredentials::default(),
+                std::iter::empty::<(&str, String)>(),
+            )
+            .expect("legacy alias should normalize");
+
+        assert_eq!(report.model.as_deref(), Some("claude-sonnet-4.6"));
+        assert_eq!(report.readiness, ProviderReadiness::MissingAuth);
+    }
+
+    #[test]
     fn load_execution_uses_api_base_override_and_env_precedence() {
         let resolver = ProviderResolver::builtin();
         let settings = AgentSettings {
@@ -2114,6 +2189,35 @@ mod tests {
                 .get("copilot")
                 .expect("copilot provider")
                 .supports_fast_mode()
+        );
+    }
+
+    #[test]
+    fn canonical_model_id_normalizes_claude_aliases_per_provider() {
+        let registry = ProviderRegistry::builtin();
+        let copilot = registry.get("copilot").expect("copilot provider");
+        let anthropic = registry.get("anthropic").expect("anthropic provider");
+        let bedrock = registry.get("bedrock").expect("bedrock provider");
+
+        assert_eq!(
+            copilot.canonical_model_id("claude-sonnet-4"),
+            "claude-sonnet-4.6"
+        );
+        assert_eq!(
+            copilot.canonical_model_id("claude-sonnet-4-6"),
+            "claude-sonnet-4.6"
+        );
+        assert_eq!(
+            anthropic.canonical_model_id("claude-sonnet-4"),
+            "claude-sonnet-4-6"
+        );
+        assert_eq!(
+            anthropic.canonical_model_id("claude-sonnet-4.6"),
+            "claude-sonnet-4-6"
+        );
+        assert_eq!(
+            bedrock.canonical_model_id("claude-sonnet-4"),
+            "anthropic.claude-sonnet-4-6"
         );
     }
 

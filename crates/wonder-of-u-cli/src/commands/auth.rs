@@ -437,6 +437,7 @@ pub(crate) fn set_model_selection(
     let model = model
         .or(selection_model)
         .unwrap_or_else(|| provider_config.default_model.clone());
+    let model = provider_config.canonical_model_id(&model);
     // Strict providers maintain a curated catalogue; reject unknown ids.
     // Non-strict providers (gateways, local, native-dynamic) accept any
     // non-empty model string—we just guard against blank input.
@@ -1190,6 +1191,30 @@ mod tests {
         assert!(
             msg.contains("strict catalogue"),
             "error must mention strict catalogue; got: {msg}"
+        );
+    }
+
+    #[test]
+    fn set_model_selection_canonicalizes_legacy_copilot_alias() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let result = super::set_model_selection(
+            Some(dir.path()),
+            Some("copilot".into()),
+            Some("claude-sonnet-4".into()),
+            None,
+        )
+        .expect("legacy alias should normalize");
+
+        let settings = wonder_of_u_agent::SettingsStore::new(dir.path())
+            .read()
+            .expect("read settings");
+        assert_eq!(
+            settings.selected_model.as_deref(),
+            Some("claude-sonnet-4.6")
+        );
+        assert!(
+            result.contains("provider_selection=copilot:claude-sonnet-4.6"),
+            "selection output should use canonical id; got:\n{result}"
         );
     }
 
