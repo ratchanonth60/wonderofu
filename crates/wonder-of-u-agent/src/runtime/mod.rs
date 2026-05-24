@@ -103,15 +103,15 @@ pub struct ProviderToolSpec {
 }
 
 fn provider_input_schema(schema: &Value) -> Value {
-    if schema.is_null() {
+    if schema.is_object() {
+        schema.clone()
+    } else {
         serde_json::json!({
             "type": "object",
             "properties": {},
             "required": [],
             "additionalProperties": false,
         })
-    } else {
-        schema.clone()
     }
 }
 
@@ -1012,6 +1012,14 @@ mod tests {
             schema.get("additionalProperties").and_then(Value::as_bool),
             Some(false)
         );
+    }
+
+    #[test]
+    fn provider_input_schema_replaces_non_object_schema_with_empty_object_schema() {
+        let schema = provider_input_schema(&Value::Bool(true));
+
+        assert_eq!(schema.get("type").and_then(Value::as_str), Some("object"));
+        assert!(schema.get("properties").is_some_and(Value::is_object));
     }
 
     #[test]

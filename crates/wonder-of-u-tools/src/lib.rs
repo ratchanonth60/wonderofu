@@ -406,17 +406,16 @@ mod tests {
     }
 
     #[test]
-    fn worktree_list_keeps_default_provider_index_schema_valid() {
+    fn worktree_list_default_provider_schema_is_valid() {
         let registry = builtin_registry().expect("registry");
         let enabled = registry.enabled_specs(&FeatureSet::first_release());
-        let worktree_index = enabled
+        let worktree_list = enabled
             .iter()
-            .position(|spec| spec.name == "worktree_list")
+            .find(|spec| spec.name == "worktree_list")
             .expect("worktree_list enabled");
 
-        assert_eq!(worktree_index, 20);
         assert_eq!(
-            enabled[worktree_index]
+            worktree_list
                 .input_schema
                 .get("type")
                 .and_then(Value::as_str),
