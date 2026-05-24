@@ -8,6 +8,8 @@ mod permissions;
 mod protocol;
 mod provider;
 mod runtime;
+/// Tool-use summary generation using a fast model.
+pub mod tool_use_summary;
 
 /// Re-exports items from `agent_summary`
 pub use agent_summary::{generate_agent_summary, read_session_link};
