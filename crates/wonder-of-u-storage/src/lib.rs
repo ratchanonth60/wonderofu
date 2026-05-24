@@ -332,6 +332,21 @@ impl StoragePaths {
         self.task_results_dir().join(format!("{task_id}.json"))
     }
 
+    /// Returns the path for an agent session-link sidecar.
+    ///
+    /// This file contains the raw `SessionId` string for the agent subprocess
+    /// that is running under `task_id`.  It is written at agent startup (before
+    /// the first turn) and consumed by the agent-summary ticker in the parent
+    /// process so it can locate the correct transcript.
+    ///
+    /// The `.session_link` extension is intentionally distinct from `.json` to
+    /// avoid collisions with the result sidecar written on task completion.
+    #[must_use]
+    pub fn task_session_link_path(&self, task_id: TaskId) -> PathBuf {
+        self.task_results_dir()
+            .join(format!("{task_id}.session_link"))
+    }
+
     /// Returns the directory for per-session logical todo-v2 task lists.
     #[must_use]
     pub fn task_lists_dir(&self) -> PathBuf {
@@ -2297,6 +2312,7 @@ mod fleet_inspector_tests {
             worktree_path: None,
             worktree_head_commit: None,
             progress: TaskProgress::default(),
+            agent_summary: None,
             started_at: OffsetDateTime::now_utc(),
             finished_at: if status.is_terminal() {
                 Some(OffsetDateTime::now_utc())

@@ -759,6 +759,14 @@ pub struct TaskState {
     /// those files deserialize with all-zero / `None` values via `#[serde(default)]`.
     #[serde(default, skip_serializing_if = "skip_progress")]
     pub progress: TaskProgress,
+    /// Short (3-5 word) summary of what the agent subprocess is currently doing.
+    ///
+    /// Generated every 30 s by the parent process reading the agent's transcript
+    /// and asking the API for a present-tense label (e.g. "Reading runAgent.ts").
+    /// Absent for tasks created before agent-summary was introduced, or when no
+    /// summary has been generated yet.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_summary: Option<String>,
     /// Stores the started at
     #[serde(with = "time::serde::rfc3339")]
     pub started_at: OffsetDateTime,
@@ -797,6 +805,7 @@ impl TaskState {
             worktree_path: None,
             worktree_head_commit: None,
             progress: TaskProgress::default(),
+            agent_summary: None,
             started_at: OffsetDateTime::now_utc(),
             finished_at: None,
         }

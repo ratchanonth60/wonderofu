@@ -2,15 +2,18 @@
 use std::os::unix::process::CommandExt;
 
 use std::{
+    collections::HashMap,
     fs::{self, OpenOptions},
     io::ErrorKind,
     path::{Path, PathBuf},
     process::{Command as ProcessCommand, Stdio},
+    sync::{Arc, Mutex},
     thread,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use time::OffsetDateTime;
+use wonder_of_u_agent::{generate_agent_summary, read_session_link};
 use wonder_of_u_core::{
     AgentRuntime, AgentTaskState, CommandContext, FleetId, PermissionDecision, PermissionMode,
     PermissionRequest, RemoteTaskMetadata, RemoteTaskState, RemoteTaskType, Result, TaskId,
@@ -23,6 +26,31 @@ const HEARTBEAT_INTERVAL_SECS: u64 = 2;
 const STALE_HEARTBEAT_AFTER_SECS: i64 = 8;
 const CLI_BIN_OVERRIDE_ENV: &str = "WONDER_OF_U_CLI_BIN";
 
+/// How often (wall-clock) to regenerate the live summary for a running agent.
+const AGENT_SUMMARY_INTERVAL: Duration = Duration::from_secs(30);
+
+/// In-memory tracking state per running agent task, used to gate the 30-second
+/// summary interval and prevent overlapping background API calls.
+#[derive(Debug)]
+struct SummaryTrack {
+    /// When we last launched a summary API call for this task.
+    last_attempted: Instant,
+    /// True while a background thread is computing a new summary.
+    in_flight: bool,
+}
+
+impl SummaryTrack {
+    fn new_ready() -> Self {
+        // Use UNIX epoch-relative instant to force an immediate first attempt.
+        Self {
+            last_attempted: Instant::now()
+                .checked_sub(AGENT_SUMMARY_INTERVAL)
+                .unwrap_or_else(Instant::now),
+            in_flight: false,
+        }
+    }
+}
+
 /// Environment variable injected into every named agent subprocess so the
 /// subprocess can poll its own mailbox inbox at turn start.
 pub(crate) const WONDER_OF_U_AGENT_NAME_ENV: &str = "WONDER_OF_U_AGENT_NAME";
@@ -30,6 +58,12 @@ pub(crate) const WONDER_OF_U_AGENT_NAME_ENV: &str = "WONDER_OF_U_AGENT_NAME";
 #[derive(Clone, Debug)]
 pub(crate) struct TaskManager {
     store: TaskStore,
+    /// Shared in-memory state for agent-summary generation.
+    ///
+    /// `Arc<Mutex<...>>` ensures all clones of a `TaskManager` share the same
+    /// timing/in-flight data; without it each clone would silently fork state
+    /// and spawn duplicate summary threads.
+    summaries: Arc<Mutex<HashMap<TaskId, SummaryTrack>>>,
 }
 
 #[derive(Clone, Debug)]
@@ -196,6 +230,7 @@ impl TaskManager {
     pub fn new(base_dir: impl Into<PathBuf>) -> Self {
         Self {
             store: TaskStore::new(base_dir),
+            summaries: Arc::new(Mutex::new(HashMap::new())),
         }
     }
     /// Handles storage dir
@@ -207,6 +242,102 @@ impl TaskManager {
     #[must_use]
     pub fn logs_dir(&self) -> PathBuf {
         self.store.paths().task_logs_dir()
+    }
+
+    /// Fires agent-summary generation for every running `LocalAgent` task whose
+    /// 30-second interval has elapsed and which has no in-flight summary call.
+    ///
+    /// Each eligible task spawns a background `std::thread` that reads the
+    /// agent's transcript via the session-link sidecar, calls the provider API,
+    /// and writes the result back to `TaskState::agent_summary` in storage.
+    ///
+    /// The TUI controller picks up the updated value on its next
+    /// `refresh_runtime_state` tick (≤500 ms later).  The background threads
+    /// and this function may both update the same task file concurrently; any
+    /// lost-update is self-healing within one interval and does not corrupt
+    /// data because each write is a complete atomic replace.
+    pub fn tick_agent_summaries(&self, provider: Option<String>, model: Option<String>) {
+        let tasks = match self.store.list_tasks() {
+            Ok(t) => t,
+            Err(_) => return,
+        };
+
+        // Only process running LocalAgent tasks.
+        let running_agents: Vec<TaskState> = tasks
+            .into_iter()
+            .filter(|t| t.kind == TaskKind::LocalAgent && t.status == TaskStatus::Running)
+            .collect();
+
+        if running_agents.is_empty() {
+            return;
+        }
+
+        let mut guard = match self.summaries.lock() {
+            Ok(g) => g,
+            Err(_) => return,
+        };
+
+        for task in running_agents {
+            let track = guard.entry(task.id).or_insert_with(SummaryTrack::new_ready);
+
+            // Skip if in-flight or interval hasn't elapsed.
+            if track.in_flight || track.last_attempted.elapsed() < AGENT_SUMMARY_INTERVAL {
+                continue;
+            }
+
+            // Read the session-link sidecar to find the transcript.
+            let session_id = match read_session_link(self.storage_dir(), task.id) {
+                Some(id) => id,
+                None => continue,
+            };
+
+            track.in_flight = true;
+            track.last_attempted = Instant::now();
+
+            // Clone everything the thread needs so no references cross the boundary.
+            let storage_dir = self.storage_dir().to_path_buf();
+            let task_id = task.id;
+            let previous_summary = task.agent_summary.clone();
+            let provider_clone = provider.clone();
+            let model_clone = model.clone();
+            let summaries = Arc::clone(&self.summaries);
+            let store = self.store.clone();
+
+            thread::spawn(move || {
+                let result = generate_agent_summary(
+                    &storage_dir,
+                    session_id,
+                    provider_clone,
+                    model_clone,
+                    previous_summary.as_deref(),
+                );
+
+                // Write back if we got a non-empty summary.
+                if let Some(summary_text) = result {
+                    if let Ok(mut task) = store.read_task(task_id) {
+                        task.agent_summary = Some(summary_text);
+                        let _ = store.write_task(&task);
+                    }
+                }
+
+                // Clear the in-flight flag regardless of outcome.
+                if let Ok(mut guard) = summaries.lock() {
+                    if let Some(track) = guard.get_mut(&task_id) {
+                        track.in_flight = false;
+                    }
+                }
+            });
+        }
+
+        // Evict entries for tasks that are no longer running so the map doesn't
+        // grow unboundedly across long TUI sessions.
+        guard.retain(|id, track| {
+            !track.in_flight
+                || self
+                    .store
+                    .read_task(*id)
+                    .is_ok_and(|t| !t.status.is_terminal())
+        });
     }
 
     /// Handles reconcile tasks
