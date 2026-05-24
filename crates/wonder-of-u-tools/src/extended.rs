@@ -347,7 +347,8 @@ impl Tool for WorktreeListTool {
             "worktree_list",
             "List git worktrees for the current repository",
             ToolKind::Search,
-        );
+        )
+        .with_input_schema(ToolSchema::object());
         spec.read_only = true;
         spec.concurrency_safe = true;
         spec
@@ -384,7 +385,8 @@ impl Tool for TerminalCaptureTool {
             "terminal_capture",
             "Capture terminal environment metadata",
             ToolKind::Search,
-        );
+        )
+        .with_input_schema(ToolSchema::object());
         spec.read_only = true;
         spec.concurrency_safe = true;
         spec
@@ -416,7 +418,8 @@ impl Tool for CronListTool {
             "cron_list",
             "List current user cron entries",
             ToolKind::Task,
-        );
+        )
+        .with_input_schema(ToolSchema::object());
         spec.aliases.push("CronList".into());
         spec.read_only = true;
         spec.concurrency_safe = true;

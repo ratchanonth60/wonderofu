@@ -18,7 +18,7 @@ use crate::ResolvedProviderExecution;
 use super::{
     CompletionRequest, CompletionResponse, HttpRequest, ProviderToolCall, ProviderToolSpec,
     StreamingHttpResponse, ToolCallBatchResponse, ToolUseRequest, ToolUseResponse, consume_sse,
-    context_window_for_model,
+    context_window_for_model, provider_input_schema,
 };
 
 // ─── Constants ────────────────────────────────────────────────────────────────
@@ -239,7 +239,7 @@ pub(super) fn build_gemini_function_declarations(tools: &[ProviderToolSpec]) -> 
                 json!({
                     "name": tool.name,
                     "description": tool.description,
-                    "parameters": tool.input_schema,
+                    "parameters": provider_input_schema(&tool.input_schema),
                 })
             })
             .collect::<Vec<_>>()

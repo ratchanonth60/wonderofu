@@ -16,7 +16,10 @@ use wonder_of_u_core::Result;
 
 use crate::{ResolvedProviderExecution, auth::AwsCredentials};
 
-use super::{CompletionRequest, DEFAULT_ANTHROPIC_MAX_OUTPUT_TOKENS, HttpRequest, ToolUseRequest};
+use super::{
+    CompletionRequest, DEFAULT_ANTHROPIC_MAX_OUTPUT_TOKENS, HttpRequest, ToolUseRequest,
+    provider_input_schema,
+};
 
 // ─── SigV4 signing ────────────────────────────────────────────────────────────
 
@@ -273,7 +276,7 @@ pub(super) fn build_bedrock_tool_use_request(
                         json!({
                             "name": tool.name.as_str(),
                             "description": tool.description.as_str(),
-                            "input_schema": tool.input_schema.clone(),
+                            "input_schema": provider_input_schema(&tool.input_schema),
                         })
                     })
                     .collect(),

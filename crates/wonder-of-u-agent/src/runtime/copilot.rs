@@ -30,7 +30,7 @@ use crate::{
 use super::{
     COPILOT_OAUTH_REFRESH_SKEW_SECONDS, CompletionRequest, DEFAULT_ANTHROPIC_API_VERSION,
     DEFAULT_ANTHROPIC_MAX_OUTPUT_TOKENS, HttpRequest, ToolConversationRound, ToolUseRequest,
-    is_anthropic_model, is_high_effort, join_url,
+    is_anthropic_model, is_high_effort, join_url, provider_input_schema,
 };
 
 /// Short-lived Copilot API session produced by the token-exchange step.
@@ -255,7 +255,7 @@ pub(super) fn build_copilot_openai_tool_use_request(
                 "function": {
                     "name": tool.name,
                     "description": tool.description,
-                    "parameters": tool.input_schema,
+                    "parameters": provider_input_schema(&tool.input_schema),
                 },
             })
         })

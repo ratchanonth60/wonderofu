@@ -388,6 +388,43 @@ mod tests {
     }
 
     #[test]
+    fn builtin_provider_specs_have_object_input_schemas() {
+        let registry = builtin_registry().expect("registry");
+        let mut failures = Vec::new();
+
+        for spec in registry.all_specs() {
+            if spec.input_schema.get("type").and_then(Value::as_str) != Some("object") {
+                failures.push(format!("{}: {}", spec.name, spec.input_schema));
+            }
+        }
+
+        assert!(
+            failures.is_empty(),
+            "provider tools must declare object input schemas:\n{}",
+            failures.join("\n")
+        );
+    }
+
+    #[test]
+    fn worktree_list_keeps_default_provider_index_schema_valid() {
+        let registry = builtin_registry().expect("registry");
+        let enabled = registry.enabled_specs(&FeatureSet::first_release());
+        let worktree_index = enabled
+            .iter()
+            .position(|spec| spec.name == "worktree_list")
+            .expect("worktree_list enabled");
+
+        assert_eq!(worktree_index, 20);
+        assert_eq!(
+            enabled[worktree_index]
+                .input_schema
+                .get("type")
+                .and_then(Value::as_str),
+            Some("object")
+        );
+    }
+
+    #[test]
     fn app_root_prefers_explicit_storage_dir() {
         let root = app_root_from_env(|name| match name {
             "WONDER_OF_U_STORAGE_DIR" => Some("/tmp/wonder".into()),

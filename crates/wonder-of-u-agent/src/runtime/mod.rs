@@ -102,6 +102,19 @@ pub struct ProviderToolSpec {
     pub input_schema: Value,
 }
 
+fn provider_input_schema(schema: &Value) -> Value {
+    if schema.is_null() {
+        serde_json::json!({
+            "type": "object",
+            "properties": {},
+            "required": [],
+            "additionalProperties": false,
+        })
+    } else {
+        schema.clone()
+    }
+}
+
 /// Represents provider tool call
 #[derive(Clone, Debug, PartialEq)]
 pub struct ProviderToolCall {
@@ -987,6 +1000,32 @@ mod tests {
                 reader: Box::new(Cursor::new(body.into_bytes())),
             })
         }
+    }
+
+    #[test]
+    fn provider_input_schema_replaces_null_with_empty_object_schema() {
+        let schema = provider_input_schema(&Value::Null);
+
+        assert_eq!(schema.get("type").and_then(Value::as_str), Some("object"));
+        assert!(schema.get("properties").is_some_and(Value::is_object));
+        assert_eq!(
+            schema.get("additionalProperties").and_then(Value::as_bool),
+            Some(false)
+        );
+    }
+
+    #[test]
+    fn provider_input_schema_preserves_declared_schema() {
+        let declared = serde_json::json!({
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"}
+            },
+            "required": ["path"],
+            "additionalProperties": false
+        });
+
+        assert_eq!(provider_input_schema(&declared), declared);
     }
 
     fn resolved_provider(provider: &str, model: Option<&str>) -> ResolvedProviderExecution {

@@ -5,8 +5,8 @@ use std::{
 
 use serde::{Deserialize, Serialize};
 use wonder_of_u_core::{
-    CommandKind, CommandSource, CommandSpec, FeatureFlag, Result, ToolKind, ToolSource, ToolSpec,
-    WonderError,
+    CommandKind, CommandSource, CommandSpec, FeatureFlag, Result, ToolKind, ToolSchema, ToolSource,
+    ToolSpec, WonderError,
 };
 
 /// Schema version for skill manifest
@@ -109,7 +109,8 @@ impl SkillManifest {
 
     /// Handles tool spec
     pub fn tool_spec(&self) -> ToolSpec {
-        let mut spec = ToolSpec::new(&self.name, &self.description, ToolKind::Skill);
+        let mut spec = ToolSpec::new(&self.name, &self.description, ToolKind::Skill)
+            .with_input_schema(ToolSchema::object().additional_properties(true));
         spec.source = ToolSource::Skill;
         spec.required_features.insert(FeatureFlag::Skills);
         spec.read_only = true;
@@ -198,6 +199,10 @@ mod tests {
 
         assert_eq!(tool_spec.kind, ToolKind::Skill);
         assert_eq!(tool_spec.source, ToolSource::Skill);
+        assert_eq!(
+            tool_spec.input_schema.get("type").and_then(|v| v.as_str()),
+            Some("object")
+        );
         assert_eq!(command_spec.source, CommandSource::Skill);
     }
 

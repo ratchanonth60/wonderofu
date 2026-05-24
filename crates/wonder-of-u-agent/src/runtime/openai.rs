@@ -11,7 +11,7 @@ use crate::ResolvedProviderExecution;
 use super::{
     CompletionRequest, CompletionResponse, HttpRequest, ProviderToolCall, StreamingHttpResponse,
     ToolCallBatchResponse, ToolConversationRound, ToolUseRequest, ToolUseResponse, consume_sse,
-    context_window_for_model, is_high_effort, join_url,
+    context_window_for_model, is_high_effort, join_url, provider_input_schema,
 };
 
 // ─── Request builders ─────────────────────────────────────────────────────────
@@ -410,7 +410,7 @@ fn build_openai_tools(tools: &[super::ProviderToolSpec]) -> Vec<Value> {
                 "function": {
                     "name": tool.name,
                     "description": tool.description,
-                    "parameters": tool.input_schema,
+                    "parameters": provider_input_schema(&tool.input_schema),
                 },
             })
         })
