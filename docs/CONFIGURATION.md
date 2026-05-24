@@ -42,8 +42,8 @@ wonder-of-u login --provider openai --api-key "$OPENAI_API_KEY"
 
 ```bash
 wonder-of-u model show
-wonder-of-u model set --provider anthropic --model claude-3-7-sonnet-latest
-wonder-of-u model set --provider openai --model gpt-4.1
+wonder-of-u model set --provider anthropic --model claude-opus-4-7
+wonder-of-u model set --provider openai --model gpt-5.5
 ```
 
 The active provider/model is reflected in the TUI footer and session state.
@@ -78,4 +78,3 @@ Individual slash commands are also available directly:
 
 Most settings are persisted in snapshots/settings so resumed sessions keep the
 same behavior.
-

@@ -496,10 +496,30 @@ impl ProviderRegistry {
                 id: "copilot".into(),
                 display_name: "GitHub Copilot".into(),
                 auth_kind: AuthMaterialKind::OAuth,
-                default_model: "gpt-4.1".into(),
+                default_model: "gpt-5.5".into(),
                 models: vec![
+                    ModelDescriptor::new("gpt-5.5", "GPT-5.5"),
+                    ModelDescriptor::new("gpt-5.4", "GPT-5.4"),
+                    ModelDescriptor::new("gpt-5.4-mini", "GPT-5.4 mini"),
+                    ModelDescriptor::new("gpt-5.4-nano", "GPT-5.4 nano"),
+                    ModelDescriptor::new("gpt-5.3-codex", "GPT-5.3-Codex"),
+                    ModelDescriptor::new("gpt-5.2", "GPT-5.2"),
+                    ModelDescriptor::new("gpt-5.2-codex", "GPT-5.2-Codex"),
+                    ModelDescriptor::new("gpt-5-mini", "GPT-5 mini"),
                     ModelDescriptor::new("gpt-4.1", "GPT-4.1"),
-                    ModelDescriptor::new("claude-sonnet-4", "Claude Sonnet 4"),
+                    ModelDescriptor::new("claude-haiku-4.5", "Claude Haiku 4.5"),
+                    ModelDescriptor::new("claude-opus-4.5", "Claude Opus 4.5"),
+                    ModelDescriptor::new("claude-opus-4.6", "Claude Opus 4.6"),
+                    ModelDescriptor::new("claude-opus-4.6-fast", "Claude Opus 4.6 (fast mode)"),
+                    ModelDescriptor::new("claude-opus-4.7", "Claude Opus 4.7"),
+                    ModelDescriptor::new("claude-sonnet-4.5", "Claude Sonnet 4.5"),
+                    ModelDescriptor::new("claude-sonnet-4.6", "Claude Sonnet 4.6"),
+                    ModelDescriptor::new("gemini-2.5-pro", "Gemini 2.5 Pro"),
+                    ModelDescriptor::new("gemini-3-flash", "Gemini 3 Flash"),
+                    ModelDescriptor::new("gemini-3.1-pro", "Gemini 3.1 Pro"),
+                    ModelDescriptor::new("gemini-3.5-flash", "Gemini 3.5 Flash"),
+                    ModelDescriptor::new("raptor-mini", "Raptor mini"),
+                    ModelDescriptor::new("goldeneye", "Goldeneye"),
                 ],
                 api_base: Some(DEFAULT_COPILOT_API_BASE.into()),
                 api_key_env: None,
@@ -513,10 +533,16 @@ impl ProviderRegistry {
                 id: "openai".into(),
                 display_name: "OpenAI".into(),
                 auth_kind: AuthMaterialKind::ApiKey,
-                default_model: "gpt-4.1".into(),
+                default_model: "gpt-5.5".into(),
                 models: vec![
+                    ModelDescriptor::new("gpt-5.5", "GPT-5.5"),
+                    ModelDescriptor::new("gpt-5.4", "GPT-5.4"),
+                    ModelDescriptor::new("gpt-5.4-mini", "GPT-5.4 mini"),
+                    ModelDescriptor::new("gpt-5.4-nano", "GPT-5.4 nano"),
+                    ModelDescriptor::new("gpt-5-mini", "GPT-5 mini"),
+                    ModelDescriptor::new("gpt-5-nano", "GPT-5 nano"),
+                    ModelDescriptor::new("gpt-5", "GPT-5"),
                     ModelDescriptor::new("gpt-4.1", "GPT-4.1"),
-                    ModelDescriptor::new("gpt-4o-mini", "GPT-4o mini"),
                 ],
                 api_base: Some("https://api.openai.com/v1".into()),
                 api_key_env: Some("OPENAI_API_KEY".into()),
@@ -530,10 +556,12 @@ impl ProviderRegistry {
                 id: "anthropic".into(),
                 display_name: "Anthropic".into(),
                 auth_kind: AuthMaterialKind::ApiKey,
-                default_model: "claude-3-7-sonnet-latest".into(),
+                default_model: "claude-opus-4-7".into(),
                 models: vec![
-                    ModelDescriptor::new("claude-3-7-sonnet-latest", "Claude 3.7 Sonnet Latest"),
-                    ModelDescriptor::new("claude-3-5-haiku-latest", "Claude 3.5 Haiku Latest"),
+                    ModelDescriptor::new("claude-opus-4-7", "Claude Opus 4.7"),
+                    ModelDescriptor::new("claude-sonnet-4-6", "Claude Sonnet 4.6"),
+                    ModelDescriptor::new("claude-haiku-4-5-20251001", "Claude Haiku 4.5"),
+                    ModelDescriptor::new("claude-haiku-4-5", "Claude Haiku 4.5 Alias"),
                 ],
                 api_base: Some("https://api.anthropic.com".into()),
                 api_key_env: Some("ANTHROPIC_API_KEY".into()),
@@ -547,15 +575,16 @@ impl ProviderRegistry {
                 id: "bedrock".into(),
                 display_name: "Amazon Bedrock".into(),
                 auth_kind: AuthMaterialKind::AwsSigV4,
-                default_model: "anthropic.claude-3-7-sonnet-20250219-v1:0".into(),
+                default_model: "anthropic.claude-opus-4-7".into(),
                 models: vec![
+                    ModelDescriptor::new("anthropic.claude-opus-4-7", "Claude Opus 4.7 (Bedrock)"),
                     ModelDescriptor::new(
-                        "anthropic.claude-3-7-sonnet-20250219-v1:0",
-                        "Claude 3.7 Sonnet (Bedrock)",
+                        "anthropic.claude-sonnet-4-6",
+                        "Claude Sonnet 4.6 (Bedrock)",
                     ),
                     ModelDescriptor::new(
-                        "anthropic.claude-3-5-haiku-20241022-v1:0",
-                        "Claude 3.5 Haiku (Bedrock)",
+                        "anthropic.claude-haiku-4-5-20251001-v1:0",
+                        "Claude Haiku 4.5 (Bedrock)",
                     ),
                 ],
                 api_base: Some(DEFAULT_BEDROCK_API_BASE.into()),
@@ -1812,7 +1841,7 @@ mod tests {
             .expect("resolve provider");
 
         assert_eq!(report.provider.as_deref(), Some("openai"));
-        assert_eq!(report.model.as_deref(), Some("gpt-4.1"));
+        assert_eq!(report.model.as_deref(), Some("gpt-5.5"));
         assert_eq!(report.auth.source_label(), Some("environment"));
     }
 
@@ -1949,7 +1978,7 @@ mod tests {
             .expect("resolve execution");
 
         assert_eq!(resolved.provider_id(), "openai");
-        assert_eq!(resolved.model(), "gpt-4.1");
+        assert_eq!(resolved.model(), "gpt-5.5");
         assert_eq!(resolved.api_base(), "http://localhost:4100/v1");
         assert_eq!(resolved.auth_source(), Some(AuthSource::Environment));
     }
@@ -2003,7 +2032,7 @@ mod tests {
             .expect("resolve anthropic execution");
 
         assert_eq!(resolved.provider_id(), "anthropic");
-        assert_eq!(resolved.model(), "claude-3-7-sonnet-latest");
+        assert_eq!(resolved.model(), "claude-opus-4-7");
     }
 
     #[test]
@@ -2033,7 +2062,7 @@ mod tests {
             )
             .expect("resolve openai execution");
 
-        assert_eq!(resolved.model(), "gpt-4o-mini");
+        assert_eq!(resolved.model(), "gpt-5.4-mini");
     }
 
     #[test]
@@ -2081,7 +2110,7 @@ mod tests {
                 .supports_fast_mode()
         );
         assert!(
-            !registry
+            registry
                 .get("copilot")
                 .expect("copilot provider")
                 .supports_fast_mode()
@@ -2096,10 +2125,7 @@ mod tests {
             bedrock.auth_kind,
             wonder_of_u_core::AuthMaterialKind::AwsSigV4
         );
-        assert_eq!(
-            bedrock.default_model,
-            "anthropic.claude-3-7-sonnet-20250219-v1:0"
-        );
+        assert_eq!(bedrock.default_model, "anthropic.claude-opus-4-7");
         assert!(bedrock.models.len() >= 2);
     }
 

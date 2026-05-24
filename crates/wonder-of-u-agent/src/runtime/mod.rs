@@ -223,9 +223,10 @@ impl HttpTransport for UreqTransport {
         let mut response = send_ureq_request(&self.agent, request)
             .map_err(|e| WonderError::validation(format!("provider request failed: {e}")))?;
         let status = response.status().as_u16();
-        let body = response.body_mut().read_to_string().map_err(|e| {
-            WonderError::validation(format!("invalid provider response body: {e}"))
-        })?;
+        let body = response
+            .body_mut()
+            .read_to_string()
+            .map_err(|e| WonderError::validation(format!("invalid provider response body: {e}")))?;
         if status >= 400 {
             Err(WonderError::validation(format!(
                 "provider HTTP request failed with status {status}: {}",
@@ -264,7 +265,9 @@ fn send_ureq_request(
     for (name, value) in &request.headers {
         builder = builder.header(name.as_str(), value.as_str());
     }
-    let http_req = builder.body(request.body.as_str()).expect("valid HTTP request");
+    let http_req = builder
+        .body(request.body.as_str())
+        .expect("valid HTTP request");
     agent.run(http_req)
 }
 
@@ -296,13 +299,28 @@ fn join_url(base: &str, path: &str) -> String {
 
 fn context_window_for_model(model: &str) -> u64 {
     let model = model.to_ascii_lowercase();
-    if model.contains("claude-3-5")
+    if model.contains("gpt-5.5")
+        || model.contains("gpt-5.4")
+        || model.contains("claude-opus-4-7")
+        || model.contains("claude-opus-4.7")
+        || model.contains("claude-sonnet-4-6")
+        || model.contains("claude-sonnet-4.6")
+    {
+        1_050_000
+    } else if model.contains("gpt-5")
+        || model.contains("claude-haiku-4-5")
+        || model.contains("claude-haiku-4.5")
+    {
+        400_000
+    } else if model.contains("gpt-4.1") {
+        1_047_576
+    } else if model.contains("claude-3-5")
         || model.contains("claude-3-7")
         || model.contains("claude-sonnet")
         || model.contains("claude-3-opus")
     {
         200_000
-    } else if model.contains("gpt-4o") || model.contains("gpt-4.1") {
+    } else if model.contains("gpt-4o") {
         128_000
     } else {
         200_000
@@ -1185,7 +1203,7 @@ mod tests {
         assert!((temperature - 0.2).abs() < 1e-6);
         assert_eq!(response.output_text, "Hello back");
         assert_eq!(response.stop_reason.as_deref(), Some("stop"));
-        assert_eq!(response.context_window_size, Some(128_000));
+        assert_eq!(response.context_window_size, Some(1_047_576));
         assert_eq!(response.usage.input_tokens, 11);
         assert_eq!(response.usage.output_tokens, 7);
         assert_eq!(response.usage.cache_read_tokens, 2);
@@ -1338,7 +1356,7 @@ mod tests {
                     batch.calls[0].arguments,
                     serde_json::json!({"pattern": "src/**/*.rs"})
                 );
-                assert_eq!(batch.context_window_size, Some(128_000));
+                assert_eq!(batch.context_window_size, Some(1_047_576));
                 assert_eq!(batch.stop_reason.as_deref(), Some("tool_calls"));
                 assert_eq!(batch.usage.input_tokens, 18);
                 assert_eq!(batch.usage.output_tokens, 3);
@@ -1363,7 +1381,7 @@ mod tests {
             }
         }));
         let runtime = ProviderRuntime::with_transport(transport.clone() as Arc<dyn HttpTransport>);
-        let resolved = resolved_provider("anthropic", Some("claude-3-7-sonnet-latest"));
+        let resolved = resolved_provider("anthropic", Some("claude-opus-4-7"));
         let request = CompletionRequest::new("Explain the slice");
 
         let response = runtime
@@ -1387,7 +1405,7 @@ mod tests {
         );
         assert_eq!(
             body.pointer("/model").and_then(serde_json::Value::as_str),
-            Some("claude-3-7-sonnet-latest")
+            Some("claude-opus-4-7")
         );
         assert_eq!(
             body.pointer("/messages/0/content")
@@ -1401,7 +1419,7 @@ mod tests {
         );
         assert_eq!(response.output_text, "Part one. Part two.");
         assert_eq!(response.stop_reason.as_deref(), Some("end_turn"));
-        assert_eq!(response.context_window_size, Some(200_000));
+        assert_eq!(response.context_window_size, Some(1_050_000));
         assert_eq!(response.usage.input_tokens, 13);
         assert_eq!(response.usage.output_tokens, 5);
         assert_eq!(response.usage.cache_creation_tokens, 4);
@@ -1443,7 +1461,7 @@ mod tests {
         assert_eq!(streamed, "Hello back");
         assert_eq!(response.output_text, "Hello back");
         assert_eq!(response.stop_reason.as_deref(), Some("stop"));
-        assert_eq!(response.context_window_size, Some(128_000));
+        assert_eq!(response.context_window_size, Some(1_047_576));
         assert_eq!(response.usage.input_tokens, 11);
         assert_eq!(response.usage.output_tokens, 7);
         assert_eq!(response.usage.cache_read_tokens, 2);
@@ -1464,7 +1482,7 @@ mod tests {
             "data: {\"type\":\"message_stop\"}\n\n",
         ));
         let runtime = ProviderRuntime::with_transport(transport.clone() as Arc<dyn HttpTransport>);
-        let resolved = resolved_provider("anthropic", Some("claude-3-7-sonnet-latest"));
+        let resolved = resolved_provider("anthropic", Some("claude-opus-4-7"));
         let mut streamed = String::new();
 
         let response = runtime
@@ -1489,7 +1507,7 @@ mod tests {
         assert_eq!(streamed, "Part one. Part two.");
         assert_eq!(response.output_text, "Part one. Part two.");
         assert_eq!(response.stop_reason.as_deref(), Some("end_turn"));
-        assert_eq!(response.context_window_size, Some(200_000));
+        assert_eq!(response.context_window_size, Some(1_050_000));
         assert_eq!(response.usage.input_tokens, 13);
         assert_eq!(response.usage.output_tokens, 5);
         assert_eq!(response.usage.cache_creation_tokens, 4);
@@ -1579,12 +1597,10 @@ mod tests {
         assert!(
             runtime.supports_tool_use_for(&resolved_oauth_provider("copilot", Some("gpt-4.1")))
         );
-        assert!(
-            runtime.supports_tool_use_for(&resolved_oauth_provider(
-                "copilot",
-                Some("claude-sonnet-4")
-            ))
-        );
+        assert!(runtime.supports_tool_use_for(&resolved_oauth_provider(
+            "copilot",
+            Some("claude-sonnet-4.6")
+        )));
     }
 
     #[test]
@@ -1820,7 +1836,7 @@ mod tests {
             )],
         );
         let runtime = ProviderRuntime::with_transport(transport.clone() as Arc<dyn HttpTransport>);
-        let resolved = resolved_oauth_provider("copilot", Some("claude-sonnet-4"));
+        let resolved = resolved_oauth_provider("copilot", Some("claude-sonnet-4.6"));
         let mut streamed = String::new();
 
         let response = runtime
@@ -1867,7 +1883,7 @@ mod tests {
         );
         assert_eq!(
             body.pointer("/model").and_then(serde_json::Value::as_str),
-            Some("claude-sonnet-4")
+            Some("claude-sonnet-4.6")
         );
         assert_eq!(streamed, "Hello Copilot");
         assert_eq!(response.output_text, "Hello Copilot");
@@ -1903,7 +1919,7 @@ mod tests {
             }),
         ]);
         let runtime = ProviderRuntime::with_transport(transport.clone() as Arc<dyn HttpTransport>);
-        let resolved = resolved_oauth_provider("copilot", Some("claude-sonnet-4"));
+        let resolved = resolved_oauth_provider("copilot", Some("claude-sonnet-4.6"));
 
         let response = runtime
             .complete_with_tool_use(
@@ -2000,7 +2016,7 @@ mod tests {
             "usage": {"input_tokens": 5, "output_tokens": 2}
         }));
         let runtime = ProviderRuntime::with_transport(transport.clone() as Arc<dyn HttpTransport>);
-        let resolved = resolved_provider("anthropic", Some("claude-3-7-sonnet-latest"));
+        let resolved = resolved_provider("anthropic", Some("claude-opus-4-7"));
         let request = CompletionRequest {
             prompt: "think deeply".into(),
             effort_level: Some("max".into()),
@@ -2113,7 +2129,7 @@ mod tests {
             serde_json::json!({"error": {"message": "Internal server error"}}),
         );
         let runtime = ProviderRuntime::with_transport(transport as Arc<dyn HttpTransport>);
-        let resolved = resolved_provider("anthropic", Some("claude-3-7-sonnet-latest"));
+        let resolved = resolved_provider("anthropic", Some("claude-opus-4-7"));
         let request = CompletionRequest::new("hello");
 
         let err = runtime
@@ -2194,7 +2210,7 @@ mod tests {
         ]);
         let body = br#"{"anthropic_version":"bedrock-2023-05-31"}"#;
         let datetime = "20231114T221320Z";
-        let url = "https://bedrock-runtime.us-east-1.amazonaws.com/model/anthropic.claude-3-7-sonnet-20250219-v1:0/invoke";
+        let url = "https://bedrock-runtime.us-east-1.amazonaws.com/model/anthropic.claude-opus-4-7/invoke";
 
         sign_request_headers(&mut headers, "POST", url, body, &credentials, datetime)
             .expect("sign headers");
@@ -3201,7 +3217,7 @@ mod tests {
             ("openai", resolved_provider("openai", Some("gpt-4.1"))),
             (
                 "anthropic",
-                resolved_provider("anthropic", Some("claude-3-7-sonnet-latest")),
+                resolved_provider("anthropic", Some("claude-opus-4-7")),
             ),
             (
                 "copilot",

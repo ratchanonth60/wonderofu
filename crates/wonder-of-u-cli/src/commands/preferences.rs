@@ -1230,7 +1230,7 @@ mod tests {
         assert!(rendered.contains("## Fast"));
         assert!(rendered.contains("fast_mode=true"));
         assert!(rendered.contains("current_fast=on"));
-        assert!(rendered.contains("fast_target=gpt-4o-mini"));
+        assert!(rendered.contains("fast_target=gpt-5.4-mini"));
         assert!(rendered.contains("does not implement the leak's entitlement"));
     }
 

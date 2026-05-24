@@ -341,7 +341,11 @@ impl VimState {
         if let Some(is_inner) = self.pending_text_object.take() {
             if let KeyCode::Char(ch) = event.code {
                 let chars: Vec<char> = buffer.text().chars().collect();
-                let cursor = if chars.is_empty() { 0 } else { buffer.cursor().min(chars.len() - 1) };
+                let cursor = if chars.is_empty() {
+                    0
+                } else {
+                    buffer.cursor().min(chars.len() - 1)
+                };
                 if let Some((start, end)) = find_text_object(&chars, cursor, ch, is_inner) {
                     let operator = self.pending_operator.take()?;
                     let result = match operator {
@@ -359,7 +363,10 @@ impl VimState {
                             }
                             if matches!(operator, PendingOperator::Change) {
                                 self.mode = VimMode::Insert;
-                                VimHandleResult { system: None, mode_changed: true }
+                                VimHandleResult {
+                                    system: None,
+                                    mode_changed: true,
+                                }
                             } else {
                                 VimHandleResult::default()
                             }
@@ -504,7 +511,11 @@ impl VimState {
         if let Some(is_inner) = self.pending_text_object.take() {
             if let KeyCode::Char(ch) = event.code {
                 let chars: Vec<char> = buffer.text().chars().collect();
-                let cursor = if chars.is_empty() { 0 } else { buffer.cursor().min(chars.len() - 1) };
+                let cursor = if chars.is_empty() {
+                    0
+                } else {
+                    buffer.cursor().min(chars.len() - 1)
+                };
                 if let Some((start, end)) = find_text_object(&chars, cursor, ch, is_inner) {
                     self.visual_anchor = Some(start);
                     let visual_end = end.saturating_sub(1).min(chars.len().saturating_sub(1));
@@ -840,10 +851,19 @@ fn line_motion(event: KeyEvent) -> Option<Motion> {
 ///
 /// `obj_type`: w W " ' ` ( ) b [ ] { } B < >
 /// `is_inner`: true for `i`, false for `a`
-fn find_text_object(chars: &[char], cursor: usize, obj_type: char, is_inner: bool) -> Option<(usize, usize)> {
+fn find_text_object(
+    chars: &[char],
+    cursor: usize,
+    obj_type: char,
+    is_inner: bool,
+) -> Option<(usize, usize)> {
     match obj_type {
-        'w' => find_word_object(chars, cursor, is_inner, |ch| ch.is_alphanumeric() || ch == '_'),
-        'W' => find_word_object(chars, cursor, is_inner, |ch| !ch.is_whitespace() && ch != '\n'),
+        'w' => find_word_object(chars, cursor, is_inner, |ch| {
+            ch.is_alphanumeric() || ch == '_'
+        }),
+        'W' => find_word_object(chars, cursor, is_inner, |ch| {
+            !ch.is_whitespace() && ch != '\n'
+        }),
         '"' | '\'' | '`' => find_quote_object(chars, cursor, obj_type, is_inner),
         '(' | ')' | 'b' => find_bracket_object(chars, cursor, '(', ')', is_inner),
         '[' | ']' => find_bracket_object(chars, cursor, '[', ']', is_inner),
@@ -906,7 +926,11 @@ fn find_word_object(
         }
     }
 
-    if start < end { Some((start, end)) } else { None }
+    if start < end {
+        Some((start, end))
+    } else {
+        None
+    }
 }
 
 fn find_quote_object(

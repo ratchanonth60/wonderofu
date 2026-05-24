@@ -372,17 +372,14 @@ fn controller_selects_model_from_picker() {
     assert!(controller.pending_model_picker.is_none());
     assert!(controller.dialog.is_none());
     assert_eq!(controller.state.provider.as_deref(), Some("anthropic"));
-    assert_eq!(
-        controller.state.model.as_deref(),
-        Some("claude-3-5-haiku-latest")
-    );
+    assert_eq!(controller.state.model.as_deref(), Some("claude-sonnet-4-6"));
     assert!(matches!(
         controller.state.messages.last().map(|message| &message.payload),
         Some(MessagePayload::Command { input, output })
             if input == "/model"
                 && output
                     .as_deref()
-                    .is_some_and(|text| text.contains("provider_selection=anthropic:claude-3-5-haiku-latest"))
+                    .is_some_and(|text| text.contains("provider_selection=anthropic:claude-sonnet-4-6"))
     ));
 }
 

@@ -2478,7 +2478,10 @@ impl PasteStore {
         }
 
         self.ensure_layout()?;
-        let sha256: String = Sha256::digest(content).iter().map(|b| format!("{b:02x}")).collect();
+        let sha256: String = Sha256::digest(content)
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect();
         let path = self.paths.paste_path(&sha256);
         if !path.exists() {
             let mut file = File::create(&path)?;
