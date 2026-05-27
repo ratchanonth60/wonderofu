@@ -6142,6 +6142,139 @@ fn controller_horizontal_mouse_wheel_ignored() {
     );
 }
 
+// ── layout-math regression tests (Fix 2) ─────────────────────────────────────
+
+/// After `on_terminal_resize` the controller's `scroll_state.last_visible_lines`
+/// must equal the messages-area height that the renderer computes.
+///
+/// Before the fix the controller used `prompt_lines + 2` (missing the
+/// integrated footer row) and `.max(3)` (below the renderer's minimum of 6),
+/// which made the visible-lines estimate diverge by at least one row.
+#[test]
+fn controller_resize_visible_lines_matches_renderer_layout() {
+    let dir = unique_test_dir("layout-math-resize");
+    let registry = commands::registry(Some(dir.clone())).expect("registry");
+    let mut controller = TuiController::new(
+        test_context(&dir),
+        &registry,
+        Some(dir.as_path()),
+        TuiLaunchOptions { session_id: None },
+    )
+    .expect("controller");
+
+    // Two-line prompt so the computed height is non-trivial.
+    controller.prompt = wonder_of_u_tui::TextBuffer::from_text("line1\nline2", true);
+
+    // Resize to a standard 80×24 terminal with no sidebar and no context warning.
+    controller.on_terminal_resize(80, 24);
+
+    // Renderer: prompt_height() = 2 + 3 = 5, max_prompt = max(24/3, 6) = 8,
+    // capped = 5.  ShellLayout::split(Rect(0,0,80,24), 5):
+    //   chrome = 1, available = 23, messages = 23 - 5 = 18.
+    assert_eq!(
+        controller.scroll_state.last_visible_lines, 18,
+        "last_visible_lines must equal the renderer's messages-area height (18) for 80×24 with 2-line prompt"
+    );
+}
+
+/// `transcript_messages_rect()` must return the same messages rect that the
+/// renderer uses, so that mouse-wheel hit-testing is accurate.
+#[test]
+fn controller_messages_rect_matches_renderer_for_empty_prompt() {
+    let dir = unique_test_dir("layout-math-rect");
+    let registry = commands::registry(Some(dir.clone())).expect("registry");
+    let mut controller = TuiController::new(
+        test_context(&dir),
+        &registry,
+        Some(dir.as_path()),
+        TuiLaunchOptions { session_id: None },
+    )
+    .expect("controller");
+
+    // Empty prompt; set last_terminal_size directly (resize is a no-op for
+    // the rect helper — it reads last_terminal_size on demand).
+    controller.last_terminal_size = (80, 24);
+
+    // Renderer: prompt_height() = 1+3 = 4, max_prompt = 8, capped = 4.
+    // ShellLayout::split(Rect(0,0,80,24), 4):
+    //   chrome=1, available=23, messages=19.
+    let rect = controller.transcript_messages_rect();
+    assert_eq!(
+        rect,
+        wonder_of_u_tui::Rect::new(0, 0, 80, 19),
+        "messages rect must equal Rect(0,0,80,19) for 80×24 with empty prompt"
+    );
+}
+
+/// A mouse ScrollUp event whose row equals `messages_rect.bottom()` (the
+/// first row of the prompt box) must NOT scroll the transcript, because that
+/// row is inside the prompt area — not the messages area.
+#[test]
+fn controller_mouse_scroll_on_prompt_border_row_does_not_scroll() {
+    let dir = unique_test_dir("layout-math-border-scroll");
+    let registry = commands::registry(Some(dir.clone())).expect("registry");
+    let mut controller = TuiController::new(
+        test_context(&dir),
+        &registry,
+        Some(dir.as_path()),
+        TuiLaunchOptions { session_id: None },
+    )
+    .expect("controller");
+
+    // Give the scroll state some content so a scroll would be detectable.
+    controller.on_terminal_resize(80, 24);
+    controller.scroll_state.on_resize(19, 100);
+
+    // With 80×24 and an empty prompt the messages rect is Rect(0,0,80,19),
+    // so row 19 is the first row of the prompt box ([y, y+height) = [19, 23)).
+    let prompt_border_row = controller.transcript_messages_rect().bottom();
+    assert_eq!(
+        prompt_border_row, 19,
+        "prompt starts at row 19 for 80×24 empty-prompt layout"
+    );
+
+    controller.handle_mouse_event(scroll_mouse_event(
+        wonder_of_u_tui::MouseEventKind::ScrollUp,
+        40,
+        prompt_border_row,
+    ));
+
+    assert_eq!(
+        controller.scroll_state.offset_from_bottom, 0,
+        "wheel on the prompt border row (y={prompt_border_row}) must not scroll the transcript"
+    );
+}
+
+// ── cursor geometry regression (Fix 1) ───────────────────────────────────────
+
+/// When the prompt ends with '\n' (Shift+Enter at end of line), the cursor
+/// must be placed on the *second* content row of the prompt box, not clamped
+/// to the first row.
+///
+/// Before the fix, `text_line_count("first\n")` returned 1 (str::lines()
+/// drops the trailing empty segment) so the prompt box was only 4 rows tall
+/// (1 content row + 3 overhead), leaving `content_height = 1` and clamping
+/// the cursor to row 0.  After the fix it returns 2 and the box is 5 rows,
+/// so `content_height = 2` and the cursor can sit on row 1.
+#[test]
+fn cursor_is_one_row_below_first_after_trailing_newline() {
+    // Compute the cursor position for "first\n" with the cursor at the end
+    // (position 6, just after the '\n').
+    let (_, cursor_y_trailing) = prompt_cursor_position(80, 24, "first\n", 6, false, false);
+
+    // Compute the cursor position for "first\n" with the cursor *on* the
+    // text (position 5, just before the '\n').
+    let (_, cursor_y_on_text) = prompt_cursor_position(80, 24, "first\n", 5, false, false);
+
+    // The cursor after the '\n' must be exactly one row below the text cursor.
+    assert_eq!(
+        cursor_y_trailing,
+        cursor_y_on_text + 1,
+        "cursor after trailing '\\n' must be one row below the text row; \
+         on_text_row={cursor_y_on_text}, trailing_newline_row={cursor_y_trailing}"
+    );
+}
+
 // ── autostart tests ───────────────────────────────────────────────────────────
 
 fn make_unconfigured_controller() -> (TuiController<'static>, PathBuf) {
@@ -7350,6 +7483,64 @@ fn controller_provider_failure_appends_error_message_and_clears_prompt() {
             );
         }
     }
+
+    // ── Fix 3 regression: no blank AssistantText placeholder ─────────────────
+    // Before the fix, submit_prompt left an empty AssistantText in the
+    // transcript immediately before the ProviderError, producing a blank
+    // assistant bullet in the UI.  Assert it is gone.
+    let has_empty_assistant = controller.state.messages.iter().any(|msg| {
+        matches!(&msg.payload, MessagePayload::AssistantText { content } if content.is_empty())
+    });
+    assert!(
+        !has_empty_assistant,
+        "no empty AssistantText placeholder must remain after a provider failure; messages: {:?}",
+        controller
+            .state
+            .messages
+            .iter()
+            .map(|m| &m.payload)
+            .collect::<Vec<_>>()
+    );
+
+    // The UserText entry for the attempted prompt must still be present so the
+    // user can see what they typed before the error occurred.
+    let has_user_text = controller.state.messages.iter().any(|msg| {
+        matches!(&msg.payload, MessagePayload::UserText { content } if content == "trigger provider failure")
+    });
+    assert!(
+        has_user_text,
+        "UserText for the failed prompt must remain in the transcript; messages: {:?}",
+        controller
+            .state
+            .messages
+            .iter()
+            .map(|m| &m.payload)
+            .collect::<Vec<_>>()
+    );
+
+    // Message order: UserText must appear immediately before ProviderError.
+    let payloads: Vec<_> = controller
+        .state
+        .messages
+        .iter()
+        .map(|m| &m.payload)
+        .collect();
+    let provider_error_idx = payloads
+        .iter()
+        .position(|p| matches!(p, MessagePayload::ProviderError { .. }))
+        .expect("ProviderError must be present");
+    assert!(
+        provider_error_idx > 0,
+        "ProviderError must be preceded by at least one message"
+    );
+    assert!(
+        matches!(
+            payloads[provider_error_idx - 1],
+            MessagePayload::UserText { .. }
+        ),
+        "the message immediately before ProviderError must be UserText, got: {:?}",
+        payloads[provider_error_idx - 1]
+    );
 }
 
 #[test]
