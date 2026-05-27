@@ -1412,6 +1412,235 @@ mod tests {
         }
     }
 
+    // ── OpenAI tool-call argument type regression tests ──────────────────────
+    //
+    // Local/OpenAI-compatible servers (Ollama, LM Studio, etc.) sometimes
+    // return `function.arguments` as a pre-parsed JSON object instead of a
+    // JSON-encoded string.  The following tests lock in the expected behaviour
+    // for every variant the parser must handle.
+
+    #[test]
+    fn openai_tool_call_arguments_as_object_are_preserved_verbatim() {
+        // Object arguments must be passed through without re-serialising or
+        // re-parsing; key ordering and nested structure must be intact.
+        let transport = RecordingTransport::with_json_body(serde_json::json!({
+            "choices": [{
+                "finish_reason": "tool_calls",
+                "message": {
+                    "content": null,
+                    "tool_calls": [{
+                        "id": "call_obj",
+                        "type": "function",
+                        "function": {
+                            "name": "search",
+                            "arguments": {"query": "Rust lifetimes", "limit": 5}
+                        }
+                    }]
+                }
+            }],
+            "usage": {"prompt_tokens": 10, "completion_tokens": 3}
+        }));
+        let runtime = ProviderRuntime::with_transport(transport as Arc<dyn HttpTransport>);
+        let resolved = resolved_provider("openai", Some("gpt-4.1"));
+
+        let response = runtime
+            .complete_with_tool_use(
+                &resolved,
+                &ToolUseRequest {
+                    prompt: "search for something".into(),
+                    ..ToolUseRequest::default()
+                },
+            )
+            .expect("object-arguments response");
+
+        match response {
+            ToolUseResponse::ToolCalls(batch) => {
+                assert_eq!(batch.calls.len(), 1);
+                assert_eq!(batch.calls[0].call_id, "call_obj");
+                assert_eq!(batch.calls[0].tool_name, "search");
+                assert_eq!(
+                    batch.calls[0].arguments,
+                    serde_json::json!({"query": "Rust lifetimes", "limit": 5}),
+                    "object arguments must be preserved as-is"
+                );
+            }
+            other => panic!("expected tool calls, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn openai_tool_call_arguments_as_array_are_preserved_verbatim() {
+        // Array arguments (unusual but valid for some tools) must also pass
+        // through unchanged.
+        let transport = RecordingTransport::with_json_body(serde_json::json!({
+            "choices": [{
+                "finish_reason": "tool_calls",
+                "message": {
+                    "content": null,
+                    "tool_calls": [{
+                        "id": "call_arr",
+                        "type": "function",
+                        "function": {
+                            "name": "bulk_insert",
+                            "arguments": ["item_a", "item_b"]
+                        }
+                    }]
+                }
+            }],
+            "usage": {"prompt_tokens": 8, "completion_tokens": 2}
+        }));
+        let runtime = ProviderRuntime::with_transport(transport as Arc<dyn HttpTransport>);
+        let resolved = resolved_provider("openai", Some("gpt-4.1"));
+
+        let response = runtime
+            .complete_with_tool_use(
+                &resolved,
+                &ToolUseRequest {
+                    prompt: "insert items".into(),
+                    ..ToolUseRequest::default()
+                },
+            )
+            .expect("array-arguments response");
+
+        match response {
+            ToolUseResponse::ToolCalls(batch) => {
+                assert_eq!(batch.calls[0].tool_name, "bulk_insert");
+                assert_eq!(
+                    batch.calls[0].arguments,
+                    serde_json::json!(["item_a", "item_b"]),
+                    "array arguments must be preserved as-is"
+                );
+            }
+            other => panic!("expected tool calls, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn openai_tool_call_arguments_null_defaults_to_empty_object() {
+        // An explicit `null` in `arguments` is treated as no-argument call.
+        let transport = RecordingTransport::with_json_body(serde_json::json!({
+            "choices": [{
+                "finish_reason": "tool_calls",
+                "message": {
+                    "content": null,
+                    "tool_calls": [{
+                        "id": "call_null",
+                        "type": "function",
+                        "function": {"name": "ping", "arguments": null}
+                    }]
+                }
+            }],
+            "usage": {"prompt_tokens": 5, "completion_tokens": 1}
+        }));
+        let runtime = ProviderRuntime::with_transport(transport as Arc<dyn HttpTransport>);
+        let resolved = resolved_provider("openai", Some("gpt-4.1"));
+
+        let response = runtime
+            .complete_with_tool_use(
+                &resolved,
+                &ToolUseRequest {
+                    prompt: "ping".into(),
+                    ..ToolUseRequest::default()
+                },
+            )
+            .expect("null-arguments response");
+
+        match response {
+            ToolUseResponse::ToolCalls(batch) => {
+                assert_eq!(
+                    batch.calls[0].arguments,
+                    serde_json::json!({}),
+                    "null arguments must default to empty object"
+                );
+            }
+            other => panic!("expected tool calls, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn openai_tool_call_arguments_blank_string_defaults_to_empty_object() {
+        // A blank string `""` or `"  "` in `arguments` is treated as
+        // no-argument call (some older providers emit this).
+        let transport = RecordingTransport::with_json_body(serde_json::json!({
+            "choices": [{
+                "finish_reason": "tool_calls",
+                "message": {
+                    "content": null,
+                    "tool_calls": [{
+                        "id": "call_blank",
+                        "type": "function",
+                        "function": {"name": "noop", "arguments": "   "}
+                    }]
+                }
+            }],
+            "usage": {"prompt_tokens": 4, "completion_tokens": 1}
+        }));
+        let runtime = ProviderRuntime::with_transport(transport as Arc<dyn HttpTransport>);
+        let resolved = resolved_provider("openai", Some("gpt-4.1"));
+
+        let response = runtime
+            .complete_with_tool_use(
+                &resolved,
+                &ToolUseRequest {
+                    prompt: "noop".into(),
+                    ..ToolUseRequest::default()
+                },
+            )
+            .expect("blank-arguments response");
+
+        match response {
+            ToolUseResponse::ToolCalls(batch) => {
+                assert_eq!(
+                    batch.calls[0].arguments,
+                    serde_json::json!({}),
+                    "blank string arguments must default to empty object"
+                );
+            }
+            other => panic!("expected tool calls, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn openai_tool_call_arguments_boolean_type_returns_validation_error() {
+        // A boolean in `arguments` is an unexpected scalar type and must
+        // produce a validation error rather than silently coercing to `{}`.
+        let transport = RecordingTransport::with_json_body(serde_json::json!({
+            "choices": [{
+                "finish_reason": "tool_calls",
+                "message": {
+                    "content": null,
+                    "tool_calls": [{
+                        "id": "call_bool",
+                        "type": "function",
+                        "function": {"name": "broken", "arguments": true}
+                    }]
+                }
+            }],
+            "usage": {"prompt_tokens": 4, "completion_tokens": 1}
+        }));
+        let runtime = ProviderRuntime::with_transport(transport as Arc<dyn HttpTransport>);
+        let resolved = resolved_provider("openai", Some("gpt-4.1"));
+
+        let err = runtime
+            .complete_with_tool_use(
+                &resolved,
+                &ToolUseRequest {
+                    prompt: "bad".into(),
+                    ..ToolUseRequest::default()
+                },
+            )
+            .expect_err("boolean arguments should be a validation error");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("unexpected arguments type"),
+            "error should describe the type mismatch; got: {msg}"
+        );
+        assert!(
+            msg.contains("broken"),
+            "error should identify the tool name; got: {msg}"
+        );
+    }
+
     #[test]
     fn anthropic_runtime_builds_messages_request() {
         let transport = RecordingTransport::with_json_body(serde_json::json!({
@@ -2743,6 +2972,132 @@ mod tests {
         assert!(
             err.to_string().contains("text content"),
             "error should mention missing text: {err}"
+        );
+    }
+
+    // ── Gemini non-streaming empty / SAFETY error tests ───────────────────────
+
+    #[test]
+    fn gemini_non_streaming_empty_parts_returns_validation_error() {
+        // A non-streaming response with no text parts must produce the same
+        // validation error as the streaming path — callers must never receive
+        // a successful empty string.
+        let transport = RecordingTransport::with_json_body(serde_json::json!({
+            "candidates": [{
+                "content": {"parts": [], "role": "model"},
+                "finishReason": "STOP"
+            }],
+            "usageMetadata": {"promptTokenCount": 4, "candidatesTokenCount": 0}
+        }));
+        let runtime = ProviderRuntime::with_transport(transport as Arc<dyn HttpTransport>);
+        let resolved = resolved_gemini_provider(None);
+
+        let err = runtime
+            .complete(&resolved, &CompletionRequest::new("ping"))
+            .expect_err("empty parts should fail");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("text content"),
+            "error should mention missing text content; got: {msg}"
+        );
+    }
+
+    #[test]
+    fn gemini_non_streaming_safety_stop_returns_validation_error_with_finish_reason() {
+        // A SAFETY-blocked response has no text parts.  The error message must
+        // include the finishReason so callers can surface it to the user.
+        let transport = RecordingTransport::with_json_body(serde_json::json!({
+            "candidates": [{
+                "content": {"parts": [], "role": "model"},
+                "finishReason": "SAFETY"
+            }],
+            "usageMetadata": {"promptTokenCount": 6, "candidatesTokenCount": 0}
+        }));
+        let runtime = ProviderRuntime::with_transport(transport as Arc<dyn HttpTransport>);
+        let resolved = resolved_gemini_provider(None);
+
+        let err = runtime
+            .complete(&resolved, &CompletionRequest::new("risky"))
+            .expect_err("SAFETY block should fail");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("text content"),
+            "error should mention missing text; got: {msg}"
+        );
+        assert!(
+            msg.contains("SAFETY"),
+            "error should include finishReason=SAFETY; got: {msg}"
+        );
+    }
+
+    #[test]
+    fn gemini_tool_use_empty_text_no_function_calls_returns_validation_error() {
+        // When the model returns no functionCall parts AND no text, the
+        // tool-use parser must return an error rather than a successful Final
+        // with empty output_text.
+        let transport = RecordingTransport::with_json_body(serde_json::json!({
+            "candidates": [{
+                "content": {"parts": [], "role": "model"},
+                "finishReason": "STOP"
+            }],
+            "usageMetadata": {"promptTokenCount": 5, "candidatesTokenCount": 0}
+        }));
+        let runtime = ProviderRuntime::with_transport(transport as Arc<dyn HttpTransport>);
+        let resolved = resolved_gemini_provider(None);
+
+        let err = runtime
+            .complete_with_tool_use(
+                &resolved,
+                &ToolUseRequest {
+                    prompt: "use a tool".into(),
+                    tools: vec![ProviderToolSpec {
+                        name: "dummy".into(),
+                        description: "A dummy tool".into(),
+                        input_schema: serde_json::json!({"type": "object"}),
+                    }],
+                    ..ToolUseRequest::default()
+                },
+            )
+            .expect_err("empty tool-use response should fail");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("no function calls") || msg.contains("no text"),
+            "error should describe the empty result; got: {msg}"
+        );
+    }
+
+    #[test]
+    fn gemini_tool_use_safety_block_no_function_calls_returns_validation_error_with_reason() {
+        // A SAFETY block on the tool-use path must propagate the finishReason
+        // in the validation error so callers can report it faithfully.
+        let transport = RecordingTransport::with_json_body(serde_json::json!({
+            "candidates": [{
+                "content": {"parts": [], "role": "model"},
+                "finishReason": "SAFETY"
+            }],
+            "usageMetadata": {"promptTokenCount": 7, "candidatesTokenCount": 0}
+        }));
+        let runtime = ProviderRuntime::with_transport(transport as Arc<dyn HttpTransport>);
+        let resolved = resolved_gemini_provider(None);
+
+        let err = runtime
+            .complete_with_tool_use(
+                &resolved,
+                &ToolUseRequest {
+                    prompt: "risky tool use".into(),
+                    tools: vec![ProviderToolSpec {
+                        name: "dangerous".into(),
+                        description: "Dangerous tool".into(),
+                        input_schema: serde_json::json!({"type": "object"}),
+                    }],
+                    ..ToolUseRequest::default()
+                },
+            )
+            .expect_err("SAFETY-blocked tool-use should fail");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("SAFETY"),
+            "error should include finishReason=SAFETY; got: {msg}"
         );
     }
 
