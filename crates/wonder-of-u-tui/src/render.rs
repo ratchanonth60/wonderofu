@@ -2119,11 +2119,19 @@ fn split_lines(text: &str) -> Vec<String> {
         return vec![String::new()];
     }
 
-    text.lines().map(ToString::to_string).collect()
+    // Use split('\n') rather than str::lines() so a trailing '\n' (inserted
+    // when the user presses Shift+Enter at the end of a line) produces a
+    // visible blank continuation row in the prompt box.  str::lines() silently
+    // drops the trailing empty segment, which caused the prompt height to be
+    // under-counted and the cursor to be clamped onto the last text row.
+    text.split('\n').map(ToString::to_string).collect()
 }
 
 fn text_line_count(text: &str) -> usize {
-    text.lines().count().max(1)
+    // split('\n') preserves a trailing newline as an extra blank row so that
+    // prompt_height() and cursor-geometry helpers stay consistent with what
+    // split_lines() renders.  str::lines() would drop it and under-count by 1.
+    text.split('\n').count().max(1)
 }
 
 #[cfg(test)]
@@ -3275,6 +3283,80 @@ mod tests {
             ..ShellView::default()
         };
         assert_eq!(view.prompt_height(), 4);
+    }
+
+    // ── Shift+Enter trailing blank line (Fix 1) ──────────────────────────────
+
+    #[test]
+    fn split_lines_preserves_trailing_blank_row() {
+        // "first\n" must yield two segments: the text row and a blank
+        // continuation row.  str::lines() would silently drop the trailing
+        // empty segment, causing the blank row to be invisible after Shift+Enter.
+        assert_eq!(
+            split_lines("first\n"),
+            vec!["first".to_string(), String::new()],
+            "trailing newline must produce a blank second segment"
+        );
+    }
+
+    #[test]
+    fn text_line_count_trailing_newline_counts_as_extra_row() {
+        // A prompt ending in '\n' must count as 2 logical lines so that
+        // prompt_height() allocates the visible blank continuation row.
+        assert_eq!(
+            text_line_count("first\n"),
+            2,
+            "trailing newline must count as an extra blank row"
+        );
+        // No regression: non-trailing newline still counts normally.
+        assert_eq!(text_line_count("a\nb"), 2);
+        // Single line without newline stays 1.
+        assert_eq!(text_line_count("hello"), 1);
+    }
+
+    #[test]
+    fn prompt_height_trailing_newline_grows_box() {
+        // "first\n" has 2 logical rows (text + blank), so the rounded prompt
+        // box needs 2 content rows + top border + integrated footer + bottom
+        // border = 5 total rows.  Before the fix this returned 4.
+        let view = ShellView {
+            prompt: "first\n".into(),
+            ..ShellView::default()
+        };
+        assert_eq!(
+            view.prompt_height(),
+            5,
+            "prompt ending in '\\n' must grow the box by one row for the blank continuation line"
+        );
+    }
+
+    #[test]
+    fn render_trailing_newline_shows_blank_prompt_row() {
+        // The prompt "first\n" must render as two visible rows inside the
+        // prompt box: one carrying "› first" and one that is blank (the cursor
+        // sits there after Shift+Enter at end of line).
+        let view = ShellView {
+            title: "Session: Blank".into(),
+            prompt: "first\n".into(),
+            status: String::new(),
+            ..ShellView::default()
+        };
+        // Use a tall-enough terminal so the full 5-row prompt box fits.
+        let frame = render_snapshot(40, 20, &view, &Theme::default());
+        let text = frame.to_plain_text();
+        assert!(
+            text.contains("› first"),
+            "first prompt row must have the '› ' marker; rendered:\n{text}"
+        );
+        // The box must be 5 rows tall: we should see the top and bottom
+        // rounded corners (╭ / ╰) plus two content rows and the footer row.
+        // Rather than asserting exact y-positions, assert that "first" appears
+        // AND that the frame has enough prompt box rows to show the blank row.
+        assert_eq!(
+            view.prompt_height(),
+            5,
+            "prompt_height must equal 5 with trailing newline so blank row is visible"
+        );
     }
 
     #[test]

@@ -1336,6 +1336,22 @@ impl<'a> TuiController<'a> {
                 self.needs_render = true;
             }
             Err(error) if is_provider_prompt => {
+                // Remove the empty assistant placeholder that was optimistically
+                // inserted before the provider request started.  If streaming had
+                // already delivered partial content the message would be non-empty
+                // and this check would not fire, so only a truly blank stub is
+                // removed.  The UserText entry that immediately precedes it is
+                // preserved so the user can see which prompt triggered the error.
+                if self
+                    .state
+                    .messages
+                    .last()
+                    .is_some_and(|msg| {
+                        matches!(&msg.payload, MessagePayload::AssistantText { content } if content.is_empty())
+                    })
+                {
+                    self.state.messages.pop();
+                }
                 // Persist the error into history so the user can see it even
                 // after scrolling; then leave the prompt cleared.
                 let sanitized = sanitize_error_for_display(&error.to_string());
@@ -4917,12 +4933,10 @@ impl<'a> TuiController<'a> {
     /// so that the scroll state stays accurate without building a full view.
     pub(super) fn on_terminal_resize(&mut self, width: u16, height: u16) {
         self.last_terminal_size = (width, height);
-        // Box prompt height: top border + content rows + bottom border.
-        let prompt_lines = self.prompt.text().lines().count().max(1);
-        let uncapped = u16::try_from(prompt_lines)
-            .unwrap_or(u16::MAX)
-            .saturating_add(2);
-        let cap = (height / 3).max(3);
+        // Mirror ShellView::prompt_height() + the renderer's one-third cap so
+        // scroll_state.last_visible_lines matches the actual messages area.
+        let uncapped = controller_prompt_height(&self.prompt.text());
+        let cap = (height / 3).max(6); // matches (main_area.height / 3).max(6) in render_shell
         let warning_height = u16::from(context_warning_visible(&self.state));
         let prompt_height = uncapped
             .saturating_add(warning_height)
@@ -4965,11 +4979,10 @@ impl<'a> TuiController<'a> {
         if width == 0 || height == 0 {
             return Rect::new(0, 0, 0, 0);
         }
-        let prompt_lines = self.prompt.text().lines().count().max(1);
-        let uncapped = u16::try_from(prompt_lines)
-            .unwrap_or(u16::MAX)
-            .saturating_add(2);
-        let cap = (height / 3).max(3);
+        // Use the same helper as on_terminal_resize so the hit-test rect for
+        // mouse wheel events is always consistent with the rendered layout.
+        let uncapped = controller_prompt_height(&self.prompt.text());
+        let cap = (height / 3).max(6);
         let warning_height = u16::from(context_warning_visible(&self.state));
         let prompt_height = uncapped
             .saturating_add(warning_height)
@@ -5099,6 +5112,25 @@ fn context_warning_visible(state: &AppState) -> bool {
         .is_some_and(|max_tokens| {
             state.costs.usage.total_tokens().saturating_mul(100) / max_tokens >= 75
         })
+}
+
+/// Mirrors `ShellView::prompt_height()` for a raw prompt string.
+///
+/// Returns the number of rows the prompt box will occupy: one row per logical
+/// line (using `split('\n')` to match the renderer so trailing newlines from
+/// Shift+Enter count as a visible blank row) plus the top border, integrated
+/// footer row, and bottom border (`+ 3`).  Minimum is 4.
+///
+/// Using this helper in `on_terminal_resize` and `transcript_messages_rect`
+/// keeps the controller's prompt-height estimate consistent with the renderer
+/// so that `scroll_state.last_visible_lines` and the mouse-hit-test rect are
+/// always accurate.
+fn controller_prompt_height(prompt_text: &str) -> u16 {
+    let line_count = prompt_text.split('\n').count().max(1);
+    u16::try_from(line_count)
+        .unwrap_or(u16::MAX)
+        .saturating_add(3) // top border + integrated footer row + bottom border
+        .max(4) // minimum boxed height: border + 1 content row + footer + border
 }
 
 fn format_token_count(value: u64) -> String {
