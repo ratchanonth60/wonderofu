@@ -1074,10 +1074,7 @@ mod tests {
         let (merged, project_path) = McpConfigStore::new(&storage)
             .read_with_project(&project, None)
             .expect("read_with_project");
-        assert!(
-            project_path.is_some(),
-            "should detect project .mcp.json"
-        );
+        assert!(project_path.is_some(), "should detect project .mcp.json");
         assert!(
             merged.server("project-only").is_some(),
             "project-only server must be visible after merge"

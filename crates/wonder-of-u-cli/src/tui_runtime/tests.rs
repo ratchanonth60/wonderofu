@@ -6172,8 +6172,7 @@ fn controller_resize_visible_lines_matches_renderer_layout() {
     // capped = 5.  ShellLayout::split(Rect(0,0,80,24), 5):
     //   chrome = 1, available = 23, messages = 23 - 5 = 18.
     assert_eq!(
-        controller.scroll_state.last_visible_lines,
-        18,
+        controller.scroll_state.last_visible_lines, 18,
         "last_visible_lines must equal the renderer's messages-area height (18) for 80×24 with 2-line prompt"
     );
 }
@@ -6261,13 +6260,11 @@ fn controller_mouse_scroll_on_prompt_border_row_does_not_scroll() {
 fn cursor_is_one_row_below_first_after_trailing_newline() {
     // Compute the cursor position for "first\n" with the cursor at the end
     // (position 6, just after the '\n').
-    let (_, cursor_y_trailing) =
-        prompt_cursor_position(80, 24, "first\n", 6, false, false);
+    let (_, cursor_y_trailing) = prompt_cursor_position(80, 24, "first\n", 6, false, false);
 
     // Compute the cursor position for "first\n" with the cursor *on* the
     // text (position 5, just before the '\n').
-    let (_, cursor_y_on_text) =
-        prompt_cursor_position(80, 24, "first\n", 5, false, false);
+    let (_, cursor_y_on_text) = prompt_cursor_position(80, 24, "first\n", 5, false, false);
 
     // The cursor after the '\n' must be exactly one row below the text cursor.
     assert_eq!(
@@ -7537,7 +7534,10 @@ fn controller_provider_failure_appends_error_message_and_clears_prompt() {
         "ProviderError must be preceded by at least one message"
     );
     assert!(
-        matches!(payloads[provider_error_idx - 1], MessagePayload::UserText { .. }),
+        matches!(
+            payloads[provider_error_idx - 1],
+            MessagePayload::UserText { .. }
+        ),
         "the message immediately before ProviderError must be UserText, got: {:?}",
         payloads[provider_error_idx - 1]
     );

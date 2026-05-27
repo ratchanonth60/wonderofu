@@ -179,8 +179,7 @@ mod tests {
         assert!(!pool.clients.contains_key(&key_b));
         // And crucially the two keys must differ.
         assert_ne!(
-            key_a,
-            key_b,
+            key_a, key_b,
             "distinct server configs must not share a cache key"
         );
     }
