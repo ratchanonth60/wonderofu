@@ -2753,7 +2753,7 @@ fn controller_executes_queued_plan_prompt() {
     let dir = unique_test_dir("tui-slash-plan-prompt");
     let (api_base, handle) = spawn_json_sequence_server(
         |_index, _headers, body| {
-            assert_eq!(body["model"], "claude-3-7-sonnet-latest");
+            assert_eq!(body["model"], "claude-sonnet-4-6");
             assert_eq!(
                 body.pointer("/messages/0/content/0/text")
                     .and_then(Value::as_str),
@@ -2778,7 +2778,7 @@ fn controller_executes_queued_plan_prompt() {
             .to_string(),
         ],
     );
-    write_provider_config_for(&dir, "anthropic", "claude-3-7-sonnet-latest", &api_base);
+    write_provider_config_for(&dir, "anthropic", "claude-sonnet-4-6", &api_base);
     let registry = commands::registry(Some(dir.clone())).expect("registry");
     let mut controller = TuiController::new(
         test_context(&dir),
@@ -2873,7 +2873,7 @@ fn queued_commands_view_updates_as_prompts_drain() {
             .to_string(),
         ],
     );
-    write_provider_config_for(&dir, "anthropic", "claude-3-7-sonnet-latest", &api_base);
+    write_provider_config_for(&dir, "anthropic", "claude-sonnet-4-6", &api_base);
     let registry = commands::registry(Some(dir.clone())).expect("registry");
     let mut controller = TuiController::new(
         test_context(&dir),
@@ -3126,7 +3126,7 @@ fn controller_submits_prompt_and_persists_session() {
     let dir = unique_test_dir("tui-prompt-submit");
     let (api_base, handle) = spawn_json_sequence_server(
         |_index, _headers, body| {
-            assert_eq!(body["model"], "claude-3-7-sonnet-latest");
+            assert_eq!(body["model"], "claude-sonnet-4-6");
             assert_eq!(
                 body.pointer("/messages/0/content/0/text")
                     .and_then(Value::as_str),
@@ -3156,7 +3156,7 @@ fn controller_submits_prompt_and_persists_session() {
             .to_string(),
         ],
     );
-    write_provider_config_for(&dir, "anthropic", "claude-3-7-sonnet-latest", &api_base);
+    write_provider_config_for(&dir, "anthropic", "claude-sonnet-4-6", &api_base);
     let registry = commands::registry(Some(dir.clone())).expect("registry");
     let mut controller = TuiController::new(
         test_context(&dir),
@@ -3192,7 +3192,7 @@ fn controller_submits_prompt_and_persists_session() {
     assert_eq!(controller.state.provider.as_deref(), Some("anthropic"));
     assert_eq!(
         controller.state.model.as_deref(),
-        Some("claude-3-7-sonnet-latest")
+        Some("claude-sonnet-4-6")
     );
     assert_eq!(
         controller.status_note.as_deref(),
@@ -4792,7 +4792,7 @@ fn controller_preserves_restored_provider_selection_on_resume() {
     let mut state = AppState::new(dir.clone());
     state.set_provider_context(
         Some("anthropic".into()),
-        Some("claude-3-7-sonnet-latest".into()),
+        Some("claude-sonnet-4-6".into()),
         AuthState::default(),
     );
     let store = TranscriptStore::new(&dir);
@@ -4822,7 +4822,7 @@ fn controller_preserves_restored_provider_selection_on_resume() {
     assert_eq!(controller.state.provider.as_deref(), Some("anthropic"));
     assert_eq!(
         controller.state.model.as_deref(),
-        Some("claude-3-7-sonnet-latest")
+        Some("claude-sonnet-4-6")
     );
     assert!(controller.state.auth.is_ready());
     // Provider/runtime details now live in state rather than the compact footer.
@@ -4880,7 +4880,7 @@ fn controller_brief_mode_injects_system_prompt_once() {
             .to_string(),
         ],
     );
-    write_provider_config_for(&dir, "anthropic", "claude-3-7-sonnet-latest", &api_base);
+    write_provider_config_for(&dir, "anthropic", "claude-sonnet-4-6", &api_base);
     let registry = commands::registry(Some(dir.clone())).expect("registry");
     let mut controller = TuiController::new(
         test_context(&dir),

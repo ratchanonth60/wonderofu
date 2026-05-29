@@ -2452,6 +2452,8 @@ mod tests {
 
     #[test]
     fn login_and_model_commands_drive_ready_status() {
+        let _anthropic = EnvVarGuard::set("ANTHROPIC_API_KEY", "");
+        let _gemini = EnvVarGuard::set("GEMINI_API_KEY", "");
         let dir = unique_test_dir("cli-provider");
         let storage_dir = dir.to_string_lossy().into_owned();
 
@@ -2505,6 +2507,9 @@ mod tests {
 
     #[test]
     fn prompt_command_executes_openai_and_persists_session() {
+        let _anthropic = EnvVarGuard::set("ANTHROPIC_API_KEY", "");
+        let _openai = EnvVarGuard::set("OPENAI_API_KEY", "");
+        let _gemini = EnvVarGuard::set("GEMINI_API_KEY", "");
         let dir = unique_test_dir("cli-prompt");
         let storage_dir = dir.to_string_lossy().into_owned();
         let (api_base, server) = spawn_json_server(
@@ -2588,7 +2593,7 @@ mod tests {
 
         let text = String::from_utf8(output).expect("utf8");
         assert!(text.contains("Runtime reply"));
-        assert!(text.contains("provider_selection=openai:gpt-4.1"));
+        assert!(text.contains("provider_selection=openai:gpt-5.5"));
         assert!(text.contains("persisted=true"));
         assert!(text.contains("total_tokens=13"));
 
@@ -2615,6 +2620,9 @@ mod tests {
 
     #[test]
     fn prompt_command_generates_local_suggestions_without_extra_network_requests() {
+        let _anthropic = EnvVarGuard::set("ANTHROPIC_API_KEY", "");
+        let _openai = EnvVarGuard::set("OPENAI_API_KEY", "");
+        let _gemini = EnvVarGuard::set("GEMINI_API_KEY", "");
         let dir = unique_test_dir("cli-prompt-suggestion");
         let storage_dir = dir.to_string_lossy().into_owned();
         let (api_base, server) = spawn_json_server(
@@ -2696,6 +2704,9 @@ mod tests {
 
     #[test]
     fn prompt_command_runs_tool_loop_and_persists_tool_messages() {
+        let _anthropic = EnvVarGuard::set("ANTHROPIC_API_KEY", "");
+        let _openai = EnvVarGuard::set("OPENAI_API_KEY", "");
+        let _gemini = EnvVarGuard::set("GEMINI_API_KEY", "");
         let dir = unique_test_dir("cli-prompt-tool-loop");
         let storage_dir = dir.to_string_lossy().into_owned();
         let (api_base, server) = spawn_json_server_sequence(
@@ -2868,6 +2879,9 @@ mod tests {
 
     #[test]
     fn skills_run_executes_bundled_skill_with_prompt_persistence() {
+        let _anthropic = EnvVarGuard::set("ANTHROPIC_API_KEY", "");
+        let _openai = EnvVarGuard::set("OPENAI_API_KEY", "");
+        let _gemini = EnvVarGuard::set("GEMINI_API_KEY", "");
         let dir = unique_test_dir("cli-skills-run");
         let storage_dir = dir.to_string_lossy().into_owned();
         let (api_base, server) = spawn_json_server(
@@ -2954,7 +2968,7 @@ mod tests {
         assert!(text.contains("Skill runtime reply"));
         assert!(text.contains("skill=workspace-audit"));
         assert!(text.contains("allowed_tools=glob,grep,file_read"));
-        assert!(text.contains("provider_selection=openai:gpt-4.1"));
+        assert!(text.contains("provider_selection=openai:gpt-5.5"));
         assert!(text.contains("persisted=true"));
 
         let session_id = SessionId::parse(extract_value(&text, "session_id=")).expect("session id");
@@ -2976,6 +2990,9 @@ mod tests {
 
     #[test]
     fn skills_run_tools_restricts_tool_registry_to_manifest_allowed_tools() {
+        let _anthropic = EnvVarGuard::set("ANTHROPIC_API_KEY", "");
+        let _openai = EnvVarGuard::set("OPENAI_API_KEY", "");
+        let _gemini = EnvVarGuard::set("GEMINI_API_KEY", "");
         let dir = unique_test_dir("cli-skills-run-tools");
         let storage_dir = dir.to_string_lossy().into_owned();
         let (api_base, server) = spawn_json_server_sequence(

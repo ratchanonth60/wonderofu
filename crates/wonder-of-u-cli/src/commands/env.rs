@@ -135,6 +135,9 @@ mod tests {
 
     #[test]
     fn env_show_works_with_storage_dir() {
+        let _anthropic = EnvVarGuard::remove("ANTHROPIC_API_KEY");
+        let _openai = EnvVarGuard::remove("OPENAI_API_KEY");
+        let _github = EnvVarGuard::remove("GITHUB_TOKEN");
         let dir = unique_test_dir("cli-env-show");
         SettingsStore::new(&dir)
             .write(&AgentSettings {
