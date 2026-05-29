@@ -73,6 +73,8 @@ pub mod task_notification;
 pub mod todo_task;
 /// Token budget heuristics for context-window management.
 pub mod token_budget;
+/// Contextual tips shown to the user during idle or spinner periods.
+pub mod tips;
 /// Provides tool support
 pub mod tool;
 /// Provides treeify support
@@ -193,6 +195,11 @@ pub use token_budget::{
     MODEL_CONTEXT_WINDOW_DEFAULT, WARNING_THRESHOLD_BUFFER_TOKENS, bytes_per_token_for_extension,
     context_window_for_model, effective_context_window, rough_token_count,
     rough_token_count_for_extension,
+};
+/// Re-exports items from `tips`
+pub use tips::{
+    BUILTIN_TIPS, NEW_USER_STARTUP_THRESHOLD, Tip, TipCondition, TipContext, is_tip_eligible,
+    render_tip, select_next_tip,
 };
 /// Re-exports items from `tool`
 pub use tool::{
