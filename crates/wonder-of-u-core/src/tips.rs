@@ -173,7 +173,7 @@ pub struct TipContext {
 /// - it has been shown within its `cooldown_sessions` window.
 #[must_use]
 pub fn is_tip_eligible(tip: &Tip, ctx: &TipContext, sessions_since_shown: u64) -> bool {
-    if sessions_since_shown < tip.cooldown_sessions as u64 {
+    if sessions_since_shown < tip.cooldown_sessions {
         return false;
     }
 
