@@ -3190,10 +3190,7 @@ fn controller_submits_prompt_and_persists_session() {
         MessagePayload::AssistantText { content } if content == "hello back"
     ));
     assert_eq!(controller.state.provider.as_deref(), Some("anthropic"));
-    assert_eq!(
-        controller.state.model.as_deref(),
-        Some("claude-sonnet-4-6")
-    );
+    assert_eq!(controller.state.model.as_deref(), Some("claude-sonnet-4-6"));
     assert_eq!(
         controller.status_note.as_deref(),
         Some("model response recorded")
@@ -4820,10 +4817,7 @@ fn controller_preserves_restored_provider_selection_on_resume() {
     .expect("controller");
 
     assert_eq!(controller.state.provider.as_deref(), Some("anthropic"));
-    assert_eq!(
-        controller.state.model.as_deref(),
-        Some("claude-sonnet-4-6")
-    );
+    assert_eq!(controller.state.model.as_deref(), Some("claude-sonnet-4-6"));
     assert!(controller.state.auth.is_ready());
     // Provider/runtime details now live in state rather than the compact footer.
     assert!(controller.view().footer.contains("shift+tab to cycle"));
