@@ -168,6 +168,8 @@ fn truncate_str(s: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    use wonder_of_u_test_support::EnvVarGuard;
+
     use super::*;
 
     #[test]
@@ -208,19 +210,18 @@ mod tests {
 
     #[test]
     fn generate_returns_none_without_provider_auth() {
-        // Without ANTHROPIC_API_KEY set and no stored credentials, resolve_execution
-        // will fail and the function should gracefully return None.
+        // Remove the key for the duration of this test so resolve_execution fails
+        // deterministically, regardless of the developer's environment.
+        let _guard = EnvVarGuard::remove("ANTHROPIC_API_KEY");
+
         let runtime = ProviderRuntime::new();
-        let entries = vec![ToolSummaryEntry {
+        let entries = [ToolSummaryEntry {
             name: "file_read".into(),
             input: serde_json::json!({"path": "Cargo.toml"}),
             output: "content here".into(),
         }];
-        // In CI / local without a key this must return None, never panic.
         let result = generate_tool_use_summary(&entries, &runtime, None);
-        // We can't assert Some(...) here (no real key), but we assert it doesn't panic
-        // and returns an Option.
-        let _ = result;
+        assert!(result.is_none());
     }
 
     #[test]
