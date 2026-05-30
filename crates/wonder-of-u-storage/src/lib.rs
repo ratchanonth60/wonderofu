@@ -36,6 +36,10 @@ pub use todo_task::TodoTaskStore;
 pub mod mailbox;
 pub use mailbox::MailboxStore;
 
+/// Persistent history for the contextual tips system.
+pub mod tips;
+pub use tips::{TIPS_HISTORY_SCHEMA_VERSION, TipsHistory, TipsStore};
+
 use std::{
     collections::BTreeMap,
     ffi::OsStr,

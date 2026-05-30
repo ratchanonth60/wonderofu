@@ -147,6 +147,9 @@ pub struct PickerListEntry {
     pub tag: Option<String>,
     /// Stores the selected
     pub selected: bool,
+    /// Optional group header rendered above this entry.
+    /// Only the first entry of each provider group should carry a header.
+    pub group_header: Option<String>,
 }
 /// Represents picker list view
 #[derive(Clone, Debug, Default, Eq, PartialEq)]

@@ -740,13 +740,9 @@ impl ProviderRegistry {
                 "AVIAN_API_KEY",
                 "gpt-4o-mini",
             ),
-            (
-                "opencode",
-                "OpenCode",
-                "https://opencode.ai/api/v1",
-                "OPENCODE_API_KEY",
-                "gpt-4o",
-            ),
+            // OpenCode Zen is registered separately below with a curated
+            // model catalogue and strict validation so the model picker
+            // shows each available model explicitly.
             // Synthetic AI – OpenAI-compatible gateway; base URL is approximate.
             // Authenticates with SYNTHETIC_API_KEY.
             (
@@ -768,6 +764,92 @@ impl ProviderRegistry {
                 ))
                 .expect("builtin gateway provider");
         }
+
+        // ── OpenCode Zen & Go — curated model catalogue ───────────────────────
+        // Zen (pay-as-you-go) and Go ($10/mo subscription).
+        //
+        // Go splits into two providers because its models use two different
+        // wire protocols:
+        //   - OpenAI-compatible  (/chat/completions): GLM, Kimi, DeepSeek, MiMo
+        //   - Anthropic-compatible (/messages):       MiniMax, Qwen
+        //
+        // The api_base differs: OpenAI expects /v1 prefix, Anthropic strips it
+        // because the protocol already appends /v1/messages.
+
+        fn opencode_model_catalogue() -> Vec<ModelDescriptor> {
+            vec![
+                ModelDescriptor::new("glm-5.1", "GLM-5.1 (DeepInfra / Fireworks AI / Z.ai)"),
+                ModelDescriptor::new("glm-5", "GLM-5 (DeepInfra / Fireworks AI / Z.ai)"),
+                ModelDescriptor::new("kimi-k2.5", "Kimi K2.5 (Moonshot AI)"),
+                ModelDescriptor::new("kimi-k2.6", "Kimi K2.6 (Moonshot AI)"),
+                ModelDescriptor::new("mimo-v2.5-pro", "MiMo-V2.5-Pro (Xiaomi MiMo)"),
+                ModelDescriptor::new("mimo-v2.5", "MiMo-V2.5 (Xiaomi MiMo)"),
+                ModelDescriptor::new("qwen3.7-max", "Qwen3.7 Max (Alibaba Cloud Model Studio)"),
+                ModelDescriptor::new("qwen3.6-plus", "Qwen3.6 Plus (Alibaba Cloud Model Studio)"),
+                ModelDescriptor::new("minimax-m2.7", "MiniMax M2.7 (MiniMax)"),
+                ModelDescriptor::new("minimax-m2.5", "MiniMax M2.5 (MiniMax)"),
+                ModelDescriptor::new("deepseek-v4-pro", "DeepSeek V4 Pro (DeepSeek)"),
+                ModelDescriptor::new("deepseek-v4-flash", "DeepSeek V4 Flash (DeepSeek)"),
+            ]
+        }
+
+        fn opencode_go_anthropic_models() -> Vec<ModelDescriptor> {
+            vec![
+                ModelDescriptor::new("minimax-m2.7", "MiniMax M2.7 (MiniMax)"),
+                ModelDescriptor::new("minimax-m2.5", "MiniMax M2.5 (MiniMax)"),
+                ModelDescriptor::new("qwen3.7-max", "Qwen3.7 Max (Alibaba Cloud Model Studio)"),
+                ModelDescriptor::new("qwen3.6-plus", "Qwen3.6 Plus (Alibaba Cloud Model Studio)"),
+            ]
+        }
+
+        registry
+            .register(ProviderDescriptor {
+                id: "opencode-zen".into(),
+                display_name: "OpenCode Zen".into(),
+                auth_kind: AuthMaterialKind::ApiKey,
+                default_model: "deepseek-v4-pro".into(),
+                models: opencode_model_catalogue(),
+                api_base: Some("https://opencode.ai/zen/v1".into()),
+                api_key_env: Some("OPENCODE_API_KEY".into()),
+                wire_protocol: WireProtocol::OpenAiCompat,
+                strict_model_validation: true,
+                endpoint_env: None,
+            })
+            .expect("builtin provider");
+
+        registry
+            .register(ProviderDescriptor {
+                id: "opencode-go".into(),
+                display_name: "OpenCode Go".into(),
+                auth_kind: AuthMaterialKind::ApiKey,
+                default_model: "deepseek-v4-pro".into(),
+                models: opencode_model_catalogue(),
+                api_base: Some("https://opencode.ai/zen/go/v1".into()),
+                api_key_env: Some("OPENCODE_GO_API_KEY".into()),
+                wire_protocol: WireProtocol::OpenAiCompat,
+                strict_model_validation: true,
+                endpoint_env: None,
+            })
+            .expect("builtin provider");
+
+        registry
+            .register(ProviderDescriptor {
+                id: "opencode-go-anthropic".into(),
+                display_name: "OpenCode Go (Anthropic)".into(),
+                auth_kind: AuthMaterialKind::ApiKey,
+                default_model: "minimax-m2.7".into(),
+                models: opencode_go_anthropic_models(),
+                // No /v1 suffix — AnthropicCompat appends /v1/messages.
+                api_base: Some("https://opencode.ai/zen/go".into()),
+                // Uses the same Go subscription API key as opencode-go.
+                // No api_key_env to avoid auto-select collision; configure
+                // via /setup or credential store.
+                api_key_env: None,
+                wire_protocol: WireProtocol::AnthropicCompat,
+                strict_model_validation: true,
+                endpoint_env: None,
+            })
+            .expect("builtin provider");
 
         registry
             .register(ProviderDescriptor {
@@ -2399,7 +2481,15 @@ mod tests {
         // Providers with a curated model catalogue enforce strict validation.
         // Gateway/local/native-dynamic providers are intentionally non-strict.
         let registry = ProviderRegistry::builtin();
-        for id in ["copilot", "openai", "anthropic", "bedrock"] {
+        for id in [
+            "copilot",
+            "openai",
+            "anthropic",
+            "bedrock",
+            "opencode-zen",
+            "opencode-go",
+            "opencode-go-anthropic",
+        ] {
             let provider = registry.get(id).unwrap_or_else(|| panic!("{id} provider"));
             assert!(
                 provider.strict_model_validation,
@@ -2433,7 +2523,6 @@ mod tests {
             "ionet",
             "groq",
             "avian",
-            "opencode",
         ] {
             let provider = registry
                 .get(id)
@@ -2459,7 +2548,6 @@ mod tests {
             "ionet",
             "groq",
             "avian",
-            "opencode",
         ] {
             let provider = registry
                 .get(id)
@@ -3339,7 +3427,8 @@ mod tests {
             ("IONET_API_KEY", "test-ionet-key", "ionet"),
             ("GROQ_API_KEY", "test-groq-key", "groq"),
             ("AVIAN_API_KEY", "test-avian-key", "avian"),
-            ("OPENCODE_API_KEY", "test-opencode-key", "opencode"),
+            ("OPENCODE_API_KEY", "test-opencode-key", "opencode-zen"),
+            ("OPENCODE_GO_API_KEY", "test-opencode-go-key", "opencode-go"),
         ];
 
         let resolver = ProviderResolver::builtin();
