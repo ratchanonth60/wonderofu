@@ -22,7 +22,8 @@ use wonder_of_u_core::{
 use wonder_of_u_core::{MailboxKind, MailboxMessage};
 use wonder_of_u_storage::{
     AgentTaskResultStore, CostStore, FleetStore, MailboxStore, SessionCostLedger,
-    SessionMemoryIndexStore, SessionMetadata, SessionSnapshot, TaskStore, TranscriptStore,
+    SessionMemoryIndexStore, SessionMetadata, SessionSnapshot, StoragePaths, TaskStore,
+    TranscriptStore,
 };
 use wonder_of_u_tools::{builtin_registry_with_mcp_catalog, provider_tool_specs};
 
@@ -216,6 +217,12 @@ pub(crate) fn execute_prompt_run(
         input.entrypoint,
     )?;
 
+    // Best-effort: write a session-link sidecar so the parent process can map
+    // this agent subprocess's task_id to its session transcript for live
+    // agent-summary generation.  Errors are silently ignored — this is a
+    // non-critical optimisation path.
+    let _ = try_write_session_link(storage_dir, &state);
+
     // ── inbox polling ─────────────────────────────────────────────────────────
     // When this process was launched as a named agent subprocess, check for
     // any unread mailbox messages and prepend them to the conversation turn so
@@ -329,6 +336,45 @@ fn try_write_agent_task_result(
     };
 
     AgentTaskResultStore::new(storage_dir).write_result(&result)
+}
+
+/// Writes a `{task_id}.session_link` sidecar containing the current session id.
+///
+/// Called once at agent startup so the parent TUI process can locate the
+/// transcript for live agent-summary generation.  Requires both a `storage_dir`
+/// and a `WONDER_OF_U_TASK_ID` env var to be set; silently returns `Ok(())`
+/// when either is absent.
+fn try_write_session_link(storage_dir: Option<&Path>, state: &AppState) -> Result<()> {
+    let Some(storage_dir) = storage_dir else {
+        return Ok(());
+    };
+    let task_id_str = match env::var("WONDER_OF_U_TASK_ID") {
+        Ok(v) => v,
+        Err(_) => return Ok(()),
+    };
+    let task_id = task_id_str
+        .parse::<TaskId>()
+        .map_err(|e| WonderError::validation(format!("invalid WONDER_OF_U_TASK_ID: {e}")))?;
+
+    let paths = StoragePaths::new(storage_dir);
+    // Ensure the results directory exists before writing.
+    let results_dir = paths.task_results_dir();
+    std::fs::create_dir_all(&results_dir)?;
+
+    let link_path = paths.task_session_link_path(task_id);
+    let session_id_str = state.session.id.to_string();
+    // Atomic write: write to a .next temp file then rename so readers never see
+    // a partial write.
+    let pending = link_path.with_extension("session_link.next");
+    {
+        use std::io::Write as _;
+        let mut f = std::fs::File::create(&pending)?;
+        f.write_all(session_id_str.as_bytes())?;
+        f.flush()?;
+        f.sync_all()?;
+    }
+    std::fs::rename(pending, link_path)?;
+    Ok(())
 }
 
 pub(crate) fn execute_prompt_turn(
@@ -2816,6 +2862,57 @@ mod tests {
                 .unwrap(),
             0,
             "unread count must be zero after first poll"
+        );
+    }
+
+    #[test]
+    fn try_write_session_link_writes_session_id_atomically() {
+        let dir = unique_test_dir("session_link_test");
+        let state = AppState::new(dir.clone());
+        let session_id = state.session.id;
+        let task_id = TaskId::new();
+
+        let _guard = EnvVarGuard::set("WONDER_OF_U_TASK_ID", task_id.to_string());
+
+        try_write_session_link(Some(dir.as_path()), &state)
+            .expect("try_write_session_link should succeed");
+
+        let paths = StoragePaths::new(dir.as_path());
+        let link_path = paths.task_session_link_path(task_id);
+        assert!(link_path.exists(), "session_link file must be created");
+
+        let contents = std::fs::read_to_string(&link_path).expect("read session_link file");
+        assert_eq!(
+            contents.trim(),
+            session_id.to_string(),
+            "session_link must contain the session id"
+        );
+
+        // Temp file must be cleaned up (atomic rename).
+        let pending = link_path.with_extension("session_link.next");
+        assert!(
+            !pending.exists(),
+            ".next temp file must not remain after rename"
+        );
+    }
+
+    #[test]
+    fn try_write_session_link_noop_without_env_var() {
+        let dir = unique_test_dir("session_link_noop");
+        let state = AppState::new(dir.clone());
+
+        // Ensure the env var is absent.
+        let _guard = EnvVarGuard::remove("WONDER_OF_U_TASK_ID");
+
+        try_write_session_link(Some(dir.as_path()), &state)
+            .expect("should succeed silently with no env var");
+
+        // No results dir should have been created.
+        let paths = StoragePaths::new(dir.as_path());
+        let results_dir = paths.task_results_dir();
+        assert!(
+            !results_dir.exists(),
+            "results dir must not be created when env var absent"
         );
     }
 }

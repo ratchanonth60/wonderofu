@@ -566,6 +566,13 @@ fn format_resolved_key(result: ResolvedKey) -> String {
             TuiVimCommand::RepeatFind => "repeat last find".into(),
             TuiVimCommand::RepeatFindReverse => "repeat last find backward".into(),
             TuiVimCommand::CancelPending => "cancel pending operator".into(),
+            TuiVimCommand::DeleteToLineEnd => "delete to end of line".into(),
+            TuiVimCommand::ChangeToLineEnd => "change to end of line".into(),
+            TuiVimCommand::DeleteCharBefore => "delete char before cursor".into(),
+            TuiVimCommand::ToggleCase => "toggle case of char at cursor".into(),
+            TuiVimCommand::OpenLineBelow => "open new line below".into(),
+            TuiVimCommand::OpenLineAbove => "open new line above".into(),
+            TuiVimCommand::ReplaceChar => "replace char at cursor".into(),
         },
     }
 }

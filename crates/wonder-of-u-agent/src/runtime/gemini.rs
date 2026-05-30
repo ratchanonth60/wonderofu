@@ -18,7 +18,7 @@ use crate::ResolvedProviderExecution;
 use super::{
     CompletionRequest, CompletionResponse, HttpRequest, ProviderToolCall, ProviderToolSpec,
     StreamingHttpResponse, ToolCallBatchResponse, ToolUseRequest, ToolUseResponse, consume_sse,
-    context_window_for_model,
+    context_window_for_model, provider_input_schema,
 };
 
 // ─── Constants ────────────────────────────────────────────────────────────────
@@ -239,7 +239,7 @@ pub(super) fn build_gemini_function_declarations(tools: &[ProviderToolSpec]) -> 
                 json!({
                     "name": tool.name,
                     "description": tool.description,
-                    "parameters": tool.input_schema,
+                    "parameters": provider_input_schema(&tool.input_schema),
                 })
             })
             .collect::<Vec<_>>()
@@ -282,6 +282,19 @@ pub(super) fn parse_gemini_response(
         .pointer("/candidates/0/finishReason")
         .and_then(Value::as_str)
         .map(ToString::to_string);
+
+    // Mirror the streaming path: an empty response is always an error.  This
+    // surfaces SAFETY blocks, empty-candidate replies, and other provider-side
+    // anomalies rather than returning a successful empty string to the caller.
+    if output_text.trim().is_empty() {
+        let finish_info = stop_reason
+            .as_deref()
+            .map(|r| format!(" (finishReason: {r})"))
+            .unwrap_or_default();
+        return Err(WonderError::validation(format!(
+            "Gemini response did not contain any text content{finish_info}"
+        )));
+    }
 
     let input_tokens = json
         .pointer("/usageMetadata/promptTokenCount")
@@ -361,6 +374,19 @@ pub(super) fn parse_gemini_tool_use_response(
     };
 
     if calls.is_empty() {
+        // No function calls: this must be the model's final text answer.
+        // If the text is also empty the response is unusable (e.g. SAFETY
+        // block or an unexpected empty candidate); return an error so the
+        // caller is never handed a successful but blank result.
+        if output_text.trim().is_empty() {
+            let finish_info = stop_reason
+                .as_deref()
+                .map(|r| format!(" (finishReason: {r})"))
+                .unwrap_or_default();
+            return Err(WonderError::validation(format!(
+                "Gemini tool-use response contained no function calls and no text content{finish_info}"
+            )));
+        }
         return Ok(ToolUseResponse::Final(CompletionResponse {
             provider: resolved.provider_id().to_string(),
             model: resolved.model().to_string(),

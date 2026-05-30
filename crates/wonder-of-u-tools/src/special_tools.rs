@@ -912,7 +912,7 @@ impl Tool for McpTool {
 
     async fn execute(
         &self,
-        _context: ToolContext,
+        context: ToolContext,
         use_id: ToolUseId,
         input: Value,
     ) -> Result<ToolResult> {
@@ -929,6 +929,7 @@ impl Tool for McpTool {
                     tool_name,
                     input.arguments,
                     &storage_root,
+                    &context.cwd,
                 )
             }
             // Missing one or both fields: return the source-compat stub.
@@ -1526,8 +1527,11 @@ fn dispatch_mcp_tool(
     tool_name: &str,
     arguments: Value,
     storage_root: &Path,
+    cwd: &Path,
 ) -> Result<ToolResult> {
-    let config = McpConfigStore::new(storage_root).read()?;
+    // Use the project-aware merged config so that servers declared only in a
+    // project `.mcp.json` are reachable without requiring a global registration.
+    let (config, _) = McpConfigStore::new(storage_root).read_with_project(cwd, None)?;
 
     let Some(server) = config.server(server_name) else {
         return Ok(make_dispatch_failure(
@@ -1960,6 +1964,7 @@ mod tests {
             "some-tool",
             serde_json::json!({ "arg": "value" }),
             &dir,
+            &dir,
         )
         .expect("dispatch returns Ok even for soft failures");
 
@@ -1996,6 +2001,7 @@ mod tests {
             "echo",
             serde_json::json!({ "text": "hello" }),
             &dir,
+            &dir,
         )
         .expect("dispatch returns Ok for disabled server");
 
@@ -2003,6 +2009,43 @@ mod tests {
         assert!(result.content.contains("demo"));
         assert_eq!(result.metadata["reason"], "server_disabled");
         assert_eq!(result.metadata["server"], "demo");
+    }
+
+    /// Regression: dispatch must find a server declared only in a project
+    /// `.mcp.json` when `cwd` points to (or under) the project directory.
+    /// A server that is present but disabled returns "server_disabled", which
+    /// proves the project config was loaded — not "server_not_configured".
+    #[test]
+    fn dispatch_finds_server_from_project_dot_mcp_json() {
+        // Global storage dir has no mcp config at all.
+        let storage = unique_test_dir("special-tools-project-mcp-storage");
+        // Project directory has a `.mcp.json` with a disabled server.
+        let project = unique_test_dir("special-tools-project-mcp-project");
+        fs::write(
+            project.join(".mcp.json"),
+            r#"{"mcpServers":{"project-server":{"command":"/nonexistent","disabled":true}}}"#,
+        )
+        .expect("write project .mcp.json");
+
+        // dispatch_mcp_tool should find "project-server" via the project config
+        // and return "server_disabled" (not "server_not_configured").
+        let result = dispatch_mcp_tool(
+            ToolUseId::new(),
+            "project-server",
+            "any-tool",
+            serde_json::json!({}),
+            &storage,
+            &project,
+        )
+        .expect("dispatch returns Ok for soft failures");
+
+        assert!(!result.success);
+        assert_eq!(
+            result.metadata["reason"], "server_disabled",
+            "project-only server must be found via .mcp.json; got: {}",
+            result.content
+        );
+        assert_eq!(result.metadata["server"], "project-server");
     }
 
     #[test]

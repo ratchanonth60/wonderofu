@@ -50,7 +50,7 @@ mod status;
 mod summary;
 pub mod tag;
 mod task_commands;
-mod task_runtime;
+pub(crate) mod task_runtime;
 pub(crate) mod terminal_setup;
 pub(crate) mod theme;
 mod tui;

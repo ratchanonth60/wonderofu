@@ -13,3 +13,5 @@ Thumbs.db
 *.swp
 
 docs/par*.csv
+.claude/*
+.opencode/*

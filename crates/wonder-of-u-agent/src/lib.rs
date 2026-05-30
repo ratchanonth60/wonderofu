@@ -1,13 +1,18 @@
 //! Provider/auth configuration foundations for wonder-of-u.
 #![warn(missing_docs)]
 
+mod agent_summary;
 mod auth;
 mod config;
 mod permissions;
 mod protocol;
 mod provider;
 mod runtime;
+/// Tool-use summary generation using a fast model.
+pub mod tool_use_summary;
 
+/// Re-exports items from `agent_summary`
+pub use agent_summary::{generate_agent_summary, read_session_link};
 /// Re-exports items from `auth`
 pub use auth::{
     AuthMaterial, AwsBearerCredentials, AwsCredentials, AwsProfileCredentials, CopilotDeviceCode,

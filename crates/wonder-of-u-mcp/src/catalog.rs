@@ -1,7 +1,7 @@
 use std::sync::{Arc, Mutex};
 
 use serde_json::Value;
-use wonder_of_u_core::{ToolKind, ToolSource, ToolSpec};
+use wonder_of_u_core::{FeatureFlag, ToolKind, ToolSource, ToolSpec};
 
 use crate::{
     McpConfig, McpResource, McpSessionPool, McpTool, build_mcp_resource_name, build_mcp_tool_name,
@@ -75,6 +75,10 @@ impl McpToolRegistration {
             ToolKind::Mcp,
         );
         spec.source = ToolSource::Mcp;
+        // Dynamic catalog tools require both the Tools and Mcp feature flags,
+        // matching the gating applied to the static resource tools.
+        spec.required_features.insert(FeatureFlag::Tools);
+        spec.required_features.insert(FeatureFlag::Mcp);
         if self
             .tool
             .annotations
@@ -202,10 +206,36 @@ pub fn discover_catalog_tools(config: &McpConfig) -> Vec<crate::DynamicMcpTool> 
 #[cfg(test)]
 mod tests {
     use serde_json::json;
-    use wonder_of_u_core::{ToolKind, ToolSource};
+    use wonder_of_u_core::{FeatureFlag, ToolKind, ToolSource};
 
     use super::*;
     use crate::McpToolAnnotations;
+
+    #[test]
+    fn catalog_tool_spec_requires_tools_and_mcp_feature_flags() {
+        let registration = McpToolRegistration::new(
+            "my-server",
+            McpTool {
+                name: "do-thing".into(),
+                description: Some("Do a thing".into()),
+                input_schema: json!({"type": "object"}),
+                output_schema: None,
+                annotations: None,
+                meta: None,
+            },
+        );
+
+        let spec = registration.tool_spec();
+
+        assert!(
+            spec.required_features.contains(&FeatureFlag::Tools),
+            "catalog tool spec must require FeatureFlag::Tools"
+        );
+        assert!(
+            spec.required_features.contains(&FeatureFlag::Mcp),
+            "catalog tool spec must require FeatureFlag::Mcp"
+        );
+    }
 
     #[test]
     fn catalog_exposes_namespaced_tool_specs() {

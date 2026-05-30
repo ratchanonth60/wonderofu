@@ -55,6 +55,9 @@ pub struct VimState {
     motion_count: Option<usize>,
     pending_operator: Option<PendingOperator>,
     pending_find: Option<FindDirection>,
+    /// `Some(true)` = inner (i), `Some(false)` = around (a); set after operator + i/a
+    pending_text_object: Option<bool>,
+    pending_replace: bool,
     register: VimRegister,
     undo_stack: Vec<BufferSnapshot>,
     redo_stack: Vec<BufferSnapshot>,
@@ -78,6 +81,8 @@ impl VimState {
             motion_count: None,
             pending_operator: None,
             pending_find: None,
+            pending_text_object: None,
+            pending_replace: false,
             register: VimRegister {
                 text: String::new(),
                 linewise: false,
@@ -106,6 +111,11 @@ impl VimState {
         resolver: &KeyBindingResolver,
         event: KeyEvent,
     ) -> VimHandleResult {
+        if self.pending_replace {
+            self.pending_replace = false;
+            return self.finish_replace(buffer, event);
+        }
+
         if let Some(direction) = self.pending_find.take() {
             return self.finish_find(buffer, event, direction);
         }
@@ -312,9 +322,9 @@ impl VimState {
                 }
                 VimHandleResult::default()
             }
-            Some(ResolvedKey::Edit(_)) | Some(ResolvedKey::InsertChar(_)) => {
-                VimHandleResult::default()
-            }
+            Some(ResolvedKey::Edit(_))
+            | Some(ResolvedKey::InsertChar(_))
+            | Some(ResolvedKey::Vim(_)) => VimHandleResult::default(),
         }
     }
 
@@ -332,6 +342,63 @@ impl VimState {
             ) {
                 return Some(self.apply_line_operator(buffer, operator));
             }
+        }
+
+        // Text object second key: object type char follows i/a
+        if let Some(is_inner) = self.pending_text_object.take() {
+            if let KeyCode::Char(ch) = event.code {
+                let chars: Vec<char> = buffer.text().chars().collect();
+                let cursor = if chars.is_empty() {
+                    0
+                } else {
+                    buffer.cursor().min(chars.len() - 1)
+                };
+                if let Some((start, end)) = find_text_object(&chars, cursor, ch, is_inner) {
+                    let operator = self.pending_operator.take()?;
+                    let result = match operator {
+                        PendingOperator::Yank => {
+                            self.register.text = buffer.range_text(start, end);
+                            self.register.linewise = false;
+                            VimHandleResult::default()
+                        }
+                        PendingOperator::Delete | PendingOperator::Change => {
+                            self.register.text = buffer.range_text(start, end);
+                            self.register.linewise = false;
+                            self.push_undo(buffer);
+                            if buffer.delete_span(start, end) {
+                                self.redo_stack.clear();
+                            }
+                            if matches!(operator, PendingOperator::Change) {
+                                self.mode = VimMode::Insert;
+                                VimHandleResult {
+                                    system: None,
+                                    mode_changed: true,
+                                }
+                            } else {
+                                VimHandleResult::default()
+                            }
+                        }
+                    };
+                    self.prefix_count = None;
+                    self.motion_count = None;
+                    return Some(result);
+                }
+            }
+            self.clear_pending();
+            return Some(VimHandleResult::default());
+        }
+
+        // Text object first key: i = inner, a = around
+        match event.code {
+            KeyCode::Char('i') => {
+                self.pending_text_object = Some(true);
+                return Some(VimHandleResult::default());
+            }
+            KeyCode::Char('a') => {
+                self.pending_text_object = Some(false);
+                return Some(VimHandleResult::default());
+            }
+            _ => {}
         }
 
         let motion = operator_motion(event)?;
@@ -437,6 +504,91 @@ impl VimState {
                 self.clear_pending();
                 VimHandleResult::default()
             }
+            VimCommand::DeleteToLineEnd => {
+                if let Some((start, end)) = buffer.normal_motion_range(Motion::LineEnd, 1) {
+                    self.register.text = buffer.range_text(start, end);
+                    self.register.linewise = false;
+                    self.push_undo(buffer);
+                    if buffer.delete_span(start, end) {
+                        self.redo_stack.clear();
+                    }
+                }
+                VimHandleResult::default()
+            }
+            VimCommand::ChangeToLineEnd => {
+                if let Some((start, end)) = buffer.normal_motion_range(Motion::LineEnd, 1) {
+                    self.register.text = buffer.range_text(start, end);
+                    self.register.linewise = false;
+                    self.push_undo(buffer);
+                    if buffer.delete_span(start, end) {
+                        self.redo_stack.clear();
+                    }
+                    self.mode = VimMode::Insert;
+                    self.clear_pending();
+                    return VimHandleResult {
+                        system: None,
+                        mode_changed: true,
+                    };
+                }
+                VimHandleResult::default()
+            }
+            VimCommand::DeleteCharBefore => {
+                if let Some((start, end)) = buffer.normal_motion_range(Motion::Left, 1) {
+                    self.register.text = buffer.range_text(start, end);
+                    self.register.linewise = false;
+                    self.push_undo(buffer);
+                    if buffer.delete_span(start, end) {
+                        self.redo_stack.clear();
+                    }
+                }
+                VimHandleResult::default()
+            }
+            VimCommand::ToggleCase => {
+                if !buffer.is_empty() {
+                    let pos = buffer.cursor().min(buffer.char_len().saturating_sub(1));
+                    let ch_str = buffer.range_text(pos, pos + 1);
+                    if let Some(ch) = ch_str.chars().next() {
+                        let toggled = toggle_case(ch).to_string();
+                        self.push_undo(buffer);
+                        buffer.delete_span(pos, pos + 1);
+                        buffer.insert_text_at(pos, &toggled);
+                        self.redo_stack.clear();
+                        // Advance cursor one position (clamped to last valid position)
+                        let new_cursor = (pos + 1).min(buffer.char_len().saturating_sub(1));
+                        buffer.set_cursor(new_cursor);
+                    }
+                }
+                VimHandleResult::default()
+            }
+            VimCommand::OpenLineBelow => {
+                self.push_undo(buffer);
+                buffer.append_line_end();
+                buffer.insert_char('\n');
+                self.redo_stack.clear();
+                self.mode = VimMode::Insert;
+                self.clear_pending();
+                VimHandleResult {
+                    system: None,
+                    mode_changed: true,
+                }
+            }
+            VimCommand::OpenLineAbove => {
+                self.push_undo(buffer);
+                let line_start = buffer.current_line_start();
+                buffer.insert_text_at(line_start, "\n");
+                buffer.set_cursor(line_start);
+                self.redo_stack.clear();
+                self.mode = VimMode::Insert;
+                self.clear_pending();
+                VimHandleResult {
+                    system: None,
+                    mode_changed: true,
+                }
+            }
+            VimCommand::ReplaceChar => {
+                self.pending_replace = true;
+                VimHandleResult::default()
+            }
             _ => VimHandleResult::default(),
         }
     }
@@ -447,6 +599,37 @@ impl VimState {
         resolver: &KeyBindingResolver,
         event: KeyEvent,
     ) -> VimHandleResult {
+        // Text object second key: set selection to object range
+        if let Some(is_inner) = self.pending_text_object.take() {
+            if let KeyCode::Char(ch) = event.code {
+                let chars: Vec<char> = buffer.text().chars().collect();
+                let cursor = if chars.is_empty() {
+                    0
+                } else {
+                    buffer.cursor().min(chars.len() - 1)
+                };
+                if let Some((start, end)) = find_text_object(&chars, cursor, ch, is_inner) {
+                    self.visual_anchor = Some(start);
+                    let visual_end = end.saturating_sub(1).min(chars.len().saturating_sub(1));
+                    buffer.set_cursor(visual_end);
+                }
+            }
+            return VimHandleResult::default();
+        }
+
+        // Text object first key: i = inner, a = around (before resolver so i/a don't exit visual)
+        match event.code {
+            KeyCode::Char('i') => {
+                self.pending_text_object = Some(true);
+                return VimHandleResult::default();
+            }
+            KeyCode::Char('a') => {
+                self.pending_text_object = Some(false);
+                return VimHandleResult::default();
+            }
+            _ => {}
+        }
+
         match resolver.resolve(KeyBindingContext::VimNormal, event) {
             Some(ResolvedKey::Edit(EditAction::Move(motion))) => {
                 buffer.move_normal(motion, self.take_prefix_count());
@@ -668,6 +851,22 @@ impl VimState {
         (start < end).then_some((start, end))
     }
 
+    fn finish_replace(&mut self, buffer: &mut TextBuffer, event: KeyEvent) -> VimHandleResult {
+        if let KeyCode::Char(ch) = event.code {
+            if !buffer.is_empty() {
+                let pos = buffer.cursor().min(buffer.char_len().saturating_sub(1));
+                self.push_undo(buffer);
+                buffer.delete_span(pos, pos + 1);
+                buffer.insert_text_at(pos, &ch.to_string());
+                // r leaves the cursor on the replaced character
+                buffer.set_cursor(pos);
+                self.redo_stack.clear();
+            }
+        }
+        // Non-char keys (e.g. Esc) silently cancel — no mutation
+        VimHandleResult::default()
+    }
+
     fn push_undo(&mut self, buffer: &TextBuffer) {
         let snapshot = BufferSnapshot {
             text: buffer.text(),
@@ -709,6 +908,16 @@ impl VimState {
         self.motion_count = None;
         self.pending_operator = None;
         self.pending_find = None;
+        self.pending_text_object = None;
+        self.pending_replace = false;
+    }
+}
+
+fn toggle_case(ch: char) -> char {
+    if ch.is_uppercase() {
+        ch.to_lowercase().next().unwrap_or(ch)
+    } else {
+        ch.to_uppercase().next().unwrap_or(ch)
     }
 }
 
@@ -755,7 +964,194 @@ fn line_motion(event: KeyEvent) -> Option<Motion> {
     }
 }
 
+/// Finds the byte range [start, end) for a vim text object.
+///
+/// `obj_type`: w W " ' ` ( ) b [ ] { } B < >
+/// `is_inner`: true for `i`, false for `a`
+fn find_text_object(
+    chars: &[char],
+    cursor: usize,
+    obj_type: char,
+    is_inner: bool,
+) -> Option<(usize, usize)> {
+    match obj_type {
+        'w' => find_word_object(chars, cursor, is_inner, |ch| {
+            ch.is_alphanumeric() || ch == '_'
+        }),
+        'W' => find_word_object(chars, cursor, is_inner, |ch| {
+            !ch.is_whitespace() && ch != '\n'
+        }),
+        '"' | '\'' | '`' => find_quote_object(chars, cursor, obj_type, is_inner),
+        '(' | ')' | 'b' => find_bracket_object(chars, cursor, '(', ')', is_inner),
+        '[' | ']' => find_bracket_object(chars, cursor, '[', ']', is_inner),
+        '{' | '}' | 'B' => find_bracket_object(chars, cursor, '{', '}', is_inner),
+        '<' | '>' => find_bracket_object(chars, cursor, '<', '>', is_inner),
+        _ => None,
+    }
+}
+
+fn find_word_object(
+    chars: &[char],
+    cursor: usize,
+    is_inner: bool,
+    is_word: impl Fn(char) -> bool,
+) -> Option<(usize, usize)> {
+    if chars.is_empty() {
+        return None;
+    }
+    let cursor = cursor.min(chars.len() - 1);
+    let is_ws = |ch: char| ch.is_whitespace();
+
+    let mut start = cursor;
+    let mut end = cursor;
+
+    if is_word(chars[cursor]) {
+        while start > 0 && is_word(chars[start - 1]) {
+            start -= 1;
+        }
+        while end < chars.len() && is_word(chars[end]) {
+            end += 1;
+        }
+    } else if is_ws(chars[cursor]) {
+        while start > 0 && is_ws(chars[start - 1]) {
+            start -= 1;
+        }
+        while end < chars.len() && is_ws(chars[end]) {
+            end += 1;
+        }
+        return Some((start, end));
+    } else {
+        // punctuation run
+        while start > 0 && !is_word(chars[start - 1]) && !is_ws(chars[start - 1]) {
+            start -= 1;
+        }
+        while end < chars.len() && !is_word(chars[end]) && !is_ws(chars[end]) {
+            end += 1;
+        }
+    }
+
+    if !is_inner {
+        // Include trailing whitespace, or leading if no trailing
+        if end < chars.len() && is_ws(chars[end]) {
+            while end < chars.len() && is_ws(chars[end]) {
+                end += 1;
+            }
+        } else if start > 0 && is_ws(chars[start - 1]) {
+            while start > 0 && is_ws(chars[start - 1]) {
+                start -= 1;
+            }
+        }
+    }
+
+    if start < end {
+        Some((start, end))
+    } else {
+        None
+    }
+}
+
+fn find_quote_object(
+    chars: &[char],
+    cursor: usize,
+    quote: char,
+    is_inner: bool,
+) -> Option<(usize, usize)> {
+    // Restrict to current line
+    let line_start = chars[..cursor]
+        .iter()
+        .rposition(|&ch| ch == '\n')
+        .map(|p| p + 1)
+        .unwrap_or(0);
+    let line_end = chars[cursor..]
+        .iter()
+        .position(|&ch| ch == '\n')
+        .map(|p| p + cursor)
+        .unwrap_or(chars.len());
+
+    let line = &chars[line_start..line_end];
+    let pos_in_line = cursor - line_start;
+
+    let positions: Vec<usize> = line
+        .iter()
+        .enumerate()
+        .filter(|&(_, ch)| *ch == quote)
+        .map(|(i, _)| i)
+        .collect();
+
+    // Pair quotes 0-1, 2-3, 4-5, …
+    let mut i = 0;
+    while i + 1 < positions.len() {
+        let qs = positions[i];
+        let qe = positions[i + 1];
+        if qs <= pos_in_line && pos_in_line <= qe {
+            return if is_inner {
+                Some((line_start + qs + 1, line_start + qe))
+            } else {
+                Some((line_start + qs, line_start + qe + 1))
+            };
+        }
+        i += 2;
+    }
+
+    None
+}
+
+fn find_bracket_object(
+    chars: &[char],
+    cursor: usize,
+    open: char,
+    close: char,
+    is_inner: bool,
+) -> Option<(usize, usize)> {
+    // Scan backwards from cursor to find enclosing open bracket
+    let mut depth = 0usize;
+    let mut start = None;
+    let mut i = cursor;
+    loop {
+        if chars[i] == close && i != cursor {
+            depth += 1;
+        } else if chars[i] == open {
+            if depth == 0 {
+                start = Some(i);
+                break;
+            }
+            depth -= 1;
+        }
+        if i == 0 {
+            break;
+        }
+        i -= 1;
+    }
+    let start = start?;
+
+    // Scan forward from start+1 to find matching close bracket
+    depth = 0;
+    let mut end = None;
+    for (j, &ch) in chars.iter().enumerate().skip(start + 1) {
+        if ch == open {
+            depth += 1;
+        } else if ch == close {
+            if depth == 0 {
+                end = Some(j);
+                break;
+            }
+            depth -= 1;
+        }
+    }
+    let end = end?;
+
+    if is_inner {
+        Some((start + 1, end))
+    } else {
+        Some((start, end + 1))
+    }
+}
+
 fn extra_normal_command(event: KeyEvent) -> Option<VimCommand> {
+    // Guard: modifiers would route to reserved bindings (e.g. Ctrl-r → Redo).
+    if event.modifiers.control || event.modifiers.alt {
+        return None;
+    }
     match event.code {
         KeyCode::Char('A') => Some(VimCommand::AppendLineEnd),
         KeyCode::Char('I') => Some(VimCommand::InsertLineStart),
@@ -771,6 +1167,14 @@ fn extra_normal_command(event: KeyEvent) -> Option<VimCommand> {
         KeyCode::Char(';') => Some(VimCommand::RepeatFind),
         KeyCode::Char(',') => Some(VimCommand::RepeatFindReverse),
         KeyCode::Esc => Some(VimCommand::CancelPending),
+        // New operations
+        KeyCode::Char('D') => Some(VimCommand::DeleteToLineEnd),
+        KeyCode::Char('C') => Some(VimCommand::ChangeToLineEnd),
+        KeyCode::Char('X') => Some(VimCommand::DeleteCharBefore),
+        KeyCode::Char('~') => Some(VimCommand::ToggleCase),
+        KeyCode::Char('o') => Some(VimCommand::OpenLineBelow),
+        KeyCode::Char('O') => Some(VimCommand::OpenLineAbove),
+        KeyCode::Char('r') => Some(VimCommand::ReplaceChar),
         _ => None,
     }
 }
@@ -1014,5 +1418,250 @@ mod tests {
             code: KeyCode::Char(ch),
             modifiers: NONE,
         }
+    }
+
+    // --- text object tests ---
+
+    #[test]
+    fn diw_deletes_inner_word() {
+        let resolver = KeyBindingResolver::new();
+        let mut buffer = TextBuffer::from_text("hello world", true);
+        let mut vim = VimState::new(VimMode::Normal);
+        buffer.set_cursor(1); // inside "hello"
+
+        vim.handle_key(&mut buffer, &resolver, key('d'));
+        vim.handle_key(&mut buffer, &resolver, key('i'));
+        vim.handle_key(&mut buffer, &resolver, key('w'));
+
+        assert_eq!(buffer.text(), " world");
+        assert_eq!(vim.mode(), VimMode::Normal);
+    }
+
+    // --- missing-ops tests ---
+
+    #[test]
+    fn normal_mode_delete_to_line_end() {
+        let resolver = KeyBindingResolver::new();
+        let mut buffer = TextBuffer::from_text("hello world", true);
+        let mut vim = VimState::new(VimMode::Normal);
+        buffer.set_cursor(5); // cursor on ' '
+
+        vim.handle_key(&mut buffer, &resolver, key('D'));
+
+        assert_eq!(buffer.text(), "hello");
+        assert_eq!(vim.mode(), VimMode::Normal);
+    }
+
+    #[test]
+    fn daw_deletes_word_and_trailing_space() {
+        let resolver = KeyBindingResolver::new();
+        let mut buffer = TextBuffer::from_text("hello world", true);
+        let mut vim = VimState::new(VimMode::Normal);
+        buffer.set_cursor(1); // inside "hello"
+
+        vim.handle_key(&mut buffer, &resolver, key('d'));
+        vim.handle_key(&mut buffer, &resolver, key('a'));
+        vim.handle_key(&mut buffer, &resolver, key('w'));
+
+        assert_eq!(buffer.text(), "world");
+    }
+
+    #[test]
+    fn ci_quote_changes_inner_quoted_string() {
+        let resolver = KeyBindingResolver::new();
+        let mut buffer = TextBuffer::from_text(r#"say "hello" now"#, true);
+        let mut vim = VimState::new(VimMode::Normal);
+        buffer.set_cursor(6); // inside "hello"
+
+        vim.handle_key(&mut buffer, &resolver, key('c'));
+        vim.handle_key(&mut buffer, &resolver, key('i'));
+        vim.handle_key(&mut buffer, &resolver, key('"'));
+
+        assert_eq!(vim.mode(), VimMode::Insert);
+        assert_eq!(buffer.text(), r#"say "" now"#);
+    }
+
+    #[test]
+    fn da_paren_deletes_including_brackets() {
+        let resolver = KeyBindingResolver::new();
+        let mut buffer = TextBuffer::from_text("fn foo(bar)", true);
+        let mut vim = VimState::new(VimMode::Normal);
+        buffer.set_cursor(8); // inside (bar)
+
+        vim.handle_key(&mut buffer, &resolver, key('d'));
+        vim.handle_key(&mut buffer, &resolver, key('a'));
+        vim.handle_key(&mut buffer, &resolver, key('('));
+
+        assert_eq!(buffer.text(), "fn foo");
+    }
+
+    #[test]
+    fn yi_bracket_yanks_inner_content() {
+        let resolver = KeyBindingResolver::new();
+        let mut buffer = TextBuffer::from_text("[alpha]", true);
+        let mut vim = VimState::new(VimMode::Normal);
+        buffer.set_cursor(2);
+
+        vim.handle_key(&mut buffer, &resolver, key('y'));
+        vim.handle_key(&mut buffer, &resolver, key('i'));
+        vim.handle_key(&mut buffer, &resolver, key('['));
+
+        assert_eq!(vim.register.text, "alpha");
+        assert_eq!(buffer.text(), "[alpha]"); // unchanged
+    }
+
+    #[test]
+    fn visual_iw_selects_inner_word() {
+        let resolver = KeyBindingResolver::new();
+        let mut buffer = TextBuffer::from_text("foo bar baz", true);
+        let mut vim = VimState::new(VimMode::Normal);
+        buffer.set_cursor(5); // inside "bar"
+
+        vim.handle_key(&mut buffer, &resolver, key('v'));
+        vim.handle_key(&mut buffer, &resolver, key('i'));
+        vim.handle_key(&mut buffer, &resolver, key('w'));
+
+        let (start, end) = vim.visual_range(&buffer).unwrap();
+        assert_eq!(&buffer.text()[start..end], "bar");
+    }
+
+    #[test]
+    fn text_object_unknown_type_clears_pending() {
+        let resolver = KeyBindingResolver::new();
+        let mut buffer = TextBuffer::from_text("hello", true);
+        let mut vim = VimState::new(VimMode::Normal);
+
+        vim.handle_key(&mut buffer, &resolver, key('d'));
+        vim.handle_key(&mut buffer, &resolver, key('i'));
+        vim.handle_key(&mut buffer, &resolver, key('z')); // unknown object type
+
+        // pending state cleared, text unchanged
+        assert!(!vim.has_pending_operator());
+        assert_eq!(buffer.text(), "hello");
+    }
+
+    #[test]
+    fn normal_mode_change_to_line_end_enters_insert() {
+        let resolver = KeyBindingResolver::new();
+        let mut buffer = TextBuffer::from_text("hello world", true);
+        let mut vim = VimState::new(VimMode::Normal);
+        buffer.set_cursor(5); // cursor on ' '
+
+        let result = vim.handle_key(&mut buffer, &resolver, key('C'));
+
+        assert_eq!(buffer.text(), "hello");
+        assert_eq!(vim.mode(), VimMode::Insert);
+        assert!(result.mode_changed);
+    }
+
+    #[test]
+    fn normal_mode_delete_char_before_cursor() {
+        let resolver = KeyBindingResolver::new();
+        let mut buffer = TextBuffer::from_text("hello", true);
+        let mut vim = VimState::new(VimMode::Normal);
+        buffer.set_cursor(3); // cursor on 'l'
+
+        vim.handle_key(&mut buffer, &resolver, key('X'));
+
+        assert_eq!(buffer.text(), "helo");
+        assert_eq!(vim.mode(), VimMode::Normal);
+    }
+
+    #[test]
+    fn normal_mode_delete_char_before_noop_at_line_start() {
+        let resolver = KeyBindingResolver::new();
+        let mut buffer = TextBuffer::from_text("hello", true);
+        let mut vim = VimState::new(VimMode::Normal);
+        buffer.set_cursor(0);
+
+        vim.handle_key(&mut buffer, &resolver, key('X'));
+
+        // No character before cursor — buffer unchanged
+        assert_eq!(buffer.text(), "hello");
+    }
+
+    #[test]
+    fn normal_mode_tilde_toggles_case_and_advances_cursor() {
+        let resolver = KeyBindingResolver::new();
+        let mut buffer = TextBuffer::from_text("hello", true);
+        let mut vim = VimState::new(VimMode::Normal);
+        buffer.set_cursor(0); // cursor on 'h'
+
+        vim.handle_key(&mut buffer, &resolver, key('~'));
+
+        assert_eq!(&buffer.text()[..1], "H");
+        assert_eq!(buffer.cursor(), 1);
+        assert_eq!(vim.mode(), VimMode::Normal);
+    }
+
+    #[test]
+    fn normal_mode_o_opens_line_below_and_enters_insert() {
+        let resolver = KeyBindingResolver::new();
+        let mut buffer = TextBuffer::from_text("alpha\nbeta", true);
+        let mut vim = VimState::new(VimMode::Normal);
+        buffer.set_cursor(0); // on 'a' of "alpha"
+
+        let result = vim.handle_key(&mut buffer, &resolver, key('o'));
+        assert_eq!(vim.mode(), VimMode::Insert);
+        assert!(result.mode_changed);
+
+        // Type a character to confirm cursor is on the new line
+        vim.handle_key(&mut buffer, &resolver, key('x'));
+        assert_eq!(buffer.text(), "alpha\nx\nbeta");
+    }
+
+    #[test]
+    fn normal_mode_open_line_above_enters_insert() {
+        let resolver = KeyBindingResolver::new();
+        let mut buffer = TextBuffer::from_text("alpha\nbeta", true);
+        let mut vim = VimState::new(VimMode::Normal);
+        // Move to second line
+        buffer.set_cursor(6); // on 'b' of "beta"
+
+        let result = vim.handle_key(&mut buffer, &resolver, key('O'));
+        assert_eq!(vim.mode(), VimMode::Insert);
+        assert!(result.mode_changed);
+
+        // Type a character to confirm cursor is on the new blank line
+        vim.handle_key(&mut buffer, &resolver, key('x'));
+        assert_eq!(buffer.text(), "alpha\nx\nbeta");
+    }
+
+    #[test]
+    fn normal_mode_r_replaces_char_at_cursor() {
+        let resolver = KeyBindingResolver::new();
+        let mut buffer = TextBuffer::from_text("hello", true);
+        let mut vim = VimState::new(VimMode::Normal);
+        buffer.set_cursor(1); // cursor on 'e'
+
+        // r followed by 'a' replaces 'e' with 'a'
+        vim.handle_key(&mut buffer, &resolver, key('r'));
+        vim.handle_key(&mut buffer, &resolver, key('a'));
+
+        assert_eq!(buffer.text(), "hallo");
+        assert_eq!(buffer.cursor(), 1); // cursor stays on replaced char
+        assert_eq!(vim.mode(), VimMode::Normal);
+    }
+
+    #[test]
+    fn normal_mode_r_esc_cancels_replace() {
+        let resolver = KeyBindingResolver::new();
+        let mut buffer = TextBuffer::from_text("hello", true);
+        let mut vim = VimState::new(VimMode::Normal);
+        buffer.set_cursor(1);
+
+        // r followed by Esc should leave buffer unchanged
+        vim.handle_key(&mut buffer, &resolver, key('r'));
+        vim.handle_key(
+            &mut buffer,
+            &resolver,
+            KeyEvent {
+                code: KeyCode::Esc,
+                modifiers: NONE,
+            },
+        );
+
+        assert_eq!(buffer.text(), "hello");
+        assert_eq!(vim.mode(), VimMode::Normal);
     }
 }

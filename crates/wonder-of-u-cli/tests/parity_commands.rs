@@ -1024,6 +1024,7 @@ fn tasks_remove_output_has_action_removed_field() {
         worktree_path: None,
         worktree_head_commit: None,
         progress: TaskProgress::default(),
+        agent_summary: None,
         started_at: OffsetDateTime::now_utc(),
         finished_at: Some(OffsetDateTime::now_utc()),
     };
@@ -1111,6 +1112,7 @@ fn tasks_prune_output_has_required_fields() {
                 worktree_path: None,
                 worktree_head_commit: None,
                 progress: TaskProgress::default(),
+                agent_summary: None,
                 started_at: OffsetDateTime::now_utc(),
                 finished_at: finished.then(OffsetDateTime::now_utc),
             })

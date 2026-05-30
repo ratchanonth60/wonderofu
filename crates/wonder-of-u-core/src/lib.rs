@@ -69,8 +69,12 @@ pub mod set;
 pub mod shell_session;
 /// SDK-style `<task-notification>` XML payload builder.
 pub mod task_notification;
+/// Contextual tips shown to the user during idle or spinner periods.
+pub mod tips;
 /// Logical todo-v2 task list models (source-compatible task board).
 pub mod todo_task;
+/// Token budget heuristics for context-window management.
+pub mod token_budget;
 /// Provides tool support
 pub mod tool;
 /// Provides treeify support
@@ -181,9 +185,21 @@ pub use shell_session::{ShellOutput, ShellSession, ShellSessionStore};
 pub use task_notification::{
     TaskNotificationPayload, payload_from_task_state, task_notification_both,
 };
+/// Re-exports items from `tips`
+pub use tips::{
+    BUILTIN_TIPS, NEW_USER_STARTUP_THRESHOLD, Tip, TipCondition, TipContext, is_tip_eligible,
+    render_tip, select_next_tip,
+};
 /// Re-exports items from `todo_task`
 pub use todo_task::{
     TODO_TASK_LIST_SCHEMA_VERSION, TodoTaskEntry, TodoTaskList, TodoTaskStatus, new_todo_task_id,
+};
+/// Re-exports items from `token_budget`
+pub use token_budget::{
+    AUTOCOMPACT_BUFFER_TOKENS, COMPACT_MAX_OUTPUT_TOKENS, MANUAL_COMPACT_BUFFER_TOKENS,
+    MODEL_CONTEXT_WINDOW_DEFAULT, WARNING_THRESHOLD_BUFFER_TOKENS, bytes_per_token_for_extension,
+    context_window_for_model, effective_context_window, rough_token_count,
+    rough_token_count_for_extension,
 };
 /// Re-exports items from `tool`
 pub use tool::{

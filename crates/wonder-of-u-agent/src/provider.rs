@@ -79,6 +79,29 @@ impl ProviderDescriptor {
     pub fn model(&self, model_id: &str) -> Option<&ModelDescriptor> {
         self.models.iter().find(|model| model.id == model_id)
     }
+    /// Returns the provider's canonical id for a configured model string.
+    ///
+    /// This keeps older settings compatible when they use unversioned Claude
+    /// family aliases or another provider's punctuation variant.
+    #[must_use]
+    pub fn canonical_model_id(&self, model_id: &str) -> String {
+        if self.model(model_id).is_some() {
+            return model_id.to_string();
+        }
+
+        let normalized = normalized_model_id(model_id);
+        if let Some(model) = self
+            .models
+            .iter()
+            .find(|candidate| normalized_model_id(&candidate.id) == normalized)
+        {
+            return model.id.clone();
+        }
+
+        latest_claude_family_model(self, &normalized)
+            .map(|model| model.id.clone())
+            .unwrap_or_else(|| model_id.to_string())
+    }
     /// Handles preferred fast model
     #[must_use]
     pub fn preferred_fast_model(&self) -> Option<&ModelDescriptor> {
@@ -496,10 +519,30 @@ impl ProviderRegistry {
                 id: "copilot".into(),
                 display_name: "GitHub Copilot".into(),
                 auth_kind: AuthMaterialKind::OAuth,
-                default_model: "gpt-4.1".into(),
+                default_model: "gpt-5.5".into(),
                 models: vec![
+                    ModelDescriptor::new("gpt-5.5", "GPT-5.5"),
+                    ModelDescriptor::new("gpt-5.4", "GPT-5.4"),
+                    ModelDescriptor::new("gpt-5.4-mini", "GPT-5.4 mini"),
+                    ModelDescriptor::new("gpt-5.4-nano", "GPT-5.4 nano"),
+                    ModelDescriptor::new("gpt-5.3-codex", "GPT-5.3-Codex"),
+                    ModelDescriptor::new("gpt-5.2", "GPT-5.2"),
+                    ModelDescriptor::new("gpt-5.2-codex", "GPT-5.2-Codex"),
+                    ModelDescriptor::new("gpt-5-mini", "GPT-5 mini"),
                     ModelDescriptor::new("gpt-4.1", "GPT-4.1"),
-                    ModelDescriptor::new("claude-sonnet-4", "Claude Sonnet 4"),
+                    ModelDescriptor::new("claude-haiku-4.5", "Claude Haiku 4.5"),
+                    ModelDescriptor::new("claude-opus-4.5", "Claude Opus 4.5"),
+                    ModelDescriptor::new("claude-opus-4.6", "Claude Opus 4.6"),
+                    ModelDescriptor::new("claude-opus-4.6-fast", "Claude Opus 4.6 (fast mode)"),
+                    ModelDescriptor::new("claude-opus-4.7", "Claude Opus 4.7"),
+                    ModelDescriptor::new("claude-sonnet-4.5", "Claude Sonnet 4.5"),
+                    ModelDescriptor::new("claude-sonnet-4.6", "Claude Sonnet 4.6"),
+                    ModelDescriptor::new("gemini-2.5-pro", "Gemini 2.5 Pro"),
+                    ModelDescriptor::new("gemini-3-flash", "Gemini 3 Flash"),
+                    ModelDescriptor::new("gemini-3.1-pro", "Gemini 3.1 Pro"),
+                    ModelDescriptor::new("gemini-3.5-flash", "Gemini 3.5 Flash"),
+                    ModelDescriptor::new("raptor-mini", "Raptor mini"),
+                    ModelDescriptor::new("goldeneye", "Goldeneye"),
                 ],
                 api_base: Some(DEFAULT_COPILOT_API_BASE.into()),
                 api_key_env: None,
@@ -513,10 +556,16 @@ impl ProviderRegistry {
                 id: "openai".into(),
                 display_name: "OpenAI".into(),
                 auth_kind: AuthMaterialKind::ApiKey,
-                default_model: "gpt-4.1".into(),
+                default_model: "gpt-5.5".into(),
                 models: vec![
+                    ModelDescriptor::new("gpt-5.5", "GPT-5.5"),
+                    ModelDescriptor::new("gpt-5.4", "GPT-5.4"),
+                    ModelDescriptor::new("gpt-5.4-mini", "GPT-5.4 mini"),
+                    ModelDescriptor::new("gpt-5.4-nano", "GPT-5.4 nano"),
+                    ModelDescriptor::new("gpt-5-mini", "GPT-5 mini"),
+                    ModelDescriptor::new("gpt-5-nano", "GPT-5 nano"),
+                    ModelDescriptor::new("gpt-5", "GPT-5"),
                     ModelDescriptor::new("gpt-4.1", "GPT-4.1"),
-                    ModelDescriptor::new("gpt-4o-mini", "GPT-4o mini"),
                 ],
                 api_base: Some("https://api.openai.com/v1".into()),
                 api_key_env: Some("OPENAI_API_KEY".into()),
@@ -530,10 +579,12 @@ impl ProviderRegistry {
                 id: "anthropic".into(),
                 display_name: "Anthropic".into(),
                 auth_kind: AuthMaterialKind::ApiKey,
-                default_model: "claude-3-7-sonnet-latest".into(),
+                default_model: "claude-opus-4-7".into(),
                 models: vec![
-                    ModelDescriptor::new("claude-3-7-sonnet-latest", "Claude 3.7 Sonnet Latest"),
-                    ModelDescriptor::new("claude-3-5-haiku-latest", "Claude 3.5 Haiku Latest"),
+                    ModelDescriptor::new("claude-opus-4-7", "Claude Opus 4.7"),
+                    ModelDescriptor::new("claude-sonnet-4-6", "Claude Sonnet 4.6"),
+                    ModelDescriptor::new("claude-haiku-4-5-20251001", "Claude Haiku 4.5"),
+                    ModelDescriptor::new("claude-haiku-4-5", "Claude Haiku 4.5 Alias"),
                 ],
                 api_base: Some("https://api.anthropic.com".into()),
                 api_key_env: Some("ANTHROPIC_API_KEY".into()),
@@ -547,15 +598,16 @@ impl ProviderRegistry {
                 id: "bedrock".into(),
                 display_name: "Amazon Bedrock".into(),
                 auth_kind: AuthMaterialKind::AwsSigV4,
-                default_model: "anthropic.claude-3-7-sonnet-20250219-v1:0".into(),
+                default_model: "anthropic.claude-opus-4-7".into(),
                 models: vec![
+                    ModelDescriptor::new("anthropic.claude-opus-4-7", "Claude Opus 4.7 (Bedrock)"),
                     ModelDescriptor::new(
-                        "anthropic.claude-3-7-sonnet-20250219-v1:0",
-                        "Claude 3.7 Sonnet (Bedrock)",
+                        "anthropic.claude-sonnet-4-6",
+                        "Claude Sonnet 4.6 (Bedrock)",
                     ),
                     ModelDescriptor::new(
-                        "anthropic.claude-3-5-haiku-20241022-v1:0",
-                        "Claude 3.5 Haiku (Bedrock)",
+                        "anthropic.claude-haiku-4-5-20251001-v1:0",
+                        "Claude Haiku 4.5 (Bedrock)",
                     ),
                 ],
                 api_base: Some(DEFAULT_BEDROCK_API_BASE.into()),
@@ -688,13 +740,9 @@ impl ProviderRegistry {
                 "AVIAN_API_KEY",
                 "gpt-4o-mini",
             ),
-            (
-                "opencode",
-                "OpenCode",
-                "https://opencode.ai/api/v1",
-                "OPENCODE_API_KEY",
-                "gpt-4o",
-            ),
+            // OpenCode Zen is registered separately below with a curated
+            // model catalogue and strict validation so the model picker
+            // shows each available model explicitly.
             // Synthetic AI – OpenAI-compatible gateway; base URL is approximate.
             // Authenticates with SYNTHETIC_API_KEY.
             (
@@ -716,6 +764,92 @@ impl ProviderRegistry {
                 ))
                 .expect("builtin gateway provider");
         }
+
+        // ── OpenCode Zen & Go — curated model catalogue ───────────────────────
+        // Zen (pay-as-you-go) and Go ($10/mo subscription).
+        //
+        // Go splits into two providers because its models use two different
+        // wire protocols:
+        //   - OpenAI-compatible  (/chat/completions): GLM, Kimi, DeepSeek, MiMo
+        //   - Anthropic-compatible (/messages):       MiniMax, Qwen
+        //
+        // The api_base differs: OpenAI expects /v1 prefix, Anthropic strips it
+        // because the protocol already appends /v1/messages.
+
+        fn opencode_model_catalogue() -> Vec<ModelDescriptor> {
+            vec![
+                ModelDescriptor::new("glm-5.1", "GLM-5.1 (DeepInfra / Fireworks AI / Z.ai)"),
+                ModelDescriptor::new("glm-5", "GLM-5 (DeepInfra / Fireworks AI / Z.ai)"),
+                ModelDescriptor::new("kimi-k2.5", "Kimi K2.5 (Moonshot AI)"),
+                ModelDescriptor::new("kimi-k2.6", "Kimi K2.6 (Moonshot AI)"),
+                ModelDescriptor::new("mimo-v2.5-pro", "MiMo-V2.5-Pro (Xiaomi MiMo)"),
+                ModelDescriptor::new("mimo-v2.5", "MiMo-V2.5 (Xiaomi MiMo)"),
+                ModelDescriptor::new("qwen3.7-max", "Qwen3.7 Max (Alibaba Cloud Model Studio)"),
+                ModelDescriptor::new("qwen3.6-plus", "Qwen3.6 Plus (Alibaba Cloud Model Studio)"),
+                ModelDescriptor::new("minimax-m2.7", "MiniMax M2.7 (MiniMax)"),
+                ModelDescriptor::new("minimax-m2.5", "MiniMax M2.5 (MiniMax)"),
+                ModelDescriptor::new("deepseek-v4-pro", "DeepSeek V4 Pro (DeepSeek)"),
+                ModelDescriptor::new("deepseek-v4-flash", "DeepSeek V4 Flash (DeepSeek)"),
+            ]
+        }
+
+        fn opencode_go_anthropic_models() -> Vec<ModelDescriptor> {
+            vec![
+                ModelDescriptor::new("minimax-m2.7", "MiniMax M2.7 (MiniMax)"),
+                ModelDescriptor::new("minimax-m2.5", "MiniMax M2.5 (MiniMax)"),
+                ModelDescriptor::new("qwen3.7-max", "Qwen3.7 Max (Alibaba Cloud Model Studio)"),
+                ModelDescriptor::new("qwen3.6-plus", "Qwen3.6 Plus (Alibaba Cloud Model Studio)"),
+            ]
+        }
+
+        registry
+            .register(ProviderDescriptor {
+                id: "opencode-zen".into(),
+                display_name: "OpenCode Zen".into(),
+                auth_kind: AuthMaterialKind::ApiKey,
+                default_model: "deepseek-v4-pro".into(),
+                models: opencode_model_catalogue(),
+                api_base: Some("https://opencode.ai/zen/v1".into()),
+                api_key_env: Some("OPENCODE_API_KEY".into()),
+                wire_protocol: WireProtocol::OpenAiCompat,
+                strict_model_validation: true,
+                endpoint_env: None,
+            })
+            .expect("builtin provider");
+
+        registry
+            .register(ProviderDescriptor {
+                id: "opencode-go".into(),
+                display_name: "OpenCode Go".into(),
+                auth_kind: AuthMaterialKind::ApiKey,
+                default_model: "deepseek-v4-pro".into(),
+                models: opencode_model_catalogue(),
+                api_base: Some("https://opencode.ai/zen/go/v1".into()),
+                api_key_env: Some("OPENCODE_GO_API_KEY".into()),
+                wire_protocol: WireProtocol::OpenAiCompat,
+                strict_model_validation: true,
+                endpoint_env: None,
+            })
+            .expect("builtin provider");
+
+        registry
+            .register(ProviderDescriptor {
+                id: "opencode-go-anthropic".into(),
+                display_name: "OpenCode Go (Anthropic)".into(),
+                auth_kind: AuthMaterialKind::ApiKey,
+                default_model: "minimax-m2.7".into(),
+                models: opencode_go_anthropic_models(),
+                // No /v1 suffix — AnthropicCompat appends /v1/messages.
+                api_base: Some("https://opencode.ai/zen/go".into()),
+                // Uses the same Go subscription API key as opencode-go.
+                // No api_key_env to avoid auto-select collision; configure
+                // via /setup or credential store.
+                api_key_env: None,
+                wire_protocol: WireProtocol::AnthropicCompat,
+                strict_model_validation: true,
+                endpoint_env: None,
+            })
+            .expect("builtin provider");
 
         registry
             .register(ProviderDescriptor {
@@ -1137,6 +1271,8 @@ impl ProviderResolver {
                 configured
             };
         }
+
+        configured = provider.canonical_model_id(&configured);
 
         if provider.strict_model_validation {
             // Reject model ids not listed in the provider's model catalogue.
@@ -1685,6 +1821,35 @@ fn is_fast_model_id(model_id: &str) -> bool {
     normalized.contains("mini") || normalized.contains("haiku")
 }
 
+fn normalized_model_id(model_id: &str) -> String {
+    model_id
+        .chars()
+        .filter(|ch| ch.is_ascii_alphanumeric())
+        .map(|ch| ch.to_ascii_lowercase())
+        .collect()
+}
+
+fn latest_claude_family_model<'a>(
+    provider: &'a ProviderDescriptor,
+    requested_model_id: &str,
+) -> Option<&'a ModelDescriptor> {
+    let family = match requested_model_id {
+        "claudesonnet4" | "anthropicclaudesonnet4" => "claudesonnet4",
+        "claudeopus4" | "anthropicclaudeopus4" => "claudeopus4",
+        "claudehaiku4" | "anthropicclaudehaiku4" => "claudehaiku4",
+        _ => return None,
+    };
+
+    provider
+        .models
+        .iter()
+        .filter(|candidate| {
+            let normalized_candidate = normalized_model_id(&candidate.id);
+            normalized_candidate.contains(family) && normalized_candidate != family
+        })
+        .max_by(|left, right| left.id.cmp(&right.id))
+}
+
 fn oauth_access_token_expired(expires_at: Option<OffsetDateTime>) -> bool {
     expires_at.is_some_and(|value| value <= OffsetDateTime::now_utc())
 }
@@ -1812,7 +1977,7 @@ mod tests {
             .expect("resolve provider");
 
         assert_eq!(report.provider.as_deref(), Some("openai"));
-        assert_eq!(report.model.as_deref(), Some("gpt-4.1"));
+        assert_eq!(report.model.as_deref(), Some("gpt-5.5"));
         assert_eq!(report.auth.source_label(), Some("environment"));
     }
 
@@ -1917,6 +2082,27 @@ mod tests {
     }
 
     #[test]
+    fn resolver_accepts_legacy_copilot_claude_alias() {
+        let resolver = ProviderResolver::builtin();
+        let settings = AgentSettings {
+            selected_provider: Some("copilot".into()),
+            selected_model: Some("claude-sonnet-4".into()),
+            ..AgentSettings::default()
+        };
+
+        let report = resolver
+            .resolve_with_env(
+                &settings,
+                &StoredCredentials::default(),
+                std::iter::empty::<(&str, String)>(),
+            )
+            .expect("legacy alias should normalize");
+
+        assert_eq!(report.model.as_deref(), Some("claude-sonnet-4.6"));
+        assert_eq!(report.readiness, ProviderReadiness::MissingAuth);
+    }
+
+    #[test]
     fn load_execution_uses_api_base_override_and_env_precedence() {
         let resolver = ProviderResolver::builtin();
         let settings = AgentSettings {
@@ -1949,7 +2135,7 @@ mod tests {
             .expect("resolve execution");
 
         assert_eq!(resolved.provider_id(), "openai");
-        assert_eq!(resolved.model(), "gpt-4.1");
+        assert_eq!(resolved.model(), "gpt-5.5");
         assert_eq!(resolved.api_base(), "http://localhost:4100/v1");
         assert_eq!(resolved.auth_source(), Some(AuthSource::Environment));
     }
@@ -2003,7 +2189,7 @@ mod tests {
             .expect("resolve anthropic execution");
 
         assert_eq!(resolved.provider_id(), "anthropic");
-        assert_eq!(resolved.model(), "claude-3-7-sonnet-latest");
+        assert_eq!(resolved.model(), "claude-opus-4-7");
     }
 
     #[test]
@@ -2033,7 +2219,7 @@ mod tests {
             )
             .expect("resolve openai execution");
 
-        assert_eq!(resolved.model(), "gpt-4o-mini");
+        assert_eq!(resolved.model(), "gpt-5.4-mini");
     }
 
     #[test]
@@ -2081,10 +2267,39 @@ mod tests {
                 .supports_fast_mode()
         );
         assert!(
-            !registry
+            registry
                 .get("copilot")
                 .expect("copilot provider")
                 .supports_fast_mode()
+        );
+    }
+
+    #[test]
+    fn canonical_model_id_normalizes_claude_aliases_per_provider() {
+        let registry = ProviderRegistry::builtin();
+        let copilot = registry.get("copilot").expect("copilot provider");
+        let anthropic = registry.get("anthropic").expect("anthropic provider");
+        let bedrock = registry.get("bedrock").expect("bedrock provider");
+
+        assert_eq!(
+            copilot.canonical_model_id("claude-sonnet-4"),
+            "claude-sonnet-4.6"
+        );
+        assert_eq!(
+            copilot.canonical_model_id("claude-sonnet-4-6"),
+            "claude-sonnet-4.6"
+        );
+        assert_eq!(
+            anthropic.canonical_model_id("claude-sonnet-4"),
+            "claude-sonnet-4-6"
+        );
+        assert_eq!(
+            anthropic.canonical_model_id("claude-sonnet-4.6"),
+            "claude-sonnet-4-6"
+        );
+        assert_eq!(
+            bedrock.canonical_model_id("claude-sonnet-4"),
+            "anthropic.claude-sonnet-4-6"
         );
     }
 
@@ -2096,10 +2311,7 @@ mod tests {
             bedrock.auth_kind,
             wonder_of_u_core::AuthMaterialKind::AwsSigV4
         );
-        assert_eq!(
-            bedrock.default_model,
-            "anthropic.claude-3-7-sonnet-20250219-v1:0"
-        );
+        assert_eq!(bedrock.default_model, "anthropic.claude-opus-4-7");
         assert!(bedrock.models.len() >= 2);
     }
 
@@ -2269,7 +2481,15 @@ mod tests {
         // Providers with a curated model catalogue enforce strict validation.
         // Gateway/local/native-dynamic providers are intentionally non-strict.
         let registry = ProviderRegistry::builtin();
-        for id in ["copilot", "openai", "anthropic", "bedrock"] {
+        for id in [
+            "copilot",
+            "openai",
+            "anthropic",
+            "bedrock",
+            "opencode-zen",
+            "opencode-go",
+            "opencode-go-anthropic",
+        ] {
             let provider = registry.get(id).unwrap_or_else(|| panic!("{id} provider"));
             assert!(
                 provider.strict_model_validation,
@@ -2303,7 +2523,6 @@ mod tests {
             "ionet",
             "groq",
             "avian",
-            "opencode",
         ] {
             let provider = registry
                 .get(id)
@@ -2329,7 +2548,6 @@ mod tests {
             "ionet",
             "groq",
             "avian",
-            "opencode",
         ] {
             let provider = registry
                 .get(id)
@@ -3209,7 +3427,8 @@ mod tests {
             ("IONET_API_KEY", "test-ionet-key", "ionet"),
             ("GROQ_API_KEY", "test-groq-key", "groq"),
             ("AVIAN_API_KEY", "test-avian-key", "avian"),
-            ("OPENCODE_API_KEY", "test-opencode-key", "opencode"),
+            ("OPENCODE_API_KEY", "test-opencode-key", "opencode-zen"),
+            ("OPENCODE_GO_API_KEY", "test-opencode-go-key", "opencode-go"),
         ];
 
         let resolver = ProviderResolver::builtin();

@@ -207,11 +207,21 @@ pub fn builtin_registry() -> Result<ToolRegistry> {
 /// Discovered tools use namespaced names (e.g. `mcp__github__create_issue`) and therefore
 /// cannot shadow built-in tools.
 ///
+/// Project-level `.mcp.json` files are merged into the global config via
+/// [`wonder_of_u_mcp::McpConfigStore::read_with_project`], so servers declared only in a
+/// project `.mcp.json` are visible to the registry.  The current working directory is used
+/// as the starting point for the project config search.
+///
 /// If `storage_root` contains no MCP config, or if all servers are unreachable, the
 /// returned registry is identical to [`builtin_registry`].
 pub fn builtin_registry_with_mcp_catalog(storage_root: &Path) -> Result<ToolRegistry> {
     let mut registry = builtin_registry()?;
-    if let Ok(config) = wonder_of_u_mcp::McpConfigStore::new(storage_root).read() {
+    // Use the process cwd as the search root for a project `.mcp.json`; fall
+    // back to the storage root itself if the cwd cannot be determined.
+    let cwd = env::current_dir().unwrap_or_else(|_| storage_root.to_path_buf());
+    if let Ok((config, _)) =
+        wonder_of_u_mcp::McpConfigStore::new(storage_root).read_with_project(&cwd, None)
+    {
         for tool in wonder_of_u_mcp::discover_catalog_tools(&config) {
             // Namespacing guarantees no collisions with built-ins; soft-fail just in case.
             let _ = registry.register(Arc::new(tool));
@@ -384,6 +394,42 @@ mod tests {
                 "snip",
                 "tungsten"
             ]
+        );
+    }
+
+    #[test]
+    fn builtin_provider_specs_have_object_input_schemas() {
+        let registry = builtin_registry().expect("registry");
+        let mut failures = Vec::new();
+
+        for spec in registry.all_specs() {
+            if spec.input_schema.get("type").and_then(Value::as_str) != Some("object") {
+                failures.push(format!("{}: {}", spec.name, spec.input_schema));
+            }
+        }
+
+        assert!(
+            failures.is_empty(),
+            "provider tools must declare object input schemas:\n{}",
+            failures.join("\n")
+        );
+    }
+
+    #[test]
+    fn worktree_list_default_provider_schema_is_valid() {
+        let registry = builtin_registry().expect("registry");
+        let enabled = registry.enabled_specs(&FeatureSet::first_release());
+        let worktree_list = enabled
+            .iter()
+            .find(|spec| spec.name == "worktree_list")
+            .expect("worktree_list enabled");
+
+        assert_eq!(
+            worktree_list
+                .input_schema
+                .get("type")
+                .and_then(Value::as_str),
+            Some("object")
         );
     }
 
@@ -988,6 +1034,50 @@ mod tests {
         assert!(
             registry.resolve("file_read").is_some(),
             "file_read tool must be present"
+        );
+    }
+
+    /// Regression: `builtin_registry_with_mcp_catalog` must discover servers
+    /// declared only in a project `.mcp.json` and make them visible in the
+    /// returned registry.
+    ///
+    /// We use a server whose command does not exist so `discover_catalog_tools`
+    /// will skip it (servers that fail to connect are silently ignored), but we
+    /// can verify the config-reading path reaches the project file by checking
+    /// the dispatch layer separately.
+    #[test]
+    fn builtin_registry_with_mcp_catalog_reads_project_dot_mcp_json() {
+        use std::fs;
+
+        use wonder_of_u_mcp::McpConfigStore;
+        use wonder_of_u_test_support::unique_test_dir;
+
+        // Storage dir has no global mcp config.
+        let storage = unique_test_dir("registry-project-mcp-storage");
+        // Project dir with a `.mcp.json` that names a server.
+        let project = unique_test_dir("registry-project-mcp-project");
+        fs::write(
+            project.join(".mcp.json"),
+            r#"{"mcpServers":{"project-only":{"command":"/nonexistent/server"}}}"#,
+        )
+        .expect("write project .mcp.json");
+
+        // The registry call should succeed even though the server is unreachable.
+        let registry = builtin_registry_with_mcp_catalog(&storage)
+            .expect("registry must succeed with unreachable project server");
+
+        // Built-ins are always present.
+        assert!(registry.resolve("bash").is_some());
+
+        // Separately verify the config-read path sees the project server via
+        // the store API, without needing a real process.
+        let (merged, project_path) = McpConfigStore::new(&storage)
+            .read_with_project(&project, None)
+            .expect("read_with_project");
+        assert!(project_path.is_some(), "should detect project .mcp.json");
+        assert!(
+            merged.server("project-only").is_some(),
+            "project-only server must be visible after merge"
         );
     }
 }

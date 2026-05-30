@@ -12,7 +12,7 @@ use super::{
     CompletionRequest, CompletionResponse, DEFAULT_ANTHROPIC_API_VERSION,
     DEFAULT_ANTHROPIC_MAX_OUTPUT_TOKENS, HttpRequest, ProviderToolCall, StreamingHttpResponse,
     ToolCallBatchResponse, ToolUseRequest, ToolUseResponse, consume_sse, context_window_for_model,
-    is_anthropic_model, is_high_effort, join_url,
+    is_anthropic_model, is_high_effort, join_url, provider_input_schema,
 };
 
 // ─── Request builders ─────────────────────────────────────────────────────────
@@ -139,7 +139,7 @@ pub(super) fn build_anthropic_tool_use_request_with_headers(
                         json!({
                             "name": tool.name.as_str(),
                             "description": tool.description.as_str(),
-                            "input_schema": tool.input_schema.clone(),
+                            "input_schema": provider_input_schema(&tool.input_schema),
                         })
                     })
                     .collect(),

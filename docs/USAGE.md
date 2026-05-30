@@ -137,7 +137,7 @@ wonder-of-u model show
 
 ```bash
 wonder-of-u prompt "Explain the workspace layout"
-wonder-of-u prompt --provider openai --model gpt-4.1 "Write a release note"
+wonder-of-u prompt --provider openai --model gpt-5.5 "Write a release note"
 wonder-of-u prompt --tools "Inspect this repository and summarize risks"
 ```
 

@@ -1,6 +1,8 @@
 use super::*;
 use std::time::{Duration, Instant};
 
+use crate::commands::task_runtime::TaskManager;
+
 /// Lines scrolled per single mouse-wheel notch in the transcript area.
 const MOUSE_SCROLL_LINES: i32 = 3;
 const SPINNER_PROGRESS_INTERVAL: Duration = Duration::from_millis(100);
@@ -88,6 +90,11 @@ pub(super) struct TuiController<'a> {
     /// or `BypassPermissions`) rather than always falling back to `Default`.
     /// Cleared whenever the session leaves plan mode.
     pub(super) pre_plan_permission_mode: Option<PermissionMode>,
+    /// Lazily-initialised task manager used for agent-summary generation.
+    ///
+    /// Kept on the controller so that the internal `Arc<Mutex<...>>` timing
+    /// state survives across TUI ticks.  `None` when no `storage_dir` is set.
+    pub(super) task_manager: Option<TaskManager>,
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -266,6 +273,7 @@ impl<'a> TuiController<'a> {
             expand_tool_output: false,
             sidebar_cache: SidebarPanelCache::default(),
             pre_plan_permission_mode: None,
+            task_manager: storage_dir.map(TaskManager::new),
         };
         controller.hydrate_initial_settings()?;
         controller.refresh_runtime_state()?;
@@ -302,7 +310,22 @@ impl<'a> TuiController<'a> {
             UiEvent::Key(key) => self.handle_key_event(key, &mut before_blocking),
             UiEvent::Paste(text) => {
                 if !text.is_empty() {
-                    if self.global_search_open {
+                    if let Some(form) = &mut self.pending_provider_form {
+                        form.input.insert_text(&text);
+                        self.needs_render = true;
+                    } else if let Some(picker) = &mut self.pending_model_picker {
+                        picker.query.insert_text(&text);
+                        self.refresh_model_picker_dialog();
+                    } else if let Some(picker) = &mut self.pending_theme_picker {
+                        picker.query.insert_text(&text);
+                        self.needs_render = true;
+                    } else if let Some(picker) = &mut self.pending_permission_picker {
+                        picker.query.insert_text(&text);
+                        self.needs_render = true;
+                    } else if let Some(picker) = &mut self.pending_memory_picker {
+                        picker.query.insert_text(&text);
+                        self.needs_render = true;
+                    } else if self.global_search_open {
                         self.edit_global_search_query_text(&text);
                     } else if self.history_search.is_some() {
                         self.edit_history_search_query_text(&text);
@@ -343,6 +366,11 @@ impl<'a> TuiController<'a> {
                 self.needs_render |= self.refresh_global_search_if_ready()?;
                 if self.refresh_runtime_state()? {
                     self.needs_render = true;
+                }
+                // Fire background agent-summary generation for running agent tasks.
+                // Errors are silently ignored — summaries are best-effort display hints.
+                if let Some(tm) = &self.task_manager {
+                    tm.tick_agent_summaries(self.state.provider.clone(), self.state.model.clone());
                 }
                 if self.refresh_sidebar_panel_cache() {
                     self.needs_render = true;
@@ -1323,6 +1351,22 @@ impl<'a> TuiController<'a> {
                 self.needs_render = true;
             }
             Err(error) if is_provider_prompt => {
+                // Remove the empty assistant placeholder that was optimistically
+                // inserted before the provider request started.  If streaming had
+                // already delivered partial content the message would be non-empty
+                // and this check would not fire, so only a truly blank stub is
+                // removed.  The UserText entry that immediately precedes it is
+                // preserved so the user can see which prompt triggered the error.
+                if self
+                    .state
+                    .messages
+                    .last()
+                    .is_some_and(|msg| {
+                        matches!(&msg.payload, MessagePayload::AssistantText { content } if content.is_empty())
+                    })
+                {
+                    self.state.messages.pop();
+                }
                 // Persist the error into history so the user can see it even
                 // after scrolling; then leave the prompt cleared.
                 let sanitized = sanitize_error_for_display(&error.to_string());
@@ -4254,6 +4298,7 @@ impl<'a> TuiController<'a> {
                     opt.provider, opt.provider_display, opt.model, opt.model_display, opt.auth
                 )
             });
+            let mut last_provider: Option<&str> = None;
             return Some(PickerListView {
                 title: "Select Model".into(),
                 query: picker.query.text(),
@@ -4261,19 +4306,29 @@ impl<'a> TuiController<'a> {
                     .into_iter()
                     .filter_map(|index| picker.options.get(index))
                     .map(|opt| {
-                        let mut tag = opt.auth.clone();
+                        let group_header = if last_provider != Some(opt.provider.as_str()) {
+                            last_provider = Some(opt.provider.as_str());
+                            Some(format!("{} ({})", opt.provider_display, opt.auth))
+                        } else {
+                            None
+                        };
+                        let mut tag = String::new();
                         if opt.default {
-                            tag.push_str(", default");
+                            tag.push_str("default");
                         }
                         if opt.selected {
-                            tag.push_str(", current");
+                            if !tag.is_empty() {
+                                tag.push_str(", ");
+                            }
+                            tag.push_str("current");
                         }
                         PickerListEntry {
                             label: opt.model_display.clone(),
-                            description: opt.provider_display.clone(),
-                            tag: Some(tag),
+                            description: String::new(),
+                            tag: (!tag.is_empty()).then_some(tag),
                             selected: opt.model == picker.options[picker.selected_index].model
                                 && opt.provider == picker.options[picker.selected_index].provider,
+                            group_header,
                         }
                     })
                     .collect(),
@@ -4295,6 +4350,7 @@ impl<'a> TuiController<'a> {
                         description: opt.description.clone(),
                         tag: opt.selected.then(|| "current".into()),
                         selected: opt.theme == picker.options[picker.selected_index].theme,
+                        group_header: None,
                     })
                     .collect(),
                 hint: PICKER_HINT.into(),
@@ -4326,6 +4382,7 @@ impl<'a> TuiController<'a> {
                         description: opt.description.clone(),
                         tag: opt.selected.then(|| "current".into()),
                         selected: opt.mode == picker.options[picker.selected_index].mode,
+                        group_header: None,
                     })
                     .collect(),
                 hint: PICKER_HINT.into(),
@@ -4346,6 +4403,7 @@ impl<'a> TuiController<'a> {
                         description: format!("{} ({})", opt.description, opt.path.display()),
                         tag: opt.selected.then(|| "default".into()),
                         selected: opt.target == picker.options[picker.selected_index].target,
+                        group_header: None,
                     })
                     .collect(),
                 hint: PICKER_HINT.into(),
@@ -4381,6 +4439,7 @@ impl<'a> TuiController<'a> {
                             SetupItemAction::CopilotOAuth => None,
                         },
                         selected: i == overlay.selected_index,
+                        group_header: None,
                     })
                     .collect(),
                 hint: readiness_hint,
@@ -4904,12 +4963,10 @@ impl<'a> TuiController<'a> {
     /// so that the scroll state stays accurate without building a full view.
     pub(super) fn on_terminal_resize(&mut self, width: u16, height: u16) {
         self.last_terminal_size = (width, height);
-        // Box prompt height: top border + content rows + bottom border.
-        let prompt_lines = self.prompt.text().lines().count().max(1);
-        let uncapped = u16::try_from(prompt_lines)
-            .unwrap_or(u16::MAX)
-            .saturating_add(2);
-        let cap = (height / 3).max(3);
+        // Mirror ShellView::prompt_height() + the renderer's one-third cap so
+        // scroll_state.last_visible_lines matches the actual messages area.
+        let uncapped = controller_prompt_height(&self.prompt.text());
+        let cap = (height / 3).max(6); // matches (main_area.height / 3).max(6) in render_shell
         let warning_height = u16::from(context_warning_visible(&self.state));
         let prompt_height = uncapped
             .saturating_add(warning_height)
@@ -4952,11 +5009,10 @@ impl<'a> TuiController<'a> {
         if width == 0 || height == 0 {
             return Rect::new(0, 0, 0, 0);
         }
-        let prompt_lines = self.prompt.text().lines().count().max(1);
-        let uncapped = u16::try_from(prompt_lines)
-            .unwrap_or(u16::MAX)
-            .saturating_add(2);
-        let cap = (height / 3).max(3);
+        // Use the same helper as on_terminal_resize so the hit-test rect for
+        // mouse wheel events is always consistent with the rendered layout.
+        let uncapped = controller_prompt_height(&self.prompt.text());
+        let cap = (height / 3).max(6);
         let warning_height = u16::from(context_warning_visible(&self.state));
         let prompt_height = uncapped
             .saturating_add(warning_height)
@@ -5086,6 +5142,25 @@ fn context_warning_visible(state: &AppState) -> bool {
         .is_some_and(|max_tokens| {
             state.costs.usage.total_tokens().saturating_mul(100) / max_tokens >= 75
         })
+}
+
+/// Mirrors `ShellView::prompt_height()` for a raw prompt string.
+///
+/// Returns the number of rows the prompt box will occupy: one row per logical
+/// line (using `split('\n')` to match the renderer so trailing newlines from
+/// Shift+Enter count as a visible blank row) plus the top border, integrated
+/// footer row, and bottom border (`+ 3`).  Minimum is 4.
+///
+/// Using this helper in `on_terminal_resize` and `transcript_messages_rect`
+/// keeps the controller's prompt-height estimate consistent with the renderer
+/// so that `scroll_state.last_visible_lines` and the mouse-hit-test rect are
+/// always accurate.
+fn controller_prompt_height(prompt_text: &str) -> u16 {
+    let line_count = prompt_text.split('\n').count().max(1);
+    u16::try_from(line_count)
+        .unwrap_or(u16::MAX)
+        .saturating_add(3) // top border + integrated footer row + bottom border
+        .max(4) // minimum boxed height: border + 1 content row + footer + border
 }
 
 fn format_token_count(value: u64) -> String {

@@ -1820,6 +1820,7 @@ pub(super) fn provider_form_picker_view(form: &ProviderFormState) -> PickerListV
                     description: opt.provider_id.clone(),
                     tag: None,
                     selected: i == form.selected_index,
+                    group_header: None,
                 })
                 .collect(),
             hint: provider_form_status_note(&form.stage),
@@ -1836,6 +1837,7 @@ pub(super) fn provider_form_picker_view(form: &ProviderFormState) -> PickerListV
                     description: opt.provider_id.clone(),
                     tag: Some("selected".into()),
                     selected: true,
+                    group_header: None,
                 })
                 .into_iter()
                 .collect(),

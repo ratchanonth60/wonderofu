@@ -36,6 +36,10 @@ pub use todo_task::TodoTaskStore;
 pub mod mailbox;
 pub use mailbox::MailboxStore;
 
+/// Persistent history for the contextual tips system.
+pub mod tips;
+pub use tips::{TIPS_HISTORY_SCHEMA_VERSION, TipsHistory, TipsStore};
+
 use std::{
     collections::BTreeMap,
     ffi::OsStr,
@@ -330,6 +334,21 @@ impl StoragePaths {
     #[must_use]
     pub fn task_result_path(&self, task_id: TaskId) -> PathBuf {
         self.task_results_dir().join(format!("{task_id}.json"))
+    }
+
+    /// Returns the path for an agent session-link sidecar.
+    ///
+    /// This file contains the raw `SessionId` string for the agent subprocess
+    /// that is running under `task_id`.  It is written at agent startup (before
+    /// the first turn) and consumed by the agent-summary ticker in the parent
+    /// process so it can locate the correct transcript.
+    ///
+    /// The `.session_link` extension is intentionally distinct from `.json` to
+    /// avoid collisions with the result sidecar written on task completion.
+    #[must_use]
+    pub fn task_session_link_path(&self, task_id: TaskId) -> PathBuf {
+        self.task_results_dir()
+            .join(format!("{task_id}.session_link"))
     }
 
     /// Returns the directory for per-session logical todo-v2 task lists.
@@ -917,11 +936,11 @@ impl SessionMemoryIndex {
             }
 
             indexed_message_count += 1;
-            let key = format!(
-                "{}:{:x}",
-                source.label(),
-                Sha256::digest(normalized.as_bytes())
-            );
+            let digest: String = Sha256::digest(normalized.as_bytes())
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect();
+            let key = format!("{}:{}", source.label(), digest);
             let summary = truncate_memory_summary(&normalized, 160);
 
             if let Some(entry) = entries.get_mut(&key) {
@@ -2297,6 +2316,7 @@ mod fleet_inspector_tests {
             worktree_path: None,
             worktree_head_commit: None,
             progress: TaskProgress::default(),
+            agent_summary: None,
             started_at: OffsetDateTime::now_utc(),
             finished_at: if status.is_terminal() {
                 Some(OffsetDateTime::now_utc())
@@ -2462,7 +2482,10 @@ impl PasteStore {
         }
 
         self.ensure_layout()?;
-        let sha256 = format!("{:x}", Sha256::digest(content));
+        let sha256: String = Sha256::digest(content)
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect();
         let path = self.paths.paste_path(&sha256);
         if !path.exists() {
             let mut file = File::create(&path)?;

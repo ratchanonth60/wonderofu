@@ -147,6 +147,9 @@ pub struct PickerListEntry {
     pub tag: Option<String>,
     /// Stores the selected
     pub selected: bool,
+    /// Optional group header rendered above this entry.
+    /// Only the first entry of each provider group should carry a header.
+    pub group_header: Option<String>,
 }
 /// Represents picker list view
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -229,6 +232,12 @@ pub fn task_panel_view(app: &AppState) -> Option<TaskPanelView> {
                 TaskKind::LocalAgent => {
                     if let Some(agent) = &task.agent {
                         text.push_str(&format!(" • {}", agent_runtime_label(agent.runtime)));
+                    }
+                    // Show live progress summary when the agent is actively running.
+                    if task.status == TaskStatus::Running {
+                        if let Some(summary) = &task.agent_summary {
+                            text.push_str(&format!(" — {summary}"));
+                        }
                     }
                 }
                 TaskKind::RemoteAgent => {}
@@ -593,6 +602,52 @@ mod tests {
         assert!(footer_text(&app).contains("cwd=/workspace"));
         let panel = task_panel_view(&app).expect("task panel");
         assert_eq!(panel.lines[0].text, "[running] shell: run tests");
+    }
+
+    #[test]
+    fn task_panel_shows_agent_summary_for_running_local_agent() {
+        use wonder_of_u_core::{AgentTaskState, TaskId};
+
+        let mut app = AppState::new(PathBuf::from("/workspace"));
+        let mut task = TaskState::pending_agent(
+            "fix bug",
+            AgentTaskState::prompt_subprocess("fix bug", "Fix the null check", None, None),
+        );
+        task.status = TaskStatus::Running;
+        task.agent_summary = Some("Fixing null check in validate.ts".into());
+        app.background_tasks.insert(TaskId::new(), task);
+
+        let panel = task_panel_view(&app).expect("task panel present");
+        assert!(
+            panel.lines[0]
+                .text
+                .contains("Fixing null check in validate.ts"),
+            "agent_summary must appear in running LocalAgent line; got: {}",
+            panel.lines[0].text
+        );
+    }
+
+    #[test]
+    fn task_panel_omits_agent_summary_when_not_running() {
+        use wonder_of_u_core::{AgentTaskState, TaskId};
+
+        let mut app = AppState::new(PathBuf::from("/workspace"));
+        let mut task = TaskState::pending_agent(
+            "fix bug",
+            AgentTaskState::prompt_subprocess("fix bug", "Fix the null check", None, None),
+        );
+        task.status = TaskStatus::Completed;
+        task.agent_summary = Some("Fixing null check in validate.ts".into());
+        app.background_tasks.insert(TaskId::new(), task);
+
+        let panel = task_panel_view(&app).expect("task panel present");
+        assert!(
+            !panel.lines[0]
+                .text
+                .contains("Fixing null check in validate.ts"),
+            "agent_summary must NOT appear for Completed task; got: {}",
+            panel.lines[0].text
+        );
     }
 
     #[test]

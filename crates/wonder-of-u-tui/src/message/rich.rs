@@ -1810,7 +1810,8 @@ pub enum SystemErrorKind {
 
 impl SystemErrorKind {
     fn detect(text: &str) -> Option<Self> {
-        let lower = text.to_ascii_lowercase();
+        let headline = text.lines().map(str::trim).find(|line| !line.is_empty())?;
+        let lower = headline.to_ascii_lowercase();
         if lower.is_empty() {
             return None;
         }
@@ -1833,7 +1834,11 @@ impl SystemErrorKind {
         {
             return Some(Self::Api);
         }
-        if lower.contains("error") || lower.contains("failed") {
+        if lower.starts_with("error")
+            || lower.starts_with("failed")
+            || lower.contains(" error:")
+            || lower.contains(" failed:")
+        {
             return Some(Self::System);
         }
         None
@@ -2978,6 +2983,29 @@ mod tests {
         assert!(
             lines.iter().any(|l| l.text.starts_with('●')),
             "AssistantText first line must start with ● bullet; lines: {lines:?}"
+        );
+    }
+
+    #[test]
+    fn assistant_text_with_error_topic_does_not_render_as_system_error() {
+        let session_id = SessionId::new();
+        let messages = vec![MessageEnvelope::new(
+            session_id,
+            MessagePayload::AssistantText {
+                content: "Perfect! Here is an overview.\n\n## Error handling\nThe project uses structured errors.".into(),
+            },
+        )];
+        let lines = super::super::message_lines(&messages, false);
+
+        assert!(
+            lines.iter().all(|line| line.role != MessageRole::Error),
+            "Assistant overview text must not be promoted to error UI; lines: {lines:?}"
+        );
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.text.contains("Error handling")),
+            "Assistant content must still render; lines: {lines:?}"
         );
     }
 

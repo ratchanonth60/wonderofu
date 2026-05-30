@@ -347,12 +347,15 @@ impl Tool for WebSearchTool {
 }
 
 fn fetch_text(input: &WebFetchInput) -> Result<String> {
-    let response = ureq::get(&input.url).call().map_err(map_ureq_error)?;
+    let mut response = ureq::get(&input.url).call().map_err(map_ureq_error)?;
     let is_html = response
-        .header("content-type")
+        .headers()
+        .get("content-type")
+        .and_then(|v| v.to_str().ok())
         .is_some_and(|value| value.contains("html"));
     let body = response
-        .into_string()
+        .body_mut()
+        .read_to_string()
         .map_err(|error| WonderError::validation(format!("invalid response body: {error}")))?;
     let text = if is_html { strip_html(&body) } else { body };
     Ok(truncate_text(text, input.max_length))
@@ -496,25 +499,25 @@ fn serper_search(api_key: &str, input: &WebSearchInput) -> Result<String> {
         "num": input.num_results(),
     })
     .to_string();
-    let response = ureq::post("https://google.serper.dev/search")
-        .set("X-API-KEY", api_key)
-        .set("Content-Type", "application/json")
-        .send_string(&body)
+    let mut response = ureq::post("https://google.serper.dev/search")
+        .header("X-API-KEY", api_key)
+        .header("Content-Type", "application/json")
+        .send(&body)
         .map_err(map_ureq_error)?;
-    let body = response.into_string().map_err(|error| {
+    let body = response.body_mut().read_to_string().map_err(|error| {
         WonderError::validation(format!("invalid serper response body: {error}"))
     })?;
     format_serper_results(&body, input)
 }
 
 fn brave_search(api_key: &str, input: &WebSearchInput) -> Result<String> {
-    let response = ureq::get("https://api.search.brave.com/res/v1/web/search")
-        .set("X-Subscription-Token", api_key)
+    let mut response = ureq::get("https://api.search.brave.com/res/v1/web/search")
+        .header("X-Subscription-Token", api_key)
         .query("q", &input.query)
-        .query("count", &input.num_results().to_string())
+        .query("count", input.num_results().to_string())
         .call()
         .map_err(map_ureq_error)?;
-    let body = response.into_string().map_err(|error| {
+    let body = response.body_mut().read_to_string().map_err(|error| {
         WonderError::validation(format!("invalid brave response body: {error}"))
     })?;
     format_brave_results(&body, input)
@@ -678,11 +681,8 @@ fn truncate_text(text: String, max_length: Option<u32>) -> String {
 
 fn map_ureq_error(error: ureq::Error) -> WonderError {
     match error {
-        ureq::Error::Status(status, response) => {
-            let body = response.into_string().unwrap_or_default();
-            WonderError::validation(format!("status {status}: {body}"))
-        }
-        ureq::Error::Transport(error) => WonderError::validation(error.to_string()),
+        ureq::Error::StatusCode(status) => WonderError::validation(format!("status {status}")),
+        other => WonderError::validation(other.to_string()),
     }
 }
 

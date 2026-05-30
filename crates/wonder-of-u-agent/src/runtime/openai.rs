@@ -11,7 +11,7 @@ use crate::ResolvedProviderExecution;
 use super::{
     CompletionRequest, CompletionResponse, HttpRequest, ProviderToolCall, StreamingHttpResponse,
     ToolCallBatchResponse, ToolConversationRound, ToolUseRequest, ToolUseResponse, consume_sse,
-    context_window_for_model, is_high_effort, join_url,
+    context_window_for_model, is_high_effort, join_url, provider_input_schema,
 };
 
 // ─── Request builders ─────────────────────────────────────────────────────────
@@ -348,18 +348,28 @@ pub(super) fn parse_openai_tool_call(value: &Value) -> Result<ProviderToolCall> 
         .and_then(Value::as_str)
         .filter(|value| !value.trim().is_empty())
         .ok_or_else(|| WonderError::validation("OpenAI tool call missing function name"))?;
-    let raw_arguments = value
-        .pointer("/function/arguments")
-        .and_then(Value::as_str)
-        .unwrap_or("{}");
-    let arguments = if raw_arguments.trim().is_empty() {
-        json!({})
-    } else {
-        serde_json::from_str(raw_arguments).map_err(|error| {
+
+    // `function.arguments` has two legal forms:
+    //  • A JSON string  – canonical OpenAI format; parse it as JSON.
+    //  • A JSON object or array – some local/OpenAI-compatible servers (e.g.
+    //    Ollama, LM Studio) return arguments already deserialised; pass through
+    //    verbatim so callers never have to re-parse.
+    // Missing or explicit `null` → treat as `{}` (no arguments).
+    // Any other JSON scalar (bool, number) is invalid and returns an error.
+    let arguments = match value.pointer("/function/arguments") {
+        None | Some(Value::Null) => json!({}),
+        Some(v @ Value::Object(_)) | Some(v @ Value::Array(_)) => v.clone(),
+        Some(Value::String(s)) if s.trim().is_empty() => json!({}),
+        Some(Value::String(s)) => serde_json::from_str(s).map_err(|error| {
             WonderError::validation(format!(
                 "OpenAI tool call `{tool_name}` returned invalid JSON arguments: {error}"
             ))
-        })?
+        })?,
+        Some(other) => {
+            return Err(WonderError::validation(format!(
+                "OpenAI tool call `{tool_name}` has unexpected arguments type: {other}"
+            )));
+        }
     };
 
     Ok(ProviderToolCall {
@@ -410,7 +420,7 @@ fn build_openai_tools(tools: &[super::ProviderToolSpec]) -> Vec<Value> {
                 "function": {
                     "name": tool.name,
                     "description": tool.description,
-                    "parameters": tool.input_schema,
+                    "parameters": provider_input_schema(&tool.input_schema),
                 },
             })
         })

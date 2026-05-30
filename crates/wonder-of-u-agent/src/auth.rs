@@ -191,26 +191,30 @@ pub fn copilot_standard_headers() -> BTreeMap<String, String> {
 pub fn request_copilot_device_code() -> Result<CopilotDeviceCode> {
     let client_id = copilot_device_flow_client_id();
     let response = match ureq::post(github_device_code_url().as_str())
-        .set("accept", "application/json")
-        .send_form(&[
+        .config()
+        .http_status_as_error(false)
+        .build()
+        .header("accept", "application/json")
+        .send_form([
             ("client_id", client_id.as_str()),
             ("scope", DEFAULT_COPILOT_DEVICE_SCOPE),
         ]) {
         Ok(response) => response,
-        Err(ureq::Error::Status(status, response)) => {
-            let body = response.into_string().unwrap_or_default();
-            return Err(WonderError::validation(format!(
-                "GitHub device code request failed with status {status}: {}",
-                describe_auth_error(&body)
-            )));
-        }
-        Err(ureq::Error::Transport(error)) => {
+        Err(error) => {
             return Err(WonderError::validation(format!(
                 "GitHub device code request failed: {error}"
             )));
         }
     };
-    let response_body = response.into_string().map_err(|error| {
+    let status = response.status().as_u16();
+    if status >= 400 {
+        let body = response.into_body().read_to_string().unwrap_or_default();
+        return Err(WonderError::validation(format!(
+            "GitHub device code request failed with status {status}: {}",
+            describe_auth_error(&body)
+        )));
+    }
+    let response_body = response.into_body().read_to_string().map_err(|error| {
         WonderError::validation(format!("invalid device code response body: {error}"))
     })?;
     let json = serde_json::from_str::<serde_json::Value>(&response_body).map_err(|error| {
@@ -244,27 +248,31 @@ pub fn poll_copilot_access_token(
 
     while started.elapsed() < timeout {
         let response = match ureq::post(github_device_access_token_url().as_str())
-            .set("accept", "application/json")
-            .send_form(&[
+            .config()
+            .http_status_as_error(false)
+            .build()
+            .header("accept", "application/json")
+            .send_form([
                 ("client_id", client_id.as_str()),
                 ("device_code", device_code),
                 ("grant_type", "urn:ietf:params:oauth:grant-type:device_code"),
             ]) {
             Ok(response) => response,
-            Err(ureq::Error::Status(status, response)) => {
-                let body = response.into_string().unwrap_or_default();
-                return Err(WonderError::validation(format!(
-                    "GitHub oauth token request failed with status {status}: {}",
-                    describe_auth_error(&body)
-                )));
-            }
-            Err(ureq::Error::Transport(error)) => {
+            Err(error) => {
                 return Err(WonderError::validation(format!(
                     "GitHub oauth token request failed: {error}"
                 )));
             }
         };
-        let response_body = response.into_string().map_err(|error| {
+        let status = response.status().as_u16();
+        if status >= 400 {
+            let body = response.into_body().read_to_string().unwrap_or_default();
+            return Err(WonderError::validation(format!(
+                "GitHub oauth token request failed with status {status}: {}",
+                describe_auth_error(&body)
+            )));
+        }
+        let response_body = response.into_body().read_to_string().map_err(|error| {
             WonderError::validation(format!("invalid oauth access token response body: {error}"))
         })?;
         let json = serde_json::from_str::<serde_json::Value>(&response_body).map_err(|error| {
@@ -325,27 +333,31 @@ pub fn refresh_copilot_access_token(refresh_token: &str) -> Result<CopilotOAuthT
     }
     let client_id = copilot_device_flow_client_id();
     let response = match ureq::post(github_device_access_token_url().as_str())
-        .set("accept", "application/json")
-        .send_form(&[
+        .config()
+        .http_status_as_error(false)
+        .build()
+        .header("accept", "application/json")
+        .send_form([
             ("client_id", client_id.as_str()),
             ("grant_type", "refresh_token"),
             ("refresh_token", refresh_token),
         ]) {
         Ok(response) => response,
-        Err(ureq::Error::Status(status, response)) => {
-            let body = response.into_string().unwrap_or_default();
-            return Err(WonderError::validation(format!(
-                "GitHub oauth refresh request failed with status {status}: {}",
-                describe_auth_error(&body)
-            )));
-        }
-        Err(ureq::Error::Transport(error)) => {
+        Err(error) => {
             return Err(WonderError::validation(format!(
                 "GitHub oauth refresh request failed: {error}"
             )));
         }
     };
-    let response_body = response.into_string().map_err(|error| {
+    let status = response.status().as_u16();
+    if status >= 400 {
+        let body = response.into_body().read_to_string().unwrap_or_default();
+        return Err(WonderError::validation(format!(
+            "GitHub oauth refresh request failed with status {status}: {}",
+            describe_auth_error(&body)
+        )));
+    }
+    let response_body = response.into_body().read_to_string().map_err(|error| {
         WonderError::validation(format!("invalid oauth refresh response body: {error}"))
     })?;
     let json = serde_json::from_str::<serde_json::Value>(&response_body).map_err(|error| {
@@ -612,6 +624,8 @@ fn required_string(json: &serde_json::Value, pointer: &str, context: &str) -> Re
 
 #[cfg(test)]
 mod tests {
+    use std::sync::{Mutex, MutexGuard};
+
     use super::*;
 
     // ── parse_aws_credentials_file ───────────────────────────────────────────
@@ -682,8 +696,9 @@ aws_secret_access_key = MYSECRET
 
     #[test]
     fn bearer_env_absent_returns_none() {
+        let _env_lock = env_lock();
         // Use a temp env scope by checking without setting the var (relies on
-        // test isolation; do not call env::set_var in parallel tests).
+        // test isolation through the module-level env lock).
         // We simply assert the shape when the var is not set.
         let result = {
             // Ensure the var is unset for this sub-scope.
@@ -695,6 +710,7 @@ aws_secret_access_key = MYSECRET
 
     #[test]
     fn bearer_env_present_returns_credentials() {
+        let _env_lock = env_lock();
         let _g1 = EnvGuard::set("AWS_BEARER_TOKEN_BEDROCK", "my-bearer-token");
         let _g2 = EnvGuard::set("AWS_REGION", "ap-southeast-1");
         let result = resolve_aws_bearer_from_env().expect("bearer token present");
@@ -704,6 +720,7 @@ aws_secret_access_key = MYSECRET
 
     #[test]
     fn bearer_env_blank_returns_none() {
+        let _env_lock = env_lock();
         let _g = EnvGuard::set("AWS_BEARER_TOKEN_BEDROCK", "   ");
         assert!(resolve_aws_bearer_from_env().is_none());
     }
@@ -712,6 +729,7 @@ aws_secret_access_key = MYSECRET
 
     #[test]
     fn profile_resolver_reads_credentials_file() {
+        let _env_lock = env_lock();
         let content = "\
 [default]
 aws_access_key_id = FILEKEY
@@ -741,6 +759,7 @@ region = us-east-2
 
     #[test]
     fn profile_resolver_missing_file_returns_none() {
+        let _env_lock = env_lock();
         let _g = EnvGuard::set(
             "AWS_SHARED_CREDENTIALS_FILE",
             "/nonexistent/path/credentials",
@@ -752,6 +771,7 @@ region = us-east-2
 
     #[test]
     fn gcp_env_all_absent_returns_none() {
+        let _env_lock = env_lock();
         let _g1 = EnvGuard::unset("VERTEXAI_PROJECT");
         let _g2 = EnvGuard::unset("VERTEXAI_LOCATION");
         let _g3 = EnvGuard::unset("GOOGLE_APPLICATION_CREDENTIALS");
@@ -760,6 +780,7 @@ region = us-east-2
 
     #[test]
     fn gcp_env_partially_set_returns_none() {
+        let _env_lock = env_lock();
         let _g1 = EnvGuard::set("VERTEXAI_PROJECT", "my-project");
         let _g2 = EnvGuard::unset("VERTEXAI_LOCATION");
         let _g3 = EnvGuard::unset("GOOGLE_APPLICATION_CREDENTIALS");
@@ -768,6 +789,7 @@ region = us-east-2
 
     #[test]
     fn gcp_env_all_present_returns_readiness() {
+        let _env_lock = env_lock();
         let _g1 = EnvGuard::set("VERTEXAI_PROJECT", "my-gcp-project");
         let _g2 = EnvGuard::set("VERTEXAI_LOCATION", "us-central1");
         let _g3 = EnvGuard::set("GOOGLE_APPLICATION_CREDENTIALS", "/sa/key.json");
@@ -779,9 +801,13 @@ region = us-east-2
 
     // ── test helpers ─────────────────────────────────────────────────────────
 
+    fn env_lock() -> MutexGuard<'static, ()> {
+        static ENV_LOCK: Mutex<()> = Mutex::new(());
+        ENV_LOCK.lock().expect("env test lock")
+    }
+
     /// RAII guard that sets/restores a single environment variable for the
-    /// duration of a test.  Must be used with `--test-threads=1` to avoid
-    /// races when multiple tests touch the same var.
+    /// duration of a test.  Tests using this helper must hold [`env_lock`].
     struct EnvGuard {
         key: String,
         previous: Option<String>,
@@ -790,7 +816,7 @@ region = us-east-2
     impl EnvGuard {
         fn set(key: &str, value: &str) -> Self {
             let previous = std::env::var(key).ok();
-            // SAFETY: single-threaded test context only (--test-threads=1).
+            // SAFETY: callers hold env_lock while this guard is alive.
             unsafe { std::env::set_var(key, value) };
             Self {
                 key: key.to_string(),
@@ -800,7 +826,7 @@ region = us-east-2
 
         fn unset(key: &str) -> Self {
             let previous = std::env::var(key).ok();
-            // SAFETY: single-threaded test context only (--test-threads=1).
+            // SAFETY: callers hold env_lock while this guard is alive.
             unsafe { std::env::remove_var(key) };
             Self {
                 key: key.to_string(),
@@ -813,11 +839,11 @@ region = us-east-2
         fn drop(&mut self) {
             match &self.previous {
                 Some(val) => {
-                    // SAFETY: single-threaded test context only (--test-threads=1).
+                    // SAFETY: callers hold env_lock while this guard is alive.
                     unsafe { std::env::set_var(&self.key, val) };
                 }
                 None => {
-                    // SAFETY: single-threaded test context only (--test-threads=1).
+                    // SAFETY: callers hold env_lock while this guard is alive.
                     unsafe { std::env::remove_var(&self.key) };
                 }
             }
