@@ -310,7 +310,22 @@ impl<'a> TuiController<'a> {
             UiEvent::Key(key) => self.handle_key_event(key, &mut before_blocking),
             UiEvent::Paste(text) => {
                 if !text.is_empty() {
-                    if self.global_search_open {
+                    if let Some(form) = &mut self.pending_provider_form {
+                        form.input.insert_text(&text);
+                        self.needs_render = true;
+                    } else if let Some(picker) = &mut self.pending_model_picker {
+                        picker.query.insert_text(&text);
+                        self.refresh_model_picker_dialog();
+                    } else if let Some(picker) = &mut self.pending_theme_picker {
+                        picker.query.insert_text(&text);
+                        self.needs_render = true;
+                    } else if let Some(picker) = &mut self.pending_permission_picker {
+                        picker.query.insert_text(&text);
+                        self.needs_render = true;
+                    } else if let Some(picker) = &mut self.pending_memory_picker {
+                        picker.query.insert_text(&text);
+                        self.needs_render = true;
+                    } else if self.global_search_open {
                         self.edit_global_search_query_text(&text);
                     } else if self.history_search.is_some() {
                         self.edit_history_search_query_text(&text);
@@ -4283,6 +4298,7 @@ impl<'a> TuiController<'a> {
                     opt.provider, opt.provider_display, opt.model, opt.model_display, opt.auth
                 )
             });
+            let mut last_provider: Option<&str> = None;
             return Some(PickerListView {
                 title: "Select Model".into(),
                 query: picker.query.text(),
@@ -4290,19 +4306,29 @@ impl<'a> TuiController<'a> {
                     .into_iter()
                     .filter_map(|index| picker.options.get(index))
                     .map(|opt| {
-                        let mut tag = opt.auth.clone();
+                        let group_header = if last_provider != Some(opt.provider.as_str()) {
+                            last_provider = Some(opt.provider.as_str());
+                            Some(format!("{} ({})", opt.provider_display, opt.auth))
+                        } else {
+                            None
+                        };
+                        let mut tag = String::new();
                         if opt.default {
-                            tag.push_str(", default");
+                            tag.push_str("default");
                         }
                         if opt.selected {
-                            tag.push_str(", current");
+                            if !tag.is_empty() {
+                                tag.push_str(", ");
+                            }
+                            tag.push_str("current");
                         }
                         PickerListEntry {
                             label: opt.model_display.clone(),
-                            description: opt.provider_display.clone(),
-                            tag: Some(tag),
+                            description: String::new(),
+                            tag: (!tag.is_empty()).then_some(tag),
                             selected: opt.model == picker.options[picker.selected_index].model
                                 && opt.provider == picker.options[picker.selected_index].provider,
+                            group_header,
                         }
                     })
                     .collect(),
@@ -4324,6 +4350,7 @@ impl<'a> TuiController<'a> {
                         description: opt.description.clone(),
                         tag: opt.selected.then(|| "current".into()),
                         selected: opt.theme == picker.options[picker.selected_index].theme,
+                        group_header: None,
                     })
                     .collect(),
                 hint: PICKER_HINT.into(),
@@ -4355,6 +4382,7 @@ impl<'a> TuiController<'a> {
                         description: opt.description.clone(),
                         tag: opt.selected.then(|| "current".into()),
                         selected: opt.mode == picker.options[picker.selected_index].mode,
+                        group_header: None,
                     })
                     .collect(),
                 hint: PICKER_HINT.into(),
@@ -4375,6 +4403,7 @@ impl<'a> TuiController<'a> {
                         description: format!("{} ({})", opt.description, opt.path.display()),
                         tag: opt.selected.then(|| "default".into()),
                         selected: opt.target == picker.options[picker.selected_index].target,
+                        group_header: None,
                     })
                     .collect(),
                 hint: PICKER_HINT.into(),
@@ -4410,6 +4439,7 @@ impl<'a> TuiController<'a> {
                             SetupItemAction::CopilotOAuth => None,
                         },
                         selected: i == overlay.selected_index,
+                        group_header: None,
                     })
                     .collect(),
                 hint: readiness_hint,
