@@ -192,7 +192,9 @@ pub fn is_tip_eligible(tip: &Tip, ctx: &TipContext, sessions_since_shown: u64) -
 ///
 /// Returns `None` when `candidates` is empty.
 #[must_use]
-pub fn select_next_tip<'a>(candidates: &[(&'a Tip, u64)]) -> Option<&'a Tip> {
+pub fn select_next_tip<'a>(
+    candidates: &[(&'a Tip, u64)],
+) -> Option<&'a Tip> {
     candidates
         .iter()
         .max_by_key(|(_, since)| *since)

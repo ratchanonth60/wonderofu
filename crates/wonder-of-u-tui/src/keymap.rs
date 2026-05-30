@@ -75,6 +75,20 @@ pub enum VimCommand {
     RepeatFindReverse,
     /// Represents cancel pending
     CancelPending,
+    /// Delete from cursor to end of line (equivalent to d$)
+    DeleteToLineEnd,
+    /// Delete from cursor to end of line then enter Insert mode (equivalent to c$)
+    ChangeToLineEnd,
+    /// Delete char before cursor (equivalent to dh/backspace in normal mode)
+    DeleteCharBefore,
+    /// Toggle case of char at cursor and advance one position
+    ToggleCase,
+    /// Open new line after current line and enter Insert mode
+    OpenLineBelow,
+    /// Open new line before current line and enter Insert mode
+    OpenLineAbove,
+    /// Replace single char at cursor with next keypress
+    ReplaceChar,
 }
 /// Enumerates resolved key
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

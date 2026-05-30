@@ -57,6 +57,7 @@ pub struct VimState {
     pending_find: Option<FindDirection>,
     /// `Some(true)` = inner (i), `Some(false)` = around (a); set after operator + i/a
     pending_text_object: Option<bool>,
+    pending_replace: bool,
     register: VimRegister,
     undo_stack: Vec<BufferSnapshot>,
     redo_stack: Vec<BufferSnapshot>,
@@ -81,6 +82,7 @@ impl VimState {
             pending_operator: None,
             pending_find: None,
             pending_text_object: None,
+            pending_replace: false,
             register: VimRegister {
                 text: String::new(),
                 linewise: false,
@@ -109,6 +111,11 @@ impl VimState {
         resolver: &KeyBindingResolver,
         event: KeyEvent,
     ) -> VimHandleResult {
+        if self.pending_replace {
+            self.pending_replace = false;
+            return self.finish_replace(buffer, event);
+        }
+
         if let Some(direction) = self.pending_find.take() {
             return self.finish_find(buffer, event, direction);
         }
@@ -315,9 +322,9 @@ impl VimState {
                 }
                 VimHandleResult::default()
             }
-            Some(ResolvedKey::Edit(_)) | Some(ResolvedKey::InsertChar(_)) => {
-                VimHandleResult::default()
-            }
+            Some(ResolvedKey::Edit(_))
+            | Some(ResolvedKey::InsertChar(_))
+            | Some(ResolvedKey::Vim(_)) => VimHandleResult::default(),
         }
     }
 
@@ -495,6 +502,91 @@ impl VimState {
             VimCommand::RepeatFindReverse => self.repeat_find(buffer, true),
             VimCommand::CancelPending => {
                 self.clear_pending();
+                VimHandleResult::default()
+            }
+            VimCommand::DeleteToLineEnd => {
+                if let Some((start, end)) = buffer.normal_motion_range(Motion::LineEnd, 1) {
+                    self.register.text = buffer.range_text(start, end);
+                    self.register.linewise = false;
+                    self.push_undo(buffer);
+                    if buffer.delete_span(start, end) {
+                        self.redo_stack.clear();
+                    }
+                }
+                VimHandleResult::default()
+            }
+            VimCommand::ChangeToLineEnd => {
+                if let Some((start, end)) = buffer.normal_motion_range(Motion::LineEnd, 1) {
+                    self.register.text = buffer.range_text(start, end);
+                    self.register.linewise = false;
+                    self.push_undo(buffer);
+                    if buffer.delete_span(start, end) {
+                        self.redo_stack.clear();
+                    }
+                    self.mode = VimMode::Insert;
+                    self.clear_pending();
+                    return VimHandleResult {
+                        system: None,
+                        mode_changed: true,
+                    };
+                }
+                VimHandleResult::default()
+            }
+            VimCommand::DeleteCharBefore => {
+                if let Some((start, end)) = buffer.normal_motion_range(Motion::Left, 1) {
+                    self.register.text = buffer.range_text(start, end);
+                    self.register.linewise = false;
+                    self.push_undo(buffer);
+                    if buffer.delete_span(start, end) {
+                        self.redo_stack.clear();
+                    }
+                }
+                VimHandleResult::default()
+            }
+            VimCommand::ToggleCase => {
+                if !buffer.is_empty() {
+                    let pos = buffer.cursor().min(buffer.char_len().saturating_sub(1));
+                    let ch_str = buffer.range_text(pos, pos + 1);
+                    if let Some(ch) = ch_str.chars().next() {
+                        let toggled = toggle_case(ch).to_string();
+                        self.push_undo(buffer);
+                        buffer.delete_span(pos, pos + 1);
+                        buffer.insert_text_at(pos, &toggled);
+                        self.redo_stack.clear();
+                        // Advance cursor one position (clamped to last valid position)
+                        let new_cursor = (pos + 1).min(buffer.char_len().saturating_sub(1));
+                        buffer.set_cursor(new_cursor);
+                    }
+                }
+                VimHandleResult::default()
+            }
+            VimCommand::OpenLineBelow => {
+                self.push_undo(buffer);
+                buffer.append_line_end();
+                buffer.insert_char('\n');
+                self.redo_stack.clear();
+                self.mode = VimMode::Insert;
+                self.clear_pending();
+                VimHandleResult {
+                    system: None,
+                    mode_changed: true,
+                }
+            }
+            VimCommand::OpenLineAbove => {
+                self.push_undo(buffer);
+                let line_start = buffer.current_line_start();
+                buffer.insert_text_at(line_start, "\n");
+                buffer.set_cursor(line_start);
+                self.redo_stack.clear();
+                self.mode = VimMode::Insert;
+                self.clear_pending();
+                VimHandleResult {
+                    system: None,
+                    mode_changed: true,
+                }
+            }
+            VimCommand::ReplaceChar => {
+                self.pending_replace = true;
                 VimHandleResult::default()
             }
             _ => VimHandleResult::default(),
@@ -759,6 +851,22 @@ impl VimState {
         (start < end).then_some((start, end))
     }
 
+    fn finish_replace(&mut self, buffer: &mut TextBuffer, event: KeyEvent) -> VimHandleResult {
+        if let KeyCode::Char(ch) = event.code {
+            if !buffer.is_empty() {
+                let pos = buffer.cursor().min(buffer.char_len().saturating_sub(1));
+                self.push_undo(buffer);
+                buffer.delete_span(pos, pos + 1);
+                buffer.insert_text_at(pos, &ch.to_string());
+                // r leaves the cursor on the replaced character
+                buffer.set_cursor(pos);
+                self.redo_stack.clear();
+            }
+        }
+        // Non-char keys (e.g. Esc) silently cancel — no mutation
+        VimHandleResult::default()
+    }
+
     fn push_undo(&mut self, buffer: &TextBuffer) {
         let snapshot = BufferSnapshot {
             text: buffer.text(),
@@ -801,6 +909,15 @@ impl VimState {
         self.pending_operator = None;
         self.pending_find = None;
         self.pending_text_object = None;
+        self.pending_replace = false;
+    }
+}
+
+fn toggle_case(ch: char) -> char {
+    if ch.is_uppercase() {
+        ch.to_lowercase().next().unwrap_or(ch)
+    } else {
+        ch.to_uppercase().next().unwrap_or(ch)
     }
 }
 
@@ -1031,6 +1148,10 @@ fn find_bracket_object(
 }
 
 fn extra_normal_command(event: KeyEvent) -> Option<VimCommand> {
+    // Guard: modifiers would route to reserved bindings (e.g. Ctrl-r → Redo).
+    if event.modifiers.control || event.modifiers.alt {
+        return None;
+    }
     match event.code {
         KeyCode::Char('A') => Some(VimCommand::AppendLineEnd),
         KeyCode::Char('I') => Some(VimCommand::InsertLineStart),
@@ -1046,6 +1167,14 @@ fn extra_normal_command(event: KeyEvent) -> Option<VimCommand> {
         KeyCode::Char(';') => Some(VimCommand::RepeatFind),
         KeyCode::Char(',') => Some(VimCommand::RepeatFindReverse),
         KeyCode::Esc => Some(VimCommand::CancelPending),
+        // New operations
+        KeyCode::Char('D') => Some(VimCommand::DeleteToLineEnd),
+        KeyCode::Char('C') => Some(VimCommand::ChangeToLineEnd),
+        KeyCode::Char('X') => Some(VimCommand::DeleteCharBefore),
+        KeyCode::Char('~') => Some(VimCommand::ToggleCase),
+        KeyCode::Char('o') => Some(VimCommand::OpenLineBelow),
+        KeyCode::Char('O') => Some(VimCommand::OpenLineAbove),
+        KeyCode::Char('r') => Some(VimCommand::ReplaceChar),
         _ => None,
     }
 }
@@ -1308,6 +1437,21 @@ mod tests {
         assert_eq!(vim.mode(), VimMode::Normal);
     }
 
+    // --- missing-ops tests ---
+
+    #[test]
+    fn normal_mode_delete_to_line_end() {
+        let resolver = KeyBindingResolver::new();
+        let mut buffer = TextBuffer::from_text("hello world", true);
+        let mut vim = VimState::new(VimMode::Normal);
+        buffer.set_cursor(5); // cursor on ' '
+
+        vim.handle_key(&mut buffer, &resolver, key('D'));
+
+        assert_eq!(buffer.text(), "hello");
+        assert_eq!(vim.mode(), VimMode::Normal);
+    }
+
     #[test]
     fn daw_deletes_word_and_trailing_space() {
         let resolver = KeyBindingResolver::new();
@@ -1394,5 +1538,130 @@ mod tests {
         // pending state cleared, text unchanged
         assert!(!vim.has_pending_operator());
         assert_eq!(buffer.text(), "hello");
+    }
+
+    #[test]
+    fn normal_mode_change_to_line_end_enters_insert() {
+        let resolver = KeyBindingResolver::new();
+        let mut buffer = TextBuffer::from_text("hello world", true);
+        let mut vim = VimState::new(VimMode::Normal);
+        buffer.set_cursor(5); // cursor on ' '
+
+        let result = vim.handle_key(&mut buffer, &resolver, key('C'));
+
+        assert_eq!(buffer.text(), "hello");
+        assert_eq!(vim.mode(), VimMode::Insert);
+        assert!(result.mode_changed);
+    }
+
+    #[test]
+    fn normal_mode_delete_char_before_cursor() {
+        let resolver = KeyBindingResolver::new();
+        let mut buffer = TextBuffer::from_text("hello", true);
+        let mut vim = VimState::new(VimMode::Normal);
+        buffer.set_cursor(3); // cursor on 'l'
+
+        vim.handle_key(&mut buffer, &resolver, key('X'));
+
+        assert_eq!(buffer.text(), "helo");
+        assert_eq!(vim.mode(), VimMode::Normal);
+    }
+
+    #[test]
+    fn normal_mode_delete_char_before_noop_at_line_start() {
+        let resolver = KeyBindingResolver::new();
+        let mut buffer = TextBuffer::from_text("hello", true);
+        let mut vim = VimState::new(VimMode::Normal);
+        buffer.set_cursor(0);
+
+        vim.handle_key(&mut buffer, &resolver, key('X'));
+
+        // No character before cursor — buffer unchanged
+        assert_eq!(buffer.text(), "hello");
+    }
+
+    #[test]
+    fn normal_mode_tilde_toggles_case_and_advances_cursor() {
+        let resolver = KeyBindingResolver::new();
+        let mut buffer = TextBuffer::from_text("hello", true);
+        let mut vim = VimState::new(VimMode::Normal);
+        buffer.set_cursor(0); // cursor on 'h'
+
+        vim.handle_key(&mut buffer, &resolver, key('~'));
+
+        assert_eq!(&buffer.text()[..1], "H");
+        assert_eq!(buffer.cursor(), 1);
+        assert_eq!(vim.mode(), VimMode::Normal);
+    }
+
+    #[test]
+    fn normal_mode_o_opens_line_below_and_enters_insert() {
+        let resolver = KeyBindingResolver::new();
+        let mut buffer = TextBuffer::from_text("alpha\nbeta", true);
+        let mut vim = VimState::new(VimMode::Normal);
+        buffer.set_cursor(0); // on 'a' of "alpha"
+
+        let result = vim.handle_key(&mut buffer, &resolver, key('o'));
+        assert_eq!(vim.mode(), VimMode::Insert);
+        assert!(result.mode_changed);
+
+        // Type a character to confirm cursor is on the new line
+        vim.handle_key(&mut buffer, &resolver, key('x'));
+        assert_eq!(buffer.text(), "alpha\nx\nbeta");
+    }
+
+    #[test]
+    fn normal_mode_open_line_above_enters_insert() {
+        let resolver = KeyBindingResolver::new();
+        let mut buffer = TextBuffer::from_text("alpha\nbeta", true);
+        let mut vim = VimState::new(VimMode::Normal);
+        // Move to second line
+        buffer.set_cursor(6); // on 'b' of "beta"
+
+        let result = vim.handle_key(&mut buffer, &resolver, key('O'));
+        assert_eq!(vim.mode(), VimMode::Insert);
+        assert!(result.mode_changed);
+
+        // Type a character to confirm cursor is on the new blank line
+        vim.handle_key(&mut buffer, &resolver, key('x'));
+        assert_eq!(buffer.text(), "alpha\nx\nbeta");
+    }
+
+    #[test]
+    fn normal_mode_r_replaces_char_at_cursor() {
+        let resolver = KeyBindingResolver::new();
+        let mut buffer = TextBuffer::from_text("hello", true);
+        let mut vim = VimState::new(VimMode::Normal);
+        buffer.set_cursor(1); // cursor on 'e'
+
+        // r followed by 'a' replaces 'e' with 'a'
+        vim.handle_key(&mut buffer, &resolver, key('r'));
+        vim.handle_key(&mut buffer, &resolver, key('a'));
+
+        assert_eq!(buffer.text(), "hallo");
+        assert_eq!(buffer.cursor(), 1); // cursor stays on replaced char
+        assert_eq!(vim.mode(), VimMode::Normal);
+    }
+
+    #[test]
+    fn normal_mode_r_esc_cancels_replace() {
+        let resolver = KeyBindingResolver::new();
+        let mut buffer = TextBuffer::from_text("hello", true);
+        let mut vim = VimState::new(VimMode::Normal);
+        buffer.set_cursor(1);
+
+        // r followed by Esc should leave buffer unchanged
+        vim.handle_key(&mut buffer, &resolver, key('r'));
+        vim.handle_key(
+            &mut buffer,
+            &resolver,
+            KeyEvent {
+                code: KeyCode::Esc,
+                modifiers: NONE,
+            },
+        );
+
+        assert_eq!(buffer.text(), "hello");
+        assert_eq!(vim.mode(), VimMode::Normal);
     }
 }
