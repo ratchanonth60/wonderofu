@@ -12,7 +12,10 @@ use std::{
 
 use crossterm::{
     cursor::{Hide, Show},
-    event::{EnableBracketedPaste, KeyboardEnhancementFlags, PushKeyboardEnhancementFlags},
+    event::{
+        EnableBracketedPaste, EnableMouseCapture, KeyboardEnhancementFlags,
+        PushKeyboardEnhancementFlags,
+    },
     execute,
     terminal::{self, EnterAlternateScreen, LeaveAlternateScreen},
 };
@@ -36,6 +39,7 @@ use wonder_of_u_core::{
     PermissionRequest, PermissionRuleSource, ProviderReadiness, QueuePlacement, Result, SessionId,
     TaskState, TaskStatus, TodoTaskStatus, ToolContext, ToolKind, ToolQuery, ToolResult,
     ToolSource, ToolUseId, WonderError, parse_slash_command, payload_from_task_state,
+    token_budget::AUTOCOMPACT_BUFFER_TOKENS,
 };
 use wonder_of_u_mcp::McpConfigStore;
 use wonder_of_u_storage::{TaskStore, TodoTaskStore, TranscriptStore};
@@ -145,6 +149,7 @@ pub(crate) fn run_tui<W: Write>(
                     EnterAlternateScreen,
                     Hide,
                     EnableBracketedPaste,
+                    EnableMouseCapture,
                     PushKeyboardEnhancementFlags(keyboard_enhancement_flags())
                 )?;
                 term.clear()?;

@@ -87,6 +87,7 @@ mod tests {
             scroll: TranscriptScrollView::default(),
             sidebar: None,
             prompt_warning: None,
+            tool_progress: Vec::new(),
         };
 
         let frame = render_snapshot(30, 9, &view, &Theme::default());
@@ -142,6 +143,7 @@ mod tests {
             scroll: TranscriptScrollView::default(),
             sidebar: None,
             prompt_warning: None,
+            tool_progress: Vec::new(),
         };
 
         let frame = render_snapshot(48, 10, &view, &Theme::default());
@@ -241,6 +243,7 @@ mod tests {
             scroll: TranscriptScrollView::default(),
             sidebar: None,
             prompt_warning: None,
+            tool_progress: Vec::new(),
         };
 
         let frame = render_snapshot(42, 12, &view, &Theme::default());
@@ -293,6 +296,7 @@ mod tests {
             scroll: TranscriptScrollView::default(),
             sidebar: None,
             prompt_warning: None,
+            tool_progress: Vec::new(),
         };
 
         let frame = render_snapshot(42, 12, &view, &Theme::default());
@@ -347,6 +351,7 @@ mod tests {
             scroll: TranscriptScrollView::default(),
             sidebar: None,
             prompt_warning: None,
+            tool_progress: Vec::new(),
         };
 
         let frame = render_snapshot(42, 16, &view, &Theme::default());
@@ -413,6 +418,7 @@ mod tests {
             scroll: TranscriptScrollView::default(),
             sidebar: None,
             prompt_warning: None,
+            tool_progress: Vec::new(),
         };
 
         let frame = render_snapshot(48, 12, &view, &Theme::default());
@@ -477,6 +483,7 @@ mod tests {
             scroll: TranscriptScrollView::default(),
             sidebar: None,
             prompt_warning: None,
+            tool_progress: Vec::new(),
         };
 
         let frame = render_snapshot(64, 12, &view, &Theme::default());
@@ -523,6 +530,7 @@ mod tests {
             scroll: TranscriptScrollView::default(),
             sidebar: None,
             prompt_warning: None,
+            tool_progress: Vec::new(),
         };
 
         let frame = render_snapshot(32, 9, &view, &Theme::default());
@@ -560,6 +568,7 @@ mod tests {
             scroll: TranscriptScrollView::default(),
             sidebar: None,
             prompt_warning: None,
+            tool_progress: Vec::new(),
         };
 
         let frame = render_snapshot(48, 10, &view, &Theme::default());
@@ -622,6 +631,7 @@ mod tests {
             scroll: TranscriptScrollView::default(),
             sidebar: None,
             prompt_warning: None,
+            tool_progress: Vec::new(),
         };
 
         let frame = render_snapshot(48, 12, &view, &Theme::default());
@@ -691,6 +701,7 @@ mod tests {
             scroll: TranscriptScrollView::default(),
             sidebar: None,
             prompt_warning: None,
+            tool_progress: Vec::new(),
         };
 
         let frame = render_snapshot(60, 16, &view, &Theme::default());
@@ -773,6 +784,7 @@ mod tests {
             scroll: TranscriptScrollView::default(),
             sidebar: None,
             prompt_warning: None,
+            tool_progress: Vec::new(),
         };
 
         let frame = render_snapshot(60, 16, &view, &Theme::default());
@@ -835,6 +847,7 @@ mod tests {
             scroll: TranscriptScrollView::default(),
             sidebar: None,
             prompt_warning: None,
+            tool_progress: Vec::new(),
         };
 
         let frame = render_snapshot(32, 8, &view, &Theme::default());
@@ -871,6 +884,7 @@ mod tests {
             scroll: TranscriptScrollView::default(),
             sidebar: None,
             prompt_warning: None,
+            tool_progress: Vec::new(),
         };
 
         let frame = render_snapshot(60, 10, &view, &Theme::default());

@@ -77,6 +77,8 @@ fn controller_mouse_scroll_down_inside_transcript_scrolls_toward_newer() {
 
 #[test]
 fn controller_mouse_scroll_outside_transcript_area_ignored() {
+    // Scroll now works from anywhere on screen (no area restriction), so a
+    // wheel event over the prompt zone should scroll the transcript.
     let dir = unique_test_dir("mouse-scroll-outside");
     write_provider_config(&dir, "http://127.0.0.1:1/v1");
     let registry = commands::registry(Some(dir.clone())).expect("registry");
@@ -90,15 +92,16 @@ fn controller_mouse_scroll_outside_transcript_area_ignored() {
     controller.on_terminal_resize(80, 24);
     controller.scroll_state.on_resize(20, 100);
 
-    // row 22 falls in the prompt/chrome zone of an 80×24 terminal
+    // row 22 falls in the prompt/chrome zone of an 80×24 terminal —
+    // with the area restriction removed, scroll still applies.
     controller.handle_mouse_event(scroll_mouse_event(
         wonder_of_u_tui::MouseEventKind::ScrollUp,
         40,
         22,
     ));
-    assert_eq!(
-        controller.scroll_state.offset_from_bottom, 0,
-        "wheel over the prompt zone must be ignored"
+    assert!(
+        controller.scroll_state.offset_from_bottom > 0,
+        "wheel anywhere on screen should scroll the transcript"
     );
 }
 
@@ -232,6 +235,8 @@ fn controller_messages_rect_matches_renderer_for_empty_prompt() {
 /// row is inside the prompt area — not the messages area.
 #[test]
 fn controller_mouse_scroll_on_prompt_border_row_does_not_scroll() {
+    // Scroll now works from anywhere on screen; the prompt border row also
+    // triggers a scroll.  Test name kept for history; assertion updated.
     let dir = unique_test_dir("layout-math-border-scroll");
     let registry = commands::registry(Some(dir.clone())).expect("registry");
     let mut controller = TuiController::new(
@@ -242,12 +247,9 @@ fn controller_mouse_scroll_on_prompt_border_row_does_not_scroll() {
     )
     .expect("controller");
 
-    // Give the scroll state some content so a scroll would be detectable.
     controller.on_terminal_resize(80, 24);
     controller.scroll_state.on_resize(19, 100);
 
-    // With 80×24 and an empty prompt the messages rect is Rect(0,0,80,19),
-    // so row 19 is the first row of the prompt box ([y, y+height) = [19, 23)).
     let prompt_border_row = controller.transcript_messages_rect().bottom();
     assert_eq!(
         prompt_border_row, 19,
@@ -260,9 +262,10 @@ fn controller_mouse_scroll_on_prompt_border_row_does_not_scroll() {
         prompt_border_row,
     ));
 
-    assert_eq!(
-        controller.scroll_state.offset_from_bottom, 0,
-        "wheel on the prompt border row (y={prompt_border_row}) must not scroll the transcript"
+    // Area restriction removed — scrolling applies from any row.
+    assert!(
+        controller.scroll_state.offset_from_bottom > 0,
+        "wheel on prompt border row should now scroll the transcript"
     );
 }
 

@@ -225,6 +225,9 @@ pub struct PendingProviderToolCall {
     pub tool_name: String,
     /// Stores the arguments
     pub arguments: Value,
+    /// Gemini thought_signature — echoed back verbatim on next request.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thought_signature: Option<String>,
 }
 /// Represents pending provider tool result
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]

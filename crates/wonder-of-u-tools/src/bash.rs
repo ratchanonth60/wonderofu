@@ -268,7 +268,7 @@ impl Tool for BashTool {
             }
         }
 
-        // --- One-shot fallback path (original implementation) ---
+        // --- One-shot fallback path ---
         let mut child = shell_command(&input.command);
         child
             .current_dir(&cwd)
@@ -276,19 +276,50 @@ impl Tool for BashTool {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
         let mut child = child.spawn()?;
-        let timed_out = child.wait_timeout(timeout)?.is_none();
+
+        // Spawn reader threads so stdout lines arrive incrementally.
+        // The progress_tx channel is preview-only: try_send silently drops lines
+        // under back-pressure, which is fine — result is built from the full buffer.
+        let stdout_pipe = child.stdout.take().expect("stdout piped");
+        let stderr_pipe = child.stderr.take().expect("stderr piped");
+        let progress_tx = context.progress_tx.clone();
+
+        let stdout_handle = std::thread::spawn(move || {
+            use std::io::{BufRead, BufReader};
+            let mut all = String::new();
+            for line in BufReader::new(stdout_pipe).lines() {
+                let line = line.unwrap_or_default();
+                if let Some(ref tx) = progress_tx {
+                    let _ = tx.try_send(line.clone());
+                }
+                all.push_str(&line);
+                all.push('\n');
+            }
+            all
+        });
+        let stderr_handle = std::thread::spawn(move || {
+            use std::io::Read;
+            let mut s = String::new();
+            let _ = stderr_pipe
+                .take(crate::orchestration::MAX_TOOL_RESULT_BYTES as u64)
+                .read_to_string(&mut s);
+            s
+        });
+
+        let exit_status = child.wait_timeout(timeout)?;
+        let timed_out = exit_status.is_none();
         if timed_out {
             match child.kill() {
                 Ok(()) => {}
                 Err(error) if error.kind() == std::io::ErrorKind::InvalidInput => {}
                 Err(error) => return Err(error.into()),
             }
+            let _ = child.wait();
         }
 
-        let output = child.wait_with_output()?;
-        let exit_code = output.status.code();
-        let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+        let stdout = stdout_handle.join().unwrap_or_default();
+        let stderr = stderr_handle.join().unwrap_or_default();
+        let exit_code = exit_status.and_then(|s| s.code());
         let mut content = render_output(&stdout, &stderr, exit_code);
         if timed_out {
             let timeout_message = format!(
@@ -302,7 +333,7 @@ impl Tool for BashTool {
             };
         }
 
-        let mut result = if !timed_out && output.status.success() {
+        let mut result = if !timed_out && exit_status.is_some_and(|s| s.success()) {
             ToolResult::success(use_id, content)
         } else {
             ToolResult::failure(use_id, content)
@@ -496,6 +527,7 @@ mod tests {
             permission_rules: Vec::new(),
             features: FeatureSet::first_release(),
             bash_session_store: None,
+            progress_tx: None,
             fork_context: None,
         }
     }
@@ -512,6 +544,7 @@ mod tests {
             permission_rules: Vec::new(),
             features: FeatureSet::first_release(),
             bash_session_store: Some(Arc::new(Mutex::new(ShellSessionStore::new()))),
+            progress_tx: None,
             fork_context: None,
         }
     }
@@ -709,6 +742,7 @@ mod tests {
             permission_rules: Vec::new(),
             features: FeatureSet::first_release(),
             bash_session_store: Some(Arc::clone(&store)),
+            progress_tx: None,
             fork_context: None,
         };
         block_on(tool.execute(
@@ -730,6 +764,7 @@ mod tests {
             permission_rules: Vec::new(),
             features: FeatureSet::first_release(),
             bash_session_store: Some(Arc::clone(&store)),
+            progress_tx: None,
             fork_context: None,
         };
         let result = block_on(tool.execute(
@@ -833,5 +868,32 @@ mod tests {
             );
             std::thread::sleep(std::time::Duration::from_millis(50));
         }
+    }
+
+    #[test]
+    fn bash_progress_tx_receives_stdout_lines() {
+        let dir = unique_test_dir("tools-bash-progress");
+        let tool = BashTool;
+        let (tx, rx) = std::sync::mpsc::sync_channel::<String>(64);
+        let mut ctx = tool_context(dir);
+        ctx.progress_tx = Some(tx);
+
+        let result = block_on(tool.execute(
+            ctx,
+            ToolUseId::new(),
+            json!({ "command": "printf 'line1\\nline2\\nline3\\n'" }),
+        ))
+        .expect("run bash tool");
+
+        assert!(result.success);
+        let received: Vec<String> = std::iter::from_fn(|| rx.try_recv().ok()).collect();
+        assert!(
+            received.iter().any(|l| l.contains("line1")),
+            "expected line1 in progress stream: {received:?}"
+        );
+        assert!(
+            received.iter().any(|l| l.contains("line2")),
+            "expected line2 in progress stream: {received:?}"
+        );
     }
 }

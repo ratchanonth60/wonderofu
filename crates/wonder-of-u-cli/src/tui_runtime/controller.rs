@@ -95,6 +95,12 @@ pub(super) struct TuiController<'a> {
     /// Kept on the controller so that the internal `Arc<Mutex<...>>` timing
     /// state survives across TUI ticks.  `None` when no `storage_dir` is set.
     pub(super) task_manager: Option<TaskManager>,
+    /// Live stdout lines received from a running shell tool (bash/shell).
+    /// Cleared after each tool call completes. Shown in the loading area.
+    pub(super) tool_progress_lines: Vec<String>,
+    /// Receiving end of the shell-tool progress channel.
+    /// Drained on every tick while a tool is executing.
+    pub(super) tool_progress_rx: Option<mpsc::Receiver<String>>,
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -274,6 +280,8 @@ impl<'a> TuiController<'a> {
             sidebar_cache: SidebarPanelCache::default(),
             pre_plan_permission_mode: None,
             task_manager: storage_dir.map(TaskManager::new),
+            tool_progress_lines: Vec::new(),
+            tool_progress_rx: None,
         };
         controller.hydrate_initial_settings()?;
         controller.refresh_runtime_state()?;
@@ -473,24 +481,37 @@ impl<'a> TuiController<'a> {
         // and perform prompt cursor movement.
         if !self.has_picker_overlay() && self.dialog.is_none() {
             let page = self.scroll_state.last_visible_lines.max(1);
-            match (key.code, key.modifiers.control) {
-                (KeyCode::PageUp, _) => {
+            match (key.code, key.modifiers.control, key.modifiers.alt) {
+                (KeyCode::PageUp, _, _) => {
                     self.scroll_state.scroll_by(page as i32);
                     self.needs_render = true;
                     return Ok(());
                 }
-                (KeyCode::PageDown, _) => {
+                (KeyCode::PageDown, _, _) => {
                     self.scroll_state.scroll_by(-(page as i32));
                     self.needs_render = true;
                     return Ok(());
                 }
-                (KeyCode::Home, true) => {
+                (KeyCode::Home, true, _) => {
                     self.scroll_state.scroll_to_top();
                     self.needs_render = true;
                     return Ok(());
                 }
-                (KeyCode::End, true) => {
+                (KeyCode::End, true, _) => {
                     self.scroll_state.scroll_to_bottom();
+                    self.needs_render = true;
+                    return Ok(());
+                }
+                // Alt+Up / Alt+Down: scroll transcript line-by-line.
+                // These don't interfere with prompt editing since Alt modifies
+                // the key semantics.
+                (KeyCode::Up, _, true) => {
+                    self.scroll_state.scroll_by(3);
+                    self.needs_render = true;
+                    return Ok(());
+                }
+                (KeyCode::Down, _, true) => {
+                    self.scroll_state.scroll_by(-3);
                     self.needs_render = true;
                     return Ok(());
                 }
@@ -1219,6 +1240,7 @@ impl<'a> TuiController<'a> {
                     self.turn_state = TurnState::Completed;
                     self.state.input_mode = InputMode::Prompt;
                     self.status_note = Some("tool loop response recorded".into());
+                    self.maybe_autocompact(); // may override status_note if threshold crossed
                     return Ok(());
                 }
                 ToolUseResponse::ToolCalls(batch) => {
@@ -1493,6 +1515,7 @@ impl<'a> TuiController<'a> {
         } else {
             "model response recorded".into()
         });
+        self.maybe_autocompact(); // may override status_note if threshold crossed
         Ok(())
     }
 
@@ -1623,6 +1646,7 @@ impl<'a> TuiController<'a> {
                     } else {
                         "tool loop response recorded".into()
                     });
+                    self.maybe_autocompact(); // may override status_note if threshold crossed
                     return Ok(());
                 }
                 ToolUseResponse::ToolCalls(batch) => {
@@ -2404,6 +2428,7 @@ impl<'a> TuiController<'a> {
             permission_rules: Vec::new(),
             features: self.state.features.clone(),
             bash_session_store: None,
+            progress_tx: None,
             fork_context: build_fork_context_snapshot(&self.state, system_prompt.as_deref()),
         }
     }
@@ -2520,9 +2545,16 @@ impl<'a> TuiController<'a> {
         self.turn_state = TurnState::ToolExecuting;
         self.state.input_mode = InputMode::Bash;
         self.status_note = Some(format!("running tool {}", call.tool_name));
+        self.tool_progress_lines.clear();
+
+        // Set up a bounded channel so shell tools can stream partial stdout.
+        let (progress_tx, progress_rx) = mpsc::sync_channel::<String>(256);
+        self.tool_progress_rx = Some(progress_rx);
+        let mut context = context.clone();
+        context.progress_tx = Some(progress_tx);
+
         self.needs_render = true;
         on_progress(self)?;
-        let context = context.clone();
         let arguments = call.arguments.clone();
         let result = match run_with_spinner_tick(
             move || block_on(tool.execute(context, use_id, arguments)),
@@ -2532,6 +2564,8 @@ impl<'a> TuiController<'a> {
             Ok(result) => result,
             Err(error) => ToolResult::failure(use_id, format!("tool execution failed: {error}")),
         };
+        self.tool_progress_rx = None;
+        self.tool_progress_lines.clear();
         self.finalize_tool_result(Vec::new(), call, result, on_progress)
     }
 
@@ -2540,6 +2574,18 @@ impl<'a> TuiController<'a> {
         F: FnMut(&Self) -> Result<()>,
     {
         self.loading_frame = self.loading_frame.wrapping_add(1);
+        // Drain any new lines from the shell progress channel.
+        if let Some(ref rx) = self.tool_progress_rx {
+            while let Ok(line) = rx.try_recv() {
+                if !line.trim().is_empty() {
+                    self.tool_progress_lines.push(line);
+                    // Keep only the last 8 lines to avoid unbounded growth.
+                    if self.tool_progress_lines.len() > 8 {
+                        self.tool_progress_lines.remove(0);
+                    }
+                }
+            }
+        }
         self.needs_render = true;
         on_progress(self)
     }
@@ -2831,6 +2877,9 @@ impl<'a> TuiController<'a> {
         view.loading_elapsed_secs = self.loading_frame / 2;
         // Cumulative token count from costs tracking (0 when no API calls yet).
         view.loading_total_tokens = self.state.costs.usage.total_tokens();
+
+        // Live shell output lines (only populated while a bash/shell tool is running).
+        view.tool_progress = self.tool_progress_lines.clone();
 
         // Compact Claude-style footer; verbose cwd/provider/model metadata lives in the sidebar.
         let permission_label = permission_mode_output_label(self.state.permission_mode);
@@ -4981,8 +5030,11 @@ impl<'a> TuiController<'a> {
             prompt_height,
         );
         let total = self.transcript_line_count(shell_main_area_width(width, self.sidebar_visible));
-        self.scroll_state
-            .on_resize(usize::from(layout.messages.height), total);
+        // Subtract the loading row from visible height so the scroll max-offset
+        // matches the actual renderable area (spinner sits on top of transcripts).
+        let loading_row = u16::from(is_loading_turn_state(self.turn_state));
+        let visible = layout.messages.height.saturating_sub(loading_row);
+        self.scroll_state.on_resize(usize::from(visible), total);
     }
 
     /// Recomputes the total rendered transcript line count and notifies the
@@ -5001,9 +5053,10 @@ impl<'a> TuiController<'a> {
     /// Returns the transcript messages [`Rect`] derived from the last known
     /// terminal dimensions.
     ///
-    /// Returns an empty rect until the first `UiEvent::Resize` arrives, so
-    /// mouse wheel events before the terminal reports its size are silently
-    /// ignored.
+    /// Returns the transcript messages rect for layout and hit-testing.
+    ///
+    /// Used by tests to verify layout geometry.
+    #[allow(dead_code)]
     pub(super) fn transcript_messages_rect(&self) -> Rect {
         let (width, height) = self.last_terminal_size;
         if width == 0 || height == 0 {
@@ -5056,16 +5109,9 @@ impl<'a> TuiController<'a> {
             return;
         }
 
-        // Only apply the scroll when the pointer is inside the transcript
-        // messages area; wheel events over the prompt bar or chrome are
-        // silently ignored.
-        if !self
-            .transcript_messages_rect()
-            .contains(mouse.column, mouse.row)
-        {
-            return;
-        }
-
+        // Apply scroll regardless of pointer position — the transcript is the
+        // only scrollable surface so restricting to the transcript rect just
+        // confuses users scrolling while the cursor is in the prompt area.
         self.scroll_state.scroll_by(delta);
         self.needs_render = true;
     }
@@ -5082,6 +5128,27 @@ impl<'a> TuiController<'a> {
             total = total.saturating_add(1);
         }
         total
+    }
+
+    /// Checks whether the context is close to full and, if so, queues a
+    /// `/compact` command to run at the start of the next turn.
+    ///
+    /// Mirrors the TypeScript `autoCompact.ts` logic: triggers when the
+    /// remaining token budget falls below `AUTOCOMPACT_BUFFER_TOKENS`.
+    /// Safe to call unconditionally — it is a no-op when context is fine or
+    /// when the window size is unknown.
+    pub(super) fn maybe_autocompact(&mut self) {
+        let Some(window_size) = self.state.context_window_size.filter(|&w| w > 0) else {
+            return;
+        };
+        let used = self.state.costs.usage.total_tokens();
+        let buffer = AUTOCOMPACT_BUFFER_TOKENS as u64;
+        if used + buffer > window_size {
+            self.state.queue_command("/compact", QueuePlacement::Now);
+            self.status_note = Some(format!(
+                "context {used}/{window_size} tokens — auto-compacting"
+            ));
+        }
     }
 }
 

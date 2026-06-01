@@ -176,10 +176,31 @@ pub fn message_lines_for_width(
     summary_width: usize,
     expand_output: bool,
 ) -> Vec<MessageLineView> {
-    rich_message_views(messages, expand_output)
-        .into_iter()
-        .flat_map(|view| view.display_lines(summary_width.max(1), expand_output))
-        .collect()
+    let width = summary_width.max(1);
+    let views = rich_message_views(messages, expand_output);
+    let mut result: Vec<MessageLineView> = Vec::new();
+    let mut prev_turn_role: Option<MessageRole> = None;
+
+    for view in views {
+        let view_lines = view.display_lines(width, expand_output);
+        let curr_role = view_lines.first().map(|l| l.role);
+
+        // Insert a blank separator line on User↔Assistant turn boundaries.
+        if let Some(curr) = curr_role {
+            if matches!(curr, MessageRole::User | MessageRole::Assistant) {
+                if let Some(prev) = prev_turn_role {
+                    if prev != curr {
+                        result.push(MessageLineView::new("", MessageRole::System));
+                    }
+                }
+                prev_turn_role = Some(curr);
+            }
+        }
+
+        result.extend(view_lines);
+    }
+
+    result
 }
 /// Handles status text
 #[must_use]
@@ -546,14 +567,16 @@ mod tests {
             ),
         ];
 
-        // Claude visual parity: user and assistant messages open with a "● " bullet.
+        // User messages open with "▶ ", assistant with "◆ ".
+        // A blank separator is inserted between User and Assistant turns.
         // The timestamp line follows the first assistant content line.
         // Tool/error rows use their own "● Tool(args)" + "  ⎿  detail" chrome.
         assert_eq!(
             message_lines(&messages, false),
             vec![
-                MessageLineView::new("● review changes", MessageRole::User),
-                MessageLineView::new("● line one line two", MessageRole::Assistant),
+                MessageLineView::new("▶ review changes", MessageRole::User),
+                MessageLineView::new("", MessageRole::System),
+                MessageLineView::new("◆ line one line two", MessageRole::Assistant),
                 MessageLineView::with_spans(
                     MessageRole::System,
                     vec![

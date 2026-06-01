@@ -391,6 +391,7 @@ fn tool_sidebar_lines_produces_summary() {
         permission_rules: Vec::new(),
         features: FeatureSet::first_release(),
         bash_session_store: None,
+        progress_tx: None,
         fork_context: None,
     };
     let lines = tool_sidebar_lines(&context, None);

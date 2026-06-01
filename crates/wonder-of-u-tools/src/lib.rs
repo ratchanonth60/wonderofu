@@ -14,6 +14,7 @@ mod fleet_tools;
 mod orchestration;
 mod plan_tool;
 mod search;
+mod shell;
 mod shell_stall_watchdog;
 mod source_compat;
 mod special_tools;
@@ -81,6 +82,8 @@ pub use plan_tool::{
 };
 /// Re-exports items from `search`
 pub use search::{GlobEntryType, GlobInput, GlobTool, GrepInput, GrepTool};
+/// Re-exports items from `shell`
+pub use shell::{ShellInput, ShellTool};
 /// Re-exports items from `shell_stall_watchdog`
 pub use shell_stall_watchdog::looks_like_prompt;
 /// Re-exports items from `source_compat`
@@ -125,6 +128,7 @@ pub use worktree_tools::{
 pub fn builtin_tools() -> Vec<Arc<dyn Tool>> {
     vec![
         Arc::new(BashTool),
+        Arc::new(ShellTool),
         Arc::new(PowerShellTool),
         Arc::new(FileReadTool),
         Arc::new(FileWriteTool),
@@ -331,6 +335,7 @@ mod tests {
             names,
             vec![
                 "bash",
+                "shell",
                 "powershell",
                 "file_read",
                 "file_write",

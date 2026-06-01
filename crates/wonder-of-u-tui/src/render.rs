@@ -238,6 +238,10 @@ pub struct ShellView {
     pub sidebar: Option<SidebarView>,
     /// Warning banner shown immediately above the prompt when context usage is high.
     pub prompt_warning: Option<PromptWarningView>,
+    /// Live stdout lines from a currently-executing shell tool.
+    ///
+    /// Shown in the loading area above the prompt.  Empty when no tool is running.
+    pub tool_progress: Vec<String>,
 }
 
 impl ShellView {
@@ -360,6 +364,7 @@ impl ShellView {
                 app.costs.usage.total_tokens(),
                 app.context_window_size,
             ),
+            tool_progress: Vec::new(),
         }
     }
 }

@@ -397,6 +397,7 @@ pub(super) fn parse_anthropic_tool_call(value: &Value) -> Result<ProviderToolCal
         call_id: call_id.to_string(),
         tool_name: tool_name.to_string(),
         arguments,
+        thought_signature: None,
     })
 }
 

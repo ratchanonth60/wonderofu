@@ -317,6 +317,12 @@ pub struct ToolContext {
     /// snapshot in the [`FleetMemberRequest`] before launching the child
     /// subprocess.  All other tools ignore it.
     pub fork_context: Option<ForkContextSnapshot>,
+    /// Optional sender for streaming partial shell output to the TUI during execution.
+    ///
+    /// When present, shell tools (`bash`, `shell`) send each stdout line to this
+    /// channel so the TUI can display live progress while the command runs.
+    /// `None` for non-TUI callers (tests, headless prompt runs, etc.).
+    pub progress_tx: Option<std::sync::mpsc::SyncSender<String>>,
 }
 
 impl ToolContext {
@@ -795,6 +801,7 @@ mod tests {
             permission_rules: Vec::new(),
             features: FeatureSet::first_release(),
             bash_session_store: None,
+            progress_tx: None,
             fork_context: None,
         }
     }

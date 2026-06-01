@@ -927,6 +927,7 @@ mod tests {
             permission_rules: vec![],
             features: FeatureSet::first_release(),
             bash_session_store: None,
+            progress_tx: None,
             fork_context: None,
         };
         let use_id = wonder_of_u_core::ToolUseId::new();
@@ -1042,6 +1043,7 @@ mod tests {
             permission_rules: vec![],
             features: FeatureSet::first_release(),
             bash_session_store: None,
+            progress_tx: None,
             fork_context: None,
         };
         let tool = AgentTool;
@@ -1147,6 +1149,7 @@ mod tests {
             permission_rules: vec![],
             features: FeatureSet::first_release(),
             bash_session_store: None,
+            progress_tx: None,
             fork_context: None, // no fork context provided
         };
         let tool = AgentTool;
@@ -1191,6 +1194,7 @@ mod tests {
             permission_rules: vec![],
             features: FeatureSet::first_release(),
             bash_session_store: None,
+            progress_tx: None,
             fork_context: Some(fork_ctx.clone()),
         };
         let tool = AgentTool;
@@ -1249,6 +1253,7 @@ mod tests {
             permission_rules: vec![],
             features: FeatureSet::first_release(),
             bash_session_store: None,
+            progress_tx: None,
             fork_context: Some(fork_ctx),
         };
 
@@ -1291,6 +1296,7 @@ mod tests {
             permission_rules: vec![],
             features: FeatureSet::first_release(),
             bash_session_store: None,
+            progress_tx: None,
             fork_context: None,
         };
 
@@ -1347,6 +1353,7 @@ mod tests {
             permission_rules: vec![],
             features: FeatureSet::first_release(),
             bash_session_store: None,
+            progress_tx: None,
             fork_context: None,
         };
         let tool = AgentTool;
@@ -1397,6 +1404,7 @@ mod tests {
             permission_rules: vec![policy_rule],
             features: FeatureSet::first_release(),
             bash_session_store: None,
+            progress_tx: None,
             fork_context: None,
         };
 
@@ -1441,6 +1449,7 @@ mod tests {
             permission_rules: vec![policy_rule],
             features: FeatureSet::first_release(),
             bash_session_store: None,
+            progress_tx: None,
             fork_context: None,
         };
         let tool = AgentTool;
@@ -1482,6 +1491,7 @@ mod tests {
             permission_rules: vec![cli_rule],
             features: FeatureSet::first_release(),
             bash_session_store: None,
+            progress_tx: None,
             fork_context: None,
         };
         let tool = AgentTool;
@@ -1522,6 +1532,7 @@ mod tests {
                 permission_rules: vec![],
                 features: FeatureSet::first_release(),
                 bash_session_store: None,
+                progress_tx: None,
                 fork_context: None,
             };
             let tool = AgentTool;

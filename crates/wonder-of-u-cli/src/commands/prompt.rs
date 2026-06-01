@@ -957,6 +957,7 @@ fn tool_context(state: &AppState, system_prompt: Option<&str>) -> ToolContext {
         permission_rules: Vec::new(),
         features: state.features.clone(),
         bash_session_store: None,
+        progress_tx: None,
         fork_context: build_fork_context_snapshot(state, system_prompt),
     }
 }

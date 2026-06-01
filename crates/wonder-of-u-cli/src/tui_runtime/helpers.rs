@@ -303,6 +303,7 @@ pub(super) fn prompt_cursor_position(
         scroll: wonder_of_u_tui::TranscriptScrollView::default(),
         sidebar: None,
         prompt_warning: None,
+        tool_progress: Vec::new(),
     }
     .prompt_height();
     // Apply the same 1/3-terminal cap used by the renderer.
@@ -410,6 +411,7 @@ pub(super) fn history_search_cursor_position(
         scroll: wonder_of_u_tui::TranscriptScrollView::default(),
         sidebar: None,
         prompt_warning: None,
+        tool_progress: Vec::new(),
     }
     .prompt_height();
     let warning_height = u16::from(prompt_warning_visible);
@@ -893,6 +895,7 @@ pub(super) fn pending_provider_call_from_runtime(
         call_id: call.call_id.clone(),
         tool_name: call.tool_name.clone(),
         arguments: call.arguments.clone(),
+        thought_signature: call.thought_signature.clone(),
     }
 }
 
@@ -937,6 +940,7 @@ pub(super) fn runtime_provider_call_from_pending(
         call_id: call.call_id.clone(),
         tool_name: call.tool_name.clone(),
         arguments: call.arguments.clone(),
+        thought_signature: call.thought_signature.clone(),
     }
 }
 

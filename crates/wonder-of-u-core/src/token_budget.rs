@@ -53,8 +53,12 @@ pub const COMPACT_MAX_OUTPUT_TOKENS: usize = 20_000;
 pub fn context_window_for_model(model_id: &str) -> usize {
     let m = model_id.to_ascii_lowercase();
 
-    // 1 M-context models (claude-sonnet-4 and opus-4-6 per context.ts)
-    if m.contains("claude-sonnet-4") || m.contains("opus-4-6") || m.contains("[1m]") {
+    // 1 M-context models: all Claude Sonnet 4 and Opus 4 variants
+    if m.contains("claude-sonnet-4")
+        || m.contains("claude-opus-4")
+        || m.contains("opus-4-6")
+        || m.contains("[1m]")
+    {
         return 1_000_000;
     }
 

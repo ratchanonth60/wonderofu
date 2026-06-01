@@ -124,6 +124,10 @@ pub struct ProviderToolCall {
     pub tool_name: String,
     /// Stores the arguments
     pub arguments: Value,
+    /// Gemini thinking models attach a `thought_signature` to each function
+    /// call.  It must be echoed back verbatim in subsequent requests;
+    /// omitting it causes a 400 INVALID_ARGUMENT error from the API.
+    pub thought_signature: Option<String>,
 }
 
 /// Represents provider tool result message
@@ -314,10 +318,14 @@ fn context_window_for_model(model: &str) -> u64 {
     let model = model.to_ascii_lowercase();
     if model.contains("gpt-5.5")
         || model.contains("gpt-5.4")
+        || model.contains("claude-opus-4-8")
+        || model.contains("claude-opus-4.8")
         || model.contains("claude-opus-4-7")
         || model.contains("claude-opus-4.7")
         || model.contains("claude-sonnet-4-6")
         || model.contains("claude-sonnet-4.6")
+        || model.contains("claude-sonnet-4-5")
+        || model.contains("claude-sonnet-4.5")
     {
         1_050_000
     } else if model.contains("gpt-5")
@@ -842,9 +850,11 @@ mod tests {
     use time::OffsetDateTime;
     use wonder_of_u_test_support::unique_test_dir;
 
+    use wonder_of_u_core::AuthMaterialKind;
+
     use crate::{
-        AgentSettings, AuthMaterial, CredentialStore, SettingsStore, StoredCredentials,
-        auth::AwsCredentials,
+        AgentSettings, AuthMaterial, CredentialStore, ProviderDescriptor, ProviderRegistry,
+        SettingsStore, StoredCredentials, auth::AwsCredentials,
     };
 
     use super::*;
@@ -1298,6 +1308,7 @@ mod tests {
                             call_id: "call_123".into(),
                             tool_name: "file_read".into(),
                             arguments: serde_json::json!({"path": "src/main.rs"}),
+                            thought_signature: None,
                         }],
                         results: vec![ProviderToolResultMessage {
                             call_id: "call_123".into(),
@@ -1927,6 +1938,7 @@ mod tests {
                             call_id: "toolu_prev".into(),
                             tool_name: "glob".into(),
                             arguments: serde_json::json!({"pattern": "src/**/*.rs"}),
+                            thought_signature: None,
                         }],
                         results: vec![ProviderToolResultMessage {
                             call_id: "toolu_prev".into(),
@@ -2806,14 +2818,36 @@ mod tests {
 
     // ─── Gemini ───────────────────────────────────────────────────────────────
 
+    /// Builds a resolved Gemini execution using the **native** Gemini protocol.
+    ///
+    /// The live `gemini` provider now uses `OpenAiCompat` (Google's OpenAI-
+    /// compatible endpoint), but the tests below specifically exercise the
+    /// native Gemini request/response format (`generateContent` etc.), so they
+    /// use a custom registry that keeps the old `GeminiNative` wire protocol.
     fn resolved_gemini_provider(model: Option<&str>) -> ResolvedProviderExecution {
+        let mut registry = ProviderRegistry::default();
+        registry
+            .register(ProviderDescriptor {
+                id: "gemini".into(),
+                display_name: "Google Gemini (native)".into(),
+                auth_kind: AuthMaterialKind::ApiKey,
+                default_model: "gemini-2.5-flash".into(),
+                models: vec![],
+                api_base: Some("https://generativelanguage.googleapis.com".into()),
+                api_key_env: Some("GEMINI_API_KEY".into()),
+                wire_protocol: WireProtocol::GeminiNative,
+                strict_model_validation: false,
+                endpoint_env: None,
+            })
+            .expect("register gemini native");
+
         let settings = AgentSettings {
             selected_provider: Some("gemini".into()),
             selected_model: model.map(ToString::to_string),
             ..AgentSettings::default()
         };
 
-        ProviderResolver::builtin()
+        ProviderResolver::from_registry(registry)
             .resolve_execution_with_env(
                 &settings,
                 &StoredCredentials::default(),
@@ -3236,6 +3270,7 @@ mod tests {
                             call_id: "gemini-call-0".into(),
                             tool_name: "file_read".into(),
                             arguments: serde_json::json!({"path": "README.md"}),
+                            thought_signature: None,
                         }],
                         results: vec![ProviderToolResultMessage {
                             call_id: "gemini-call-0".into(),

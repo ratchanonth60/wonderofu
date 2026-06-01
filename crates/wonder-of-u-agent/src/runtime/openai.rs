@@ -372,10 +372,20 @@ pub(super) fn parse_openai_tool_call(value: &Value) -> Result<ProviderToolCall> 
         }
     };
 
+    // Gemini (via its OpenAI-compat endpoint) attaches a `thought_signature`
+    // inside `extra_content.google.thought_signature` on thinking-model calls.
+    // We must echo it back in subsequent requests or Gemini returns 400.
+    let thought_signature = value
+        .pointer("/extra_content/google/thought_signature")
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())
+        .map(ToString::to_string);
+
     Ok(ProviderToolCall {
         call_id: call_id.to_string(),
         tool_name: tool_name.to_string(),
         arguments,
+        thought_signature,
     })
 }
 
@@ -386,14 +396,22 @@ fn append_openai_round(messages: &mut Vec<Value>, round: &ToolConversationRound)
         .calls
         .iter()
         .map(|call| {
-            Ok(json!({
+            let mut entry = json!({
                 "id": call.call_id,
                 "type": "function",
                 "function": {
                     "name": call.tool_name,
                     "arguments": serde_json::to_string(&call.arguments)?,
                 },
-            }))
+            });
+            // Echo the Gemini thought_signature back so the API doesn't reject
+            // the request with INVALID_ARGUMENT.
+            if let Some(sig) = &call.thought_signature {
+                entry["extra_content"] = json!({
+                    "google": {"thought_signature": sig}
+                });
+            }
+            Ok(entry)
         })
         .collect::<Result<Vec<_>>>()?;
     messages.push(json!({
