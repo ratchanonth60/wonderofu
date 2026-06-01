@@ -36,6 +36,9 @@ pub struct DialogView {
     pub body: Vec<String>,
     /// Stores the actions
     pub actions: Vec<DialogActionView>,
+    /// Index of the currently focused action (arrow-key navigable).
+    /// Always clamped to `[0, actions.len())`.
+    pub selected_action: usize,
 }
 
 impl DialogView {
@@ -52,6 +55,7 @@ impl DialogView {
                 DialogActionView::new("Confirm", true),
                 DialogActionView::new("Cancel", false),
             ],
+            selected_action: 0,
         }
     }
     /// Handles permission
@@ -70,6 +74,7 @@ impl DialogView {
                 DialogActionView::new("Allow", true),
                 DialogActionView::new("Deny", false),
             ],
+            selected_action: 0,
         }
     }
     /// Handles notice
@@ -82,8 +87,37 @@ impl DialogView {
             title: title.into(),
             body: body.into_iter().map(Into::into).collect(),
             actions: vec![DialogActionView::new("Close", true)],
+            selected_action: 0,
         }
     }
+    /// Moves focus to the previous action (wraps around).
+    pub fn focus_prev(&mut self) {
+        if self.actions.is_empty() {
+            return;
+        }
+        self.selected_action = if self.selected_action == 0 {
+            self.actions.len() - 1
+        } else {
+            self.selected_action - 1
+        };
+    }
+
+    /// Moves focus to the next action (wraps around).
+    pub fn focus_next(&mut self) {
+        if self.actions.is_empty() {
+            return;
+        }
+        self.selected_action = (self.selected_action + 1) % self.actions.len();
+    }
+
+    /// Returns `true` when the currently focused action is the primary (first) action.
+    #[must_use]
+    pub fn selected_is_primary(&self) -> bool {
+        self.actions
+            .get(self.selected_action)
+            .is_some_and(|a| a.primary)
+    }
+
     /// Handles kind
     #[must_use]
     pub fn kind(&self) -> DialogKind {

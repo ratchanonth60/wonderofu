@@ -376,6 +376,7 @@ impl TrustDialogView {
                 .iter()
                 .map(SecurityActionView::to_dialog_action)
                 .collect(),
+            selected_action: 0,
         }
     }
 }
@@ -525,6 +526,7 @@ impl ManagedSettingsSecurityDialogView {
                 .iter()
                 .map(SecurityActionView::to_dialog_action)
                 .collect(),
+            selected_action: 0,
         }
     }
 }

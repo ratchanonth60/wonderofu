@@ -335,6 +335,15 @@ fn context_window_for_model(model: &str) -> u64 {
         400_000
     } else if model.contains("gpt-4.1") {
         1_047_576
+    } else if model.contains("gemini-2.5")
+        || model.contains("gemini-3.")
+        || model.contains("gemini-3-")
+        || model.contains("gemini-pro-latest")
+        || model.contains("gemini-flash-latest")
+        || model.contains("gemini-2.0")
+        || model.contains("gemma-4")
+    {
+        1_048_576
     } else if model.contains("claude-3-5")
         || model.contains("claude-3-7")
         || model.contains("claude-sonnet")
@@ -354,6 +363,11 @@ fn context_window_for_model(model: &str) -> u64 {
 /// Anthropic Messages sub-paths.
 fn is_anthropic_model(model: &str) -> bool {
     model.to_ascii_lowercase().contains("claude")
+}
+
+fn is_gemini_model(model: &str) -> bool {
+    let m = model.to_ascii_lowercase();
+    m.contains("gemini") || m.contains("gemma")
 }
 
 fn is_high_effort(level: Option<&str>) -> bool {
@@ -1249,7 +1263,7 @@ mod tests {
             Some("Say hi")
         );
         assert_eq!(
-            body.pointer("/max_completion_tokens")
+            body.pointer("/max_tokens")
                 .and_then(serde_json::Value::as_u64),
             Some(64)
         );
@@ -1738,11 +1752,6 @@ mod tests {
         assert_eq!(recorded.url, "https://api.openai.com/v1/chat/completions");
         assert_eq!(
             body.pointer("/stream").and_then(serde_json::Value::as_bool),
-            Some(true)
-        );
-        assert_eq!(
-            body.pointer("/stream_options/include_usage")
-                .and_then(serde_json::Value::as_bool),
             Some(true)
         );
         assert_eq!(streamed, "Hello back");

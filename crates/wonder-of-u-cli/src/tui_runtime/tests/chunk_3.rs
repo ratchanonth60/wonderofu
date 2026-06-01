@@ -613,6 +613,7 @@ fn make_controller_with_copilot_awaiting() -> (TuiController<'static>, tempfile:
             DialogActionView::new("Open Browser", true),
             DialogActionView::new("Cancel", false),
         ],
+        selected_action: 0,
     };
     controller.dialog = Some(dialog);
     controller.pending_setup_overlay = None; // real flow clears this; mirror that here

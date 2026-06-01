@@ -127,6 +127,7 @@ impl PermissionSummaryView {
             title: self.title.clone(),
             body,
             actions: self.actions.clone(),
+            selected_action: 0,
         }
     }
 }

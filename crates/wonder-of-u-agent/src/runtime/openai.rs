@@ -11,7 +11,7 @@ use crate::ResolvedProviderExecution;
 use super::{
     CompletionRequest, CompletionResponse, HttpRequest, ProviderToolCall, StreamingHttpResponse,
     ToolCallBatchResponse, ToolConversationRound, ToolUseRequest, ToolUseResponse, consume_sse,
-    context_window_for_model, is_high_effort, join_url, provider_input_schema,
+    context_window_for_model, is_gemini_model, is_high_effort, join_url, provider_input_schema,
 };
 
 // ─── Request builders ─────────────────────────────────────────────────────────
@@ -61,21 +61,16 @@ fn build_openai_request_with_mode(
         .expect("openai request body should be an object");
     if stream {
         body_map.insert("stream".into(), Value::Bool(true));
-        body_map.insert(
-            "stream_options".into(),
-            json!({
-                "include_usage": true,
-            }),
-        );
     }
     if let Some(temperature) = request.temperature {
         body_map.insert("temperature".into(), json!(temperature));
     }
     if let Some(max_output_tokens) = request.max_output_tokens {
-        body_map.insert("max_completion_tokens".into(), json!(max_output_tokens));
+        body_map.insert("max_tokens".into(), json!(max_output_tokens));
     }
     // Wire reasoning effort for OpenAI reasoning models.
-    if is_high_effort(request.effort_level.as_deref()) {
+    // Skip for Gemini models — Google uses thinkingConfig instead.
+    if is_high_effort(request.effort_level.as_deref()) && !is_gemini_model(resolved.model()) {
         body_map.insert("reasoning_effort".into(), json!("high"));
     }
 
@@ -138,10 +133,11 @@ pub(super) fn build_openai_tool_use_request(
         body_map.insert("temperature".into(), json!(temperature));
     }
     if let Some(max_output_tokens) = request.max_output_tokens {
-        body_map.insert("max_completion_tokens".into(), json!(max_output_tokens));
+        body_map.insert("max_tokens".into(), json!(max_output_tokens));
     }
     // Wire reasoning effort for OpenAI reasoning models.
-    if is_high_effort(request.effort_level.as_deref()) {
+    // Skip for Gemini models — Google uses thinkingConfig instead.
+    if is_high_effort(request.effort_level.as_deref()) && !is_gemini_model(resolved.model()) {
         body_map.insert("reasoning_effort".into(), json!("high"));
     }
 

@@ -971,26 +971,53 @@ impl<'a> TuiController<'a> {
     where
         F: FnMut(&Self) -> Result<()>,
     {
-        match resolved {
-            Some(ResolvedKey::Edit(EditAction::InsertNewline))
-            | Some(ResolvedKey::InsertChar('y'))
-            | Some(ResolvedKey::InsertChar('Y')) => {
-                self.resolve_pending_tool_approval(true, before_blocking)
-            }
-            _ if key.code == KeyCode::Esc => {
-                self.resolve_pending_tool_approval(false, before_blocking)
-            }
-            Some(ResolvedKey::InsertChar('n'))
-            | Some(ResolvedKey::InsertChar('N'))
-            | Some(ResolvedKey::System(wonder_of_u_tui::SystemAction::Interrupt)) => {
-                self.resolve_pending_tool_approval(false, before_blocking)
-            }
-            _ => {
-                self.status_note = Some("press Enter/y to allow, n/Esc to deny".into());
+        // Up / Left: move selection to previous action.
+        if matches!(key.code, KeyCode::Up | KeyCode::Left) {
+            if let Some(dialog) = &mut self.dialog {
+                dialog.focus_prev();
                 self.needs_render = true;
-                Ok(())
             }
+            return Ok(());
         }
+
+        // Down / Right / Tab: move selection to next action.
+        if matches!(key.code, KeyCode::Down | KeyCode::Right | KeyCode::Tab) {
+            if let Some(dialog) = &mut self.dialog {
+                dialog.focus_next();
+                self.needs_render = true;
+            }
+            return Ok(());
+        }
+
+        // Enter / Space: confirm the currently focused action.
+        if matches!(resolved, Some(ResolvedKey::Edit(EditAction::InsertNewline)))
+            || key.code == KeyCode::Char(' ')
+        {
+            let approved = self.dialog.as_ref().is_none_or(|d| d.selected_is_primary());
+            return self.resolve_pending_tool_approval(approved, before_blocking);
+        }
+
+        // Legacy y/n shortcuts still work.
+        if key.code == KeyCode::Esc
+            || matches!(
+                resolved,
+                Some(ResolvedKey::InsertChar('n'))
+                    | Some(ResolvedKey::InsertChar('N'))
+                    | Some(ResolvedKey::System(
+                        wonder_of_u_tui::SystemAction::Interrupt
+                    ))
+            )
+        {
+            return self.resolve_pending_tool_approval(false, before_blocking);
+        }
+        if matches!(
+            resolved,
+            Some(ResolvedKey::InsertChar('y')) | Some(ResolvedKey::InsertChar('Y'))
+        ) {
+            return self.resolve_pending_tool_approval(true, before_blocking);
+        }
+        self.needs_render = true;
+        Ok(())
     }
 
     pub(super) fn resolve_pending_tool_approval<F>(
@@ -3099,6 +3126,7 @@ impl<'a> TuiController<'a> {
                 wonder_of_u_tui::DialogActionView::new("Select", true),
                 wonder_of_u_tui::DialogActionView::new("Cancel", false),
             ],
+            selected_action: 0,
         });
         self.status_note = Some(picker_status_note("permission mode"));
         self.needs_render = true;
@@ -3248,6 +3276,7 @@ impl<'a> TuiController<'a> {
                 wonder_of_u_tui::DialogActionView::new("Select", true),
                 wonder_of_u_tui::DialogActionView::new("Cancel", false),
             ],
+            selected_action: 0,
         });
         self.status_note = Some(picker_status_note("memory"));
         self.needs_render = true;
@@ -3466,6 +3495,7 @@ impl<'a> TuiController<'a> {
                 wonder_of_u_tui::DialogActionView::new("Select", true),
                 wonder_of_u_tui::DialogActionView::new("Cancel", false),
             ],
+            selected_action: 0,
         });
         self.status_note = Some(picker_status_note("theme picker"));
         self.needs_render = true;
@@ -3618,6 +3648,7 @@ impl<'a> TuiController<'a> {
                 wonder_of_u_tui::DialogActionView::new("Select", true),
                 wonder_of_u_tui::DialogActionView::new("Cancel", false),
             ],
+            selected_action: 0,
         });
         self.status_note = Some(picker_status_note("model picker"));
         self.needs_render = true;
@@ -4087,6 +4118,7 @@ impl<'a> TuiController<'a> {
                 DialogActionView::new("Open Browser", true),
                 DialogActionView::new("Cancel", false),
             ],
+            selected_action: 0,
         };
         self.dialog = Some(dialog);
         self.pending_copilot_oauth =
