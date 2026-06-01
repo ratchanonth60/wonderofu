@@ -323,6 +323,15 @@ pub struct ToolContext {
     /// channel so the TUI can display live progress while the command runs.
     /// `None` for non-TUI callers (tests, headless prompt runs, etc.).
     pub progress_tx: Option<std::sync::mpsc::SyncSender<String>>,
+    /// TUI interaction channel for `ask_user` and similar interaction tools.
+    ///
+    /// When `Some`, the tool must NOT use `io::stdin` / `io::stdout` (which
+    /// conflict with crossterm's raw-mode event loop).  Instead it blocks on
+    /// this receiver waiting for the TUI to deliver the user's answer.
+    ///
+    /// Wrapped in `Arc<Mutex>` so that `ToolContext` remains `Clone + Send`.
+    /// Only the executing tool thread should ever call `recv()` on it.
+    pub interaction_rx: Option<std::sync::Arc<std::sync::Mutex<std::sync::mpsc::Receiver<String>>>>,
 }
 
 impl ToolContext {
@@ -802,6 +811,7 @@ mod tests {
             features: FeatureSet::first_release(),
             bash_session_store: None,
             progress_tx: None,
+            interaction_rx: None,
             fork_context: None,
         }
     }

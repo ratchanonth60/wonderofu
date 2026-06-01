@@ -101,6 +101,18 @@ pub(super) struct TuiController<'a> {
     /// Receiving end of the shell-tool progress channel.
     /// Drained on every tick while a tool is executing.
     pub(super) tool_progress_rx: Option<mpsc::Receiver<String>>,
+    /// Consecutive auto-compact failures.  When this reaches the circuit-breaker
+    /// limit we stop attempting automatic compaction until the session resets.
+    pub(super) autocompact_failures: u8,
+    /// Set when `maybe_autocompact` queues a `/compact`.  Cleared on success
+    /// (ViewActionHint::Compact) or failure (TurnState::Interrupted).
+    pub(super) autocompact_pending: bool,
+    /// When an interaction tool (ask_user) is executing, this sends the user's
+    /// typed answer to the waiting tool thread.
+    /// Question text displayed to the user while an interaction tool is waiting.
+    pub(super) interaction_question: Option<String>,
+    /// Answer typed by the user, pending delivery to a paused interaction tool.
+    pub(super) interaction_pending_answer: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -282,6 +294,10 @@ impl<'a> TuiController<'a> {
             task_manager: storage_dir.map(TaskManager::new),
             tool_progress_lines: Vec::new(),
             tool_progress_rx: None,
+            autocompact_failures: 0,
+            autocompact_pending: false,
+            interaction_question: None,
+            interaction_pending_answer: None,
         };
         controller.hydrate_initial_settings()?;
         controller.refresh_runtime_state()?;
@@ -1134,6 +1150,13 @@ impl<'a> TuiController<'a> {
         )?;
         let query = ToolQuery::from(context);
         if let Some(tool) = registry.resolve_enabled(&call.provider_call.tool_name, &query) {
+            // Interaction tools: synthesise the result from the stored answer
+            // instead of running the tool (which would block on stdin).
+            if tool.spec().kind == ToolKind::Interaction {
+                let answer = self.interaction_pending_answer.take().unwrap_or_default();
+                return self.deliver_interaction_answer(answer, call, before_blocking);
+            }
+
             self.turn_state = TurnState::ToolExecuting;
             self.state.input_mode = InputMode::Bash;
             self.status_note = Some(format!("running tool {}", call.provider_call.tool_name));
@@ -1369,6 +1392,18 @@ impl<'a> TuiController<'a> {
     {
         let original = self.prompt.text();
         let input = original.trim().to_string();
+
+        // If an interaction tool (ask_user) is waiting, store the answer and
+        // resolve the pending approval — this will call deliver_interaction_answer
+        // which builds the ToolResult and resumes the tool loop.
+        if self.interaction_question.is_some() && self.state.pending_tool_approval.is_some() {
+            self.interaction_pending_answer = Some(input);
+            self.prompt = TextBuffer::new(true);
+            self.reset_history_recall();
+            self.needs_render = true;
+            return self.resolve_pending_tool_approval(true, before_blocking);
+        }
+
         if input.is_empty() {
             self.status_note = Some("prompt is empty".into());
             self.turn_state = TurnState::Completed;
@@ -1438,6 +1473,10 @@ impl<'a> TuiController<'a> {
                 self.turn_state = TurnState::Interrupted;
                 self.status_note = Some("provider error — see history".into());
                 self.needs_render = true;
+                if self.autocompact_pending {
+                    self.autocompact_failures = self.autocompact_failures.saturating_add(1);
+                    self.autocompact_pending = false;
+                }
             }
             Err(error) => {
                 // Slash-command errors restore the prompt so the user can retry.
@@ -1445,6 +1484,10 @@ impl<'a> TuiController<'a> {
                 self.turn_state = TurnState::Interrupted;
                 self.status_note = Some(format!("error: {error}"));
                 self.needs_render = true;
+                if self.autocompact_pending {
+                    self.autocompact_failures = self.autocompact_failures.saturating_add(1);
+                    self.autocompact_pending = false;
+                }
             }
         }
 
@@ -1459,6 +1502,15 @@ impl<'a> TuiController<'a> {
     where
         F: FnMut(&Self) -> Result<()>,
     {
+        // Blocking limit check: if token usage is so high that the API would
+        // reject the request anyway, surface a helpful error immediately rather
+        // than wasting a round-trip.  Mirrors claude-code autoCompact.ts.
+        if self.is_at_blocking_limit() {
+            return Err(WonderError::validation(
+                "context window is full — run /compact to summarise history before continuing",
+            ));
+        }
+
         let request_prompt = compose_conversation_prompt(&self.state.messages, input);
         let runtime = ProviderRuntime::new();
         let resolved = self.resolve_prompt_execution(&runtime)?;
@@ -2034,7 +2086,12 @@ impl<'a> TuiController<'a> {
         } else if let Some(view_action) = view_action {
             self.status_note = Some(match view_action {
                 ViewActionHint::Clear => "conversation cleared".into(),
-                ViewActionHint::Compact => "conversation compacted".into(),
+                ViewActionHint::Compact => {
+                    // Compact succeeded — reset the circuit breaker.
+                    self.autocompact_failures = 0;
+                    self.autocompact_pending = false;
+                    "conversation compacted".into()
+                }
             });
         } else if self.dialog.as_ref().is_some_and(|dialog| {
             dialog.title == "Context Usage"
@@ -2456,6 +2513,7 @@ impl<'a> TuiController<'a> {
             features: self.state.features.clone(),
             bash_session_store: None,
             progress_tx: None,
+            interaction_rx: None,
             fork_context: build_fork_context_snapshot(&self.state, system_prompt.as_deref()),
         }
     }
@@ -2473,6 +2531,27 @@ impl<'a> TuiController<'a> {
     {
         let query = ToolQuery::from(context);
         if let Some(tool) = registry.resolve_enabled(&call.tool_name, &query) {
+            // Interaction tools (ask_user): pause and hand off to the TUI event
+            // loop instead of blocking on stdin.  We show the question and wait
+            // for the user to type their answer in the prompt box.
+            if tool.spec().kind == ToolKind::Interaction {
+                let question = call
+                    .arguments
+                    .get("question")
+                    .and_then(|v| v.as_str())
+                    .map(ToString::to_string)
+                    .unwrap_or_else(|| "(no question provided)".into());
+                self.interaction_question = Some(question.clone());
+                self.turn_state = TurnState::ToolPermissionPending;
+                self.state.input_mode = InputMode::Prompt;
+                self.status_note = Some("Type your answer and press Enter ↵".into());
+                self.needs_render = true;
+                on_progress(self)?;
+                return Ok(ToolExecutionOutcome::Paused {
+                    reason: format!("ask_user: {question}"),
+                });
+            }
+
             if let Err(error) = tool.validate_input(&call.arguments) {
                 return self
                     .finalize_tool_result(
@@ -2569,6 +2648,15 @@ impl<'a> TuiController<'a> {
     where
         F: FnMut(&Self) -> Result<()>,
     {
+        // Interaction tools (ask_user) must not use raw stdin/stdout in TUI mode.
+        // They are handled by execute_tool_call returning Paused; run_tool_call
+        // is only reached for non-interaction tools.
+        debug_assert_ne!(
+            tool.spec().kind,
+            ToolKind::Interaction,
+            "interaction tools must be handled before run_tool_call"
+        );
+
         self.turn_state = TurnState::ToolExecuting;
         self.state.input_mode = InputMode::Bash;
         self.status_note = Some(format!("running tool {}", call.tool_name));
@@ -2594,6 +2682,26 @@ impl<'a> TuiController<'a> {
         self.tool_progress_rx = None;
         self.tool_progress_lines.clear();
         self.finalize_tool_result(Vec::new(), call, result, on_progress)
+    }
+
+    /// Delivers the user's typed answer to a pending interaction tool call and
+    /// synthesises the `ToolResult` without ever running the tool itself.
+    ///
+    /// Called from `approve_pending_tool_call` when the pending call's tool has
+    /// `ToolKind::Interaction`.  The answer was stored in
+    /// `self.interaction_pending_answer` by `submit_prompt`.
+    pub(super) fn deliver_interaction_answer<F>(
+        &mut self,
+        answer: String,
+        call: &LocalToolCall,
+        before_blocking: &mut F,
+    ) -> Result<ProviderToolResultMessage>
+    where
+        F: FnMut(&Self) -> Result<()>,
+    {
+        self.interaction_question = None;
+        let result = ToolResult::success(call.use_id, answer);
+        self.finalize_tool_result(Vec::new(), &call.provider_call, result, before_blocking)
     }
 
     fn tick_loading_animation<F>(&mut self, on_progress: &mut F) -> Result<()>
@@ -2907,6 +3015,13 @@ impl<'a> TuiController<'a> {
 
         // Live shell output lines (only populated while a bash/shell tool is running).
         view.tool_progress = self.tool_progress_lines.clone();
+
+        // When ask_user is waiting, show the question above the prompt.
+        if let Some(ref question) = self.interaction_question {
+            // Re-use tool_progress to surface the question lines above the prompt box.
+            // Each line of the question becomes one progress line (capped at 8).
+            view.tool_progress = question.lines().take(8).map(ToString::to_string).collect();
+        }
 
         // Compact Claude-style footer; verbose cwd/provider/model metadata lives in the sidebar.
         let permission_label = permission_mode_output_label(self.state.permission_mode);
@@ -5165,22 +5280,55 @@ impl<'a> TuiController<'a> {
     /// Checks whether the context is close to full and, if so, queues a
     /// `/compact` command to run at the start of the next turn.
     ///
-    /// Mirrors the TypeScript `autoCompact.ts` logic: triggers when the
-    /// remaining token budget falls below `AUTOCOMPACT_BUFFER_TOKENS`.
-    /// Safe to call unconditionally — it is a no-op when context is fine or
-    /// when the window size is unknown.
+    /// Mirrors the TypeScript `autoCompact.ts` logic:
+    /// - Triggers when remaining budget < `AUTOCOMPACT_BUFFER_TOKENS` (13 k).
+    /// - Circuit breaker: skips after 3 consecutive compact failures so the
+    ///   session doesn't hammer the summarisation API indefinitely.
+    /// - Safe to call unconditionally — it is a no-op when context is fine or
+    ///   when the window size is unknown.
     pub(super) fn maybe_autocompact(&mut self) {
+        const MAX_CONSECUTIVE_AUTOCOMPACT_FAILURES: u8 = 3;
+
         let Some(window_size) = self.state.context_window_size.filter(|&w| w > 0) else {
             return;
         };
+        // Circuit breaker: stop trying if we've failed too many times in a row.
+        if self.autocompact_failures >= MAX_CONSECUTIVE_AUTOCOMPACT_FAILURES {
+            return;
+        }
         let used = self.state.costs.usage.total_tokens();
         let buffer = AUTOCOMPACT_BUFFER_TOKENS as u64;
         if used + buffer > window_size {
             self.state.queue_command("/compact", QueuePlacement::Now);
+            self.autocompact_pending = true;
             self.status_note = Some(format!(
                 "context {used}/{window_size} tokens — auto-compacting"
             ));
         }
+    }
+
+    /// Returns `true` when the current token usage has crossed the hard blocking
+    /// limit, i.e. remaining tokens < `MANUAL_COMPACT_BUFFER_TOKENS` (3 k).
+    ///
+    /// When this is true the session must be compacted before the next API call;
+    /// sending the request would result in a context-too-large error.
+    pub(super) fn is_at_blocking_limit(&self) -> bool {
+        let Some(window_size) = self.state.context_window_size.filter(|&w| w > 0) else {
+            // Use model-based estimate when the API hasn't reported a window yet.
+            if let Some(model) = &self.state.model {
+                let effective = effective_context_window(model) as u64;
+                if effective == 0 {
+                    return false;
+                }
+                let used = self.state.costs.usage.total_tokens();
+                let buffer = MANUAL_COMPACT_BUFFER_TOKENS as u64;
+                return used + buffer > effective;
+            }
+            return false;
+        };
+        let used = self.state.costs.usage.total_tokens();
+        let buffer = MANUAL_COMPACT_BUFFER_TOKENS as u64;
+        used + buffer > window_size
     }
 }
 

@@ -39,7 +39,9 @@ use wonder_of_u_core::{
     PermissionRequest, PermissionRuleSource, ProviderReadiness, QueuePlacement, Result, SessionId,
     TaskState, TaskStatus, TodoTaskStatus, ToolContext, ToolKind, ToolQuery, ToolResult,
     ToolSource, ToolUseId, WonderError, parse_slash_command, payload_from_task_state,
-    token_budget::AUTOCOMPACT_BUFFER_TOKENS,
+    token_budget::{
+        AUTOCOMPACT_BUFFER_TOKENS, MANUAL_COMPACT_BUFFER_TOKENS, effective_context_window,
+    },
 };
 use wonder_of_u_mcp::McpConfigStore;
 use wonder_of_u_storage::{TaskStore, TodoTaskStore, TranscriptStore};
@@ -65,7 +67,7 @@ pub(crate) struct TuiLaunchOptions {
     pub session_id: Option<String>,
 }
 
-const MAX_TOOL_LOOP_ITERATIONS: usize = 6;
+const MAX_TOOL_LOOP_ITERATIONS: usize = 100;
 const PICKER_CONTROLS_NOTE: &str =
     "type to filter, use Up/Down to choose, Tab/Enter to select, Esc to cancel";
 const HISTORY_SEARCH_CONTROLS_NOTE: &str =

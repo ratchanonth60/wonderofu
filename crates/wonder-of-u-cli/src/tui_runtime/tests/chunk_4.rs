@@ -392,6 +392,7 @@ fn tool_sidebar_lines_produces_summary() {
         features: FeatureSet::first_release(),
         bash_session_store: None,
         progress_tx: None,
+        interaction_rx: None,
         fork_context: None,
     };
     let lines = tool_sidebar_lines(&context, None);

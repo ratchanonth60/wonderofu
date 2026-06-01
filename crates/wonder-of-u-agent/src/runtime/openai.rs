@@ -416,13 +416,36 @@ fn append_openai_round(messages: &mut Vec<Value>, round: &ToolConversationRound)
         "tool_calls": tool_calls,
     }));
     for result in &round.results {
+        // Truncate tool results that are too large to avoid exceeding the
+        // context window in a single round.  Mirrors claude-code's
+        // `applyToolResultBudget` step.
+        let content = truncate_tool_result(&result.content);
         messages.push(json!({
             "role": "tool",
             "tool_call_id": result.call_id,
-            "content": result.content,
+            "content": content,
         }));
     }
     Ok(())
+}
+
+/// Maximum characters to include from a single tool result before truncating.
+/// Matches `DEFAULT_MAX_RESULT_SIZE_CHARS` in wonder-of-u-tools orchestration.
+const MAX_TOOL_RESULT_CHARS: usize = 50_000;
+
+/// Truncates a tool result that exceeds `MAX_TOOL_RESULT_CHARS`.
+///
+/// The first `MAX_TOOL_RESULT_CHARS` characters are preserved; a brief
+/// truncation notice is appended so the model knows the content was cut.
+fn truncate_tool_result(content: &str) -> std::borrow::Cow<'_, str> {
+    if content.len() <= MAX_TOOL_RESULT_CHARS {
+        return std::borrow::Cow::Borrowed(content);
+    }
+    let kept = &content[..MAX_TOOL_RESULT_CHARS];
+    let truncated_chars = content.len() - MAX_TOOL_RESULT_CHARS;
+    std::borrow::Cow::Owned(format!(
+        "{kept}\n\n[…output truncated: {truncated_chars} additional characters not shown]"
+    ))
 }
 
 fn build_openai_tools(tools: &[super::ProviderToolSpec]) -> Vec<Value> {

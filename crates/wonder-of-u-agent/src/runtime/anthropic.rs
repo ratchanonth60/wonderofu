@@ -403,6 +403,19 @@ pub(super) fn parse_anthropic_tool_call(value: &Value) -> Result<ProviderToolCal
 
 // ─── Private helpers ──────────────────────────────────────────────────────────
 
+const MAX_TOOL_RESULT_CHARS: usize = 50_000;
+
+fn truncate_tool_result(content: &str) -> std::borrow::Cow<'_, str> {
+    if content.len() <= MAX_TOOL_RESULT_CHARS {
+        return std::borrow::Cow::Borrowed(content);
+    }
+    let kept = &content[..MAX_TOOL_RESULT_CHARS];
+    let truncated_chars = content.len() - MAX_TOOL_RESULT_CHARS;
+    std::borrow::Cow::Owned(format!(
+        "{kept}\n\n[…output truncated: {truncated_chars} additional characters not shown]"
+    ))
+}
+
 fn build_anthropic_messages(request: &ToolUseRequest) -> Vec<Value> {
     let mut messages = vec![json!({
         "role": "user",
@@ -444,10 +457,13 @@ fn append_anthropic_round(messages: &mut Vec<Value>, round: &super::ToolConversa
     }));
     messages.push(json!({
         "role": "user",
-        "content": round.results.iter().map(|result| json!({
-            "type": "tool_result",
-            "tool_use_id": result.call_id.as_str(),
-            "content": result.content.as_str(),
-        })).collect::<Vec<_>>(),
+        "content": round.results.iter().map(|result| {
+            let content = truncate_tool_result(&result.content);
+            json!({
+                "type": "tool_result",
+                "tool_use_id": result.call_id.as_str(),
+                "content": content.as_ref(),
+            })
+        }).collect::<Vec<_>>(),
     }));
 }
