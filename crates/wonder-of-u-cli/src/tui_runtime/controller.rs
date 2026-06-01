@@ -436,9 +436,13 @@ impl<'a> TuiController<'a> {
         if self.global_search_open {
             return self.handle_global_search_key(key, resolved);
         }
-        if self.dialog.is_some()
-            || self.has_picker_overlay()
-            || self.pending_copilot_oauth.is_some()
+        // When ask_user is waiting for input, the dialog is display-only;
+        // all key events must reach the prompt handler so the user can type.
+        let interaction_waiting = self.interaction_question.is_some();
+        if !interaction_waiting
+            && (self.dialog.is_some()
+                || self.has_picker_overlay()
+                || self.pending_copilot_oauth.is_some())
         {
             return self.handle_dialog_key(key, resolved, before_blocking);
         }
@@ -2542,9 +2546,24 @@ impl<'a> TuiController<'a> {
                     .map(ToString::to_string)
                     .unwrap_or_else(|| "(no question provided)".into());
                 self.interaction_question = Some(question.clone());
+                // Show the question in a dialog box — same pattern as permission.
+                // The user types their answer in the prompt box below and presses Enter.
+                self.dialog = Some(DialogView {
+                    title: format!("● {}", call.tool_name),
+                    body: question
+                        .lines()
+                        .map(ToString::to_string)
+                        .chain(std::iter::once(String::new()))
+                        .chain(std::iter::once(
+                            "Type your answer in the prompt box below and press Enter ↵".into(),
+                        ))
+                        .collect(),
+                    actions: vec![],
+                    selected_action: 0,
+                });
                 self.turn_state = TurnState::ToolPermissionPending;
                 self.state.input_mode = InputMode::Prompt;
-                self.status_note = Some("Type your answer and press Enter ↵".into());
+                self.status_note = Some("type answer ↵ to send".into());
                 self.needs_render = true;
                 on_progress(self)?;
                 return Ok(ToolExecutionOutcome::Paused {
@@ -2700,6 +2719,7 @@ impl<'a> TuiController<'a> {
         F: FnMut(&Self) -> Result<()>,
     {
         self.interaction_question = None;
+        self.dialog = None;
         let result = ToolResult::success(call.use_id, answer);
         self.finalize_tool_result(Vec::new(), &call.provider_call, result, before_blocking)
     }
@@ -3015,13 +3035,6 @@ impl<'a> TuiController<'a> {
 
         // Live shell output lines (only populated while a bash/shell tool is running).
         view.tool_progress = self.tool_progress_lines.clone();
-
-        // When ask_user is waiting, show the question above the prompt.
-        if let Some(ref question) = self.interaction_question {
-            // Re-use tool_progress to surface the question lines above the prompt box.
-            // Each line of the question becomes one progress line (capped at 8).
-            view.tool_progress = question.lines().take(8).map(ToString::to_string).collect();
-        }
 
         // Compact Claude-style footer; verbose cwd/provider/model metadata lives in the sidebar.
         let permission_label = permission_mode_output_label(self.state.permission_mode);
