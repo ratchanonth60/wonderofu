@@ -301,8 +301,17 @@ fn cursor_is_one_row_below_first_after_trailing_newline() {
 
 // ── autostart tests ───────────────────────────────────────────────────────────
 
-fn make_unconfigured_controller() -> (TuiController<'static>, PathBuf) {
-    let dir = unique_test_dir("tui-autostart-unconfigured");
+fn make_missing_auth_controller(label: &str) -> (TuiController<'static>, PathBuf) {
+    let dir = unique_test_dir(label);
+    let _api_key = EnvVarGuard::set("ANTHROPIC_API_KEY", "");
+    let _oai_key = EnvVarGuard::set("OPENAI_API_KEY", "");
+    let _gemini_key = EnvVarGuard::set("GEMINI_API_KEY", "");
+    SettingsStore::new(dir.as_path())
+        .write(&AgentSettings {
+            selected_provider: Some("anthropic".into()),
+            ..AgentSettings::default()
+        })
+        .expect("write settings");
     let registry = Box::new(commands::registry(Some(dir.clone())).expect("registry"));
     let registry: &'static _ = Box::leak(registry);
     let controller = TuiController::new(
@@ -313,6 +322,11 @@ fn make_unconfigured_controller() -> (TuiController<'static>, PathBuf) {
     )
     .expect("controller");
     (controller, dir)
+}
+
+#[allow(dead_code)]
+fn make_unconfigured_controller() -> (TuiController<'static>, PathBuf) {
+    make_missing_auth_controller("tui-autostart-unconfigured")
 }
 
 fn make_ready_controller() -> (TuiController<'static>, PathBuf) {
@@ -332,13 +346,11 @@ fn make_ready_controller() -> (TuiController<'static>, PathBuf) {
 
 #[test]
 fn controller_auto_opens_setup_when_provider_not_configured() {
-    let _api_key = EnvVarGuard::set("ANTHROPIC_API_KEY", "");
-    let _oai_key = EnvVarGuard::set("OPENAI_API_KEY", "");
-    let (controller, _dir) = make_unconfigured_controller();
+    let (controller, _dir) = make_missing_auth_controller("tui-autostart-missing-auth");
 
     assert!(
         controller.pending_setup_overlay.is_some(),
-        "setup overlay should be auto-opened when provider is not configured"
+        "setup overlay should be auto-opened when provider auth is missing"
     );
     assert!(
         !controller.setup_cancelled_this_session,
@@ -358,9 +370,12 @@ fn controller_does_not_auto_open_setup_when_provider_ready() {
 
 #[test]
 fn controller_cancel_setup_sets_session_flag_and_prevents_reopen() {
-    let _api_key = EnvVarGuard::set("ANTHROPIC_API_KEY", "");
-    let _oai_key = EnvVarGuard::set("OPENAI_API_KEY", "");
-    let (mut controller, _dir) = make_unconfigured_controller();
+    let (mut controller, _dir) = make_missing_auth_controller("tui-autostart-cancel");
+
+    assert!(
+        controller.pending_setup_overlay.is_some(),
+        "setup overlay must be open before cancel (precondition)"
+    );
 
     controller
         .cancel_setup_overlay()
@@ -1411,8 +1426,8 @@ fn sidebar_compact_status_when_visible() {
     let status = controller.view().status;
 
     assert!(
-        status.contains("model:auto"),
-        "compact status must contain the model summary; got: {status:?}"
+        status.contains("local:llama3.2"),
+        "compact status must contain the auto-selected model summary; got: {status:?}"
     );
     assert!(
         status.contains("0 tok"),
@@ -1440,8 +1455,8 @@ fn sidebar_full_status_when_hidden() {
     let status = controller.view().status;
 
     assert!(
-        status.contains("model:auto"),
-        "full status must contain the model summary when sidebar is hidden; got: {status:?}"
+        status.contains("local:llama3.2"),
+        "full status must contain the auto-selected model summary when sidebar is hidden; got: {status:?}"
     );
     assert!(
         status.contains("cost:--"),

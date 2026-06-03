@@ -380,7 +380,7 @@
         assert!(text.contains("metadata=1"));
         assert!(text.contains("snapshots=1"));
         assert!(text.contains("session_memory_indexes=1"));
-        assert!(text.contains("provider_readiness=unconfigured"));
+        assert!(text.contains("provider_readiness=ready"));
         assert!(text.contains("settings_sync=local_only"));
         assert!(text.contains("settings_sync_cloud=unsupported"));
         assert!(text.contains("remote_managed_settings=deferred"));

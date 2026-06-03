@@ -1679,7 +1679,7 @@ fn controller_executes_tool_loop_and_persists_tool_messages() {
         |request_index, _headers, body| match request_index {
             0 => {
                 assert_eq!(body["model"], "gpt-4.1");
-                assert_eq!(body["messages"][0]["content"], "read the note");
+                assert_eq!(body["messages"][1]["content"], "read the note");
                 assert_eq!(body["tool_choice"], "auto");
                 assert!(
                     body["tools"]
@@ -1690,14 +1690,14 @@ fn controller_executes_tool_loop_and_persists_tool_messages() {
                 );
             }
             1 => {
-                assert_eq!(body["messages"][0]["content"], "read the note");
+                assert_eq!(body["messages"][1]["content"], "read the note");
                 assert_eq!(
-                    body["messages"][1]["tool_calls"][0]["function"]["name"],
+                    body["messages"][2]["tool_calls"][0]["function"]["name"],
                     "file_read"
                 );
-                assert_eq!(body["messages"][2]["role"], "tool");
+                assert_eq!(body["messages"][3]["role"], "tool");
                 assert!(
-                    body["messages"][2]["content"]
+                    body["messages"][3]["content"]
                         .as_str()
                         .expect("tool content")
                         .contains("hello from file")
@@ -1810,7 +1810,7 @@ fn controller_approves_permission_and_resumes_tool_loop() {
     let (api_base, handle) = spawn_json_sequence_server(
             |request_index, _headers, body| match request_index {
                 0 => {
-                    assert_eq!(body["messages"][0]["content"], "write the note");
+                    assert_eq!(body["messages"][1]["content"], "write the note");
                     assert!(
                         body["tools"]
                             .as_array()
@@ -1820,14 +1820,14 @@ fn controller_approves_permission_and_resumes_tool_loop() {
                     );
                 }
                 1 => {
-                    assert_eq!(body["messages"][0]["content"], "write the note");
+                    assert_eq!(body["messages"][1]["content"], "write the note");
                     assert_eq!(
-                        body["messages"][1]["tool_calls"][0]["function"]["name"],
+                        body["messages"][2]["tool_calls"][0]["function"]["name"],
                         "file_write"
                     );
-                    assert_eq!(body["messages"][2]["role"], "tool");
+                    assert_eq!(body["messages"][3]["role"], "tool");
                     assert!(
-                        body["messages"][2]["content"]
+                        body["messages"][3]["content"]
                             .as_str()
                             .expect("tool content")
                             .contains("note.txt")
@@ -1969,15 +1969,15 @@ fn controller_denies_permission_and_resumes_tool_loop() {
     let (api_base, handle) = spawn_json_sequence_server(
             |request_index, _headers, body| match request_index {
                 0 => {
-                    assert_eq!(body["messages"][0]["content"], "write the note");
+                    assert_eq!(body["messages"][1]["content"], "write the note");
                 }
                 1 => {
                     assert_eq!(
-                        body["messages"][1]["tool_calls"][0]["function"]["name"],
+                        body["messages"][2]["tool_calls"][0]["function"]["name"],
                         "file_write"
                     );
-                    assert_eq!(body["messages"][2]["role"], "tool");
-                    let content = body["messages"][2]["content"]
+                    assert_eq!(body["messages"][3]["role"], "tool");
+                    let content = body["messages"][3]["content"]
                         .as_str()
                         .expect("tool content");
                     assert!(content.contains("ERROR:"));
@@ -2095,14 +2095,14 @@ fn controller_restores_pending_permission_and_resumes_tool_loop() {
     let (api_base, handle) = spawn_json_sequence_server(
             |request_index, _headers, body| match request_index {
                 0 => {
-                    assert_eq!(body["messages"][0]["content"], "write the note");
+                    assert_eq!(body["messages"][1]["content"], "write the note");
                 }
                 1 => {
                     assert_eq!(
-                        body["messages"][1]["tool_calls"][0]["function"]["name"],
+                        body["messages"][2]["tool_calls"][0]["function"]["name"],
                         "file_write"
                     );
-                    assert_eq!(body["messages"][2]["role"], "tool");
+                    assert_eq!(body["messages"][3]["role"], "tool");
                 }
                 other => panic!("unexpected request index {other}"),
             },

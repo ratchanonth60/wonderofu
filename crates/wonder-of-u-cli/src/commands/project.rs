@@ -123,6 +123,59 @@ impl MemoryCommand {
     }
 }
 
+/// Slash command `/remember <text>` — ask the model to save a memory.
+///
+/// Enqueues a prompt instructing the model to write the given text as a memory
+/// entry in its auto-memory directory.  The model uses its Write tool to
+/// create an appropriately-typed file and update MEMORY.md.
+pub struct RememberCommand;
+
+impl RememberCommand {
+    /// Creates a new value
+    #[must_use]
+    pub const fn new() -> Self {
+        Self
+    }
+
+    /// Handles command spec
+    pub fn command_spec() -> CommandSpec {
+        let mut spec = CommandSpec::new(
+            "remember",
+            "Ask the AI to save something to its memory system",
+            CommandKind::Local,
+        );
+        spec.argument_hint = Some("<text to remember>".into());
+        spec
+    }
+}
+
+#[async_trait]
+impl Command for RememberCommand {
+    fn spec(&self) -> CommandSpec {
+        Self::command_spec()
+    }
+
+    async fn execute(
+        &self,
+        _context: CommandContext,
+        invocation: CommandInvocation,
+    ) -> Result<CommandOutput> {
+        let text = invocation.args.trim().to_string();
+        if text.is_empty() {
+            return Ok(CommandOutput::Text(
+                "usage: /remember <text to save to memory>".into(),
+            ));
+        }
+        let prompt = format!(
+            "Please save the following to your memory system now. Choose the most \
+             appropriate memory type (user/feedback/project/reference), write it to a \
+             suitably-named file in your memory directory, and update MEMORY.md with a \
+             one-line index entry.\n\nText to remember:\n\n{text}"
+        );
+        Ok(CommandOutput::EnqueuePrompt(prompt))
+    }
+}
+
 /// Represents copy command
 pub struct CopyCommand {
     storage_dir: Option<PathBuf>,

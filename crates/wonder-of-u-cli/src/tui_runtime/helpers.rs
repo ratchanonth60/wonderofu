@@ -1849,3 +1849,106 @@ pub(super) fn provider_form_picker_view(form: &ProviderFormState) -> PickerListV
         },
     }
 }
+
+/// Extracts the question text and option labels from an `ask_user` tool call's
+/// raw JSON arguments.  Handles both the basic `{question, options:[str]}`
+/// format and the source-compatible `{questions:[{question, options:[{label}]}]}` format.
+pub(super) fn extract_interaction_info(args: &serde_json::Value) -> (String, Vec<String>) {
+    // Source-compatible format: `questions[0]`
+    if let Some(questions) = args.get("questions").and_then(|v| v.as_array()) {
+        if let Some(first) = questions.first() {
+            let question = first
+                .get("question")
+                .and_then(|v| v.as_str())
+                .unwrap_or("(no question provided)")
+                .to_string();
+            let options = first
+                .get("options")
+                .and_then(|v| v.as_array())
+                .map(|opts| {
+                    opts.iter()
+                        .filter_map(|o| o.get("label").and_then(|l| l.as_str()).map(String::from))
+                        .collect()
+                })
+                .unwrap_or_default();
+            return (question, options);
+        }
+    }
+    // Basic format: `{question, options:[str]}`
+    let question = args
+        .get("question")
+        .and_then(|v| v.as_str())
+        .unwrap_or("(no question provided)")
+        .to_string();
+    let options = args
+        .get("options")
+        .and_then(|v| v.as_array())
+        .map(|opts| {
+            opts.iter()
+                .filter_map(|o| o.as_str().map(String::from))
+                .collect()
+        })
+        .unwrap_or_default();
+    (question, options)
+}
+
+#[cfg(test)]
+mod interaction_tests {
+    use serde_json::json;
+
+    use super::extract_interaction_info;
+
+    #[test]
+    fn basic_format_question_and_options() {
+        let args = json!({
+            "question": "Pick a colour",
+            "options": ["red", "green", "blue"]
+        });
+        let (q, opts) = extract_interaction_info(&args);
+        assert_eq!(q, "Pick a colour");
+        assert_eq!(opts, ["red", "green", "blue"]);
+    }
+
+    #[test]
+    fn basic_format_no_options() {
+        let args = json!({ "question": "What is your name?" });
+        let (q, opts) = extract_interaction_info(&args);
+        assert_eq!(q, "What is your name?");
+        assert!(opts.is_empty());
+    }
+
+    #[test]
+    fn compat_format_question_and_labels() {
+        let args = json!({
+            "questions": [{
+                "question": "Which approach?",
+                "header": "Approach",
+                "options": [
+                    { "label": "A", "description": "Take path A" },
+                    { "label": "B", "description": "Take path B" }
+                ]
+            }]
+        });
+        let (q, opts) = extract_interaction_info(&args);
+        assert_eq!(q, "Which approach?");
+        assert_eq!(opts, ["A", "B"]);
+    }
+
+    #[test]
+    fn compat_format_no_options_array() {
+        let args = json!({
+            "questions": [{ "question": "Free text?", "header": "Q", "options": [] }]
+        });
+        let (q, opts) = extract_interaction_info(&args);
+        assert_eq!(q, "Free text?");
+        assert!(opts.is_empty());
+    }
+
+    #[test]
+    fn empty_object_returns_fallback() {
+        let args = json!({});
+        let (q, opts) = extract_interaction_info(&args);
+        assert_eq!(q, "(no question provided)");
+        assert!(opts.is_empty());
+    }
+}

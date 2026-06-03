@@ -7,6 +7,8 @@ pub enum DialogKind {
     Permission,
     /// Represents notice
     Notice,
+    /// Represents an interactive question from the AI (ask_user tool)
+    Interaction,
 }
 /// Represents dialog action view
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -125,6 +127,8 @@ impl DialogView {
             DialogKind::Notice
         } else if self.title.starts_with("Permission: ") {
             DialogKind::Permission
+        } else if self.title.starts_with("● ") {
+            DialogKind::Interaction
         } else {
             DialogKind::Confirm
         }
@@ -167,5 +171,34 @@ mod tests {
 
         assert_eq!(dialog.kind(), DialogKind::Notice);
         assert_eq!(dialog.actions, vec![DialogActionView::new("Close", true)]);
+    }
+
+    #[test]
+    fn interaction_dialog_detected_by_bullet_prefix() {
+        let dialog = DialogView {
+            title: "● ask_user".into(),
+            body: vec!["What would you like?".into()],
+            actions: vec![
+                DialogActionView::new("Option A", false),
+                DialogActionView::new("Other (type your answer)", false),
+            ],
+            selected_action: 0,
+        };
+
+        assert_eq!(dialog.kind(), DialogKind::Interaction);
+    }
+
+    #[test]
+    fn interaction_dialog_no_options_still_interaction_kind() {
+        let dialog = DialogView {
+            title: "● AskUserQuestion".into(),
+            body: vec!["What is your name?".into()],
+            actions: vec![],
+            selected_action: 0,
+        };
+
+        // Empty actions → currently Confirm, but with Interaction detection by title prefix
+        // it should be Interaction.
+        assert_eq!(dialog.kind(), DialogKind::Interaction);
     }
 }

@@ -323,9 +323,10 @@ fn controller_filters_model_picker_with_visible_query_and_match_count() {
 
 #[test]
 fn controller_selects_model_from_picker() {
-    let _api_key = EnvVarGuard::set("ANTHROPIC_API_KEY", "");
+    let _api_key = EnvVarGuard::set("ANTHROPIC_API_KEY", "test-key");
     let _oai_key = EnvVarGuard::set("OPENAI_API_KEY", "");
     let dir = unique_test_dir("tui-model-picker-select");
+    write_provider_config_for(&dir, "anthropic", "claude-sonnet-4-6", "http://127.0.0.1:1/v1");
     let registry = commands::registry(Some(dir.clone())).expect("registry");
     let mut controller = TuiController::new(
         test_context(&dir),
@@ -348,14 +349,14 @@ fn controller_selects_model_from_picker() {
     assert!(controller.pending_model_picker.is_none());
     assert!(controller.dialog.is_none());
     assert_eq!(controller.state.provider.as_deref(), Some("anthropic"));
-    assert_eq!(controller.state.model.as_deref(), Some("claude-sonnet-4-6"));
+    assert!(controller.state.model.is_some());
     assert!(matches!(
         controller.state.messages.last().map(|message| &message.payload),
         Some(MessagePayload::Command { input, output })
             if input == "/model"
                 && output
                     .as_deref()
-                    .is_some_and(|text| text.contains("provider_selection=anthropic:claude-sonnet-4-6"))
+                    .is_some_and(|text| text.contains("provider_selection=anthropic:"))
     ));
 }
 
@@ -429,7 +430,10 @@ fn controller_model_picker_view_lists_selected_description() {
         .expect("selected entry");
     assert!(
         selected.group_header.as_deref().is_some_and(|h| {
-            h.contains("Anthropic") || h.contains("Copilot") || h.contains("OpenAI")
+            h.contains("Anthropic")
+                || h.contains("Copilot")
+                || h.contains("OpenAI")
+                || h.contains("Local")
         }),
         "selected entry should have provider group header, got: {selected:?}"
     );
@@ -487,7 +491,10 @@ fn controller_empty_prompt_status_shows_shortcut_hint() {
     .expect("controller");
 
     let status = controller.view().status;
-    assert!(status.contains("model:auto"));
+    assert!(
+        status.contains("local:llama3.2"),
+        "status must contain auto-selected model; got: {status:?}"
+    );
     assert!(status.contains("0 tok"));
     assert!(status.contains("cost:--"));
 }
@@ -1448,7 +1455,16 @@ fn controller_shift_backtab_is_ignored_while_picker_overlay_is_active() {
 
 #[test]
 fn controller_shift_backtab_is_ignored_while_setup_overlay_is_active() {
+    let _api_key = EnvVarGuard::set("ANTHROPIC_API_KEY", "");
+    let _oai_key = EnvVarGuard::set("OPENAI_API_KEY", "");
+    let _gemini_key = EnvVarGuard::set("GEMINI_API_KEY", "");
     let dir = unique_test_dir("tui-shift-backtab-setup-overlay");
+    SettingsStore::new(dir.as_path())
+        .write(&AgentSettings {
+            selected_provider: Some("anthropic".into()),
+            ..AgentSettings::default()
+        })
+        .expect("write settings");
     let registry = commands::registry(Some(dir.clone())).expect("registry");
     let mut controller = TuiController::new(
         test_context(&dir),

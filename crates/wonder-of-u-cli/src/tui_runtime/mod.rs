@@ -83,6 +83,7 @@ fn keyboard_enhancement_flags() -> KeyboardEnhancementFlags {
 }
 
 mod controller;
+mod extract_memories;
 mod helpers;
 mod screen;
 mod scroll;
