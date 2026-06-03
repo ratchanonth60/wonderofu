@@ -1,5 +1,6 @@
 use super::*;
 use super::extract_memories::{ExtractionHandle, maybe_spawn_extract_memories};
+use super::status_line::{StatusLineHandle, maybe_run_status_line};
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 
@@ -125,6 +126,10 @@ pub(super) struct TuiController<'a> {
     pub(super) interaction_pending_answer: Option<String>,
     /// Background memory extraction state.
     pub(super) extraction: ExtractionHandle,
+    /// Shell command from `settings.statusLine` to run after each AI response.
+    pub(super) status_line_command: Option<String>,
+    /// Handle for the background status-line command thread.
+    pub(super) status_line_handle: StatusLineHandle,
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -322,6 +327,8 @@ impl<'a> TuiController<'a> {
             interaction_other_mode: false,
             interaction_pending_answer: None,
             extraction: ExtractionHandle::new(),
+            status_line_command: None,
+            status_line_handle: StatusLineHandle::new(),
         };
         controller.hydrate_initial_settings()?;
         controller.refresh_runtime_state()?;
@@ -350,6 +357,9 @@ impl<'a> TuiController<'a> {
         self.vim_enabled = settings.vim_mode.unwrap_or(true);
         if !self.vim_enabled {
             self.vim = VimState::new(VimMode::Insert);
+        }
+        if let Some(sl) = settings.status_line {
+            self.status_line_command = Some(sl.command);
         }
         Ok(())
     }
@@ -1385,6 +1395,7 @@ impl<'a> TuiController<'a> {
                     self.status_note = Some("tool loop response recorded".into());
                     self.maybe_autocompact(); // may override status_note if threshold crossed
                     self.trigger_extract_memories(resolved);
+                    self.trigger_status_line();
                     return Ok(());
                 }
                 ToolUseResponse::ToolCalls(batch) => {
@@ -1685,6 +1696,7 @@ impl<'a> TuiController<'a> {
         });
         self.maybe_autocompact(); // may override status_note if threshold crossed
         self.trigger_extract_memories(&resolved);
+        self.trigger_status_line();
         Ok(())
     }
 
@@ -1814,6 +1826,7 @@ impl<'a> TuiController<'a> {
                     });
                     self.maybe_autocompact(); // may override status_note if threshold crossed
                     self.trigger_extract_memories(resolved);
+                    self.trigger_status_line();
                     return Ok(());
                 }
                 ToolUseResponse::ToolCalls(batch) => {
@@ -3165,8 +3178,11 @@ impl<'a> TuiController<'a> {
         } else {
             ""
         };
-        view.footer =
-            format!("▸▸ {permission_label}{vim_hint} (shift+tab to cycle) · ⌃B sidebar · ⌃C exit");
+        view.footer = if let Some(sl_text) = self.status_line_handle.current_text() {
+            sl_text
+        } else {
+            format!("▸▸ {permission_label}{vim_hint} (shift+tab to cycle) · ⌃B sidebar · ⌃C exit")
+        };
         let picker_list = self.current_picker_list_view();
         view.dialog = if picker_list.is_some() {
             None
@@ -4564,6 +4580,12 @@ impl<'a> TuiController<'a> {
             &self.state.session.cwd,
             self.storage_dir.as_deref(),
         );
+    }
+
+    fn trigger_status_line(&self) {
+        if let Some(cmd) = &self.status_line_command {
+            maybe_run_status_line(&self.status_line_handle, cmd, &self.state);
+        }
     }
 
     fn build_tool_registry_impl(

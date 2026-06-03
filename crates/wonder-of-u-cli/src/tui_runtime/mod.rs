@@ -88,6 +88,7 @@ mod helpers;
 mod screen;
 mod scroll;
 mod setup;
+mod status_line;
 
 #[cfg(test)]
 mod tests;
