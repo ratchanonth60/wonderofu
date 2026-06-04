@@ -5,7 +5,7 @@ use std::{
     fs::OpenOptions,
     io::{IsTerminal, Write},
     path::{Path, PathBuf},
-    process::Command as ProcessCommand,
+    process::{Command as ProcessCommand, Stdio},
     sync::mpsc,
     time::Duration,
 };
@@ -144,7 +144,45 @@ pub(crate) fn run_tui<W: Write>(
         .map_err(|e| WonderError::internal(format!("tokio runtime: {e}")))?;
 
     let run_result = rt.block_on(async {
+        let mut was_selection_mode = false;
         while !controller.exit_requested() {
+            // When the user enters selection mode (Ctrl+Y, Ctrl+Shift+C, /select),
+            // temporarily leave the alternate screen and disable raw mode so the
+            // terminal handles mouse click-drag selection and clipboard copy
+            // natively.  Press any key to return to TUI mode.
+            if controller.selection_mode && !was_selection_mode {
+                // Render one last frame so the user sees the current state, then
+                // restore the terminal to cooked mode.  The last frame becomes
+                // visible as plain text in the normal screen buffer.
+                render_tui(&mut term, &controller)?;
+                controller.mark_rendered();
+                restore_ratatui_terminal(&mut term);
+                was_selection_mode = true;
+            }
+
+            if controller.selection_mode {
+                let ev = crossterm::event::read()
+                    .map_err(|e| WonderError::internal(format!("crossterm read: {e}")))?;
+                if matches!(ev, crossterm::event::Event::Key(_)) {
+                    // Re-enter TUI mode: raw mode, alternate screen, mouse capture.
+                    terminal::enable_raw_mode()?;
+                    execute!(
+                        term.backend_mut(),
+                        EnterAlternateScreen,
+                        Hide,
+                        EnableBracketedPaste,
+                        EnableMouseCapture,
+                        PushKeyboardEnhancementFlags(keyboard_enhancement_flags())
+                    )?;
+                    term.clear()?;
+                    controller.exit_selection_mode();
+                    was_selection_mode = false;
+                    render_tui(&mut term, &controller)?;
+                    controller.mark_rendered();
+                }
+                continue;
+            }
+
             let event = events.next_event().await?;
             controller.handle_event(event).await?;
 

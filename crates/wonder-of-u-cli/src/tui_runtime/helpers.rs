@@ -1325,6 +1325,77 @@ pub(super) fn parse_insights_hint(text: &str) -> bool {
         .any(|line| line.trim() == "insights_prompt_ready=true")
 }
 
+pub(super) fn parse_copy_picker_state(text: &str) -> Option<CopyPickerState> {
+    let enabled = text
+        .lines()
+        .find_map(|line| line.strip_prefix("copy_picker="))?
+        .trim()
+        == "true";
+    if !enabled {
+        return None;
+    }
+    let options = text
+        .lines()
+        .filter_map(|line| line.strip_prefix("copy_option="))
+        .filter_map(|json| {
+            let v: serde_json::Value = serde_json::from_str(json).ok()?;
+            Some(CopyPickerOption {
+                label: v.get("label")?.as_str()?.to_string(),
+                description: v
+                    .get("description")
+                    .and_then(|d| d.as_str())
+                    .unwrap_or("")
+                    .to_string(),
+                code: v.get("code")?.as_str()?.to_string(),
+            })
+        })
+        .collect::<Vec<_>>();
+    if options.is_empty() {
+        return None;
+    }
+    Some(CopyPickerState {
+        original_input: "/copy".into(),
+        options,
+        selected_index: 0,
+    })
+}
+
+pub(super) fn clipboard_write(text: &str) -> bool {
+    for (command, args) in [
+        ("wl-copy", &[][..]),
+        ("xclip", &["-selection", "clipboard"][..]),
+        ("xsel", &["--clipboard", "--input"][..]),
+        ("pbcopy", &[][..]),
+        ("clip", &[][..]),
+    ] {
+        if clipboard_spawn(command, args, text) {
+            return true;
+        }
+    }
+    false
+}
+
+fn clipboard_spawn(command: &str, args: &[&str], text: &str) -> bool {
+    let mut child = match ProcessCommand::new(command)
+        .args(args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+    {
+        Ok(c) => c,
+        Err(_) => return false,
+    };
+    if let Some(mut stdin) = child.stdin.take() {
+        if stdin.write_all(text.as_bytes()).is_err() {
+            let _ = child.kill();
+            let _ = child.wait();
+            return false;
+        }
+    }
+    child.wait().is_ok_and(|s| s.success())
+}
+
 pub(super) fn parse_session_tags_hint(text: &str) -> Option<Vec<String>> {
     let value = text
         .lines()

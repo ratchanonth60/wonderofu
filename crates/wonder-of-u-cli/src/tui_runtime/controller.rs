@@ -58,6 +58,7 @@ pub(super) struct TuiController<'a> {
     pub(super) pending_model_picker: Option<ModelPickerState>,
     pub(super) pending_permission_picker: Option<PermissionPickerState>,
     pub(super) pending_memory_picker: Option<MemoryPickerState>,
+    pub(super) pending_copy_picker: Option<CopyPickerState>,
     pub(super) pending_external_editor: Option<ExternalEditorRequest>,
     /// Ephemeral setup hub overlay opened by `/setup`.  Never persisted.
     pub(super) pending_setup_overlay: Option<SetupOverlayState>,
@@ -115,6 +116,9 @@ pub(super) struct TuiController<'a> {
     /// Set when `maybe_autocompact` queues a `/compact`.  Cleared on success
     /// (ViewActionHint::Compact) or failure (TurnState::Interrupted).
     pub(super) autocompact_pending: bool,
+    /// When `true`, mouse capture is disabled so the terminal can handle native
+    /// text selection.  Press any key to exit this mode.
+    pub(super) selection_mode: bool,
     /// When an interaction tool (ask_user) is executing, this sends the user's
     /// typed answer to the waiting tool thread.
     /// Question text displayed to the user while an interaction tool is waiting.
@@ -225,6 +229,20 @@ pub(super) struct MemoryPickerState {
     pub(super) options: Vec<MemoryPickerOption>,
     pub(super) selected_index: usize,
     pub(super) query: TextBuffer,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) struct CopyPickerOption {
+    pub(super) label: String,
+    pub(super) description: String,
+    pub(super) code: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) struct CopyPickerState {
+    pub(super) original_input: String,
+    pub(super) options: Vec<CopyPickerOption>,
+    pub(super) selected_index: usize,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -353,6 +371,7 @@ impl<'a> TuiController<'a> {
             pending_model_picker: None,
             pending_permission_picker: None,
             pending_memory_picker: None,
+            pending_copy_picker: None,
             pending_external_editor: None,
             pending_setup_overlay: None,
             pending_provider_form: None,
@@ -373,6 +392,7 @@ impl<'a> TuiController<'a> {
             tool_progress_rx: None,
             autocompact_failures: 0,
             autocompact_pending: false,
+            selection_mode: false,
             interaction_question: None,
             interaction_options: Vec::new(),
             interaction_other_mode: false,
@@ -621,6 +641,20 @@ impl<'a> TuiController<'a> {
             return Ok(());
         }
 
+        // Ctrl+Y or Ctrl+Shift+C enters terminal-native text selection mode.
+        // While active, mouse capture is suspended so the terminal emulator
+        // can handle click-drag selection and clipboard copy natively.
+        // Press any key to exit selection mode and resume normal TUI input.
+        //
+        // Ctrl+Y is the primary binding because Ctrl+Shift+C is often
+        // intercepted by the terminal for its own copy-to-clipboard action.
+        if key.is_ctrl_char('y')
+            || (key.code == KeyCode::Char('c') && key.modifiers.control && key.modifiers.shift)
+        {
+            self.enter_selection_mode();
+            return Ok(());
+        }
+
         if let Some(ResolvedKey::System(
             system @ (wonder_of_u_tui::SystemAction::OpenModelPicker
             | wonder_of_u_tui::SystemAction::ToggleThinking
@@ -792,10 +826,7 @@ impl<'a> TuiController<'a> {
                 if self.should_confirm_exit() {
                     self.dialog = Some(DialogView::confirm(
                         "Exit session?",
-                        [
-                            "Press Enter to close this TUI session.",
-                            "Press any other key to keep working.",
-                        ],
+                        ["Use Up/Down to choose an action, Enter to confirm."],
                     ));
                     self.status_note = Some("confirm exit".into());
                     self.needs_render = true;
@@ -883,6 +914,9 @@ impl<'a> TuiController<'a> {
         if self.pending_memory_picker.is_some() {
             return self.handle_memory_picker_key(key, resolved);
         }
+        if self.pending_copy_picker.is_some() {
+            return self.handle_copy_picker_key(key, resolved);
+        }
         if self.pending_tag_removal.is_some() {
             return self.handle_tag_removal_key(key, resolved);
         }
@@ -911,17 +945,34 @@ impl<'a> TuiController<'a> {
             Some(wonder_of_u_tui::DialogKind::Confirm)
                 if matches!(resolved, Some(ResolvedKey::Edit(EditAction::InsertNewline))) =>
             {
-                self.dialog = None;
-                self.turn_state = TurnState::Interrupted;
-                self.exit_requested = true;
+                let is_confirm = self.dialog.as_ref().is_none_or(|d| d.selected_action == 0);
+                if is_confirm {
+                    self.dialog = None;
+                    self.turn_state = TurnState::Interrupted;
+                    self.exit_requested = true;
+                } else {
+                    self.dismiss_dialog();
+                }
                 self.needs_render = true;
                 Ok(())
             }
-            Some(wonder_of_u_tui::DialogKind::Confirm) => {
-                self.status_note = Some("exit cancelled".into());
-                self.dismiss_dialog();
-                Ok(())
-            }
+            Some(wonder_of_u_tui::DialogKind::Confirm) => match key.code {
+                KeyCode::Up | KeyCode::Down | KeyCode::Tab => {
+                    if let Some(dialog) = &mut self.dialog {
+                        dialog.selected_action = dialog.selected_action.saturating_add(1);
+                        if dialog.selected_action >= dialog.actions.len() {
+                            dialog.selected_action = 0;
+                        }
+                        self.needs_render = true;
+                    }
+                    Ok(())
+                }
+                _ => {
+                    self.status_note = Some("exit cancelled".into());
+                    self.dismiss_dialog();
+                    Ok(())
+                }
+            },
             Some(wonder_of_u_tui::DialogKind::Notice) => {
                 self.dismiss_notice_dialog();
                 Ok(())
@@ -2598,6 +2649,12 @@ impl<'a> TuiController<'a> {
             self.open_global_search(query);
             return Ok(());
         }
+        // /select enters terminal-native text selection mode so the user can
+        // click-drag to select text in the transcript and copy to clipboard.
+        if trimmed == "/select" {
+            self.enter_selection_mode();
+            return Ok(());
+        }
         let invocation = parse_slash_command(input)
             .ok_or_else(|| WonderError::validation("invalid slash command"))?;
         let context = self.command_context();
@@ -2628,6 +2685,7 @@ impl<'a> TuiController<'a> {
             && self.pending_model_picker.is_none()
             && self.pending_permission_picker.is_none()
             && self.pending_memory_picker.is_none()
+            && self.pending_copy_picker.is_none()
             && self.pending_tag_removal.is_none()
             && self.pending_theme_picker.is_none()
             && self.pending_setup_overlay.is_none()
@@ -2706,6 +2764,7 @@ impl<'a> TuiController<'a> {
             self.status_note = Some(format!("color {color}"));
         } else if self.pending_permission_picker.is_some()
             || self.pending_memory_picker.is_some()
+            || self.pending_copy_picker.is_some()
             || self.pending_tag_removal.is_some()
             || self.pending_theme_picker.is_some()
             || self.pending_model_picker.is_some()
@@ -2838,6 +2897,11 @@ impl<'a> TuiController<'a> {
             self.open_memory_picker(picker);
         } else {
             self.pending_memory_picker = None;
+        }
+        if let Some(picker) = parse_copy_picker_state(text) {
+            self.open_copy_picker(picker);
+        } else {
+            self.pending_copy_picker = None;
         }
         if let Some(tag) = parse_tag_remove_confirmation(text) {
             self.open_tag_removal_confirmation(TagRemovalState {
@@ -3522,7 +3586,7 @@ impl<'a> TuiController<'a> {
             sb.session_lines = session_lines;
 
             sb.context_lines = context_sidebar_lines(
-                self.state.costs.usage.total_tokens(),
+                self.estimated_context_tokens(),
                 self.state.context_window_size,
             );
 
@@ -3599,7 +3663,9 @@ impl<'a> TuiController<'a> {
         view.footer = if let Some(sl_text) = self.status_line_handle.current_text() {
             sl_text
         } else {
-            format!("▸▸ {permission_label}{vim_hint} (shift+tab to cycle) · ⌃B sidebar · ⌃C exit")
+            format!(
+                "▸▸ {permission_label}{vim_hint} (shift+tab to cycle) · ⌃B sidebar · ⌃Y select · ⌃C exit"
+            )
         };
         let picker_list = self.current_picker_list_view();
         view.dialog = if picker_list.is_some() {
@@ -4391,6 +4457,104 @@ impl<'a> TuiController<'a> {
     }
 
     // -----------------------------------------------------------------------
+    // Copy picker
+    // -----------------------------------------------------------------------
+
+    pub(super) fn open_copy_picker(&mut self, picker: CopyPickerState) {
+        if picker.options.is_empty() {
+            self.status_note = Some("no copy options available".into());
+            self.dialog = None;
+            self.pending_copy_picker = None;
+            self.needs_render = true;
+            return;
+        }
+        self.clear_picker_overlays();
+        self.pending_copy_picker = Some(picker);
+        self.status_note = None;
+        self.needs_render = true;
+    }
+
+    pub(super) fn step_copy_picker(&mut self, delta: isize) {
+        let Some(picker) = &mut self.pending_copy_picker else {
+            return;
+        };
+        let len = picker.options.len();
+        if len == 0 {
+            return;
+        }
+        picker.selected_index =
+            ((picker.selected_index as isize + delta).rem_euclid(len as isize)) as usize;
+        self.needs_render = true;
+    }
+
+    pub(super) fn complete_copy_picker(&mut self) -> Result<()> {
+        let Some(picker) = self.pending_copy_picker.take() else {
+            self.dismiss_dialog();
+            return Ok(());
+        };
+        let Some(option) = picker.options.get(picker.selected_index) else {
+            self.pending_copy_picker = Some(picker);
+            self.needs_render = true;
+            return Ok(());
+        };
+        self.dialog = None;
+        let copied = clipboard_write(&option.code);
+        let char_count = option.code.chars().count();
+        let line_count = option.code.lines().count().max(1);
+        let status = if copied {
+            format!("copied {char_count} chars, {line_count} lines")
+        } else {
+            format!("copy failed; wrote {char_count} chars, {line_count} lines to fallback")
+        };
+        self.record_command_message(&picker.original_input, Some(&format!("status={status}")))?;
+        self.status_note = Some(status);
+        self.needs_render = true;
+        Ok(())
+    }
+
+    pub(super) fn cancel_copy_picker(&mut self) -> Result<()> {
+        let Some(picker) = self.pending_copy_picker.take() else {
+            self.dismiss_dialog();
+            return Ok(());
+        };
+        self.dialog = None;
+        self.record_command_message(&picker.original_input, Some("status=copy picker cancelled"))?;
+        self.status_note = Some("copy picker cancelled".into());
+        self.needs_render = true;
+        Ok(())
+    }
+
+    pub(super) fn handle_copy_picker_key(
+        &mut self,
+        key: KeyEvent,
+        resolved: Option<ResolvedKey>,
+    ) -> Result<()> {
+        match key.code {
+            KeyCode::Tab => self.complete_copy_picker(),
+            KeyCode::Up => {
+                self.step_copy_picker(-1);
+                Ok(())
+            }
+            KeyCode::Down => {
+                self.step_copy_picker(1);
+                Ok(())
+            }
+            KeyCode::Esc => self.cancel_copy_picker(),
+            _ => match resolved {
+                Some(ResolvedKey::Edit(EditAction::InsertNewline)) => self.complete_copy_picker(),
+                Some(ResolvedKey::System(wonder_of_u_tui::SystemAction::Interrupt)) => {
+                    self.cancel_copy_picker()
+                }
+                _ => {
+                    self.status_note = Some(picker_status_note("copy picker"));
+                    self.needs_render = true;
+                    Ok(())
+                }
+            },
+        }
+    }
+
+    // -----------------------------------------------------------------------
     // Setup overlay
     // -----------------------------------------------------------------------
 
@@ -4955,6 +5119,7 @@ impl<'a> TuiController<'a> {
     fn clear_picker_overlays(&mut self) {
         self.pending_permission_picker = None;
         self.pending_memory_picker = None;
+        self.pending_copy_picker = None;
         self.pending_tag_removal = None;
         self.pending_theme_picker = None;
         self.pending_model_picker = None;
@@ -5049,6 +5214,7 @@ impl<'a> TuiController<'a> {
     pub(super) fn has_picker_overlay(&self) -> bool {
         self.pending_permission_picker.is_some()
             || self.pending_memory_picker.is_some()
+            || self.pending_copy_picker.is_some()
             || self.pending_tag_removal.is_some()
             || self.pending_theme_picker.is_some()
             || self.pending_model_picker.is_some()
@@ -5171,6 +5337,25 @@ impl<'a> TuiController<'a> {
                     })
                     .collect(),
                 hint: PICKER_HINT.into(),
+            });
+        }
+        if let Some(picker) = &self.pending_copy_picker {
+            return Some(PickerListView {
+                title: "Copy to clipboard".into(),
+                query: String::new(),
+                entries: picker
+                    .options
+                    .iter()
+                    .enumerate()
+                    .map(|(i, opt)| PickerListEntry {
+                        label: opt.label.clone(),
+                        description: opt.description.clone(),
+                        tag: None,
+                        selected: i == picker.selected_index,
+                        group_header: None,
+                    })
+                    .collect(),
+                hint: "↑↓ navigate  Tab/Enter copy  Esc cancel".into(),
             });
         }
         if let Some(form) = &self.pending_provider_form {
@@ -5629,7 +5814,10 @@ impl<'a> TuiController<'a> {
                 &view,
                 search.query.cursor(),
                 sidebar_active,
-                context_warning_visible(&self.state),
+                context_warning_visible(
+                    self.estimated_context_tokens(),
+                    self.state.context_window_size,
+                ),
             );
         }
         prompt_cursor_position(
@@ -5638,7 +5826,10 @@ impl<'a> TuiController<'a> {
             &self.prompt.text(),
             self.prompt.cursor(),
             sidebar_active,
-            context_warning_visible(&self.state),
+            context_warning_visible(
+                self.estimated_context_tokens(),
+                self.state.context_window_size,
+            ),
         )
     }
 
@@ -5710,7 +5901,10 @@ impl<'a> TuiController<'a> {
         // scroll_state.last_visible_lines matches the actual messages area.
         let uncapped = controller_prompt_height(&self.prompt.text());
         let cap = (height / 3).max(6); // matches (main_area.height / 3).max(6) in render_shell
-        let warning_height = u16::from(context_warning_visible(&self.state));
+        let warning_height = u16::from(context_warning_visible(
+            self.estimated_context_tokens(),
+            self.state.context_window_size,
+        ));
         let prompt_height = uncapped
             .saturating_add(warning_height)
             .min(cap.saturating_add(warning_height));
@@ -5760,7 +5954,10 @@ impl<'a> TuiController<'a> {
         // mouse wheel events is always consistent with the rendered layout.
         let uncapped = controller_prompt_height(&self.prompt.text());
         let cap = (height / 3).max(6);
-        let warning_height = u16::from(context_warning_visible(&self.state));
+        let warning_height = u16::from(context_warning_visible(
+            self.estimated_context_tokens(),
+            self.state.context_window_size,
+        ));
         let prompt_height = uncapped
             .saturating_add(warning_height)
             .min(cap.saturating_add(warning_height));
@@ -5810,6 +6007,19 @@ impl<'a> TuiController<'a> {
         self.needs_render = true;
     }
 
+    pub(super) fn enter_selection_mode(&mut self) {
+        self.selection_mode = true;
+        self.status_note =
+            Some("exiting TUI for native text selection — press any key to return".into());
+        self.needs_render = true;
+    }
+
+    pub(super) fn exit_selection_mode(&mut self) {
+        self.selection_mode = false;
+        self.status_note = None;
+        self.needs_render = true;
+    }
+
     fn transcript_line_count(&self, terminal_width: u16) -> usize {
         let summary_width = usize::from(terminal_width.max(1));
         let mut total = if self.state.messages.is_empty() {
@@ -5831,25 +6041,56 @@ impl<'a> TuiController<'a> {
     /// - Triggers when remaining budget < `AUTOCOMPACT_BUFFER_TOKENS` (13 k).
     /// - Circuit breaker: skips after 3 consecutive compact failures so the
     ///   session doesn't hammer the summarisation API indefinitely.
+    ///
+    /// # Token estimation
+    ///
+    /// Uses a character-count heuristic (~4 chars per token for English) rather
+    /// than cumulative API-reported usage, which grows monotonically and never
+    /// reflects context freed by `/compact`.
+    fn estimated_context_tokens(&self) -> u64 {
+        let mut chars = 0u64;
+        for msg in &self.state.messages {
+            chars += estimate_payload_chars(&msg.payload);
+        }
+        // Rough heuristic: ~4 characters per token for English prose.
+        // Clamp to at least 1 so we never report zero while messages exist.
+        (chars / 4).max(1)
+    }
+
+    /// Returns the effective context window size, falling back to the model-based
+    /// default when the API hasn't reported one yet.
+    fn effective_window_or_default(&self) -> Option<u64> {
+        if let Some(w) = self.state.context_window_size.filter(|&w| w > 0) {
+            return Some(w);
+        }
+        if let Some(model) = &self.state.model {
+            let effective = effective_context_window(model) as u64;
+            if effective > 0 {
+                return Some(effective);
+            }
+        }
+        None
+    }
+
     /// - Safe to call unconditionally — it is a no-op when context is fine or
     ///   when the window size is unknown.
     pub(super) fn maybe_autocompact(&mut self) {
         const MAX_CONSECUTIVE_AUTOCOMPACT_FAILURES: u8 = 3;
 
-        let Some(window_size) = self.state.context_window_size.filter(|&w| w > 0) else {
+        let Some(window_size) = self.effective_window_or_default() else {
             return;
         };
         // Circuit breaker: stop trying if we've failed too many times in a row.
         if self.autocompact_failures >= MAX_CONSECUTIVE_AUTOCOMPACT_FAILURES {
             return;
         }
-        let used = self.state.costs.usage.total_tokens();
+        let used = self.estimated_context_tokens();
         let buffer = AUTOCOMPACT_BUFFER_TOKENS as u64;
         if used + buffer > window_size {
             self.state.queue_command("/compact", QueuePlacement::Now);
             self.autocompact_pending = true;
             self.status_note = Some(format!(
-                "context {used}/{window_size} tokens — auto-compacting"
+                "context ~{used}/{window_size} tokens — auto-compacting"
             ));
         }
     }
@@ -5860,22 +6101,31 @@ impl<'a> TuiController<'a> {
     /// When this is true the session must be compacted before the next API call;
     /// sending the request would result in a context-too-large error.
     pub(super) fn is_at_blocking_limit(&self) -> bool {
-        let Some(window_size) = self.state.context_window_size.filter(|&w| w > 0) else {
-            // Use model-based estimate when the API hasn't reported a window yet.
-            if let Some(model) = &self.state.model {
-                let effective = effective_context_window(model) as u64;
-                if effective == 0 {
-                    return false;
-                }
-                let used = self.state.costs.usage.total_tokens();
-                let buffer = MANUAL_COMPACT_BUFFER_TOKENS as u64;
-                return used + buffer > effective;
-            }
+        let Some(window_size) = self.effective_window_or_default() else {
             return false;
         };
-        let used = self.state.costs.usage.total_tokens();
+        let used = self.estimated_context_tokens();
         let buffer = MANUAL_COMPACT_BUFFER_TOKENS as u64;
         used + buffer > window_size
+    }
+}
+
+fn estimate_payload_chars(payload: &MessagePayload) -> u64 {
+    match payload {
+        MessagePayload::UserText { content } => content.len() as u64,
+        MessagePayload::AssistantText { content } => content.len() as u64,
+        MessagePayload::AssistantToolUse { tool, input, .. } => {
+            (tool.len() + input.to_string().len()) as u64
+        }
+        MessagePayload::ToolResult { tool, content, .. } => (tool.len() + content.len()) as u64,
+        MessagePayload::CompactBoundary { summary } => summary.len() as u64,
+        MessagePayload::System { content } => content.len() as u64,
+        MessagePayload::Command { input, output } => {
+            input.len() as u64 + output.as_ref().map_or(0, |o| o.len()) as u64
+        }
+        MessagePayload::ProviderError { message, .. } => message.len() as u64,
+        MessagePayload::Permission { tool, reason, .. } => (tool.len() + reason.len()) as u64,
+        _ => 0,
     }
 }
 
@@ -5935,13 +6185,10 @@ fn context_sidebar_lines(used_tokens: u64, max_tokens: Option<u64>) -> Vec<Strin
     ]
 }
 
-fn context_warning_visible(state: &AppState) -> bool {
-    state
-        .context_window_size
+fn context_warning_visible(used_tokens: u64, max_tokens: Option<u64>) -> bool {
+    max_tokens
         .filter(|max_tokens| *max_tokens > 0)
-        .is_some_and(|max_tokens| {
-            state.costs.usage.total_tokens().saturating_mul(100) / max_tokens >= 75
-        })
+        .is_some_and(|max_tokens| used_tokens.saturating_mul(100) / max_tokens >= 75)
 }
 
 /// Mirrors `ShellView::prompt_height()` for a raw prompt string.
