@@ -11,7 +11,7 @@ use crate::ResolvedProviderExecution;
 use super::{
     CompletionRequest, CompletionResponse, HttpRequest, ProviderToolCall, StreamingHttpResponse,
     ToolCallBatchResponse, ToolConversationRound, ToolUseRequest, ToolUseResponse, consume_sse,
-    context_window_for_model, is_high_effort, join_url, provider_input_schema,
+    context_window_for_model, is_gemini_model, is_high_effort, join_url, provider_input_schema,
 };
 
 // ─── Request builders ─────────────────────────────────────────────────────────
@@ -61,21 +61,16 @@ fn build_openai_request_with_mode(
         .expect("openai request body should be an object");
     if stream {
         body_map.insert("stream".into(), Value::Bool(true));
-        body_map.insert(
-            "stream_options".into(),
-            json!({
-                "include_usage": true,
-            }),
-        );
     }
     if let Some(temperature) = request.temperature {
         body_map.insert("temperature".into(), json!(temperature));
     }
     if let Some(max_output_tokens) = request.max_output_tokens {
-        body_map.insert("max_completion_tokens".into(), json!(max_output_tokens));
+        body_map.insert("max_tokens".into(), json!(max_output_tokens));
     }
     // Wire reasoning effort for OpenAI reasoning models.
-    if is_high_effort(request.effort_level.as_deref()) {
+    // Skip for Gemini models — Google uses thinkingConfig instead.
+    if is_high_effort(request.effort_level.as_deref()) && !is_gemini_model(resolved.model()) {
         body_map.insert("reasoning_effort".into(), json!("high"));
     }
 
@@ -138,10 +133,11 @@ pub(super) fn build_openai_tool_use_request(
         body_map.insert("temperature".into(), json!(temperature));
     }
     if let Some(max_output_tokens) = request.max_output_tokens {
-        body_map.insert("max_completion_tokens".into(), json!(max_output_tokens));
+        body_map.insert("max_tokens".into(), json!(max_output_tokens));
     }
     // Wire reasoning effort for OpenAI reasoning models.
-    if is_high_effort(request.effort_level.as_deref()) {
+    // Skip for Gemini models — Google uses thinkingConfig instead.
+    if is_high_effort(request.effort_level.as_deref()) && !is_gemini_model(resolved.model()) {
         body_map.insert("reasoning_effort".into(), json!("high"));
     }
 
@@ -372,10 +368,20 @@ pub(super) fn parse_openai_tool_call(value: &Value) -> Result<ProviderToolCall> 
         }
     };
 
+    // Gemini (via its OpenAI-compat endpoint) attaches a `thought_signature`
+    // inside `extra_content.google.thought_signature` on thinking-model calls.
+    // We must echo it back in subsequent requests or Gemini returns 400.
+    let thought_signature = value
+        .pointer("/extra_content/google/thought_signature")
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())
+        .map(ToString::to_string);
+
     Ok(ProviderToolCall {
         call_id: call_id.to_string(),
         tool_name: tool_name.to_string(),
         arguments,
+        thought_signature,
     })
 }
 
@@ -386,14 +392,22 @@ fn append_openai_round(messages: &mut Vec<Value>, round: &ToolConversationRound)
         .calls
         .iter()
         .map(|call| {
-            Ok(json!({
+            let mut entry = json!({
                 "id": call.call_id,
                 "type": "function",
                 "function": {
                     "name": call.tool_name,
                     "arguments": serde_json::to_string(&call.arguments)?,
                 },
-            }))
+            });
+            // Echo the Gemini thought_signature back so the API doesn't reject
+            // the request with INVALID_ARGUMENT.
+            if let Some(sig) = &call.thought_signature {
+                entry["extra_content"] = json!({
+                    "google": {"thought_signature": sig}
+                });
+            }
+            Ok(entry)
         })
         .collect::<Result<Vec<_>>>()?;
     messages.push(json!({
@@ -402,13 +416,36 @@ fn append_openai_round(messages: &mut Vec<Value>, round: &ToolConversationRound)
         "tool_calls": tool_calls,
     }));
     for result in &round.results {
+        // Truncate tool results that are too large to avoid exceeding the
+        // context window in a single round.  Mirrors claude-code's
+        // `applyToolResultBudget` step.
+        let content = truncate_tool_result(&result.content);
         messages.push(json!({
             "role": "tool",
             "tool_call_id": result.call_id,
-            "content": result.content,
+            "content": content,
         }));
     }
     Ok(())
+}
+
+/// Maximum characters to include from a single tool result before truncating.
+/// Matches `DEFAULT_MAX_RESULT_SIZE_CHARS` in wonder-of-u-tools orchestration.
+const MAX_TOOL_RESULT_CHARS: usize = 50_000;
+
+/// Truncates a tool result that exceeds `MAX_TOOL_RESULT_CHARS`.
+///
+/// The first `MAX_TOOL_RESULT_CHARS` characters are preserved; a brief
+/// truncation notice is appended so the model knows the content was cut.
+fn truncate_tool_result(content: &str) -> std::borrow::Cow<'_, str> {
+    if content.len() <= MAX_TOOL_RESULT_CHARS {
+        return std::borrow::Cow::Borrowed(content);
+    }
+    let kept = &content[..MAX_TOOL_RESULT_CHARS];
+    let truncated_chars = content.len() - MAX_TOOL_RESULT_CHARS;
+    std::borrow::Cow::Owned(format!(
+        "{kept}\n\n[…output truncated: {truncated_chars} additional characters not shown]"
+    ))
 }
 
 fn build_openai_tools(tools: &[super::ProviderToolSpec]) -> Vec<Value> {

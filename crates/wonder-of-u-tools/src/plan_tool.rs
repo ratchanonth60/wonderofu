@@ -274,7 +274,6 @@ fn resolve_plan_path(context: &ToolContext, path: Option<&std::path::Path>) -> P
 mod tests {
     use std::{fs, path::PathBuf};
 
-    use futures::executor::block_on;
     use serde_json::json;
     use wonder_of_u_core::{FeatureSet, PermissionMode, SessionId, ToolContext, ToolUseId};
     use wonder_of_u_test_support::unique_test_dir;
@@ -293,33 +292,39 @@ mod tests {
             permission_rules: Vec::new(),
             features: FeatureSet::first_release(),
             bash_session_store: None,
+            progress_tx: None,
+            interaction_rx: None,
             fork_context: None,
         }
     }
 
-    #[test]
-    fn plan_read_reads_default_plan_file() {
+    #[tokio::test]
+    async fn plan_read_reads_default_plan_file() {
         let dir = unique_test_dir("tools-plan-read");
         fs::write(dir.join("plan.md"), "# plan\n").expect("write plan");
         let tool = PlanReadTool;
 
-        let result = block_on(tool.execute(tool_context(dir), ToolUseId::new(), json!({})))
+        let result = tool
+            .execute(tool_context(dir), ToolUseId::new(), json!({}))
+            .await
             .expect("read plan");
 
         assert_eq!(result.content, "# plan\n");
     }
 
-    #[test]
-    fn plan_write_overwrites_file() {
+    #[tokio::test]
+    async fn plan_write_overwrites_file() {
         let dir = unique_test_dir("tools-plan-write");
         let tool = PlanWriteTool;
 
-        let result = block_on(tool.execute(
-            tool_context(dir.clone()),
-            ToolUseId::new(),
-            json!({ "content": "# updated\n- done\n" }),
-        ))
-        .expect("write plan");
+        let result = tool
+            .execute(
+                tool_context(dir.clone()),
+                ToolUseId::new(),
+                json!({ "content": "# updated\n- done\n" }),
+            )
+            .await
+            .expect("write plan");
 
         assert!(result.success);
         assert_eq!(
@@ -338,11 +343,13 @@ mod tests {
         assert!(error.to_string().contains("path"));
     }
 
-    #[test]
-    fn enter_plan_mode_is_explicitly_unsupported() {
+    #[tokio::test]
+    async fn enter_plan_mode_is_explicitly_unsupported() {
         let dir = unique_test_dir("tools-enter-plan-mode");
         let tool = EnterPlanModeTool;
-        let error = block_on(tool.execute(tool_context(dir), ToolUseId::new(), json!({})))
+        let error = tool
+            .execute(tool_context(dir), ToolUseId::new(), json!({}))
+            .await
             .expect_err("unsupported enter plan mode");
 
         assert!(error.to_string().contains("not supported"));
@@ -362,11 +369,13 @@ mod tests {
         assert!(error.to_string().contains("allowedPrompts"));
     }
 
-    #[test]
-    fn exit_plan_mode_is_explicitly_unsupported_without_source_fields() {
+    #[tokio::test]
+    async fn exit_plan_mode_is_explicitly_unsupported_without_source_fields() {
         let dir = unique_test_dir("tools-exit-plan-mode");
         let tool = ExitPlanModeTool;
-        let error = block_on(tool.execute(tool_context(dir), ToolUseId::new(), json!({})))
+        let error = tool
+            .execute(tool_context(dir), ToolUseId::new(), json!({}))
+            .await
             .expect_err("unsupported exit plan mode");
 
         assert!(error.to_string().contains("not supported"));

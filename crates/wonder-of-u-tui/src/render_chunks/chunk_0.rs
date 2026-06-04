@@ -36,13 +36,23 @@ pub fn render_shell(frame: &mut FrameBuffer, view: &ShellView, theme: &Theme) {
         .min(max_prompt);
     let layout = ShellLayout::split(main_area, prompt_height);
 
-    // When loading, reserve the bottom row of the message area for the Claude-style
-    // progress row (e.g. `✱ thinking… · 05s · esc to interrupt`).  This keeps the
-    // loading indicator visually close to the prompt without cluttering the transcript.
-    let (messages_render_area, loading_row_area) = if view.loading && layout.messages.height >= 1 {
-        // Reduce the transcript area by one row and carve out the loading row just
-        // above the prompt box (at layout.messages.bottom() - 1).
-        let transcript_h = layout.messages.height.saturating_sub(1);
+    // When loading, reserve rows at the bottom of the message area for the Claude-style
+    // progress row and any live shell output lines.
+    let progress_line_count = if view.loading && !view.tool_progress.is_empty() {
+        view.tool_progress.len().min(3) as u16 // show at most 3 live lines
+    } else {
+        0
+    };
+    // 1 row for the spinner + optional N rows for live output above it.
+    let reserved_rows = if view.loading && layout.messages.height >= 1 {
+        1 + progress_line_count
+    } else {
+        0
+    };
+    let (messages_render_area, loading_row_area) = if reserved_rows > 0
+        && layout.messages.height > reserved_rows
+    {
+        let transcript_h = layout.messages.height.saturating_sub(reserved_rows);
         let loading_y = layout.messages.y.saturating_add(transcript_h);
         (
             Rect::new(
@@ -55,7 +65,7 @@ pub fn render_shell(frame: &mut FrameBuffer, view: &ShellView, theme: &Theme) {
                 layout.messages.x,
                 loading_y,
                 layout.messages.width,
-                1,
+                reserved_rows,
             )),
         )
     } else {
@@ -64,9 +74,9 @@ pub fn render_shell(frame: &mut FrameBuffer, view: &ShellView, theme: &Theme) {
 
     draw_message_view(frame, messages_render_area, view, theme);
 
-    // Draw the dedicated loading progress row, if active.
+    // Draw the loading area (live progress lines + spinner row), if active.
     if let Some(loading_area) = loading_row_area {
-        draw_loading_progress_row(frame, loading_area, view, theme);
+        draw_loading_area(frame, loading_area, view, theme);
     }
 
     let prompt_area = if let Some(warning) = view

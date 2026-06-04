@@ -530,13 +530,13 @@ impl ProviderRegistry {
                     ModelDescriptor::new("gpt-5.2-codex", "GPT-5.2-Codex"),
                     ModelDescriptor::new("gpt-5-mini", "GPT-5 mini"),
                     ModelDescriptor::new("gpt-4.1", "GPT-4.1"),
+                    // Claude 4 — current (Copilot dot-notation)
+                    ModelDescriptor::new("claude-opus-4.8", "Claude Opus 4.8"),
+                    ModelDescriptor::new("claude-sonnet-4.6", "Claude Sonnet 4.6"),
                     ModelDescriptor::new("claude-haiku-4.5", "Claude Haiku 4.5"),
-                    ModelDescriptor::new("claude-opus-4.5", "Claude Opus 4.5"),
-                    ModelDescriptor::new("claude-opus-4.6", "Claude Opus 4.6"),
-                    ModelDescriptor::new("claude-opus-4.6-fast", "Claude Opus 4.6 (fast mode)"),
+                    // Claude 4 — previous
                     ModelDescriptor::new("claude-opus-4.7", "Claude Opus 4.7"),
                     ModelDescriptor::new("claude-sonnet-4.5", "Claude Sonnet 4.5"),
-                    ModelDescriptor::new("claude-sonnet-4.6", "Claude Sonnet 4.6"),
                     ModelDescriptor::new("gemini-2.5-pro", "Gemini 2.5 Pro"),
                     ModelDescriptor::new("gemini-3-flash", "Gemini 3 Flash"),
                     ModelDescriptor::new("gemini-3.1-pro", "Gemini 3.1 Pro"),
@@ -579,12 +579,21 @@ impl ProviderRegistry {
                 id: "anthropic".into(),
                 display_name: "Anthropic".into(),
                 auth_kind: AuthMaterialKind::ApiKey,
-                default_model: "claude-opus-4-7".into(),
+                default_model: "claude-opus-4-8".into(),
                 models: vec![
-                    ModelDescriptor::new("claude-opus-4-7", "Claude Opus 4.7"),
+                    // Claude 4 — current
+                    ModelDescriptor::new("claude-opus-4-8", "Claude Opus 4.8"),
                     ModelDescriptor::new("claude-sonnet-4-6", "Claude Sonnet 4.6"),
                     ModelDescriptor::new("claude-haiku-4-5-20251001", "Claude Haiku 4.5"),
-                    ModelDescriptor::new("claude-haiku-4-5", "Claude Haiku 4.5 Alias"),
+                    // Claude 4 — previous
+                    ModelDescriptor::new("claude-opus-4-7", "Claude Opus 4.7"),
+                    ModelDescriptor::new("claude-sonnet-4-5", "Claude Sonnet 4.5"),
+                    ModelDescriptor::new("claude-haiku-4-5", "Claude Haiku 4.5 (alias)"),
+                    // Claude 3.7
+                    ModelDescriptor::new("claude-3-7-sonnet-20250219", "Claude Sonnet 3.7"),
+                    // Claude 3.5
+                    ModelDescriptor::new("claude-3-5-sonnet-20241022", "Claude Sonnet 3.5"),
+                    ModelDescriptor::new("claude-3-5-haiku-20241022", "Claude Haiku 3.5"),
                 ],
                 api_base: Some("https://api.anthropic.com".into()),
                 api_key_env: Some("ANTHROPIC_API_KEY".into()),
@@ -598,9 +607,10 @@ impl ProviderRegistry {
                 id: "bedrock".into(),
                 display_name: "Amazon Bedrock".into(),
                 auth_kind: AuthMaterialKind::AwsSigV4,
-                default_model: "anthropic.claude-opus-4-7".into(),
+                default_model: "anthropic.claude-opus-4-8".into(),
                 models: vec![
-                    ModelDescriptor::new("anthropic.claude-opus-4-7", "Claude Opus 4.7 (Bedrock)"),
+                    // Claude 4 — current
+                    ModelDescriptor::new("anthropic.claude-opus-4-8", "Claude Opus 4.8 (Bedrock)"),
                     ModelDescriptor::new(
                         "anthropic.claude-sonnet-4-6",
                         "Claude Sonnet 4.6 (Bedrock)",
@@ -608,6 +618,26 @@ impl ProviderRegistry {
                     ModelDescriptor::new(
                         "anthropic.claude-haiku-4-5-20251001-v1:0",
                         "Claude Haiku 4.5 (Bedrock)",
+                    ),
+                    // Claude 4 — previous
+                    ModelDescriptor::new("anthropic.claude-opus-4-7", "Claude Opus 4.7 (Bedrock)"),
+                    ModelDescriptor::new(
+                        "anthropic.claude-sonnet-4-5",
+                        "Claude Sonnet 4.5 (Bedrock)",
+                    ),
+                    // Claude 3.7
+                    ModelDescriptor::new(
+                        "anthropic.claude-3-7-sonnet-20250219-v1:0",
+                        "Claude Sonnet 3.7 (Bedrock)",
+                    ),
+                    // Claude 3.5
+                    ModelDescriptor::new(
+                        "anthropic.claude-3-5-sonnet-20241022-v2:0",
+                        "Claude Sonnet 3.5 (Bedrock)",
+                    ),
+                    ModelDescriptor::new(
+                        "anthropic.claude-3-5-haiku-20241022-v1:0",
+                        "Claude Haiku 3.5 (Bedrock)",
                     ),
                 ],
                 api_base: Some(DEFAULT_BEDROCK_API_BASE.into()),
@@ -617,16 +647,49 @@ impl ProviderRegistry {
                 endpoint_env: None,
             })
             .expect("builtin provider");
+        // Shared Gemini model catalogue — used by both Google AI Studio (gemini)
+        // and Vertex AI (vertex). strict_model_validation is false so new model
+        // IDs released by Google pass through without requiring a catalog update.
+        // Source: opencode binary v1.15.13 google provider catalogue.
+        let gemini_models = vec![
+            // Gemini 2.5 (current stable)
+            ModelDescriptor::new("gemini-2.5-pro", "Gemini 2.5 Pro"),
+            ModelDescriptor::new("gemini-2.5-flash", "Gemini 2.5 Flash"),
+            ModelDescriptor::new("gemini-2.5-flash-lite", "Gemini 2.5 Flash-Lite"),
+            // Always-latest aliases
+            ModelDescriptor::new("gemini-flash-latest", "Gemini Flash Latest"),
+            ModelDescriptor::new("gemini-flash-lite-latest", "Gemini Flash-Lite Latest"),
+            // Gemini 3 (preview / next-gen)
+            ModelDescriptor::new("gemini-3.1-pro-preview", "Gemini 3.1 Pro Preview"),
+            ModelDescriptor::new(
+                "gemini-3.1-flash-lite-preview",
+                "Gemini 3.1 Flash Lite Preview",
+            ),
+            ModelDescriptor::new("gemini-3.1-flash-lite", "Gemini 3.1 Flash Lite"),
+            ModelDescriptor::new("gemini-3-flash-preview", "Gemini 3 Flash Preview"),
+            ModelDescriptor::new("gemini-3-pro-preview", "Gemini 3 Pro Preview"),
+            ModelDescriptor::new("gemini-3.5-flash", "Gemini 3.5 Flash"),
+            // Gemini 2.0 (legacy)
+            ModelDescriptor::new("gemini-2.0-flash", "Gemini 2.0 Flash"),
+            ModelDescriptor::new("gemini-2.0-flash-lite", "Gemini 2.0 Flash-Lite"),
+            // Gemma (open weights)
+            ModelDescriptor::new("gemma-4-31b-it", "Gemma 4 31B"),
+            ModelDescriptor::new("gemma-4-26b-a4b-it", "Gemma 4 26B A4B"),
+        ];
+        // Gemini uses the OpenAI-compatible endpoint so we can reuse the
+        // standard OpenAI wire protocol instead of a bespoke native format.
+        // Endpoint: https://generativelanguage.googleapis.com/v1beta/openai/
+        // Auth: Authorization: Bearer <GEMINI_API_KEY>
         registry
             .register(ProviderDescriptor {
                 id: "gemini".into(),
                 display_name: "Google Gemini".into(),
                 auth_kind: AuthMaterialKind::ApiKey,
-                default_model: "gemini-2.0-flash".into(),
-                models: vec![],
-                api_base: Some("https://generativelanguage.googleapis.com".into()),
+                default_model: "gemini-2.5-flash".into(),
+                models: gemini_models.clone(),
+                api_base: Some("https://generativelanguage.googleapis.com/v1beta/openai".into()),
                 api_key_env: Some("GEMINI_API_KEY".into()),
-                wire_protocol: WireProtocol::GeminiNative,
+                wire_protocol: WireProtocol::OpenAiCompat,
                 strict_model_validation: false,
                 endpoint_env: None,
             })
@@ -636,8 +699,8 @@ impl ProviderRegistry {
                 id: "vertex".into(),
                 display_name: "Google Vertex AI".into(),
                 auth_kind: AuthMaterialKind::GcpOAuth2,
-                default_model: "gemini-2.0-flash".into(),
-                models: vec![],
+                default_model: "gemini-2.5-flash".into(),
+                models: gemini_models,
                 // Vertex endpoints are location-specific; the runtime computes
                 // the real URL from project + location in the resolved auth.
                 // This placeholder satisfies the api_base requirement.
@@ -776,29 +839,70 @@ impl ProviderRegistry {
         // The api_base differs: OpenAI expects /v1 prefix, Anthropic strips it
         // because the protocol already appends /v1/messages.
 
-        fn opencode_model_catalogue() -> Vec<ModelDescriptor> {
+        // OpenCode Zen — curated paid models from the zen.opencode.ai proxy.
+        // Source: opencode binary v1.15.13 provider catalogue.
+        fn opencode_zen_models() -> Vec<ModelDescriptor> {
             vec![
-                ModelDescriptor::new("glm-5.1", "GLM-5.1 (DeepInfra / Fireworks AI / Z.ai)"),
-                ModelDescriptor::new("glm-5", "GLM-5 (DeepInfra / Fireworks AI / Z.ai)"),
-                ModelDescriptor::new("kimi-k2.5", "Kimi K2.5 (Moonshot AI)"),
-                ModelDescriptor::new("kimi-k2.6", "Kimi K2.6 (Moonshot AI)"),
-                ModelDescriptor::new("mimo-v2.5-pro", "MiMo-V2.5-Pro (Xiaomi MiMo)"),
-                ModelDescriptor::new("mimo-v2.5", "MiMo-V2.5 (Xiaomi MiMo)"),
-                ModelDescriptor::new("qwen3.7-max", "Qwen3.7 Max (Alibaba Cloud Model Studio)"),
-                ModelDescriptor::new("qwen3.6-plus", "Qwen3.6 Plus (Alibaba Cloud Model Studio)"),
-                ModelDescriptor::new("minimax-m2.7", "MiniMax M2.7 (MiniMax)"),
-                ModelDescriptor::new("minimax-m2.5", "MiniMax M2.5 (MiniMax)"),
-                ModelDescriptor::new("deepseek-v4-pro", "DeepSeek V4 Pro (DeepSeek)"),
-                ModelDescriptor::new("deepseek-v4-flash", "DeepSeek V4 Flash (DeepSeek)"),
+                // Claude 4
+                ModelDescriptor::new("claude-opus-4-5", "Claude Opus 4.5"),
+                ModelDescriptor::new("claude-sonnet-4-6", "Claude Sonnet 4.6"),
+                ModelDescriptor::new("claude-sonnet-4", "Claude Sonnet 4"),
+                ModelDescriptor::new("claude-haiku-4-5", "Claude Haiku 4.5"),
+                ModelDescriptor::new("claude-opus-4-1", "Claude Opus 4.1"),
+                ModelDescriptor::new("claude-3-5-haiku", "Claude Haiku 3.5"),
+                // GPT-5 family
+                ModelDescriptor::new("gpt-5.5-pro", "GPT-5.5 Pro"),
+                ModelDescriptor::new("gpt-5.4-pro", "GPT-5.4 Pro"),
+                ModelDescriptor::new("gpt-5.4-nano", "GPT-5.4 Nano"),
+                ModelDescriptor::new("gpt-5.3-codex", "GPT-5.3 Codex"),
+                ModelDescriptor::new("gpt-5.3-codex-spark", "GPT-5.3 Codex Spark"),
+                ModelDescriptor::new("gpt-5.2", "GPT-5.2"),
+                ModelDescriptor::new("gpt-5.1", "GPT-5.1"),
+                ModelDescriptor::new("gpt-5.1-codex-max", "GPT-5.1 Codex Max"),
+                ModelDescriptor::new("gpt-5.1-codex-mini", "GPT-5.1 Codex Mini"),
+                ModelDescriptor::new("gpt-5-codex", "GPT-5 Codex"),
+                ModelDescriptor::new("gpt-5", "GPT-5"),
+                ModelDescriptor::new("gpt-5-nano", "GPT-5 Nano"),
+                // Gemini
+                ModelDescriptor::new("gemini-3-pro", "Gemini 3 Pro"),
+                ModelDescriptor::new("gemini-3-flash", "Gemini 3 Flash"),
+                // Grok
+                ModelDescriptor::new("grok-build-0.1", "Grok Build 0.1"),
+                // Kimi / MiMo / GLM / Qwen / MiniMax
+                ModelDescriptor::new("kimi-k2.6", "Kimi K2.6"),
+                ModelDescriptor::new("kimi-k2-thinking", "Kimi K2 Thinking"),
+                ModelDescriptor::new("glm-4.7", "GLM-4.7"),
+                ModelDescriptor::new("qwen3.6-plus", "Qwen3.6 Plus"),
+                ModelDescriptor::new("minimax-m2.1", "MiniMax M2.1"),
+                ModelDescriptor::new("mimo-v2.5-free", "MiMo V2.5 Free"),
+                ModelDescriptor::new("mimo-v2-omni-free", "MiMo V2 Omni Free"),
             ]
         }
 
+        // OpenCode Go — affordable subscription models (OpenAI-compat wire).
+        // Active models only (deprecated: qwen3.5-plus, mimo-v2-omni).
+        fn opencode_go_models() -> Vec<ModelDescriptor> {
+            vec![
+                ModelDescriptor::new("deepseek-v4-pro", "DeepSeek V4 Pro"),
+                ModelDescriptor::new("deepseek-v4-flash", "DeepSeek V4 Flash"),
+                ModelDescriptor::new("kimi-k2.6", "Kimi K2.6"),
+                ModelDescriptor::new("kimi-k2.5", "Kimi K2.5"),
+                ModelDescriptor::new("glm-5.1", "GLM-5.1"),
+                ModelDescriptor::new("glm-5", "GLM-5"),
+                ModelDescriptor::new("mimo-v2.5-pro", "MiMo V2.5 Pro"),
+                ModelDescriptor::new("mimo-v2.5", "MiMo V2.5"),
+                ModelDescriptor::new("mimo-v2-pro", "MiMo V2 Pro"),
+                ModelDescriptor::new("minimax-m2.5", "MiniMax M2.5"),
+            ]
+        }
+
+        // OpenCode Go (Anthropic wire) — models that use the Anthropic messages
+        // protocol via the Go proxy (qwen3.7-max, qwen3.6-plus, minimax-m2.7).
         fn opencode_go_anthropic_models() -> Vec<ModelDescriptor> {
             vec![
-                ModelDescriptor::new("minimax-m2.7", "MiniMax M2.7 (MiniMax)"),
-                ModelDescriptor::new("minimax-m2.5", "MiniMax M2.5 (MiniMax)"),
-                ModelDescriptor::new("qwen3.7-max", "Qwen3.7 Max (Alibaba Cloud Model Studio)"),
-                ModelDescriptor::new("qwen3.6-plus", "Qwen3.6 Plus (Alibaba Cloud Model Studio)"),
+                ModelDescriptor::new("qwen3.7-max", "Qwen3.7 Max"),
+                ModelDescriptor::new("qwen3.6-plus", "Qwen3.6 Plus"),
+                ModelDescriptor::new("minimax-m2.7", "MiniMax M2.7"),
             ]
         }
 
@@ -807,8 +911,8 @@ impl ProviderRegistry {
                 id: "opencode-zen".into(),
                 display_name: "OpenCode Zen".into(),
                 auth_kind: AuthMaterialKind::ApiKey,
-                default_model: "deepseek-v4-pro".into(),
-                models: opencode_model_catalogue(),
+                default_model: "claude-sonnet-4-6".into(),
+                models: opencode_zen_models(),
                 api_base: Some("https://opencode.ai/zen/v1".into()),
                 api_key_env: Some("OPENCODE_API_KEY".into()),
                 wire_protocol: WireProtocol::OpenAiCompat,
@@ -823,7 +927,7 @@ impl ProviderRegistry {
                 display_name: "OpenCode Go".into(),
                 auth_kind: AuthMaterialKind::ApiKey,
                 default_model: "deepseek-v4-pro".into(),
-                models: opencode_model_catalogue(),
+                models: opencode_go_models(),
                 api_base: Some("https://opencode.ai/zen/go/v1".into()),
                 api_key_env: Some("OPENCODE_GO_API_KEY".into()),
                 wire_protocol: WireProtocol::OpenAiCompat,
@@ -837,13 +941,11 @@ impl ProviderRegistry {
                 id: "opencode-go-anthropic".into(),
                 display_name: "OpenCode Go (Anthropic)".into(),
                 auth_kind: AuthMaterialKind::ApiKey,
-                default_model: "minimax-m2.7".into(),
+                default_model: "qwen3.7-max".into(),
                 models: opencode_go_anthropic_models(),
                 // No /v1 suffix — AnthropicCompat appends /v1/messages.
                 api_base: Some("https://opencode.ai/zen/go".into()),
                 // Uses the same Go subscription API key as opencode-go.
-                // No api_key_env to avoid auto-select collision; configure
-                // via /setup or credential store.
                 api_key_env: None,
                 wire_protocol: WireProtocol::AnthropicCompat,
                 strict_model_validation: true,
@@ -942,6 +1044,16 @@ impl ProviderResolver {
             registry: ProviderRegistry::builtin(),
         }
     }
+
+    /// Constructs a resolver from an arbitrary registry.
+    ///
+    /// Intended for tests that need a custom provider catalogue without
+    /// going through the full builtin registry.
+    #[cfg(test)]
+    pub(crate) fn from_registry(registry: ProviderRegistry) -> Self {
+        Self { registry }
+    }
+
     /// Builds the registry
     #[must_use]
     pub fn registry(&self) -> &ProviderRegistry {
@@ -2189,7 +2301,7 @@ mod tests {
             .expect("resolve anthropic execution");
 
         assert_eq!(resolved.provider_id(), "anthropic");
-        assert_eq!(resolved.model(), "claude-opus-4-7");
+        assert_eq!(resolved.model(), "claude-opus-4-8");
     }
 
     #[test]
@@ -2311,7 +2423,7 @@ mod tests {
             bedrock.auth_kind,
             wonder_of_u_core::AuthMaterialKind::AwsSigV4
         );
-        assert_eq!(bedrock.default_model, "anthropic.claude-opus-4-7");
+        assert_eq!(bedrock.default_model, "anthropic.claude-opus-4-8");
         assert!(bedrock.models.len() >= 2);
     }
 

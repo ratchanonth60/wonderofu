@@ -75,23 +75,56 @@ fn draw_dialog(frame: &mut FrameBuffer, viewport: Rect, dialog: &DialogView, the
 
     frame.fill_rect(viewport, ' ', theme.background);
 
-    let actions = dialog.action_hint();
+    // Build styled action rows: focused action gets accent colour + ▶ prefix;
+    // others are dimmed.  Each action occupies its own row for arrow navigation.
+    let action_lines: Vec<StyledLine> = dialog
+        .actions
+        .iter()
+        .enumerate()
+        .map(|(i, action)| {
+            let focused = i == dialog.selected_action;
+            let prefix = if focused { "▶ " } else { "  " };
+            let text = format!("{prefix}{}", action.label);
+            if focused {
+                let mut style = theme.prompt; // accent / cyan
+                style.bold = true;
+                StyledLine::plain(text, style)
+            } else {
+                StyledLine::plain(text, theme.footer)
+            }
+        })
+        .collect();
+
+    let hint_text = if dialog.actions.len() > 1 {
+        "↑↓ navigate · Enter confirm · Esc cancel".to_string()
+    } else {
+        "Enter / Esc to close".to_string()
+    };
+
     let content_width = dialog
         .body
         .iter()
         .map(|line| widest_line(line))
+        .chain(action_lines.iter().map(|l| widest_line(&l.text)))
         .chain(std::iter::once(widest_line(&dialog.title)))
-        .chain(std::iter::once(widest_line(&actions)))
+        .chain(std::iter::once(widest_line(&hint_text)))
         .max()
         .unwrap_or(0);
     let width = u16::try_from(content_width.saturating_add(4))
         .unwrap_or(viewport.width)
         .max(viewport.width.saturating_sub(2))
         .min(viewport.width);
-    // +4: top border (title) + blank separator + action row + bottom border.
-    let height = u16::try_from(dialog.body.len().saturating_add(4))
-        .unwrap_or(viewport.height)
-        .min(viewport.height);
+    // body rows + blank + action rows + hint row + bottom border (+3 overhead).
+    let height = u16::try_from(
+        dialog
+            .body
+            .len()
+            .saturating_add(2) // blank separator + hint row
+            .saturating_add(dialog.actions.len())
+            .saturating_add(2), // top border + bottom border
+    )
+    .unwrap_or(viewport.height)
+    .min(viewport.height);
     let rect = Rect::new(
         viewport.x + viewport.width.saturating_sub(width) / 2,
         viewport.y + viewport.height.saturating_sub(height) / 2,
@@ -100,9 +133,13 @@ fn draw_dialog(frame: &mut FrameBuffer, viewport: Rect, dialog: &DialogView, the
     );
 
     let mut body = plain_lines(&dialog.body, theme.messages);
-    // Blank separator line gives visual breathing room before the action row.
     body.push(StyledLine::plain(String::new(), theme.footer));
-    body.push(StyledLine::plain(actions, theme.status));
+    body.extend(action_lines);
+    // Keyboard hint row in dim style.
+    body.push(StyledLine::plain(
+        hint_text,
+        TextStyle::default().fg(Color::DarkGrey).dim(),
+    ));
     draw_panel(frame, rect, Some(&dialog.title), &body, theme);
 }
 

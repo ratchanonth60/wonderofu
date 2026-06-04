@@ -353,6 +353,7 @@ pub(super) fn parse_gemini_tool_use_response(
                 .unwrap_or_default()
                 .to_string(),
             arguments: call.get("args").cloned().unwrap_or_else(|| json!({})),
+            thought_signature: None,
         })
         .filter(|call| !call.tool_name.is_empty())
         .collect();

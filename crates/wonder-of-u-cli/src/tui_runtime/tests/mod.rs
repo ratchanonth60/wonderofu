@@ -22,6 +22,14 @@ use wonder_of_u_tui::KeyModifiers;
 
 use crate::commands;
 
+fn block_on<F: std::future::Future>(f: F) -> F::Output {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("tokio runtime")
+        .block_on(f)
+}
+
 include!("chunk_0.rs");
 include!("chunk_1.rs");
 include!("chunk_2.rs");

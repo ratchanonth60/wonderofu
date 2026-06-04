@@ -77,6 +77,8 @@ fn controller_mouse_scroll_down_inside_transcript_scrolls_toward_newer() {
 
 #[test]
 fn controller_mouse_scroll_outside_transcript_area_ignored() {
+    // Scroll now works from anywhere on screen (no area restriction), so a
+    // wheel event over the prompt zone should scroll the transcript.
     let dir = unique_test_dir("mouse-scroll-outside");
     write_provider_config(&dir, "http://127.0.0.1:1/v1");
     let registry = commands::registry(Some(dir.clone())).expect("registry");
@@ -90,15 +92,16 @@ fn controller_mouse_scroll_outside_transcript_area_ignored() {
     controller.on_terminal_resize(80, 24);
     controller.scroll_state.on_resize(20, 100);
 
-    // row 22 falls in the prompt/chrome zone of an 80×24 terminal
+    // row 22 falls in the prompt/chrome zone of an 80×24 terminal —
+    // with the area restriction removed, scroll still applies.
     controller.handle_mouse_event(scroll_mouse_event(
         wonder_of_u_tui::MouseEventKind::ScrollUp,
         40,
         22,
     ));
-    assert_eq!(
-        controller.scroll_state.offset_from_bottom, 0,
-        "wheel over the prompt zone must be ignored"
+    assert!(
+        controller.scroll_state.offset_from_bottom > 0,
+        "wheel anywhere on screen should scroll the transcript"
     );
 }
 
@@ -232,6 +235,8 @@ fn controller_messages_rect_matches_renderer_for_empty_prompt() {
 /// row is inside the prompt area — not the messages area.
 #[test]
 fn controller_mouse_scroll_on_prompt_border_row_does_not_scroll() {
+    // Scroll now works from anywhere on screen; the prompt border row also
+    // triggers a scroll.  Test name kept for history; assertion updated.
     let dir = unique_test_dir("layout-math-border-scroll");
     let registry = commands::registry(Some(dir.clone())).expect("registry");
     let mut controller = TuiController::new(
@@ -242,12 +247,9 @@ fn controller_mouse_scroll_on_prompt_border_row_does_not_scroll() {
     )
     .expect("controller");
 
-    // Give the scroll state some content so a scroll would be detectable.
     controller.on_terminal_resize(80, 24);
     controller.scroll_state.on_resize(19, 100);
 
-    // With 80×24 and an empty prompt the messages rect is Rect(0,0,80,19),
-    // so row 19 is the first row of the prompt box ([y, y+height) = [19, 23)).
     let prompt_border_row = controller.transcript_messages_rect().bottom();
     assert_eq!(
         prompt_border_row, 19,
@@ -260,9 +262,10 @@ fn controller_mouse_scroll_on_prompt_border_row_does_not_scroll() {
         prompt_border_row,
     ));
 
-    assert_eq!(
-        controller.scroll_state.offset_from_bottom, 0,
-        "wheel on the prompt border row (y={prompt_border_row}) must not scroll the transcript"
+    // Area restriction removed — scrolling applies from any row.
+    assert!(
+        controller.scroll_state.offset_from_bottom > 0,
+        "wheel on prompt border row should now scroll the transcript"
     );
 }
 
@@ -298,8 +301,17 @@ fn cursor_is_one_row_below_first_after_trailing_newline() {
 
 // ── autostart tests ───────────────────────────────────────────────────────────
 
-fn make_unconfigured_controller() -> (TuiController<'static>, PathBuf) {
-    let dir = unique_test_dir("tui-autostart-unconfigured");
+fn make_missing_auth_controller(label: &str) -> (TuiController<'static>, PathBuf) {
+    let dir = unique_test_dir(label);
+    let _api_key = EnvVarGuard::set("ANTHROPIC_API_KEY", "");
+    let _oai_key = EnvVarGuard::set("OPENAI_API_KEY", "");
+    let _gemini_key = EnvVarGuard::set("GEMINI_API_KEY", "");
+    SettingsStore::new(dir.as_path())
+        .write(&AgentSettings {
+            selected_provider: Some("anthropic".into()),
+            ..AgentSettings::default()
+        })
+        .expect("write settings");
     let registry = Box::new(commands::registry(Some(dir.clone())).expect("registry"));
     let registry: &'static _ = Box::leak(registry);
     let controller = TuiController::new(
@@ -310,6 +322,11 @@ fn make_unconfigured_controller() -> (TuiController<'static>, PathBuf) {
     )
     .expect("controller");
     (controller, dir)
+}
+
+#[allow(dead_code)]
+fn make_unconfigured_controller() -> (TuiController<'static>, PathBuf) {
+    make_missing_auth_controller("tui-autostart-unconfigured")
 }
 
 fn make_ready_controller() -> (TuiController<'static>, PathBuf) {
@@ -329,13 +346,11 @@ fn make_ready_controller() -> (TuiController<'static>, PathBuf) {
 
 #[test]
 fn controller_auto_opens_setup_when_provider_not_configured() {
-    let _api_key = EnvVarGuard::set("ANTHROPIC_API_KEY", "");
-    let _oai_key = EnvVarGuard::set("OPENAI_API_KEY", "");
-    let (controller, _dir) = make_unconfigured_controller();
+    let (controller, _dir) = make_missing_auth_controller("tui-autostart-missing-auth");
 
     assert!(
         controller.pending_setup_overlay.is_some(),
-        "setup overlay should be auto-opened when provider is not configured"
+        "setup overlay should be auto-opened when provider auth is missing"
     );
     assert!(
         !controller.setup_cancelled_this_session,
@@ -355,9 +370,12 @@ fn controller_does_not_auto_open_setup_when_provider_ready() {
 
 #[test]
 fn controller_cancel_setup_sets_session_flag_and_prevents_reopen() {
-    let _api_key = EnvVarGuard::set("ANTHROPIC_API_KEY", "");
-    let _oai_key = EnvVarGuard::set("OPENAI_API_KEY", "");
-    let (mut controller, _dir) = make_unconfigured_controller();
+    let (mut controller, _dir) = make_missing_auth_controller("tui-autostart-cancel");
+
+    assert!(
+        controller.pending_setup_overlay.is_some(),
+        "setup overlay must be open before cancel (precondition)"
+    );
 
     controller
         .cancel_setup_overlay()
@@ -372,9 +390,7 @@ fn controller_cancel_setup_sets_session_flag_and_prevents_reopen() {
         "overlay must be closed after cancel"
     );
 
-    controller
-        .maybe_auto_open_setup()
-        .expect("maybe_auto_open_setup");
+    block_on(controller.maybe_auto_open_setup()).expect("maybe_auto_open_setup");
     assert!(
         controller.pending_setup_overlay.is_none(),
         "session flag must prevent autostart from re-opening the overlay"
@@ -610,6 +626,7 @@ fn make_controller_with_copilot_awaiting() -> (TuiController<'static>, tempfile:
             DialogActionView::new("Open Browser", true),
             DialogActionView::new("Cancel", false),
         ],
+        selected_action: 0,
     };
     controller.dialog = Some(dialog);
     controller.pending_setup_overlay = None; // real flow clears this; mirror that here
@@ -1281,9 +1298,7 @@ fn sidebar_slash_command_bare_toggles() {
 
     let original = controller.sidebar_visible;
 
-    controller
-        .execute_slash_command("/sidebar")
-        .expect("/sidebar must not error");
+    block_on(controller.execute_slash_command("/sidebar")).expect("/sidebar must not error");
 
     assert_eq!(
         controller.sidebar_visible, !original,
@@ -1306,9 +1321,7 @@ fn sidebar_slash_on_off_toggle_subcommands() {
     .expect("controller");
 
     // `/sidebar off` must hide regardless of current state.
-    controller
-        .execute_slash_command("/sidebar off")
-        .expect("/sidebar off must not error");
+    block_on(controller.execute_slash_command("/sidebar off")).expect("/sidebar off must not error");
     assert!(
         !controller.sidebar_visible,
         "/sidebar off must set sidebar_visible=false"
@@ -1320,9 +1333,7 @@ fn sidebar_slash_on_off_toggle_subcommands() {
     );
 
     // `/sidebar on` must restore visibility.
-    controller
-        .execute_slash_command("/sidebar on")
-        .expect("/sidebar on must not error");
+    block_on(controller.execute_slash_command("/sidebar on")).expect("/sidebar on must not error");
     assert!(
         controller.sidebar_visible,
         "/sidebar on must set sidebar_visible=true"
@@ -1334,9 +1345,7 @@ fn sidebar_slash_on_off_toggle_subcommands() {
     );
 
     // `/sidebar toggle` must flip to hidden again.
-    controller
-        .execute_slash_command("/sidebar toggle")
-        .expect("/sidebar toggle must not error");
+    block_on(controller.execute_slash_command("/sidebar toggle")).expect("/sidebar toggle must not error");
     assert!(
         !controller.sidebar_visible,
         "/sidebar toggle must flip to false"
@@ -1407,8 +1416,8 @@ fn sidebar_compact_status_when_visible() {
     let status = controller.view().status;
 
     assert!(
-        status.contains("model:auto"),
-        "compact status must contain the model summary; got: {status:?}"
+        status.contains("local:llama3.2"),
+        "compact status must contain the auto-selected model summary; got: {status:?}"
     );
     assert!(
         status.contains("0 tok"),
@@ -1436,8 +1445,8 @@ fn sidebar_full_status_when_hidden() {
     let status = controller.view().status;
 
     assert!(
-        status.contains("model:auto"),
-        "full status must contain the model summary when sidebar is hidden; got: {status:?}"
+        status.contains("local:llama3.2"),
+        "full status must contain the auto-selected model summary when sidebar is hidden; got: {status:?}"
     );
     assert!(
         status.contains("cost:--"),
@@ -1465,9 +1474,7 @@ fn controller_provider_failure_appends_error_message_and_clears_prompt() {
     .expect("controller");
 
     controller.prompt.insert_text("trigger provider failure");
-    controller
-        .submit_prompt(&mut |_| Ok(()))
-        .expect("submit_prompt itself must not propagate the provider error");
+    block_on(controller.submit_prompt()).expect("submit_prompt itself must not propagate the provider error");
 
     // The prompt must be cleared — error is visible in history.
     assert_eq!(

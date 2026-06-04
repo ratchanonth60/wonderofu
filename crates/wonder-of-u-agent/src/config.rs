@@ -42,6 +42,14 @@ fn load_settings_from_dir(dir: &Path) -> Result<AgentSettings> {
     serde_json::from_str(&fs::read_to_string(&path)?).map_err(Into::into)
 }
 
+/// Configuration for the user-customisable status line command.
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+pub struct StatusLineConfig {
+    /// Shell command executed after each AI response.
+    /// Receives a JSON object on stdin; stdout replaces the footer bar.
+    pub command: String,
+}
+
 /// Represents agent settings
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub struct AgentSettings {
@@ -83,6 +91,10 @@ pub struct AgentSettings {
     /// `PermissionRule` during hierarchy merge.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub deny_tools: Vec<String>,
+    /// Optional status line command. When set, the command is run after each
+    /// AI response and its stdout replaces the default footer bar text.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status_line: Option<StatusLineConfig>,
 }
 /// Represents provider override
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
@@ -235,6 +247,9 @@ impl SettingsHierarchy {
                     PermissionRuleBehavior::Deny,
                     layer.source,
                 ));
+            }
+            if merged.status_line.is_none() {
+                merged.status_line = s.status_line.clone();
             }
         }
 

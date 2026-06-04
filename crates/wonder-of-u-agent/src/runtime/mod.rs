@@ -124,6 +124,10 @@ pub struct ProviderToolCall {
     pub tool_name: String,
     /// Stores the arguments
     pub arguments: Value,
+    /// Gemini thinking models attach a `thought_signature` to each function
+    /// call.  It must be echoed back verbatim in subsequent requests;
+    /// omitting it causes a 400 INVALID_ARGUMENT error from the API.
+    pub thought_signature: Option<String>,
 }
 
 /// Represents provider tool result message
@@ -314,10 +318,14 @@ fn context_window_for_model(model: &str) -> u64 {
     let model = model.to_ascii_lowercase();
     if model.contains("gpt-5.5")
         || model.contains("gpt-5.4")
+        || model.contains("claude-opus-4-8")
+        || model.contains("claude-opus-4.8")
         || model.contains("claude-opus-4-7")
         || model.contains("claude-opus-4.7")
         || model.contains("claude-sonnet-4-6")
         || model.contains("claude-sonnet-4.6")
+        || model.contains("claude-sonnet-4-5")
+        || model.contains("claude-sonnet-4.5")
     {
         1_050_000
     } else if model.contains("gpt-5")
@@ -327,6 +335,15 @@ fn context_window_for_model(model: &str) -> u64 {
         400_000
     } else if model.contains("gpt-4.1") {
         1_047_576
+    } else if model.contains("gemini-2.5")
+        || model.contains("gemini-3.")
+        || model.contains("gemini-3-")
+        || model.contains("gemini-pro-latest")
+        || model.contains("gemini-flash-latest")
+        || model.contains("gemini-2.0")
+        || model.contains("gemma-4")
+    {
+        1_048_576
     } else if model.contains("claude-3-5")
         || model.contains("claude-3-7")
         || model.contains("claude-sonnet")
@@ -346,6 +363,11 @@ fn context_window_for_model(model: &str) -> u64 {
 /// Anthropic Messages sub-paths.
 fn is_anthropic_model(model: &str) -> bool {
     model.to_ascii_lowercase().contains("claude")
+}
+
+fn is_gemini_model(model: &str) -> bool {
+    let m = model.to_ascii_lowercase();
+    m.contains("gemini") || m.contains("gemma")
 }
 
 fn is_high_effort(level: Option<&str>) -> bool {
@@ -837,14 +859,16 @@ impl ProviderRuntime {
 
 #[cfg(test)]
 mod tests {
-    use std::{collections::BTreeMap, io::Cursor, sync::Mutex};
+    use std::{collections::BTreeMap, sync::Mutex};
 
     use time::OffsetDateTime;
     use wonder_of_u_test_support::unique_test_dir;
 
+    use wonder_of_u_core::AuthMaterialKind;
+
     use crate::{
-        AgentSettings, AuthMaterial, CredentialStore, SettingsStore, StoredCredentials,
-        auth::AwsCredentials,
+        AgentSettings, AuthMaterial, CredentialStore, ProviderDescriptor, ProviderRegistry,
+        SettingsStore, StoredCredentials, auth::AwsCredentials,
     };
 
     use super::*;
@@ -855,7 +879,6 @@ mod tests {
     struct RecordingTransport {
         requests: Mutex<Vec<HttpRequest>>,
         responses: Mutex<Vec<HttpResponse>>,
-        stream_bodies: Mutex<Vec<String>>,
         force_error: Mutex<Option<String>>,
     }
 
@@ -867,7 +890,6 @@ mod tests {
                     status: 200,
                     body: serde_json::to_string(&body).expect("serialize response"),
                 }]),
-                stream_bodies: Mutex::new(Vec::new()),
                 force_error: Mutex::new(None),
             })
         }
@@ -896,7 +918,6 @@ mod tests {
                         })
                         .collect(),
                 ),
-                stream_bodies: Mutex::new(Vec::new()),
                 force_error: Mutex::new(None),
             })
         }
@@ -904,8 +925,10 @@ mod tests {
         fn with_stream_body(body: &str) -> Arc<Self> {
             Arc::new(Self {
                 requests: Mutex::new(Vec::new()),
-                responses: Mutex::new(Vec::new()),
-                stream_bodies: Mutex::new(vec![body.into()]),
+                responses: Mutex::new(vec![HttpResponse {
+                    status: 200,
+                    body: body.to_string(),
+                }]),
                 force_error: Mutex::new(None),
             })
         }
@@ -914,20 +937,20 @@ mod tests {
             json_bodies: Vec<serde_json::Value>,
             stream_bodies: Vec<&str>,
         ) -> Arc<Self> {
+            let mut responses: Vec<HttpResponse> = json_bodies
+                .into_iter()
+                .map(|body| HttpResponse {
+                    status: 200,
+                    body: serde_json::to_string(&body).expect("serialize response"),
+                })
+                .collect();
+            responses.extend(stream_bodies.into_iter().map(|body| HttpResponse {
+                status: 200,
+                body: body.to_string(),
+            }));
             Arc::new(Self {
                 requests: Mutex::new(Vec::new()),
-                responses: Mutex::new(
-                    json_bodies
-                        .into_iter()
-                        .map(|body| HttpResponse {
-                            status: 200,
-                            body: serde_json::to_string(&body).expect("serialize response"),
-                        })
-                        .collect(),
-                ),
-                stream_bodies: Mutex::new(
-                    stream_bodies.into_iter().map(ToString::to_string).collect(),
-                ),
+                responses: Mutex::new(responses),
                 force_error: Mutex::new(None),
             })
         }
@@ -987,17 +1010,9 @@ mod tests {
         }
 
         fn execute_stream(&self, request: &HttpRequest) -> Result<StreamingHttpResponse> {
-            self.requests
-                .lock()
-                .expect("lock requests")
-                .push(request.clone());
-            let mut stream_bodies = self.stream_bodies.lock().expect("lock stream body");
-            if stream_bodies.is_empty() {
-                return Err(WonderError::internal("missing recorded stream body"));
-            }
-            let body = stream_bodies.remove(0);
+            let response = self.execute(request)?;
             Ok(StreamingHttpResponse {
-                reader: Box::new(Cursor::new(body.into_bytes())),
+                reader: Box::new(std::io::Cursor::new(response.body.into_bytes())),
             })
         }
     }
@@ -1239,7 +1254,7 @@ mod tests {
             Some("Say hi")
         );
         assert_eq!(
-            body.pointer("/max_completion_tokens")
+            body.pointer("/max_tokens")
                 .and_then(serde_json::Value::as_u64),
             Some(64)
         );
@@ -1298,6 +1313,7 @@ mod tests {
                             call_id: "call_123".into(),
                             tool_name: "file_read".into(),
                             arguments: serde_json::json!({"path": "src/main.rs"}),
+                            thought_signature: None,
                         }],
                         results: vec![ProviderToolResultMessage {
                             call_id: "call_123".into(),
@@ -1729,11 +1745,6 @@ mod tests {
             body.pointer("/stream").and_then(serde_json::Value::as_bool),
             Some(true)
         );
-        assert_eq!(
-            body.pointer("/stream_options/include_usage")
-                .and_then(serde_json::Value::as_bool),
-            Some(true)
-        );
         assert_eq!(streamed, "Hello back");
         assert_eq!(response.output_text, "Hello back");
         assert_eq!(response.stop_reason.as_deref(), Some("stop"));
@@ -1927,6 +1938,7 @@ mod tests {
                             call_id: "toolu_prev".into(),
                             tool_name: "glob".into(),
                             arguments: serde_json::json!({"pattern": "src/**/*.rs"}),
+                            thought_signature: None,
                         }],
                         results: vec![ProviderToolResultMessage {
                             call_id: "toolu_prev".into(),
@@ -2806,14 +2818,36 @@ mod tests {
 
     // ─── Gemini ───────────────────────────────────────────────────────────────
 
+    /// Builds a resolved Gemini execution using the **native** Gemini protocol.
+    ///
+    /// The live `gemini` provider now uses `OpenAiCompat` (Google's OpenAI-
+    /// compatible endpoint), but the tests below specifically exercise the
+    /// native Gemini request/response format (`generateContent` etc.), so they
+    /// use a custom registry that keeps the old `GeminiNative` wire protocol.
     fn resolved_gemini_provider(model: Option<&str>) -> ResolvedProviderExecution {
+        let mut registry = ProviderRegistry::default();
+        registry
+            .register(ProviderDescriptor {
+                id: "gemini".into(),
+                display_name: "Google Gemini (native)".into(),
+                auth_kind: AuthMaterialKind::ApiKey,
+                default_model: "gemini-2.5-flash".into(),
+                models: vec![],
+                api_base: Some("https://generativelanguage.googleapis.com".into()),
+                api_key_env: Some("GEMINI_API_KEY".into()),
+                wire_protocol: WireProtocol::GeminiNative,
+                strict_model_validation: false,
+                endpoint_env: None,
+            })
+            .expect("register gemini native");
+
         let settings = AgentSettings {
             selected_provider: Some("gemini".into()),
             selected_model: model.map(ToString::to_string),
             ..AgentSettings::default()
         };
 
-        ProviderResolver::builtin()
+        ProviderResolver::from_registry(registry)
             .resolve_execution_with_env(
                 &settings,
                 &StoredCredentials::default(),
@@ -3236,6 +3270,7 @@ mod tests {
                             call_id: "gemini-call-0".into(),
                             tool_name: "file_read".into(),
                             arguments: serde_json::json!({"path": "README.md"}),
+                            thought_signature: None,
                         }],
                         results: vec![ProviderToolResultMessage {
                             call_id: "gemini-call-0".into(),

@@ -558,7 +558,6 @@ impl Tool for ListPeersTool {
 mod tests {
     use std::path::PathBuf;
 
-    use futures::executor::block_on;
     use serde_json::json;
     use wonder_of_u_core::{FeatureSet, PermissionMode, SessionId};
     use wonder_of_u_test_support::unique_test_dir;
@@ -577,6 +576,8 @@ mod tests {
             permission_rules: Vec::new(),
             features: FeatureSet::first_release(),
             bash_session_store: None,
+            progress_tx: None,
+            interaction_rx: None,
             fork_context: None,
         }
     }
@@ -637,20 +638,22 @@ mod tests {
         assert!(error.to_string().contains(TEAM_LEAD_NAME));
     }
 
-    #[test]
-    fn send_message_execute_team_returns_success_with_send_effect() {
+    #[tokio::test]
+    async fn send_message_execute_team_returns_success_with_send_effect() {
         let dir = unique_test_dir("tools-send-message-team-effect");
         let tool = SendMessageTool;
-        let result = block_on(tool.execute(
-            tool_context(dir.clone()),
-            ToolUseId::new(),
-            json!({
-                "to": "reviewer",
-                "summary": "review request",
-                "message": "please check the patch",
-            }),
-        ))
-        .expect("execute");
+        let result = tool
+            .execute(
+                tool_context(dir.clone()),
+                ToolUseId::new(),
+                json!({
+                    "to": "reviewer",
+                    "summary": "review request",
+                    "message": "please check the patch",
+                }),
+            )
+            .await
+            .expect("execute");
 
         // Team recipients: success with a SendAgentMessage effect.
         assert!(
@@ -674,19 +677,21 @@ mod tests {
         assert!(!dir.join("fleet").exists());
     }
 
-    #[test]
-    fn send_message_execute_uds_returns_unsupported() {
+    #[tokio::test]
+    async fn send_message_execute_uds_returns_unsupported() {
         let dir = unique_test_dir("tools-send-message-uds-unsupported");
         let tool = SendMessageTool;
-        let result = block_on(tool.execute(
-            tool_context(dir.clone()),
-            ToolUseId::new(),
-            json!({
-                "to": "uds:/tmp/demo.sock",
-                "message": "hello",
-            }),
-        ))
-        .expect("execute");
+        let result = tool
+            .execute(
+                tool_context(dir.clone()),
+                ToolUseId::new(),
+                json!({
+                    "to": "uds:/tmp/demo.sock",
+                    "message": "hello",
+                }),
+            )
+            .await
+            .expect("execute");
 
         assert!(!result.success, "uds send should remain unsupported");
         assert!(result.content.contains("send_message is unavailable"));
@@ -695,20 +700,22 @@ mod tests {
         assert!(!dir.join("fleet").exists());
     }
 
-    #[test]
-    fn send_message_execute_broadcast_returns_send_effect() {
+    #[tokio::test]
+    async fn send_message_execute_broadcast_returns_send_effect() {
         let dir = unique_test_dir("tools-send-message-broadcast-effect");
         let tool = SendMessageTool;
-        let result = block_on(tool.execute(
-            tool_context(dir.clone()),
-            ToolUseId::new(),
-            json!({
-                "to": "*",
-                "summary": "heads up",
-                "message": "pivoting to auth module",
-            }),
-        ))
-        .expect("execute");
+        let result = tool
+            .execute(
+                tool_context(dir.clone()),
+                ToolUseId::new(),
+                json!({
+                    "to": "*",
+                    "summary": "heads up",
+                    "message": "pivoting to auth module",
+                }),
+            )
+            .await
+            .expect("execute");
 
         assert!(
             result.success,
@@ -726,23 +733,25 @@ mod tests {
         assert_eq!(result.metadata["live_delivery"], false);
     }
 
-    #[test]
-    fn send_message_execute_structured_team_returns_send_effect() {
+    #[tokio::test]
+    async fn send_message_execute_structured_team_returns_send_effect() {
         let dir = unique_test_dir("tools-send-message-structured-effect");
         let tool = SendMessageTool;
-        let result = block_on(tool.execute(
-            tool_context(dir.clone()),
-            ToolUseId::new(),
-            json!({
-                "to": "team-lead",
-                "message": {
-                    "type": "shutdown_response",
-                    "request_id": "req-42",
-                    "approve": true,
-                },
-            }),
-        ))
-        .expect("execute");
+        let result = tool
+            .execute(
+                tool_context(dir.clone()),
+                ToolUseId::new(),
+                json!({
+                    "to": "team-lead",
+                    "message": {
+                        "type": "shutdown_response",
+                        "request_id": "req-42",
+                        "approve": true,
+                    },
+                }),
+            )
+            .await
+            .expect("execute");
 
         assert!(
             result.success,
@@ -774,19 +783,21 @@ mod tests {
         assert!(error.to_string().contains("team_name"));
     }
 
-    #[test]
-    fn team_create_execute_returns_unsupported_without_creating_team_state() {
+    #[tokio::test]
+    async fn team_create_execute_returns_unsupported_without_creating_team_state() {
         let dir = unique_test_dir("tools-team-create-unsupported");
         let tool = TeamCreateTool;
-        let result = block_on(tool.execute(
-            tool_context(dir.clone()),
-            ToolUseId::new(),
-            json!({
-                "team_name": "reviewers",
-                "description": "parallel reviewers",
-            }),
-        ))
-        .expect("execute");
+        let result = tool
+            .execute(
+                tool_context(dir.clone()),
+                ToolUseId::new(),
+                json!({
+                    "team_name": "reviewers",
+                    "description": "parallel reviewers",
+                }),
+            )
+            .await
+            .expect("execute");
 
         assert!(!result.success);
         assert!(result.content.contains("team_create is unavailable"));
@@ -795,11 +806,13 @@ mod tests {
         assert!(!dir.join("tasks").exists());
     }
 
-    #[test]
-    fn team_delete_execute_returns_unsupported_without_cleanup_side_effects() {
+    #[tokio::test]
+    async fn team_delete_execute_returns_unsupported_without_cleanup_side_effects() {
         let dir = unique_test_dir("tools-team-delete-unsupported");
         let tool = TeamDeleteTool;
-        let result = block_on(tool.execute(tool_context(dir.clone()), ToolUseId::new(), json!({})))
+        let result = tool
+            .execute(tool_context(dir.clone()), ToolUseId::new(), json!({}))
+            .await
             .expect("execute");
 
         assert!(!result.success);
@@ -808,11 +821,13 @@ mod tests {
         assert!(!dir.join("teams").exists());
     }
 
-    #[test]
-    fn list_peers_execute_returns_explicit_unsupported_failure() {
+    #[tokio::test]
+    async fn list_peers_execute_returns_explicit_unsupported_failure() {
         let dir = unique_test_dir("tools-list-peers-unsupported");
         let tool = ListPeersTool;
-        let result = block_on(tool.execute(tool_context(dir), ToolUseId::new(), json!({})))
+        let result = tool
+            .execute(tool_context(dir), ToolUseId::new(), json!({}))
+            .await
             .expect("execute");
 
         assert!(!result.success);

@@ -35,7 +35,7 @@ use super::{
     task_runtime::WONDER_OF_U_AGENT_NAME_ENV,
 };
 
-const MAX_TOOL_LOOP_ITERATIONS: usize = 6;
+const MAX_TOOL_LOOP_ITERATIONS: usize = 100;
 
 pub(crate) struct PromptExecutionInput {
     pub provider: Option<String>,
@@ -957,6 +957,8 @@ fn tool_context(state: &AppState, system_prompt: Option<&str>) -> ToolContext {
         permission_rules: Vec::new(),
         features: state.features.clone(),
         bash_session_store: None,
+        progress_tx: None,
+        interaction_rx: None,
         fork_context: build_fork_context_snapshot(state, system_prompt),
     }
 }

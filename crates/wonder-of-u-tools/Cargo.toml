@@ -23,4 +23,5 @@ wonder-of-u-storage.workspace = true
 
 [dev-dependencies]
 futures.workspace = true
+tokio.workspace = true
 wonder-of-u-test-support.workspace = true

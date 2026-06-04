@@ -532,15 +532,31 @@ fn render_model_picker_output(report: &wonder_of_u_agent::ProviderStatusReport) 
                     })
                 ));
             }
+        } else if !provider.models.is_empty() {
+            // Non-strict providers with a curated catalogue: enumerate each
+            // entry like strict providers, but any model string still passes
+            // validation at resolution time.
+            for model in &provider.models {
+                lines.push(format!(
+                    "model_option={}",
+                    json!({
+                        "provider": provider.id,
+                        "provider_display": provider.display_name,
+                        "model": model.id,
+                        "model_display": model.display_name,
+                        "default": provider.default_model == model.id,
+                        "selected": report.provider.as_deref() == Some(provider.id.as_str())
+                            && report.model.as_deref() == Some(model.id.as_str()),
+                        "auth": auth_kind_label(provider.auth_kind),
+                    })
+                ));
+            }
         } else {
-            // Non-strict providers (gateways, local, native-dynamic): emit the
-            // default model as a representative picker entry.  Any non-empty
-            // model string is valid; the label signals pass-through semantics.
+            // Non-strict providers with no catalogue (gateways, local, etc.):
+            // emit the default model as a representative picker entry.
             let model_id = &provider.default_model;
             let active_model = report.model.as_deref().unwrap_or(model_id);
             let is_active_provider = report.provider.as_deref() == Some(provider.id.as_str());
-            // Show either the currently-selected model (if this is the active
-            // provider) or the provider's default as the representative entry.
             let display_model = if is_active_provider {
                 active_model
             } else {

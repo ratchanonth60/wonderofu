@@ -1086,7 +1086,6 @@ fn canonicalize_or_existing(path: &Path) -> Result<PathBuf> {
 mod tests {
     use std::{fs, path::PathBuf, process::Command};
 
-    use futures::executor::block_on;
     use serde_json::{Value, json};
     use wonder_of_u_core::{
         FeatureSet, PermissionDecision, PermissionMode, SessionId, ToolContext, ToolUseId,
@@ -1108,6 +1107,8 @@ mod tests {
             permission_rules: Vec::new(),
             features: FeatureSet::first_release(),
             bash_session_store: None,
+            progress_tx: None,
+            interaction_rx: None,
             fork_context: None,
         }
     }
@@ -1177,6 +1178,8 @@ mod tests {
             permission_rules: Vec::new(),
             features: FeatureSet::first_release(),
             bash_session_store: None,
+            progress_tx: None,
+            interaction_rx: None,
             fork_context: None,
         }
     }
@@ -1261,15 +1264,17 @@ mod tests {
         assert!(matches!(exit, PermissionDecision::Ask { .. }));
     }
 
-    #[test]
-    fn enter_worktree_creates_git_worktree_and_runtime_action() {
+    #[tokio::test]
+    async fn enter_worktree_creates_git_worktree_and_runtime_action() {
         let repo = init_git_repo("tools-enter-worktree-runtime");
-        let result = block_on(EnterWorktreeTool.execute(
-            tool_context(repo.clone()),
-            ToolUseId::new(),
-            json!({ "name": "topic/demo" }),
-        ))
-        .expect("enter worktree");
+        let result = EnterWorktreeTool
+            .execute(
+                tool_context(repo.clone()),
+                ToolUseId::new(),
+                json!({ "name": "topic/demo" }),
+            )
+            .await
+            .expect("enter worktree");
 
         assert!(result.success, "{}", result.content);
         let action = parse_action(&result);
@@ -1292,25 +1297,29 @@ mod tests {
         );
     }
 
-    #[test]
-    fn exit_worktree_keep_returns_restore_action_without_git_mutation() {
+    #[tokio::test]
+    async fn exit_worktree_keep_returns_restore_action_without_git_mutation() {
         let repo = init_git_repo("tools-exit-worktree-keep");
-        let enter = block_on(EnterWorktreeTool.execute(
-            tool_context(repo.clone()),
-            ToolUseId::new(),
-            json!({ "name": "topic" }),
-        ))
-        .expect("enter worktree");
+        let enter = EnterWorktreeTool
+            .execute(
+                tool_context(repo.clone()),
+                ToolUseId::new(),
+                json!({ "name": "topic" }),
+            )
+            .await
+            .expect("enter worktree");
         let action = parse_action(&enter);
         let state = action.session_state.expect("session state");
         let before = run_git(&repo, ["worktree", "list", "--porcelain"]);
 
-        let exit = block_on(ExitWorktreeTool.execute(
-            worktree_context(&state),
-            ToolUseId::new(),
-            json!({ "action": "keep" }),
-        ))
-        .expect("exit keep");
+        let exit = ExitWorktreeTool
+            .execute(
+                worktree_context(&state),
+                ToolUseId::new(),
+                json!({ "action": "keep" }),
+            )
+            .await
+            .expect("exit keep");
 
         assert!(exit.success, "{}", exit.content);
         let exit_action = parse_action(&exit);
@@ -1320,26 +1329,30 @@ mod tests {
         assert_eq!(before, run_git(&repo, ["worktree", "list", "--porcelain"]));
     }
 
-    #[test]
-    fn exit_worktree_remove_refuses_dirty_worktree_without_discard() {
+    #[tokio::test]
+    async fn exit_worktree_remove_refuses_dirty_worktree_without_discard() {
         let repo = init_git_repo("tools-exit-worktree-dirty-guard");
-        let enter = block_on(EnterWorktreeTool.execute(
-            tool_context(repo.clone()),
-            ToolUseId::new(),
-            json!({ "name": "topic" }),
-        ))
-        .expect("enter worktree");
+        let enter = EnterWorktreeTool
+            .execute(
+                tool_context(repo.clone()),
+                ToolUseId::new(),
+                json!({ "name": "topic" }),
+            )
+            .await
+            .expect("enter worktree");
         let action = parse_action(&enter);
         let state = action.session_state.expect("session state");
         fs::write(state.worktree_path.join("dirty.txt"), "dirty\n").expect("write dirty file");
         let before = run_git(&repo, ["worktree", "list", "--porcelain"]);
 
-        let exit = block_on(ExitWorktreeTool.execute(
-            worktree_context(&state),
-            ToolUseId::new(),
-            json!({ "action": "remove" }),
-        ))
-        .expect("exit remove");
+        let exit = ExitWorktreeTool
+            .execute(
+                worktree_context(&state),
+                ToolUseId::new(),
+                json!({ "action": "remove" }),
+            )
+            .await
+            .expect("exit remove");
 
         assert!(!exit.success);
         assert!(exit.content.contains("discard"));
@@ -1347,26 +1360,30 @@ mod tests {
         assert!(state.worktree_path.exists());
     }
 
-    #[test]
-    fn exit_worktree_remove_discards_confirmed_changes() {
+    #[tokio::test]
+    async fn exit_worktree_remove_discards_confirmed_changes() {
         let repo = init_git_repo("tools-exit-worktree-remove");
-        let enter = block_on(EnterWorktreeTool.execute(
-            tool_context(repo.clone()),
-            ToolUseId::new(),
-            json!({ "name": "topic" }),
-        ))
-        .expect("enter worktree");
+        let enter = EnterWorktreeTool
+            .execute(
+                tool_context(repo.clone()),
+                ToolUseId::new(),
+                json!({ "name": "topic" }),
+            )
+            .await
+            .expect("enter worktree");
         let action = parse_action(&enter);
         let state = action.session_state.expect("session state");
         let branch = state.worktree_branch.clone().expect("worktree branch");
         fs::write(state.worktree_path.join("dirty.txt"), "dirty\n").expect("write dirty file");
 
-        let exit = block_on(ExitWorktreeTool.execute(
-            worktree_context(&state),
-            ToolUseId::new(),
-            json!({ "action": "remove", "discard_changes": true }),
-        ))
-        .expect("exit remove");
+        let exit = ExitWorktreeTool
+            .execute(
+                worktree_context(&state),
+                ToolUseId::new(),
+                json!({ "action": "remove", "discard_changes": true }),
+            )
+            .await
+            .expect("exit remove");
 
         assert!(exit.success, "{}", exit.content);
         let exit_action = parse_action(&exit);
@@ -1381,18 +1398,20 @@ mod tests {
         );
     }
 
-    #[test]
-    fn exit_worktree_without_active_session_does_not_mutate_git_state() {
+    #[tokio::test]
+    async fn exit_worktree_without_active_session_does_not_mutate_git_state() {
         let repo = init_git_repo("tools-exit-worktree-no-session");
         let before_worktrees = run_git(&repo, ["worktree", "list", "--porcelain"]);
         let before_branches = run_git(&repo, ["branch", "--list", "--format=%(refname:short)"]);
 
-        let result = block_on(ExitWorktreeTool.execute(
-            tool_context(repo.clone()),
-            ToolUseId::new(),
-            json!({ "action": "remove", "discard_changes": true }),
-        ))
-        .expect("exit no session");
+        let result = ExitWorktreeTool
+            .execute(
+                tool_context(repo.clone()),
+                ToolUseId::new(),
+                json!({ "action": "remove", "discard_changes": true }),
+            )
+            .await
+            .expect("exit no session");
 
         assert!(!result.success);
         assert!(result.content.contains("No-op"));

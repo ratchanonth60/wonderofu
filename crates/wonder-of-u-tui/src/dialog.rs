@@ -7,6 +7,8 @@ pub enum DialogKind {
     Permission,
     /// Represents notice
     Notice,
+    /// Represents an interactive question from the AI (ask_user tool)
+    Interaction,
 }
 /// Represents dialog action view
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -36,6 +38,9 @@ pub struct DialogView {
     pub body: Vec<String>,
     /// Stores the actions
     pub actions: Vec<DialogActionView>,
+    /// Index of the currently focused action (arrow-key navigable).
+    /// Always clamped to `[0, actions.len())`.
+    pub selected_action: usize,
 }
 
 impl DialogView {
@@ -52,6 +57,7 @@ impl DialogView {
                 DialogActionView::new("Confirm", true),
                 DialogActionView::new("Cancel", false),
             ],
+            selected_action: 0,
         }
     }
     /// Handles permission
@@ -70,6 +76,7 @@ impl DialogView {
                 DialogActionView::new("Allow", true),
                 DialogActionView::new("Deny", false),
             ],
+            selected_action: 0,
         }
     }
     /// Handles notice
@@ -82,8 +89,37 @@ impl DialogView {
             title: title.into(),
             body: body.into_iter().map(Into::into).collect(),
             actions: vec![DialogActionView::new("Close", true)],
+            selected_action: 0,
         }
     }
+    /// Moves focus to the previous action (wraps around).
+    pub fn focus_prev(&mut self) {
+        if self.actions.is_empty() {
+            return;
+        }
+        self.selected_action = if self.selected_action == 0 {
+            self.actions.len() - 1
+        } else {
+            self.selected_action - 1
+        };
+    }
+
+    /// Moves focus to the next action (wraps around).
+    pub fn focus_next(&mut self) {
+        if self.actions.is_empty() {
+            return;
+        }
+        self.selected_action = (self.selected_action + 1) % self.actions.len();
+    }
+
+    /// Returns `true` when the currently focused action is the primary (first) action.
+    #[must_use]
+    pub fn selected_is_primary(&self) -> bool {
+        self.actions
+            .get(self.selected_action)
+            .is_some_and(|a| a.primary)
+    }
+
     /// Handles kind
     #[must_use]
     pub fn kind(&self) -> DialogKind {
@@ -91,6 +127,8 @@ impl DialogView {
             DialogKind::Notice
         } else if self.title.starts_with("Permission: ") {
             DialogKind::Permission
+        } else if self.title.starts_with("● ") {
+            DialogKind::Interaction
         } else {
             DialogKind::Confirm
         }
@@ -133,5 +171,34 @@ mod tests {
 
         assert_eq!(dialog.kind(), DialogKind::Notice);
         assert_eq!(dialog.actions, vec![DialogActionView::new("Close", true)]);
+    }
+
+    #[test]
+    fn interaction_dialog_detected_by_bullet_prefix() {
+        let dialog = DialogView {
+            title: "● ask_user".into(),
+            body: vec!["What would you like?".into()],
+            actions: vec![
+                DialogActionView::new("Option A", false),
+                DialogActionView::new("Other (type your answer)", false),
+            ],
+            selected_action: 0,
+        };
+
+        assert_eq!(dialog.kind(), DialogKind::Interaction);
+    }
+
+    #[test]
+    fn interaction_dialog_no_options_still_interaction_kind() {
+        let dialog = DialogView {
+            title: "● AskUserQuestion".into(),
+            body: vec!["What is your name?".into()],
+            actions: vec![],
+            selected_action: 0,
+        };
+
+        // Empty actions → currently Confirm, but with Interaction detection by title prefix
+        // it should be Interaction.
+        assert_eq!(dialog.kind(), DialogKind::Interaction);
     }
 }

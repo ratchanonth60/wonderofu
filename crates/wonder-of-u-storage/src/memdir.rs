@@ -18,7 +18,7 @@ use crate::write_text_atomically;
 const MEMORY_EXTENSION: &str = "md";
 const ENTRYPOINT_NAME: &str = "MEMORY.md";
 const PROJECTS_DIRNAME: &str = "projects";
-const CLAUDE_DIRNAME: &str = ".claude";
+const APP_CONFIG_DIRNAME: &str = "wonder-of-u";
 const MEMORY_DIRNAME: &str = "memory";
 const TEAM_MEMORY_DIRNAME: &str = "team-memory";
 const MAX_COMPONENT_LEN: usize = 120;
@@ -49,13 +49,10 @@ pub struct MemoryEntry {
     pub modified: SystemTime,
 }
 
-/// Returns the default user memory directory.
+/// Returns the default user memory directory: `<app_config_dir>/memory`.
 #[must_use]
 pub fn memdir_root() -> PathBuf {
-    home_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join(CLAUDE_DIRNAME)
-        .join(MEMORY_DIRNAME)
+    app_config_dir().join(MEMORY_DIRNAME)
 }
 
 /// Returns the project-scoped memory directory for a working tree.
@@ -69,9 +66,7 @@ pub fn project_memdir(cwd: &Path) -> PathBuf {
 /// Returns the team-scoped memory directory for a team identifier.
 #[must_use]
 pub fn team_memdir(team_id: &str) -> PathBuf {
-    home_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join(CLAUDE_DIRNAME)
+    app_config_dir()
         .join(TEAM_MEMORY_DIRNAME)
         .join(sanitize_component(team_id, "team"))
 }
@@ -214,6 +209,124 @@ pub fn prune_expired(dir: &Path, max_age_days: u64) -> Result<usize> {
     Ok(removed)
 }
 
+/// Returns the auto-memory directory for a given working directory.
+///
+/// Path: `<storage_dir>/projects/<sanitized-git-root>/memory/`
+///
+/// If `storage_dir` is `None` the app config dir is resolved via env vars
+/// (`WONDER_OF_U_STORAGE_DIR` → `XDG_CONFIG_HOME/wonder-of-u` → `~/.config/wonder-of-u`).
+#[must_use]
+pub fn auto_mem_dir(cwd: &Path, storage_dir: Option<&Path>) -> PathBuf {
+    let git_root = git_root_from(cwd).unwrap_or_else(|| cwd.to_path_buf());
+    let base = storage_dir
+        .map(Path::to_path_buf)
+        .unwrap_or_else(app_config_dir);
+    base.join(PROJECTS_DIRNAME)
+        .join(sanitize_component(
+            &git_root
+                .canonicalize()
+                .unwrap_or_else(|_| git_root.clone())
+                .to_string_lossy(),
+            "project",
+        ))
+        .join(MEMORY_DIRNAME)
+}
+
+/// Returns the path to the MEMORY.md entrypoint index for a given cwd.
+#[must_use]
+pub fn auto_mem_entrypoint(cwd: &Path, storage_dir: Option<&Path>) -> PathBuf {
+    auto_mem_dir(cwd, storage_dir).join(ENTRYPOINT_NAME)
+}
+
+/// Reads MEMORY.md content, applying line and byte truncation caps.
+/// Returns `None` when the file does not exist or is empty.
+#[must_use]
+pub fn read_auto_mem_entrypoint(cwd: &Path, storage_dir: Option<&Path>) -> Option<String> {
+    let path = auto_mem_entrypoint(cwd, storage_dir);
+    let raw = fs::read_to_string(&path).ok()?;
+    if raw.trim().is_empty() {
+        return None;
+    }
+    Some(crate::truncate_entrypoint_content(&raw).content)
+}
+
+/// Builds the memory system-prompt section for injection into every request.
+///
+/// Includes:
+/// 1. Instructions for the four memory types (user/feedback/project/reference)
+/// 2. How to save (write file + update MEMORY.md index)
+/// 3. MEMORY.md content if it exists
+#[must_use]
+pub fn build_auto_memory_section(cwd: &Path, storage_dir: Option<&Path>) -> String {
+    let mem_dir = auto_mem_dir(cwd, storage_dir);
+    let mem_dir_str = mem_dir.display().to_string();
+    let max_lines = crate::MAX_ENTRYPOINT_LINES;
+
+    let entrypoint_section = match read_auto_mem_entrypoint(cwd, storage_dir) {
+        Some(content) => format!("## {ENTRYPOINT_NAME}\n\n{content}"),
+        None => format!(
+            "## {ENTRYPOINT_NAME}\n\nYour {ENTRYPOINT_NAME} is currently empty. When you save new memories, they will appear here."
+        ),
+    };
+
+    format!(
+        r#"# auto memory
+
+You have a persistent, file-based memory system at `{mem_dir_str}`. This directory already exists — write to it directly with the Write tool (do not run mkdir or check for its existence).
+
+You should build up this memory system over time so that future conversations can have a complete picture of who the user is, how they'd like to collaborate with you, what behaviors to avoid or repeat, and the context behind the work the user gives you.
+
+If the user explicitly asks you to remember something, save it immediately as whichever type fits best. If they ask you to forget something, find and remove the relevant entry.
+
+## Types of memory
+
+- **user**: User's role, goals, responsibilities, knowledge. Always private.
+- **feedback**: Guidance about how to approach work — corrections AND validated successes. Lead with the rule, then **Why:** and **How to apply:** lines.
+- **project**: Ongoing work, goals, incidents, decisions not derivable from code. Lead with fact, then **Why:** and **How to apply:**. Convert relative dates to absolute.
+- **reference**: Pointers to external systems (dashboards, issue trackers, Slack channels).
+
+## What NOT to save
+
+Code patterns, architecture, git history, file structure, CLAUDE.md content, ephemeral task details — these are derivable from the project. If asked to save a PR list or activity summary, ask what was *surprising* or *non-obvious* — that is the part worth keeping.
+
+## How to save memories
+
+Saving a memory is a two-step process:
+
+**Step 1** — write the memory to its own file (e.g., `user_role.md`, `feedback_testing.md`) with this frontmatter:
+```markdown
+---
+name: {{short-kebab-case-slug}}
+description: {{one-line summary used to decide relevance}}
+metadata:
+  type: {{user, feedback, project, reference}}
+---
+
+{{memory content}}
+```
+
+**Step 2** — add a pointer in `{ENTRYPOINT_NAME}`. It is an index, not a memory — one line per entry under ~150 chars: `- [Title](file.md) — one-line hook`. No frontmatter. Never write memory content directly into `{ENTRYPOINT_NAME}`.
+
+- `{ENTRYPOINT_NAME}` is always loaded into context — lines after {max_lines} will be truncated, keep the index concise
+- Organize semantically by topic, not chronologically
+- Update or remove memories that are wrong or outdated
+- Do not write duplicate memories — check for an existing one to update first
+
+## When to access memories
+
+- When memories seem relevant, or the user references prior-conversation work.
+- You MUST access memory when the user explicitly asks you to check, recall, or remember.
+- If the user says to *ignore* or *not use* memory: do not apply, cite, or mention memory content.
+- Memory records can become stale. Verify that a memory is still correct before acting on it. If a recalled memory conflicts with current information, trust what you observe now — update or remove the stale memory.
+
+## Before recommending from memory
+
+A memory naming a specific function, file, or flag is a claim it existed *when written* — it may have been renamed or removed. Verify before recommending.
+
+{entrypoint_section}"#
+    )
+}
+
 /// Formats loaded team memories as a prompt block.
 #[must_use]
 pub fn team_memory_prompt(entries: &[MemoryEntry]) -> String {
@@ -237,6 +350,41 @@ fn home_dir() -> Option<PathBuf> {
     env::var_os("HOME")
         .filter(|home| !home.is_empty())
         .map(PathBuf::from)
+}
+
+/// Returns the wonder-of-u config/data directory.
+///
+/// Resolution order (matches `resolve_default_storage_dir` in the CLI):
+///   1. `WONDER_OF_U_STORAGE_DIR` env var (explicit override)
+///   2. `XDG_CONFIG_HOME/wonder-of-u`
+///   3. `HOME/.config/wonder-of-u`
+fn app_config_dir() -> PathBuf {
+    if let Ok(path) = env::var("WONDER_OF_U_STORAGE_DIR") {
+        if !path.is_empty() {
+            return PathBuf::from(path);
+        }
+    }
+    if let Ok(path) = env::var("XDG_CONFIG_HOME") {
+        if !path.is_empty() {
+            return PathBuf::from(path).join(APP_CONFIG_DIRNAME);
+        }
+    }
+    home_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join(".config")
+        .join(APP_CONFIG_DIRNAME)
+}
+
+/// Walks up from `cwd` looking for a `.git` directory and returns that dir.
+fn git_root_from(cwd: &Path) -> Option<PathBuf> {
+    let mut current = Some(cwd);
+    while let Some(dir) = current {
+        if dir.join(".git").exists() {
+            return Some(dir.to_path_buf());
+        }
+        current = dir.parent().filter(|parent| *parent != dir);
+    }
+    None
 }
 
 fn normalize_project_path(cwd: &Path) -> String {
@@ -270,18 +418,14 @@ fn sanitize_component(input: &str, fallback: &str) -> String {
 }
 
 fn classify_memory_kind(path: &Path) -> MemoryKind {
-    let team_root = home_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join(CLAUDE_DIRNAME)
-        .join(TEAM_MEMORY_DIRNAME);
+    let config = app_config_dir();
+    let team_root = config.join(TEAM_MEMORY_DIRNAME);
     if path.starts_with(&team_root) {
         return MemoryKind::Team;
     }
-
-    if path.starts_with(memdir_root().join(PROJECTS_DIRNAME)) {
+    if path.starts_with(config.join(PROJECTS_DIRNAME)) {
         return MemoryKind::Project;
     }
-
     MemoryKind::User
 }
 

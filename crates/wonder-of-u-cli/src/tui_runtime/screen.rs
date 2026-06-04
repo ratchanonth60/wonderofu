@@ -1,7 +1,7 @@
 use super::*;
 use crossterm::event::{
-    DisableBracketedPaste, KeyboardEnhancementFlags, PopKeyboardEnhancementFlags,
-    PushKeyboardEnhancementFlags,
+    DisableBracketedPaste, DisableMouseCapture, EnableMouseCapture, KeyboardEnhancementFlags,
+    PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
 };
 
 fn keyboard_enhancement_flags() -> KeyboardEnhancementFlags {
@@ -19,6 +19,7 @@ pub(super) fn setup_ratatui_terminal<W: Write>(writer: W) -> Result<Terminal<Cro
         EnterAlternateScreen,
         Hide,
         EnableBracketedPaste,
+        EnableMouseCapture,
         PushKeyboardEnhancementFlags(keyboard_enhancement_flags())
     )?;
     Ok(Terminal::new(backend)?)
@@ -31,6 +32,7 @@ pub(super) fn restore_ratatui_terminal<W: Write>(term: &mut Terminal<CrosstermBa
         LeaveAlternateScreen,
         Show,
         DisableBracketedPaste,
+        DisableMouseCapture,
         PopKeyboardEnhancementFlags
     );
     let _ = terminal::disable_raw_mode();

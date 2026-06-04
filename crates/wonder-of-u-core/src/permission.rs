@@ -1042,13 +1042,15 @@ pub fn is_path_within(path: &Path, root: &Path) -> bool {
 
 fn review_decision(
     mode: PermissionMode,
-    read_only: bool,
+    _read_only: bool,
     reason: PermissionDecisionReason,
 ) -> PermissionDecision {
     match mode {
         PermissionMode::BypassPermissions => PermissionDecision::allow(reason),
         PermissionMode::DontAsk => PermissionDecision::deny(reason),
-        PermissionMode::Plan if !read_only => PermissionDecision::deny(reason),
+        // Plan mode: read-only actions are auto-approved elsewhere; non-read-only
+        // actions require explicit approval so the user can permit them (e.g.
+        // running tests) without leaving plan mode entirely.
         _ => PermissionDecision::ask(reason),
     }
 }
@@ -1285,9 +1287,12 @@ impl PermissionMode {
                 mode: self,
                 detail: "dontAsk mode denies actions requiring confirmation".into(),
             }),
-            Self::Plan if !read_only => PermissionDecision::deny(PermissionDecisionReason::Mode {
+            // Plan mode: non-read-only actions require explicit user approval
+            // rather than a silent deny, so the user can permit executions like
+            // running tests without switching permission modes entirely.
+            Self::Plan if !read_only => PermissionDecision::ask(PermissionDecisionReason::Mode {
                 mode: self,
-                detail: "plan mode allows read-only actions only".into(),
+                detail: "plan mode: approve to allow this non-read-only action".into(),
             }),
             Self::AcceptEdits if !destructive => {
                 PermissionDecision::allow(PermissionDecisionReason::Mode {
@@ -1312,9 +1317,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn plan_mode_denies_writes() {
+    fn plan_mode_asks_for_non_readonly_actions() {
+        // Plan mode now asks for approval instead of silently denying, so users
+        // can approve actions like `cargo test` without leaving plan mode.
         let decision = PermissionMode::Plan.default_decision(false, false);
-        assert!(matches!(decision, PermissionDecision::Deny { .. }));
+        assert!(matches!(decision, PermissionDecision::Ask { .. }));
     }
 
     #[test]

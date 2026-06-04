@@ -87,6 +87,7 @@ mod tests {
             scroll: TranscriptScrollView::default(),
             sidebar: None,
             prompt_warning: None,
+            tool_progress: Vec::new(),
         };
 
         let frame = render_snapshot(30, 9, &view, &Theme::default());
@@ -142,6 +143,7 @@ mod tests {
             scroll: TranscriptScrollView::default(),
             sidebar: None,
             prompt_warning: None,
+            tool_progress: Vec::new(),
         };
 
         let frame = render_snapshot(48, 10, &view, &Theme::default());
@@ -241,6 +243,7 @@ mod tests {
             scroll: TranscriptScrollView::default(),
             sidebar: None,
             prompt_warning: None,
+            tool_progress: Vec::new(),
         };
 
         let frame = render_snapshot(42, 12, &view, &Theme::default());
@@ -293,6 +296,7 @@ mod tests {
             scroll: TranscriptScrollView::default(),
             sidebar: None,
             prompt_warning: None,
+            tool_progress: Vec::new(),
         };
 
         let frame = render_snapshot(42, 12, &view, &Theme::default());
@@ -300,13 +304,13 @@ mod tests {
         assert_eq!(
             frame.to_plain_text(),
             [
-                " ╭─Confirm action───────────────────────╮",
-                " │Approve command execution             │",
-                " │This cannot be undone                 │",
-                " │                                      │",
-                " │[Confirm]  Cancel                     │",
-                " ╰──────────────────────────────────────╯",
-                "",
+                "╭─Confirm action─────────────────────────╮",
+                "│Approve command execution               │",
+                "│This cannot be undone                   │",
+                "│                                        │",
+                "│▶ Confirm                               │",
+                "│  Cancel                                │",
+                "╰────────────────────────────────────────╯",
                 "╭─ prompt ───────────────────────────────╮",
                 "│› continue?                             │",
                 "│permission · 1 messages · Enter send · S│",
@@ -347,6 +351,7 @@ mod tests {
             scroll: TranscriptScrollView::default(),
             sidebar: None,
             prompt_warning: None,
+            tool_progress: Vec::new(),
         };
 
         let frame = render_snapshot(42, 16, &view, &Theme::default());
@@ -413,6 +418,7 @@ mod tests {
             scroll: TranscriptScrollView::default(),
             sidebar: None,
             prompt_warning: None,
+            tool_progress: Vec::new(),
         };
 
         let frame = render_snapshot(48, 12, &view, &Theme::default());
@@ -477,6 +483,7 @@ mod tests {
             scroll: TranscriptScrollView::default(),
             sidebar: None,
             prompt_warning: None,
+            tool_progress: Vec::new(),
         };
 
         let frame = render_snapshot(64, 12, &view, &Theme::default());
@@ -523,6 +530,7 @@ mod tests {
             scroll: TranscriptScrollView::default(),
             sidebar: None,
             prompt_warning: None,
+            tool_progress: Vec::new(),
         };
 
         let frame = render_snapshot(32, 9, &view, &Theme::default());
@@ -560,6 +568,7 @@ mod tests {
             scroll: TranscriptScrollView::default(),
             sidebar: None,
             prompt_warning: None,
+            tool_progress: Vec::new(),
         };
 
         let frame = render_snapshot(48, 10, &view, &Theme::default());
@@ -622,6 +631,7 @@ mod tests {
             scroll: TranscriptScrollView::default(),
             sidebar: None,
             prompt_warning: None,
+            tool_progress: Vec::new(),
         };
 
         let frame = render_snapshot(48, 12, &view, &Theme::default());
@@ -691,6 +701,7 @@ mod tests {
             scroll: TranscriptScrollView::default(),
             sidebar: None,
             prompt_warning: None,
+            tool_progress: Vec::new(),
         };
 
         let frame = render_snapshot(60, 16, &view, &Theme::default());
@@ -773,6 +784,7 @@ mod tests {
             scroll: TranscriptScrollView::default(),
             sidebar: None,
             prompt_warning: None,
+            tool_progress: Vec::new(),
         };
 
         let frame = render_snapshot(60, 16, &view, &Theme::default());
@@ -835,6 +847,7 @@ mod tests {
             scroll: TranscriptScrollView::default(),
             sidebar: None,
             prompt_warning: None,
+            tool_progress: Vec::new(),
         };
 
         let frame = render_snapshot(32, 8, &view, &Theme::default());
@@ -871,6 +884,7 @@ mod tests {
             scroll: TranscriptScrollView::default(),
             sidebar: None,
             prompt_warning: None,
+            tool_progress: Vec::new(),
         };
 
         let frame = render_snapshot(60, 10, &view, &Theme::default());
@@ -2510,15 +2524,14 @@ mod tests {
         let frame = render_snapshot(44, 10, &view, &Theme::default());
         let text = frame.to_plain_text();
 
-        // The blank separator must separate the body text from "[Close]".
-        // We look for an interior border row that contains only spaces (the blank line),
-        // sandwiched between the body content and the action hint.
+        // The blank separator must separate the body text from the action row.
+        // Actions are now rendered vertically with ▶ prefix for focused action.
         let body_pos = text.find("This is a notice").expect("body text not found");
-        let action_pos = text.find("[Close]").expect("[Close] not found");
+        let action_pos = text.find("Close").expect("Close action not found");
         let between = &text[body_pos..action_pos];
         assert!(
             between.contains("│  ") || between.contains("│\n"),
-            "a blank interior row must appear between body and action hint; rendered:\n{text}"
+            "a blank interior row must appear between body and action; rendered:\n{text}"
         );
     }
 

@@ -55,6 +55,8 @@ walkdir = "2"
 shell-words = "1"
 libc = "0.2"
 ureq = "3"
+reqwest = { version = "0.12", features = ["json", "stream"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "process", "io-util", "time", "signal"] }
 
 wonder-of-u-core = { path = "crates/wonder-of-u-core" }
 wonder-of-u-agent = { path = "crates/wonder-of-u-agent" }

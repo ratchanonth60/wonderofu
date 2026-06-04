@@ -766,6 +766,8 @@ mod tests {
             permission_rules: Vec::new(),
             features: FeatureSet::first_release(),
             bash_session_store: None,
+            progress_tx: None,
+            interaction_rx: None,
             fork_context: None,
         }
     }
@@ -795,9 +797,8 @@ mod tests {
         assert_eq!(truncated, "Hello Rust");
     }
 
-    #[test]
-    fn web_fetch_without_prompt_fetches_plain_text() {
-        use futures::executor::block_on;
+    #[tokio::test]
+    async fn web_fetch_without_prompt_fetches_plain_text() {
         use wonder_of_u_core::ToolUseId;
 
         let (url, server) = spawn_http_server(
@@ -805,15 +806,17 @@ mod tests {
             "<html><body><h1>Hello</h1><p>Rust &amp; tools</p></body></html>",
         );
         let tool = WebFetchTool;
-        let result = block_on(tool.execute(
-            tool_context(PathBuf::from("/workspace")),
-            ToolUseId::new(),
-            serde_json::json!({
-                "url": url,
-                "max_length": 10,
-            }),
-        ))
-        .expect("execute should not return Err");
+        let result = tool
+            .execute(
+                tool_context(PathBuf::from("/workspace")),
+                ToolUseId::new(),
+                serde_json::json!({
+                    "url": url,
+                    "max_length": 10,
+                }),
+            )
+            .await
+            .expect("execute should not return Err");
         server.join().expect("server thread should finish");
 
         assert!(result.success, "expected success result");
@@ -821,9 +824,8 @@ mod tests {
         assert_eq!(result.metadata, serde_json::Value::Null);
     }
 
-    #[test]
-    fn web_fetch_prompt_returns_provider_handoff_result() {
-        use futures::executor::block_on;
+    #[tokio::test]
+    async fn web_fetch_prompt_returns_provider_handoff_result() {
         use wonder_of_u_core::ToolUseId;
 
         let (url, server) = spawn_http_server(
@@ -831,15 +833,17 @@ mod tests {
             "<html><body><h1>Hello</h1><p>Rust &amp; tools</p></body></html>",
         );
         let tool = WebFetchTool;
-        let result = block_on(tool.execute(
-            tool_context(PathBuf::from("/workspace")),
-            ToolUseId::new(),
-            serde_json::json!({
-                "url": url,
-                "prompt": "Summarize the page in one sentence",
-            }),
-        ))
-        .expect("execute should not return Err");
+        let result = tool
+            .execute(
+                tool_context(PathBuf::from("/workspace")),
+                ToolUseId::new(),
+                serde_json::json!({
+                    "url": url,
+                    "prompt": "Summarize the page in one sentence",
+                }),
+            )
+            .await
+            .expect("execute should not return Err");
         server.join().expect("server thread should finish");
 
         assert!(result.success, "expected success handoff result");
@@ -1137,18 +1141,19 @@ mod tests {
         ));
     }
 
-    #[test]
-    fn web_search_unconfigured_result_metadata_is_explicit() {
-        use futures::executor::block_on;
+    #[tokio::test]
+    async fn web_search_unconfigured_result_metadata_is_explicit() {
         use wonder_of_u_core::ToolUseId;
 
         let tool = WebSearchTool;
-        let result = block_on(tool.execute(
-            provider_tool_context(PathBuf::from("/workspace")),
-            ToolUseId::new(),
-            json!({ "query": "rust" }),
-        ))
-        .expect("execute should not return Err");
+        let result = tool
+            .execute(
+                provider_tool_context(PathBuf::from("/workspace")),
+                ToolUseId::new(),
+                json!({ "query": "rust" }),
+            )
+            .await
+            .expect("execute should not return Err");
 
         assert!(result.success);
         assert_eq!(

@@ -88,7 +88,7 @@ use preferences::{
 use privacy_settings::PrivacySettingsCommand;
 use project::{
     AddDirCommand, BranchCommand, ContextCommand, CopyCommand, DiffCommand, FilesCommand,
-    InitCommand, MemoryCommand,
+    InitCommand, MemoryCommand, RememberCommand,
 };
 use prompt::PromptCommand;
 use review_workflow::{
@@ -161,6 +161,7 @@ pub fn registry(storage_dir: Option<PathBuf>) -> Result<CommandRegistry> {
         ContextCommand::command_spec(),
         CopyCommand::command_spec(),
         MemoryCommand::command_spec(),
+        RememberCommand::command_spec(),
         RenameCommand::command_spec(),
         ExportCommand::command_spec(),
         ClearCommand::command_spec(),
@@ -281,6 +282,7 @@ pub fn registry(storage_dir: Option<PathBuf>) -> Result<CommandRegistry> {
     registry.register(Arc::new(ContextCommand::new(storage_dir.clone())))?;
     registry.register(Arc::new(CopyCommand::new(storage_dir.clone())))?;
     registry.register(Arc::new(MemoryCommand::new(storage_dir.clone())))?;
+    registry.register(Arc::new(RememberCommand::new()))?;
     registry.register(Arc::new(RenameCommand::new(storage_dir.clone())))?;
     registry.register(Arc::new(ExportCommand::new(storage_dir.clone())))?;
     registry.register(Arc::new(ClearCommand::new(storage_dir.clone())))?;

@@ -1185,7 +1185,6 @@ fn executable_on_path(name: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use futures::executor::block_on;
     use serde_json::json;
     use wonder_of_u_core::{FeatureSet, PermissionMode, SessionId, ToolQuery};
     use wonder_of_u_test_support::unique_test_dir;
@@ -1204,6 +1203,8 @@ mod tests {
             permission_rules: Vec::new(),
             features: FeatureSet::first_release(),
             bash_session_store: None,
+            progress_tx: None,
+            interaction_rx: None,
             fork_context: None,
         }
     }
@@ -1225,24 +1226,26 @@ mod tests {
         input.resolve_file(&tool_context(dir)).expect("valid");
     }
 
-    #[test]
-    fn lsp_execute_returns_explicit_unsupported_failure() {
+    #[tokio::test]
+    async fn lsp_execute_returns_explicit_unsupported_failure() {
         let dir = unique_test_dir("tools-lsp-unsupported");
         let file = dir.join("lib.rs");
         fs::write(&file, "pub fn demo() {}\n").expect("source file");
         let tool = LspTool;
 
-        let result = block_on(tool.execute(
-            tool_context(dir.clone()),
-            ToolUseId::new(),
-            json!({
-                "operation": "documentSymbol",
-                "filePath": file.display().to_string(),
-                "line": 1,
-                "character": 1,
-            }),
-        ))
-        .expect("execute");
+        let result = tool
+            .execute(
+                tool_context(dir.clone()),
+                ToolUseId::new(),
+                json!({
+                    "operation": "documentSymbol",
+                    "filePath": file.display().to_string(),
+                    "line": 1,
+                    "character": 1,
+                }),
+            )
+            .await
+            .expect("execute");
 
         assert!(!result.success);
         assert!(result.content.contains(SOURCE_LSP_RUNTIME_UNAVAILABLE));
@@ -1254,8 +1257,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn config_reads_selected_model_and_permission_mode() {
+    #[tokio::test]
+    async fn config_reads_selected_model_and_permission_mode() {
         let dir = unique_test_dir("tools-config-model");
         let storage = dir.join(".config").join("wonder-of-u");
         fs::create_dir_all(storage.join("config")).expect("config dir");
@@ -1269,41 +1272,47 @@ mod tests {
         assert_eq!(model, "opus");
 
         let tool = ConfigTool;
-        let result = block_on(tool.execute(
-            tool_context(dir),
-            ToolUseId::new(),
-            json!({ "setting": "permissions.defaultMode" }),
-        ))
-        .expect("execute");
+        let result = tool
+            .execute(
+                tool_context(dir),
+                ToolUseId::new(),
+                json!({ "setting": "permissions.defaultMode" }),
+            )
+            .await
+            .expect("execute");
 
         assert!(result.success);
         assert!(result.content.contains("acceptEdits"));
         assert_eq!(result.metadata["value"], "acceptEdits");
     }
 
-    #[test]
-    fn config_reports_known_unbacked_reads_and_unavailable_writes() {
+    #[tokio::test]
+    async fn config_reports_known_unbacked_reads_and_unavailable_writes() {
         let tool = ConfigTool;
         let context = tool_context(unique_test_dir("tools-config-unsupported"));
 
-        let read = block_on(tool.execute(
-            context.clone(),
-            ToolUseId::new(),
-            json!({ "setting": "theme" }),
-        ))
-        .expect("read");
+        let read = tool
+            .execute(
+                context.clone(),
+                ToolUseId::new(),
+                json!({ "setting": "theme" }),
+            )
+            .await
+            .expect("read");
         assert!(!read.success);
         assert_eq!(read.metadata["setting"], "theme");
 
         let spec = tool.spec();
         assert!(!spec.read_only);
 
-        let write = block_on(tool.execute(
-            context,
-            ToolUseId::new(),
-            json!({ "setting": "theme", "value": "dark" }),
-        ))
-        .expect("write");
+        let write = tool
+            .execute(
+                context,
+                ToolUseId::new(),
+                json!({ "setting": "theme", "value": "dark" }),
+            )
+            .await
+            .expect("write");
         assert!(!write.success);
         assert!(write.content.contains(SOURCE_CONFIG_WRITE_UNAVAILABLE));
         assert_eq!(write.metadata["operation"], "set");
@@ -1345,23 +1354,25 @@ mod tests {
         assert_eq!(settings.effort_level.as_deref(), Some("2"));
     }
 
-    #[test]
-    fn brief_reports_attachment_metadata_without_claiming_delivery() {
+    #[tokio::test]
+    async fn brief_reports_attachment_metadata_without_claiming_delivery() {
         let dir = unique_test_dir("tools-brief-attachments");
         let screenshot = dir.join("shot.png");
         fs::write(&screenshot, [1_u8, 2, 3, 4]).expect("attachment");
         let tool = BriefTool;
 
-        let result = block_on(tool.execute(
-            tool_context(dir),
-            ToolUseId::new(),
-            json!({
-                "message": "Done",
-                "attachments": [screenshot.display().to_string()],
-                "status": "normal",
-            }),
-        ))
-        .expect("execute");
+        let result = tool
+            .execute(
+                tool_context(dir),
+                ToolUseId::new(),
+                json!({
+                    "message": "Done",
+                    "attachments": [screenshot.display().to_string()],
+                    "status": "normal",
+                }),
+            )
+            .await
+            .expect("execute");
 
         assert!(!result.success);
         assert_eq!(result.metadata["attachment_count"], 1);
@@ -1369,8 +1380,8 @@ mod tests {
         assert!(result.content.contains(SOURCE_BRIEF_RUNTIME_UNAVAILABLE));
     }
 
-    #[test]
-    fn skill_returns_metadata_for_project_skills() {
+    #[tokio::test]
+    async fn skill_returns_metadata_for_project_skills() {
         let dir = unique_test_dir("tools-skill-project");
         let skill_dir = dir.join(".wonder/skills/review");
         fs::create_dir_all(&skill_dir).expect("skill dir");
@@ -1390,12 +1401,14 @@ mod tests {
         .expect("manifest");
 
         let tool = SkillTool;
-        let result = block_on(tool.execute(
-            tool_context(dir),
-            ToolUseId::new(),
-            json!({ "skill": "/review-pr", "args": "123" }),
-        ))
-        .expect("execute");
+        let result = tool
+            .execute(
+                tool_context(dir),
+                ToolUseId::new(),
+                json!({ "skill": "/review-pr", "args": "123" }),
+            )
+            .await
+            .expect("execute");
 
         assert!(result.success);
         assert!(result.content.contains("status=prompt_composition"));
@@ -1406,8 +1419,8 @@ mod tests {
         assert_eq!(result.metadata["skill"], "review");
     }
 
-    #[test]
-    fn skill_hides_plugin_backed_entries_when_plugins_feature_is_disabled() {
+    #[tokio::test]
+    async fn skill_hides_plugin_backed_entries_when_plugins_feature_is_disabled() {
         let dir = unique_test_dir("tools-skill-plugin-gate");
         let plugin_dir = dir.join(".wonder/plugins/demo");
         let skill_dir = plugin_dir.join("skills/plugin-skill");
@@ -1440,19 +1453,21 @@ mod tests {
         context.features.disable(FeatureFlag::Plugins);
 
         let tool = SkillTool;
-        let result = block_on(tool.execute(
-            context,
-            ToolUseId::new(),
-            json!({ "skill": "plugin-skill" }),
-        ))
-        .expect("execute");
+        let result = tool
+            .execute(
+                context,
+                ToolUseId::new(),
+                json!({ "skill": "plugin-skill" }),
+            )
+            .await
+            .expect("execute");
 
         assert!(!result.success);
         assert_eq!(result.metadata["reason"], "unknown_skill");
     }
 
-    #[test]
-    fn skill_metadata_includes_args_in_result() {
+    #[tokio::test]
+    async fn skill_metadata_includes_args_in_result() {
         let dir = unique_test_dir("tools-skill-args");
         let skill_dir = dir.join(".wonder/skills/summarize");
         fs::create_dir_all(&skill_dir).expect("skill dir");
@@ -1470,12 +1485,14 @@ mod tests {
         .expect("manifest");
 
         let tool = SkillTool;
-        let result = block_on(tool.execute(
-            tool_context(dir),
-            ToolUseId::new(),
-            json!({ "skill": "summarize", "args": "some context" }),
-        ))
-        .expect("execute");
+        let result = tool
+            .execute(
+                tool_context(dir),
+                ToolUseId::new(),
+                json!({ "skill": "summarize", "args": "some context" }),
+            )
+            .await
+            .expect("execute");
 
         assert!(result.success);
         // args must be in metadata so callers can log/audit the invocation.
@@ -1485,8 +1502,8 @@ mod tests {
         assert!(result.content.contains("Skill arguments:\nsome context"));
     }
 
-    #[test]
-    fn skill_execution_prompt_present_in_content() {
+    #[tokio::test]
+    async fn skill_execution_prompt_present_in_content() {
         let dir = unique_test_dir("tools-skill-note");
         let skill_dir = dir.join(".wonder/skills/lint");
         fs::create_dir_all(&skill_dir).expect("skill dir");
@@ -1503,12 +1520,14 @@ mod tests {
         .expect("manifest");
 
         let tool = SkillTool;
-        let result = block_on(tool.execute(
-            tool_context(dir),
-            ToolUseId::new(),
-            json!({ "skill": "lint" }),
-        ))
-        .expect("execute");
+        let result = tool
+            .execute(
+                tool_context(dir),
+                ToolUseId::new(),
+                json!({ "skill": "lint" }),
+            )
+            .await
+            .expect("execute");
 
         assert!(result.success);
         assert!(
@@ -1532,16 +1551,18 @@ mod tests {
         );
     }
 
-    #[test]
-    fn skill_unknown_with_args_returns_structured_failure() {
+    #[tokio::test]
+    async fn skill_unknown_with_args_returns_structured_failure() {
         let dir = unique_test_dir("tools-skill-unknown-args");
         let tool = SkillTool;
-        let result = block_on(tool.execute(
-            tool_context(dir),
-            ToolUseId::new(),
-            json!({ "skill": "no-such-skill", "args": "some args" }),
-        ))
-        .expect("execute");
+        let result = tool
+            .execute(
+                tool_context(dir),
+                ToolUseId::new(),
+                json!({ "skill": "no-such-skill", "args": "some args" }),
+            )
+            .await
+            .expect("execute");
 
         assert!(!result.success);
         assert_eq!(result.metadata["supported"], false);
@@ -1549,27 +1570,31 @@ mod tests {
         assert_eq!(result.metadata["skill"], "no-such-skill");
     }
 
-    #[test]
-    fn tool_search_supports_select_and_keyword_queries() {
+    #[tokio::test]
+    async fn tool_search_supports_select_and_keyword_queries() {
         let tool = ToolSearchTool;
         let context = tool_context(unique_test_dir("tools-tool-search"));
 
-        let select = block_on(tool.execute(
-            context.clone(),
-            ToolUseId::new(),
-            json!({ "query": "select:LSP,Config" }),
-        ))
-        .expect("select");
+        let select = tool
+            .execute(
+                context.clone(),
+                ToolUseId::new(),
+                json!({ "query": "select:LSP,Config" }),
+            )
+            .await
+            .expect("select");
         assert!(select.success);
         assert!(select.content.contains("\"name\": \"lsp\""));
         assert!(select.content.contains("\"name\": \"config\""));
 
-        let keyword = block_on(tool.execute(
-            context,
-            ToolUseId::new(),
-            json!({ "query": "search the web", "max_results": 2 }),
-        ))
-        .expect("keyword");
+        let keyword = tool
+            .execute(
+                context,
+                ToolUseId::new(),
+                json!({ "query": "search the web", "max_results": 2 }),
+            )
+            .await
+            .expect("keyword");
         assert!(keyword.success);
         assert!(keyword.content.contains("\"name\": \"web_search\""));
     }

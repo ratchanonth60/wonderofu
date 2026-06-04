@@ -389,7 +389,6 @@ fn relative_to_root<'a>(path: &'a Path, root: &'a Path) -> Option<&'a Path> {
 mod tests {
     use std::{fs, path::PathBuf};
 
-    use futures::executor::block_on;
     use serde_json::json;
     use wonder_of_u_core::{FeatureSet, PermissionMode, SessionId, ToolContext, ToolUseId};
     use wonder_of_u_test_support::unique_test_dir;
@@ -408,6 +407,8 @@ mod tests {
             permission_rules: Vec::new(),
             features: FeatureSet::first_release(),
             bash_session_store: None,
+            progress_tx: None,
+            interaction_rx: None,
             fork_context: None,
         }
     }
@@ -422,20 +423,22 @@ mod tests {
         assert!(error.to_string().contains("invalid glob pattern"));
     }
 
-    #[test]
-    fn glob_finds_matching_files() {
+    #[tokio::test]
+    async fn glob_finds_matching_files() {
         let dir = unique_test_dir("tools-glob");
         fs::create_dir_all(dir.join("src")).expect("mkdir src");
         fs::create_dir_all(dir.join("docs")).expect("mkdir docs");
         fs::write(dir.join("src/lib.rs"), "pub fn demo() {}\n").expect("write rs");
         fs::write(dir.join("docs/readme.md"), "hello\n").expect("write md");
         let tool = GlobTool;
-        let result = block_on(tool.execute(
-            tool_context(dir),
-            ToolUseId::new(),
-            json!({ "pattern": "src/**/*.rs" }),
-        ))
-        .expect("run glob");
+        let result = tool
+            .execute(
+                tool_context(dir),
+                ToolUseId::new(),
+                json!({ "pattern": "src/**/*.rs" }),
+            )
+            .await
+            .expect("run glob");
 
         assert!(result.success);
         assert_eq!(result.content, "src/lib.rs");
@@ -451,18 +454,20 @@ mod tests {
         assert!(error.to_string().contains("invalid grep pattern"));
     }
 
-    #[test]
-    fn grep_searches_matching_lines() {
+    #[tokio::test]
+    async fn grep_searches_matching_lines() {
         let dir = unique_test_dir("tools-grep");
         fs::create_dir_all(dir.join("src")).expect("mkdir src");
         fs::write(dir.join("src/lib.rs"), "alpha\nbeta\nalpha beta\n").expect("write file");
         let tool = GrepTool;
-        let result = block_on(tool.execute(
-            tool_context(dir),
-            ToolUseId::new(),
-            json!({ "pattern": "alpha", "glob": "src/**/*.rs" }),
-        ))
-        .expect("run grep");
+        let result = tool
+            .execute(
+                tool_context(dir),
+                ToolUseId::new(),
+                json!({ "pattern": "alpha", "glob": "src/**/*.rs" }),
+            )
+            .await
+            .expect("run grep");
 
         assert!(result.success);
         assert_eq!(

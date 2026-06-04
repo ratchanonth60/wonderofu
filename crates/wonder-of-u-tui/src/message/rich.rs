@@ -246,6 +246,41 @@ impl MarkdownSummaryView {
 
         for block in &self.blocks {
             match block {
+                MarkdownBlockView::Heading { level, text } => {
+                    // Headings render as standalone bold+colored lines.
+                    // They don't consume first_block so the next paragraph still
+                    // gets the role prefix ("▶ "/"◆ ").
+                    let style = match level {
+                        1 => TextStyle::default().fg(Color::Cyan).bold(),
+                        2 => TextStyle::default().fg(Color::Blue).bold(),
+                        _ => TextStyle::default().bold(),
+                    };
+                    lines.push(MessageLineView::with_spans(
+                        self.role,
+                        vec![MessageSpanView::new(text.clone(), Some(style))],
+                    ));
+                    continue; // skip first_block = false
+                }
+                MarkdownBlockView::Blockquote(text) => {
+                    let block_lines = wrap_summary_lines(
+                        text,
+                        max_width.saturating_sub(2).max(1),
+                        MAX_PARAGRAPH_LINES,
+                        false,
+                    );
+                    for line_text in &block_lines {
+                        lines.push(MessageLineView::with_spans(
+                            self.role,
+                            vec![
+                                MessageSpanView::new(
+                                    "│ ".to_string(),
+                                    Some(TextStyle::default().fg(Color::DarkGrey)),
+                                ),
+                                MessageSpanView::new(line_text.clone(), None),
+                            ],
+                        ));
+                    }
+                }
                 MarkdownBlockView::Paragraph(text) => {
                     let block_lines =
                         wrap_summary_lines(text, max_width, MAX_PARAGRAPH_LINES, false);
@@ -253,7 +288,7 @@ impl MarkdownSummaryView {
                     if display_prefix.is_empty() {
                         // Continuation blocks (second paragraph onward) and Tool-role
                         // messages stay flush-left; only the first block of a
-                        // User/Assistant message carries the "● " bullet.
+                        // User/Assistant message carries the role prefix.
                         push_unprefixed_block(&mut lines, &block_lines, self.role, max_width);
                     } else {
                         push_wrapped_block(
@@ -313,6 +348,15 @@ pub enum MarkdownBlockView {
     Code(MarkdownCodeBlockView),
     /// Represents table
     Table(MarkdownTableView),
+    /// A markdown heading (`# `, `## `, `### `).
+    Heading {
+        /// Heading level: 1 for `#`, 2 for `##`, 3 for `###`.
+        level: u8,
+        /// Heading text with marker stripped.
+        text: String,
+    },
+    /// A blockquote (`> text`).
+    Blockquote(String),
 }
 
 /// A summarized fenced code block.
@@ -2039,6 +2083,46 @@ fn parse_markdown_blocks(text: &str) -> Vec<MarkdownBlockView> {
             continue;
         }
 
+        // Detect headings (### before ## before # to avoid false prefix match).
+        let trimmed_line = line.trim_start();
+        if let Some(text) = trimmed_line
+            .strip_prefix("### ")
+            .or_else(|| trimmed_line.strip_prefix("## "))
+            .or_else(|| trimmed_line.strip_prefix("# "))
+        {
+            let level = if trimmed_line.starts_with("### ") {
+                3u8
+            } else if trimmed_line.starts_with("## ") {
+                2
+            } else {
+                1
+            };
+            flush_paragraph(&mut blocks, &mut paragraph);
+            blocks.push(MarkdownBlockView::Heading {
+                level,
+                text: text.trim().to_string(),
+            });
+            index = index.saturating_add(1);
+            continue;
+        }
+
+        // Detect blockquotes — accumulate consecutive `> ` lines.
+        if let Some(first_quote) = trimmed_line.strip_prefix("> ") {
+            flush_paragraph(&mut blocks, &mut paragraph);
+            let mut quote_lines = vec![first_quote.to_string()];
+            index = index.saturating_add(1);
+            while let Some(next_line) = lines.get(index).copied() {
+                if let Some(q) = next_line.trim_start().strip_prefix("> ") {
+                    quote_lines.push(q.to_string());
+                    index = index.saturating_add(1);
+                } else {
+                    break;
+                }
+            }
+            blocks.push(MarkdownBlockView::Blockquote(quote_lines.join(" ")));
+            continue;
+        }
+
         paragraph.push(normalize_markdown_line(line));
         index = index.saturating_add(1);
     }
@@ -2110,24 +2194,149 @@ fn parse_table_line(line: &str) -> Vec<String> {
 }
 
 fn normalize_markdown_line(line: &str) -> String {
+    // Headings and blockquotes are detected upstream in parse_markdown_blocks;
+    // this function only handles lines that end up in Paragraph blocks.
     let trimmed = line.trim();
-    let trimmed = trimmed
-        .strip_prefix("# ")
-        .or_else(|| trimmed.strip_prefix("## "))
-        .or_else(|| trimmed.strip_prefix("### "))
-        .unwrap_or(trimmed);
-    let trimmed = trimmed
+    trimmed
         .strip_prefix("- ")
         .map(|value| format!("• {value}"))
         .or_else(|| trimmed.strip_prefix("* ").map(|value| format!("• {value}")))
-        .or_else(|| {
-            trimmed
-                .strip_prefix("> ")
-                .map(|value| format!("quote: {value}"))
-        })
-        .unwrap_or_else(|| trimmed.to_string());
+        .unwrap_or_else(|| trimmed.to_string())
+}
 
-    trimmed.replace('`', "")
+/// Parses inline markdown markers from an already-wrapped text segment.
+///
+/// Handles: `**bold**`, `*italic*`, `` `code` ``, `~~strikethrough~~`.
+/// Returns styled spans. Falls back to a single unstyled span when no markers
+/// are found, which the caller can detect via [`spans_have_markup`].
+fn parse_inline_spans(text: &str) -> Vec<MessageSpanView> {
+    let mut spans: Vec<MessageSpanView> = Vec::new();
+    let mut rest = text;
+    let mut plain = String::new();
+
+    while !rest.is_empty() {
+        let next_marker = rest
+            .char_indices()
+            .find(|(_, c)| matches!(c, '`' | '*' | '~'));
+
+        let Some((pos, ch)) = next_marker else {
+            plain.push_str(rest);
+            break;
+        };
+
+        plain.push_str(&rest[..pos]);
+        rest = &rest[pos..];
+
+        match ch {
+            '`' => {
+                if let Some(end) = rest[1..].find('`') {
+                    let code = &rest[1..1 + end];
+                    if !code.is_empty() {
+                        let code_owned = code.to_string();
+                        if !plain.is_empty() {
+                            spans.push(MessageSpanView::new(std::mem::take(&mut plain), None));
+                        }
+                        spans.push(MessageSpanView::new(
+                            code_owned,
+                            Some(TextStyle::default().fg(Color::DarkCyan)),
+                        ));
+                        rest = &rest[1 + end + 1..];
+                    } else {
+                        plain.push('`');
+                        rest = &rest[1..];
+                    }
+                } else {
+                    plain.push('`');
+                    rest = &rest[1..];
+                }
+            }
+            '*' => {
+                if rest.starts_with("**") {
+                    if let Some(end) = rest[2..].find("**") {
+                        let bold = &rest[2..2 + end];
+                        if !bold.is_empty() {
+                            let bold_owned = bold.to_string();
+                            if !plain.is_empty() {
+                                spans.push(MessageSpanView::new(std::mem::take(&mut plain), None));
+                            }
+                            spans.push(MessageSpanView::new(
+                                bold_owned,
+                                Some(TextStyle::default().bold()),
+                            ));
+                            rest = &rest[2 + end + 2..];
+                        } else {
+                            plain.push_str("**");
+                            rest = &rest[2..];
+                        }
+                    } else {
+                        plain.push_str("**");
+                        rest = &rest[2..];
+                    }
+                } else if let Some(end) = rest[1..].find('*') {
+                    let italic = &rest[1..1 + end];
+                    if !italic.is_empty() && !italic.starts_with('*') {
+                        let italic_owned = italic.to_string();
+                        if !plain.is_empty() {
+                            spans.push(MessageSpanView::new(std::mem::take(&mut plain), None));
+                        }
+                        spans.push(MessageSpanView::new(
+                            italic_owned,
+                            Some(TextStyle::default().italic()),
+                        ));
+                        rest = &rest[1 + end + 1..];
+                    } else {
+                        plain.push('*');
+                        rest = &rest[1..];
+                    }
+                } else {
+                    plain.push('*');
+                    rest = &rest[1..];
+                }
+            }
+            '~' => {
+                if rest.starts_with("~~") {
+                    if let Some(end) = rest[2..].find("~~") {
+                        let strike = &rest[2..2 + end];
+                        if !strike.is_empty() {
+                            let strike_owned = strike.to_string();
+                            if !plain.is_empty() {
+                                spans.push(MessageSpanView::new(std::mem::take(&mut plain), None));
+                            }
+                            spans.push(MessageSpanView::new(
+                                strike_owned,
+                                Some(TextStyle::default().dim()),
+                            ));
+                            rest = &rest[2 + end + 2..];
+                        } else {
+                            plain.push_str("~~");
+                            rest = &rest[2..];
+                        }
+                    } else {
+                        plain.push_str("~~");
+                        rest = &rest[2..];
+                    }
+                } else {
+                    plain.push('~');
+                    rest = &rest[1..];
+                }
+            }
+            _ => {
+                let c_len = ch.len_utf8();
+                plain.push_str(&rest[..c_len]);
+                rest = &rest[c_len..];
+            }
+        }
+    }
+
+    if !plain.is_empty() {
+        spans.push(MessageSpanView::new(plain, None));
+    }
+
+    spans
+}
+
+fn spans_have_markup(spans: &[MessageSpanView]) -> bool {
+    spans.iter().any(|s| s.style.is_some())
 }
 
 fn push_wrapped_block(
@@ -2177,10 +2386,20 @@ fn push_wrapped_block(
             } else {
                 continuation_prefix
             };
-            output.push(MessageLineView::new(
-                format!("{segment_prefix}{segment}"),
-                role,
-            ));
+            let spans = parse_inline_spans(&segment);
+            if spans_have_markup(&spans) {
+                let mut all_spans = Vec::with_capacity(spans.len() + 1);
+                if !segment_prefix.is_empty() {
+                    all_spans.push(MessageSpanView::new(segment_prefix.to_string(), None));
+                }
+                all_spans.extend(spans);
+                output.push(MessageLineView::with_spans(role, all_spans));
+            } else {
+                output.push(MessageLineView::new(
+                    format!("{segment_prefix}{segment}"),
+                    role,
+                ));
+            }
         }
         used_prefix = true;
     }
@@ -2197,11 +2416,14 @@ fn push_unprefixed_block(
         if wrapped.is_empty() {
             output.push(MessageLineView::new(String::new(), role));
         } else {
-            output.extend(
-                wrapped
-                    .into_iter()
-                    .map(|segment| MessageLineView::new(segment, role)),
-            );
+            for segment in wrapped {
+                let spans = parse_inline_spans(&segment);
+                if spans_have_markup(&spans) {
+                    output.push(MessageLineView::with_spans(role, spans));
+                } else {
+                    output.push(MessageLineView::new(segment, role));
+                }
+            }
         }
     }
 }
@@ -2291,11 +2513,12 @@ fn wrap_summary_lines(
 
 fn role_prefix(role: MessageRole) -> &'static str {
     match role {
-        // Black-circle bullet mirrors Claude Code's fullscreen transcript style: the
-        // first line of every user/assistant paragraph is visually anchored by "● ".
+        // ▶ for user input (right-pointing triangle = "going in"),
+        // ◆ for assistant output (diamond = AI response).
         // Continuation blocks (second paragraph onward) are rendered flush-left via
         // the empty-prefix branch in `display_lines`.
-        MessageRole::User | MessageRole::Assistant => "● ",
+        MessageRole::User => "▶ ",
+        MessageRole::Assistant => "◆ ",
         // Tool headlines already carry their own "● Tool(args)" bullet, so no extra
         // prefix is needed here.
         MessageRole::Tool => "",
@@ -2317,6 +2540,8 @@ fn markdown_block_has_content(block: &MarkdownBlockView) -> bool {
                     .flatten()
                     .any(|cell| !cell.trim().is_empty())
         }
+        MarkdownBlockView::Heading { text, .. } => !text.trim().is_empty(),
+        MarkdownBlockView::Blockquote(text) => !text.trim().is_empty(),
     }
 }
 
@@ -2456,17 +2681,22 @@ mod tests {
             "# Heading\n- first item\n```rust\nfn main() {}\nprintln!(\"hi\");\n```",
         );
 
+        // # Heading → Heading block (bold cyan span, no role prefix)
+        // - first item → Paragraph block ("◆ • first item")
+        // code block → 2 syntax-highlighted lines
         let lines = view.display_lines(80);
-        assert_eq!(lines.len(), 3);
+        assert_eq!(lines.len(), 4);
+        assert_eq!(lines[0].text, "Heading");
+        assert!(!lines[0].spans.is_empty(), "heading must have styled span");
         assert_eq!(
-            lines[0],
-            MessageLineView::new("● Heading • first item", MessageRole::Assistant,)
+            lines[1],
+            MessageLineView::new("◆ • first item", MessageRole::Assistant)
         );
-        assert_eq!(lines[1].text, "fn main() {}");
-        assert_eq!(lines[2].text, "println!(\"hi\");");
-        assert!(!lines[1].spans.is_empty());
+        assert_eq!(lines[2].text, "fn main() {}");
+        assert_eq!(lines[3].text, "println!(\"hi\");");
+        assert!(!lines[2].spans.is_empty());
         assert!(
-            lines[1].spans.iter().any(|span| span.style.is_some()),
+            lines[2].spans.iter().any(|span| span.style.is_some()),
             "expected syntect to style Rust code: {lines:?}"
         );
     }
@@ -2522,15 +2752,13 @@ mod tests {
 
     #[test]
     fn markdown_summary_user_text_renders_with_bullet_prefix() {
-        // Claude Code-style visual parity: the first line of every user
-        // paragraph is prefixed with "● " so it is visually anchored in the
-        // transcript without a legacy "user> " role string.
+        // User messages use "▶ " prefix; assistant uses "◆ ".
         let view = MarkdownSummaryView::new(MessageRole::User, "review the diff and continue");
 
         assert_eq!(
             view.display_lines(80),
             vec![MessageLineView::new(
-                "● review the diff and continue",
+                "▶ review the diff and continue",
                 MessageRole::User,
             )]
         );
@@ -2553,7 +2781,7 @@ mod tests {
 
         assert_eq!(
             lines[0],
-            MessageLineView::new("● all set", MessageRole::Assistant)
+            MessageLineView::new("◆ all set", MessageRole::Assistant)
         );
         assert_eq!(
             lines[1],
@@ -2954,10 +3182,10 @@ mod tests {
             lines.iter().any(|l| l.text.contains("hi there")),
             "UserText content must appear in transcript; lines: {lines:?}"
         );
-        // Claude Code visual parity: first user line must start with the "●" bullet.
+        // Visual parity: first user line must start with "▶" prefix.
         assert!(
-            lines.iter().any(|l| l.text.starts_with('●')),
-            "UserText first line must start with ● bullet; lines: {lines:?}"
+            lines.iter().any(|l| l.text.starts_with('▶')),
+            "UserText first line must start with ▶ prefix; lines: {lines:?}"
         );
     }
 
@@ -2979,10 +3207,10 @@ mod tests {
             lines.iter().any(|l| l.text.contains("Hello!")),
             "AssistantText content must appear in transcript; lines: {lines:?}"
         );
-        // Claude Code visual parity: first assistant line must start with the "●" bullet.
+        // Visual parity: first assistant line must start with "◆" prefix.
         assert!(
-            lines.iter().any(|l| l.text.starts_with('●')),
-            "AssistantText first line must start with ● bullet; lines: {lines:?}"
+            lines.iter().any(|l| l.text.starts_with('◆')),
+            "AssistantText first line must start with ◆ prefix; lines: {lines:?}"
         );
     }
 
@@ -3184,19 +3412,18 @@ mod tests {
             texts.iter().any(|t| t.starts_with('●')),
             "Tool call must use ● bullet; lines: {texts:?}"
         );
-        // Claude Code parity: user and assistant first-paragraph lines must also
-        // start with the "●" bullet so every message origin is visually anchored.
+        // User messages open with "▶ ", assistant messages with "◆ ".
         assert!(
             texts
                 .iter()
-                .any(|t| t.starts_with('●') && t.contains("list my files")),
-            "User message must open with ● bullet; lines: {texts:?}"
+                .any(|t| t.starts_with('▶') && t.contains("list my files")),
+            "User message must open with ▶ prefix; lines: {texts:?}"
         );
         assert!(
             texts
                 .iter()
-                .any(|t| t.starts_with('●') && t.contains("Done")),
-            "Assistant message must open with ● bullet; lines: {texts:?}"
+                .any(|t| t.starts_with('◆') && t.contains("Done")),
+            "Assistant message must open with ◆ prefix; lines: {texts:?}"
         );
     }
 
@@ -3208,7 +3435,7 @@ mod tests {
 
         let lines = view.display_lines(80);
         assert_eq!(lines.len(), 1);
-        assert_eq!(lines[0].text, "● implement the feature");
+        assert_eq!(lines[0].text, "▶ implement the feature");
         assert_eq!(lines[0].role, MessageRole::User);
     }
 
@@ -3218,37 +3445,37 @@ mod tests {
 
         let lines = view.display_lines(80);
         assert_eq!(lines.len(), 1);
-        assert_eq!(lines[0].text, "● I'll take care of that.");
+        assert_eq!(lines[0].text, "◆ I'll take care of that.");
         assert_eq!(lines[0].role, MessageRole::Assistant);
     }
 
     #[test]
     fn user_multiblock_only_first_block_has_bullet() {
         // A user message with two paragraphs (separated by a blank line in the
-        // source) must show "● " only on the first block's first line; the
+        // source) must show "▶ " only on the first block's first line; the
         // second paragraph renders flush-left.
         let view =
             MarkdownSummaryView::new(MessageRole::User, "first paragraph\n\nsecond paragraph");
 
         let lines = view.display_lines(80);
         assert!(
-            lines.iter().any(|l| l.text.starts_with('●')),
-            "At least one line must have the ● bullet; lines: {lines:?}"
+            lines.iter().any(|l| l.text.starts_with('▶')),
+            "At least one line must have the ▶ prefix; lines: {lines:?}"
         );
-        // Second block must NOT start with "●".
+        // Second block must NOT start with "▶".
         assert!(
             lines
                 .iter()
                 .skip(1)
-                .any(|l| l.text.contains("second paragraph") && !l.text.starts_with('●')),
-            "Second paragraph must be flush-left (no bullet); lines: {lines:?}"
+                .any(|l| l.text.contains("second paragraph") && !l.text.starts_with('▶')),
+            "Second paragraph must be flush-left (no prefix); lines: {lines:?}"
         );
     }
 
     #[test]
     fn assistant_bullet_continuation_is_indented_two_spaces_when_wrapped() {
         // A very long assistant paragraph that must wrap at a narrow width
-        // should have the first line starting with "● " and subsequent wrapped
+        // should have the first line starting with "◆ " and subsequent wrapped
         // lines indented by two spaces to align with the bullet body.
         let view = MarkdownSummaryView::new(
             MessageRole::Assistant,
@@ -3258,8 +3485,8 @@ mod tests {
         // Use a narrow width so the text wraps.
         let lines = view.display_lines(20);
         assert!(
-            lines[0].text.starts_with("● "),
-            "First wrapped line must begin with ● ; lines: {lines:?}"
+            lines[0].text.starts_with("◆ "),
+            "First wrapped line must begin with ◆ ; lines: {lines:?}"
         );
         if lines.len() > 1 {
             assert!(

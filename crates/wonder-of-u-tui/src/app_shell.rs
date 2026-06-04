@@ -79,6 +79,7 @@ impl ExitFlowView {
                 DialogActionView::new("Exit", true),
                 DialogActionView::new("Stay", false),
             ],
+            selected_action: 0,
         }
     }
 }

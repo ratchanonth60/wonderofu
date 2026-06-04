@@ -25,12 +25,12 @@ pub struct AskUserInput {
 impl AskUserInput {
     fn validate(&self) -> Result<()> {
         require_non_empty_text("ask_user", "question", &self.question)?;
-        if let Some(options) = &self.options {
-            if options.iter().any(|option| option.trim().is_empty()) {
-                return Err(WonderError::validation(
-                    "ask_user options must be non-empty when provided",
-                ));
-            }
+        if let Some(options) = &self.options
+            && options.iter().any(|opt| opt.trim().is_empty())
+        {
+            return Err(WonderError::validation(
+                "ask_user options must be non-empty when provided",
+            ));
         }
         Ok(())
     }
@@ -229,7 +229,7 @@ impl Tool for AskUserTool {
 
     async fn execute(
         &self,
-        _context: ToolContext,
+        context: ToolContext,
         use_id: ToolUseId,
         input: Value,
     ) -> Result<ToolResult> {
@@ -237,6 +237,22 @@ impl Tool for AskUserTool {
         input.validate()?;
         let input = input.into_basic_input();
 
+        // TUI mode: use the interaction channel so we don't conflict with
+        // crossterm's raw-mode event reader.
+        if let Some(rx) = context.interaction_rx {
+            let answer = rx
+                .lock()
+                .map_err(|_| WonderError::internal("ask_user: interaction mutex poisoned"))?
+                .recv()
+                .map_err(|_| {
+                    WonderError::validation(
+                        "ask_user: interaction channel closed before answer arrived",
+                    )
+                })?;
+            return Ok(ToolResult::success(use_id, answer));
+        }
+
+        // Non-TUI (CLI / headless) mode: use stdio directly.
         let stdin = io::stdin();
         let stdout = io::stdout();
         let mut reader = stdin.lock();

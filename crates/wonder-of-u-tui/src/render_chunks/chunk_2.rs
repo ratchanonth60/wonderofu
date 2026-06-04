@@ -66,30 +66,59 @@ fn message_panel_lines(view: &ShellView, theme: &Theme) -> Vec<StyledLine> {
     }
 }
 
-/// Renders the Claude-style progress row directly above the prompt box.
+/// Renders the loading area: live shell output lines (if any) + spinner row.
 ///
-/// Format: `{spinner} {verb}… · {elapsed} · {tokens} tokens · esc to interrupt`
-///
-/// # Layout
-///
-/// The row is a single terminal line carved from the bottom of the message area
-/// by [`render_shell`] whenever `view.loading` is `true`.  It degrades gracefully
-/// on narrow terminals — the text is simply clipped at `area.width`.
-fn draw_loading_progress_row(frame: &mut FrameBuffer, area: Rect, view: &ShellView, theme: &Theme) {
+/// `area` spans all reserved rows carved from the bottom of the message area.
+/// The last row is always the spinner; rows above it show the most recent lines
+/// of shell stdout streaming from the running tool.
+pub(super) fn draw_loading_area(
+    frame: &mut FrameBuffer,
+    area: Rect,
+    view: &ShellView,
+    theme: &Theme,
+) {
     if area.is_empty() {
         return;
     }
 
-    let text = build_loading_progress_text(view);
-    frame.fill_rect(area, ' ', theme.background);
-    // Dim progress style — matches the transcript-level progress role colour.
-    let style = {
+    let dim_style = {
+        let mut s = theme.footer;
+        s.dim = true;
+        s
+    };
+    let spinner_style = {
         let mut s = theme.status;
         s.dim = true;
         s
     };
-    frame.write_str(area.x, area.y, &text, style, area.width);
+
+    // Show the last (height-1) tool progress lines above the spinner row.
+    let total_rows = area.height as usize;
+    if total_rows > 1 && !view.tool_progress.is_empty() {
+        let line_rows = total_rows.saturating_sub(1);
+        let lines = &view.tool_progress;
+        let start = lines.len().saturating_sub(line_rows);
+        for (i, line) in lines[start..].iter().enumerate() {
+            let y = area.y + i as u16;
+            frame.fill_rect(
+                Rect::new(area.x, y, area.width, 1),
+                ' ',
+                theme.background,
+            );
+            // Truncate visually long lines and prefix with a guide character.
+            let display = format!("  ⎿  {line}");
+            frame.write_str(area.x, y, &display, dim_style, area.width);
+        }
+    }
+
+    // Spinner row is always the last row.
+    let spinner_y = area.y + area.height.saturating_sub(1);
+    let spinner_area = Rect::new(area.x, spinner_y, area.width, 1);
+    frame.fill_rect(spinner_area, ' ', theme.background);
+    let text = build_loading_progress_text(view);
+    frame.write_str(area.x, spinner_y, &text, spinner_style, area.width);
 }
+
 
 /// Builds the plain-text content of the loading progress row.
 ///

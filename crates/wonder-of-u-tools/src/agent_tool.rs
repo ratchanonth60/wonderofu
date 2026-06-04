@@ -910,8 +910,8 @@ mod tests {
     /// Verify that execute() returns a LaunchAgentTask effect and does NOT
     /// write any pending file.  This is the core contract of the new design:
     /// the tool is pure – it delegates side-effects to the runtime.
-    #[test]
-    fn agent_execute_returns_launch_effect_without_writing_pending_file() {
+    #[tokio::test]
+    async fn agent_execute_returns_launch_effect_without_writing_pending_file() {
         use wonder_of_u_core::{FeatureSet, PermissionMode, SessionId, ToolEffect};
 
         let dir = unique_test_dir("tools-agent-execute-effect");
@@ -927,13 +927,17 @@ mod tests {
             permission_rules: vec![],
             features: FeatureSet::first_release(),
             bash_session_store: None,
+            progress_tx: None,
+            interaction_rx: None,
             fork_context: None,
         };
         let use_id = wonder_of_u_core::ToolUseId::new();
         let input = json!({ "prompt": "review this code" });
         let tool = AgentTool;
 
-        let result = futures::executor::block_on(tool.execute(context, use_id, input))
+        let result = tool
+            .execute(context, use_id, input)
+            .await
             .expect("execute should succeed");
 
         // Must succeed and carry exactly one LaunchAgentTask effect.
@@ -1026,8 +1030,8 @@ mod tests {
         assert_eq!(pending[0].id, request_id);
     }
 
-    #[test]
-    fn agent_execute_rejects_unknown_subagent_type() {
+    #[tokio::test]
+    async fn agent_execute_rejects_unknown_subagent_type() {
         use wonder_of_u_core::{FeatureSet, PermissionMode, SessionId};
 
         let dir = unique_test_dir("tools-agent-execute-unknown-type");
@@ -1042,18 +1046,22 @@ mod tests {
             permission_rules: vec![],
             features: FeatureSet::first_release(),
             bash_session_store: None,
+            progress_tx: None,
+            interaction_rx: None,
             fork_context: None,
         };
         let tool = AgentTool;
-        let error = futures::executor::block_on(tool.execute(
-            context,
-            wonder_of_u_core::ToolUseId::new(),
-            json!({
-                "prompt": "review",
-                "subagent_type": "does-not-exist",
-            }),
-        ))
-        .expect_err("unknown subagent_type should be rejected");
+        let error = tool
+            .execute(
+                context,
+                wonder_of_u_core::ToolUseId::new(),
+                json!({
+                    "prompt": "review",
+                    "subagent_type": "does-not-exist",
+                }),
+            )
+            .await
+            .expect_err("unknown subagent_type should be rejected");
 
         let message = error.to_string();
         assert!(message.contains("does-not-exist"), "got: {message}");
@@ -1131,8 +1139,8 @@ mod tests {
     }
 
     /// execute() rejects mode=fork when ToolContext has no fork_context.
-    #[test]
-    fn agent_execute_rejects_fork_without_context() {
+    #[tokio::test]
+    async fn agent_execute_rejects_fork_without_context() {
         use wonder_of_u_core::{FeatureSet, PermissionMode, SessionId};
 
         let dir = unique_test_dir("tools-agent-fork-no-ctx");
@@ -1147,15 +1155,19 @@ mod tests {
             permission_rules: vec![],
             features: FeatureSet::first_release(),
             bash_session_store: None,
+            progress_tx: None,
+            interaction_rx: None,
             fork_context: None, // no fork context provided
         };
         let tool = AgentTool;
-        let error = futures::executor::block_on(tool.execute(
-            context,
-            wonder_of_u_core::ToolUseId::new(),
-            json!({ "prompt": "fork task", "mode": "fork" }),
-        ))
-        .expect_err("fork without context should fail");
+        let error = tool
+            .execute(
+                context,
+                wonder_of_u_core::ToolUseId::new(),
+                json!({ "prompt": "fork task", "mode": "fork" }),
+            )
+            .await
+            .expect_err("fork without context should fail");
 
         let msg = error.to_string();
         assert!(
@@ -1166,8 +1178,8 @@ mod tests {
 
     /// execute() with mode=fork and a populated fork_context embeds it in the
     /// LaunchAgentTask effect's request.
-    #[test]
-    fn agent_execute_fork_mode_embeds_fork_context() {
+    #[tokio::test]
+    async fn agent_execute_fork_mode_embeds_fork_context() {
         use wonder_of_u_core::{
             FeatureSet, ForkContextSnapshot, PermissionMode, SessionId, ToolEffect,
         };
@@ -1191,15 +1203,19 @@ mod tests {
             permission_rules: vec![],
             features: FeatureSet::first_release(),
             bash_session_store: None,
+            progress_tx: None,
+            interaction_rx: None,
             fork_context: Some(fork_ctx.clone()),
         };
         let tool = AgentTool;
-        let result = futures::executor::block_on(tool.execute(
-            context,
-            wonder_of_u_core::ToolUseId::new(),
-            json!({ "prompt": "continue the refactor as a fork", "mode": "fork" }),
-        ))
-        .expect("fork with context should succeed");
+        let result = tool
+            .execute(
+                context,
+                wonder_of_u_core::ToolUseId::new(),
+                json!({ "prompt": "continue the refactor as a fork", "mode": "fork" }),
+            )
+            .await
+            .expect("fork with context should succeed");
 
         assert!(
             result.success,
@@ -1225,8 +1241,8 @@ mod tests {
     }
 
     /// execute() with mode=fork rejects recursive forks via env var.
-    #[test]
-    fn agent_execute_rejects_recursive_fork_via_env_depth() {
+    #[tokio::test]
+    async fn agent_execute_rejects_recursive_fork_via_env_depth() {
         use wonder_of_u_core::{FeatureSet, ForkContextSnapshot, PermissionMode, SessionId};
         use wonder_of_u_test_support::EnvVarGuard;
 
@@ -1249,6 +1265,8 @@ mod tests {
             permission_rules: vec![],
             features: FeatureSet::first_release(),
             bash_session_store: None,
+            progress_tx: None,
+            interaction_rx: None,
             fork_context: Some(fork_ctx),
         };
 
@@ -1256,12 +1274,14 @@ mod tests {
         let _guard = EnvVarGuard::set("WONDER_OF_U_FORK_DEPTH", "1");
 
         let tool = AgentTool;
-        let error = futures::executor::block_on(tool.execute(
-            context,
-            wonder_of_u_core::ToolUseId::new(),
-            json!({ "prompt": "nested fork attempt", "mode": "fork" }),
-        ))
-        .expect_err("recursive fork should be rejected");
+        let error = tool
+            .execute(
+                context,
+                wonder_of_u_core::ToolUseId::new(),
+                json!({ "prompt": "nested fork attempt", "mode": "fork" }),
+            )
+            .await
+            .expect_err("recursive fork should be rejected");
 
         let msg = error.to_string();
         assert!(
@@ -1275,8 +1295,8 @@ mod tests {
     /// `execute()` includes `reserved_task_id` in both the metadata JSON and in
     /// the `AgentLaunchSpec` carried by the `LaunchAgentTask` effect, and the
     /// two values agree.
-    #[test]
-    fn agent_execute_includes_reserved_task_id_in_metadata_and_spec() {
+    #[tokio::test]
+    async fn agent_execute_includes_reserved_task_id_in_metadata_and_spec() {
         use wonder_of_u_core::{FeatureSet, PermissionMode, SessionId, ToolEffect};
 
         let dir = unique_test_dir("tools-agent-reserved-task-id");
@@ -1291,15 +1311,19 @@ mod tests {
             permission_rules: vec![],
             features: FeatureSet::first_release(),
             bash_session_store: None,
+            progress_tx: None,
+            interaction_rx: None,
             fork_context: None,
         };
 
-        let result = futures::executor::block_on(AgentTool.execute(
-            context,
-            wonder_of_u_core::ToolUseId::new(),
-            json!({ "prompt": "test task" }),
-        ))
-        .expect("execute should succeed");
+        let result = AgentTool
+            .execute(
+                context,
+                wonder_of_u_core::ToolUseId::new(),
+                json!({ "prompt": "test task" }),
+            )
+            .await
+            .expect("execute should succeed");
 
         // There must be exactly one LaunchAgentTask effect.
         assert_eq!(result.effects.len(), 1);
@@ -1331,8 +1355,8 @@ mod tests {
     ///
     /// This is the core of the reference-bypass-guard: a child agent should
     /// never silently inherit unrestricted permission posture from its parent.
-    #[test]
-    fn agent_execute_rejects_bypass_mode_without_policy_allow() {
+    #[tokio::test]
+    async fn agent_execute_rejects_bypass_mode_without_policy_allow() {
         use wonder_of_u_core::{FeatureSet, PermissionMode, SessionId};
 
         let dir = unique_test_dir("tools-agent-bypass-no-policy");
@@ -1347,15 +1371,19 @@ mod tests {
             permission_rules: vec![],
             features: FeatureSet::first_release(),
             bash_session_store: None,
+            progress_tx: None,
+            interaction_rx: None,
             fork_context: None,
         };
         let tool = AgentTool;
-        let error = futures::executor::block_on(tool.execute(
-            context,
-            wonder_of_u_core::ToolUseId::new(),
-            json!({ "prompt": "do something in bypass" }),
-        ))
-        .expect_err("bypass mode without policy allow should be rejected");
+        let error = tool
+            .execute(
+                context,
+                wonder_of_u_core::ToolUseId::new(),
+                json!({ "prompt": "do something in bypass" }),
+            )
+            .await
+            .expect_err("bypass mode without policy allow should be rejected");
 
         let msg = error.to_string();
         assert!(
@@ -1373,8 +1401,8 @@ mod tests {
     ///
     /// This is the designated safe-policy exception: an operator who has
     /// deliberately set a Policy allow rule acknowledges bypass propagation.
-    #[test]
-    fn agent_execute_allows_bypass_mode_with_policy_allow_for_agent() {
+    #[tokio::test]
+    async fn agent_execute_allows_bypass_mode_with_policy_allow_for_agent() {
         use wonder_of_u_core::{
             FeatureSet, PermissionMode, PermissionRule, PermissionRuleBehavior,
             PermissionRuleSource, SessionId, ToolEffect,
@@ -1397,15 +1425,19 @@ mod tests {
             permission_rules: vec![policy_rule],
             features: FeatureSet::first_release(),
             bash_session_store: None,
+            progress_tx: None,
+            interaction_rx: None,
             fork_context: None,
         };
 
-        let result = futures::executor::block_on(AgentTool.execute(
-            context,
-            wonder_of_u_core::ToolUseId::new(),
-            json!({ "prompt": "do something in bypass with explicit policy" }),
-        ))
-        .expect("bypass with explicit Policy-level allow rule should succeed");
+        let result = AgentTool
+            .execute(
+                context,
+                wonder_of_u_core::ToolUseId::new(),
+                json!({ "prompt": "do something in bypass with explicit policy" }),
+            )
+            .await
+            .expect("bypass with explicit Policy-level allow rule should succeed");
 
         assert!(result.success, "result should be success");
         assert_eq!(result.effects.len(), 1);
@@ -1417,8 +1449,8 @@ mod tests {
 
     /// execute() also accepts a wildcard `"*"` Policy allow rule as the safe
     /// exception since it explicitly covers all tools.
-    #[test]
-    fn agent_execute_allows_bypass_mode_with_wildcard_policy_allow() {
+    #[tokio::test]
+    async fn agent_execute_allows_bypass_mode_with_wildcard_policy_allow() {
         use wonder_of_u_core::{
             FeatureSet, PermissionMode, PermissionRule, PermissionRuleBehavior,
             PermissionRuleSource, SessionId, ToolEffect,
@@ -1441,15 +1473,19 @@ mod tests {
             permission_rules: vec![policy_rule],
             features: FeatureSet::first_release(),
             bash_session_store: None,
+            progress_tx: None,
+            interaction_rx: None,
             fork_context: None,
         };
         let tool = AgentTool;
-        let result = futures::executor::block_on(tool.execute(
-            context,
-            wonder_of_u_core::ToolUseId::new(),
-            json!({ "prompt": "task with wildcard policy" }),
-        ))
-        .expect("wildcard Policy allow should satisfy bypass guard");
+        let result = tool
+            .execute(
+                context,
+                wonder_of_u_core::ToolUseId::new(),
+                json!({ "prompt": "task with wildcard policy" }),
+            )
+            .await
+            .expect("wildcard Policy allow should satisfy bypass guard");
 
         assert!(result.success);
         assert!(matches!(result.effects[0], ToolEffect::LaunchAgentTask(_)));
@@ -1457,8 +1493,8 @@ mod tests {
 
     /// execute() with a non-Policy allow rule (e.g. CliArg) does NOT satisfy
     /// the bypass guard — only Policy-sourced rules count.
-    #[test]
-    fn agent_execute_rejects_bypass_mode_with_non_policy_allow() {
+    #[tokio::test]
+    async fn agent_execute_rejects_bypass_mode_with_non_policy_allow() {
         use wonder_of_u_core::{
             FeatureSet, PermissionMode, PermissionRule, PermissionRuleBehavior,
             PermissionRuleSource, SessionId,
@@ -1482,15 +1518,19 @@ mod tests {
             permission_rules: vec![cli_rule],
             features: FeatureSet::first_release(),
             bash_session_store: None,
+            progress_tx: None,
+            interaction_rx: None,
             fork_context: None,
         };
         let tool = AgentTool;
-        let error = futures::executor::block_on(tool.execute(
-            context,
-            wonder_of_u_core::ToolUseId::new(),
-            json!({ "prompt": "bypass via cli-arg allow" }),
-        ))
-        .expect_err("CliArg allow must not satisfy bypass guard; only Policy does");
+        let error = tool
+            .execute(
+                context,
+                wonder_of_u_core::ToolUseId::new(),
+                json!({ "prompt": "bypass via cli-arg allow" }),
+            )
+            .await
+            .expect_err("CliArg allow must not satisfy bypass guard; only Policy does");
 
         let msg = error.to_string();
         assert!(
@@ -1501,8 +1541,8 @@ mod tests {
 
     /// Non-bypass permission modes (Default, AcceptEdits, DontAsk) are never
     /// subject to the guard and always proceed normally.
-    #[test]
-    fn agent_execute_non_bypass_modes_are_never_blocked() {
+    #[tokio::test]
+    async fn agent_execute_non_bypass_modes_are_never_blocked() {
         use wonder_of_u_core::{FeatureSet, PermissionMode, SessionId, ToolEffect};
 
         for mode in [
@@ -1522,15 +1562,19 @@ mod tests {
                 permission_rules: vec![],
                 features: FeatureSet::first_release(),
                 bash_session_store: None,
+                progress_tx: None,
+                interaction_rx: None,
                 fork_context: None,
             };
             let tool = AgentTool;
-            let result = futures::executor::block_on(tool.execute(
-                context,
-                wonder_of_u_core::ToolUseId::new(),
-                json!({ "prompt": "task in normal mode" }),
-            ))
-            .unwrap_or_else(|e| panic!("mode {mode:?} should not be blocked; got: {e}"));
+            let result = tool
+                .execute(
+                    context,
+                    wonder_of_u_core::ToolUseId::new(),
+                    json!({ "prompt": "task in normal mode" }),
+                )
+                .await
+                .unwrap_or_else(|e| panic!("mode {mode:?} should not be blocked; got: {e}"));
 
             assert!(
                 result.success,
