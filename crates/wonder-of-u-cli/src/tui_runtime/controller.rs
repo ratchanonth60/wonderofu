@@ -269,7 +269,7 @@ pub(super) enum RestoredPromptUiState {
 pub(super) struct ActiveStreaming {
     assistant_index: usize,
     provider_id: String,
-    event_rx: tokio_mpsc::Receiver<StreamingCompletionEvent>,
+    event_rx: std::sync::mpsc::Receiver<StreamingCompletionEvent>,
     user_message: MessageEnvelope,
     resolved: wonder_of_u_agent::ResolvedProviderExecution,
     input: String,
@@ -282,7 +282,7 @@ enum ToolLoopPhase {
     },
     AwaitingResponse {
         iteration: usize,
-        response_rx: tokio_mpsc::Receiver<Result<wonder_of_u_agent::ToolUseResponse>>,
+        response_rx: std::sync::mpsc::Receiver<Result<wonder_of_u_agent::ToolUseResponse>>,
     },
     ExecutingTools {
         iteration: usize,
@@ -450,14 +450,7 @@ impl<'a> TuiController<'a> {
                 Ok(())
             }
             UiEvent::Tick => {
-                if matches!(
-                    self.turn_state,
-                    TurnState::ModelRequestActive
-                        | TurnState::CommandQueued
-                        | TurnState::ToolPermissionPending
-                        | TurnState::StreamingResponse
-                        | TurnState::ToolExecuting
-                ) {
+                if self.has_active_turn() || is_loading_turn_state(self.turn_state) {
                     self.loading_frame = self.loading_frame.wrapping_add(1);
                     self.needs_render = true;
                 } else {
@@ -1722,7 +1715,7 @@ impl<'a> TuiController<'a> {
 
         if streaming {
             let provider_id = resolved.provider_id().to_string();
-            let (tx, rx) = tokio_mpsc::channel::<StreamingCompletionEvent>(256);
+            let (tx, rx) = std::sync::mpsc::channel::<StreamingCompletionEvent>();
             let resolved_clone = resolved.clone();
             let request_clone = request.clone();
             tokio::task::spawn_blocking(move || {
@@ -1731,10 +1724,10 @@ impl<'a> TuiController<'a> {
                 let result =
                     runtime.complete_streaming(&resolved_clone, &request_clone, move |delta| {
                         let _ = delta_tx
-                            .blocking_send(StreamingCompletionEvent::Delta(delta.to_string()));
+                            .send(StreamingCompletionEvent::Delta(delta.to_string()));
                         Ok(())
                     });
-                let _ = tx.blocking_send(StreamingCompletionEvent::Done(result));
+                let _ = tx.send(StreamingCompletionEvent::Done(result));
             });
             self.active_turn = ActiveTurn::Streaming(ActiveStreaming {
                 assistant_index,
@@ -1840,11 +1833,24 @@ impl<'a> TuiController<'a> {
         }
 
         let mut turn = std::mem::replace(&mut self.active_turn, ActiveTurn::None);
-        match &mut turn {
-            ActiveTurn::None => Ok(false),
+        let result = match &mut turn {
+            ActiveTurn::None => return Ok(false),
             ActiveTurn::Streaming(stream) => self.poll_streaming_step(stream).await,
             ActiveTurn::ToolLoop(tl) => self.poll_tool_loop_step(tl).await,
+        };
+        // Inner pollers signal completion by setting turn_state to Completed or
+        // Interrupted. Streaming's Empty branch sets self.active_turn directly.
+        // For all other cases where active_turn is still None (pending response,
+        // awaiting approval), restore `turn` so subsequent ticks keep polling.
+        if matches!(self.active_turn, ActiveTurn::None)
+            && !matches!(
+                self.turn_state,
+                TurnState::Completed | TurnState::Interrupted
+            )
+        {
+            self.active_turn = turn;
         }
+        result
     }
 
     async fn poll_streaming_step(&mut self, stream: &mut ActiveStreaming) -> Result<bool> {
@@ -1938,13 +1944,13 @@ impl<'a> TuiController<'a> {
                     self.loading_frame = self.loading_frame.wrapping_add(1);
                     self.needs_render = true;
                 }
-                Err(tokio_mpsc::error::TryRecvError::Empty) => {
+                Err(std::sync::mpsc::TryRecvError::Empty) => {
                     self.active_turn = ActiveTurn::Streaming(ActiveStreaming {
                         assistant_index: stream.assistant_index,
                         provider_id: stream.provider_id.clone(),
                         event_rx: std::mem::replace(
                             &mut stream.event_rx,
-                            tokio_mpsc::channel::<StreamingCompletionEvent>(1).1,
+                            std::sync::mpsc::channel::<StreamingCompletionEvent>().1,
                         ),
                         user_message: stream.user_message.clone(),
                         resolved: stream.resolved.clone(),
@@ -1952,7 +1958,7 @@ impl<'a> TuiController<'a> {
                     });
                     return Ok(true);
                 }
-                Err(tokio_mpsc::error::TryRecvError::Disconnected) => {
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
                     return Err(WonderError::internal(
                         "streaming provider worker exited before returning a result",
                     ));
@@ -1987,7 +1993,7 @@ impl<'a> TuiController<'a> {
                     self.needs_render = true;
 
                     let (tx, rx) =
-                        tokio_mpsc::channel::<Result<wonder_of_u_agent::ToolUseResponse>>(1);
+                        std::sync::mpsc::channel::<Result<wonder_of_u_agent::ToolUseResponse>>();
                     let resolved = tl.resolved.clone();
                     let prompt = tl.request_prompt.clone();
                     let system = tl.system_prompt.clone();
@@ -2004,9 +2010,18 @@ impl<'a> TuiController<'a> {
                             rounds,
                             effort_level: effort,
                         };
-                        let result =
-                            ProviderRuntime::new().complete_with_tool_use(&resolved, &request);
-                        let _ = tx.blocking_send(result);
+                        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                            ProviderRuntime::new().complete_with_tool_use(&resolved, &request)
+                        }))
+                        .unwrap_or_else(|payload| {
+                            let msg = payload
+                                .downcast_ref::<&str>()
+                                .map(|s| s.to_string())
+                                .or_else(|| payload.downcast_ref::<String>().cloned())
+                                .unwrap_or_else(|| "unknown panic".to_string());
+                            Err(WonderError::internal(format!("provider worker panicked: {msg}")))
+                        });
+                        let _ = tx.send(result);
                     });
 
                     tl.phase = ToolLoopPhase::AwaitingResponse {
@@ -2024,7 +2039,7 @@ impl<'a> TuiController<'a> {
                         Ok(Ok(response)) => {
                             let phase = ToolLoopPhase::AwaitingResponse {
                                 iteration: it,
-                                response_rx: tokio_mpsc::channel(1).1,
+                                response_rx: std::sync::mpsc::channel().1,
                             };
                             let _old = std::mem::replace(&mut tl.phase, phase);
                             match response {
@@ -2116,11 +2131,15 @@ impl<'a> TuiController<'a> {
                             self.mark_autocompact_failed();
                             return Ok(false);
                         }
-                        Err(tokio_mpsc::error::TryRecvError::Empty) => return Ok(true),
-                        Err(tokio_mpsc::error::TryRecvError::Disconnected) => {
-                            return Err(WonderError::internal(
-                                "tool loop provider worker exited unexpectedly",
-                            ));
+                        Err(std::sync::mpsc::TryRecvError::Empty) => return Ok(true),
+                        Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                            self.active_turn = ActiveTurn::None;
+                            self.turn_state = TurnState::Interrupted;
+                            self.state.input_mode = InputMode::Prompt;
+                            self.status_note = Some("provider worker exited unexpectedly — check stderr for details".into());
+                            self.needs_render = true;
+                            self.mark_autocompact_failed();
+                            return Ok(false);
                         }
                     }
                 }
@@ -3551,8 +3570,10 @@ impl<'a> TuiController<'a> {
         } else {
             chrome_status
         };
-        view.loading = is_loading_turn_state(self.turn_state);
-        view.loading_verb = loading_verb_label(self.turn_state).map(str::to_string);
+        view.loading = self.has_active_turn() || is_loading_turn_state(self.turn_state);
+        view.loading_verb = loading_verb_label(self.turn_state)
+            .map(str::to_string)
+            .or_else(|| self.has_active_turn().then(|| "thinking".to_string()));
 
         // Elapsed seconds: tick interval is 500 ms, so divide frame count by 2.
         view.loading_elapsed_secs = self.loading_frame / 2;

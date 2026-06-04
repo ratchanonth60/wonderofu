@@ -121,15 +121,11 @@ fn send_dialog_key(
     key: KeyEvent,
     resolved: Option<ResolvedKey>,
 ) {
-    controller
-        .handle_dialog_key(key, resolved, &mut |_| Ok(()))
-        .expect("handle dialog key");
+    block_on(controller.handle_dialog_key(key, resolved)).expect("handle dialog key");
 }
 
 fn send_prompt_key(controller: &mut TuiController<'_>, key: KeyEvent) {
-    controller
-        .handle_key_event(key, &mut |_| Ok(()))
-        .expect("handle prompt key");
+    block_on(controller.handle_key_event(key)).expect("handle prompt key");
 }
 
 fn ctrl_r_key() -> KeyEvent {
@@ -206,9 +202,7 @@ fn controller_routes_slash_commands_and_updates_provider_context() {
     )
     .expect("controller");
 
-    controller
-        .execute_slash_command("/model openai:gpt-4.1")
-        .expect("execute slash");
+    block_on(controller.execute_slash_command("/model openai:gpt-4.1")).expect("execute slash");
 
     assert_eq!(controller.state.provider.as_deref(), Some("openai"));
     assert_eq!(controller.state.model.as_deref(), Some("gpt-4.1"));
@@ -235,9 +229,7 @@ fn controller_opens_model_picker_for_bare_model_command() {
     )
     .expect("controller");
 
-    controller
-        .execute_slash_command("/model")
-        .expect("open model picker");
+    block_on(controller.execute_slash_command("/model")).expect("open model picker");
 
     assert_eq!(
         controller.status_note.as_deref(),
@@ -272,9 +264,7 @@ fn controller_filters_model_picker_with_visible_query_and_match_count() {
     )
     .expect("controller");
 
-    controller
-        .execute_slash_command("/model")
-        .expect("open model picker");
+    block_on(controller.execute_slash_command("/model")).expect("open model picker");
     for ch in ['h', 'a', 'i', 'k', 'u'] {
         send_dialog_key(
             &mut controller,
@@ -336,9 +326,7 @@ fn controller_selects_model_from_picker() {
     )
     .expect("controller");
 
-    controller
-        .execute_slash_command("/model")
-        .expect("open picker");
+    block_on(controller.execute_slash_command("/model")).expect("open picker");
     send_dialog_key(&mut controller, picker_key(KeyCode::Down), None);
     send_dialog_key(
         &mut controller,
@@ -372,19 +360,15 @@ fn controller_cancels_model_picker() {
     )
     .expect("controller");
 
-    controller
-        .execute_slash_command("/model")
-        .expect("open picker");
-    controller
-        .handle_dialog_key(
-            KeyEvent {
-                code: KeyCode::Esc,
-                modifiers: wonder_of_u_tui::KeyModifiers::default(),
-            },
-            None,
-            &mut |_| Ok(()),
-        )
-        .expect("cancel picker");
+    block_on(controller.execute_slash_command("/model")).expect("open picker");
+    block_on(controller.handle_dialog_key(
+        KeyEvent {
+            code: KeyCode::Esc,
+            modifiers: wonder_of_u_tui::KeyModifiers::default(),
+        },
+        None,
+    ))
+    .expect("cancel picker");
 
     assert!(controller.pending_model_picker.is_none());
     assert!(controller.dialog.is_none());
@@ -414,9 +398,7 @@ fn controller_model_picker_view_lists_selected_description() {
     )
     .expect("controller");
 
-    controller
-        .execute_slash_command("/model")
-        .expect("open model picker");
+    block_on(controller.execute_slash_command("/model")).expect("open model picker");
 
     let view = controller.view();
     let picker = view
@@ -455,9 +437,7 @@ fn controller_picker_list_is_empty_when_no_matches() {
     )
     .expect("controller");
 
-    controller
-        .execute_slash_command("/theme")
-        .expect("open theme picker");
+    block_on(controller.execute_slash_command("/theme")).expect("open theme picker");
     // Type a query that matches nothing so the filter is empty.
     for ch in ['z', 'z', 'z'] {
         send_dialog_key(
@@ -537,9 +517,7 @@ fn controller_advances_loading_spinner_on_tick() {
     controller.turn_state = TurnState::ModelRequestActive;
     let before = controller.view().spinner_frame;
 
-    controller
-        .handle_event(UiEvent::Tick, |_| Ok(()))
-        .expect("tick should succeed");
+    block_on(controller.handle_event(UiEvent::Tick)).expect("tick should succeed");
 
     let after = controller.view().spinner_frame;
     assert_ne!(before, after);
@@ -634,9 +612,7 @@ fn controller_view_loading_elapsed_secs_increases_with_ticks() {
 
     // Fire 4 ticks — each advances loading_frame by 1; elapsed_secs = frame / 2.
     for _ in 0..4 {
-        controller
-            .handle_event(UiEvent::Tick, |_| Ok(()))
-            .expect("tick");
+        block_on(controller.handle_event(UiEvent::Tick)).expect("tick");
     }
 
     let view = controller.view();
@@ -661,19 +637,15 @@ fn controller_inserts_newline_on_shift_enter() {
     controller.pending_setup_overlay = None;
     controller.dialog = None;
 
-    controller
-        .handle_event(
-            UiEvent::Key(KeyEvent {
-                code: KeyCode::Enter,
-                modifiers: KeyModifiers {
-                    shift: true,
-                    control: false,
-                    alt: false,
-                },
-            }),
-            |_| Ok(()),
-        )
-        .expect("shift+enter should insert newline");
+    block_on(controller.handle_event(UiEvent::Key(KeyEvent {
+        code: KeyCode::Enter,
+        modifiers: KeyModifiers {
+            shift: true,
+            control: false,
+            alt: false,
+        },
+    })))
+    .expect("shift+enter should insert newline");
 
     assert_eq!(controller.prompt.text(), "\n");
     assert_eq!(controller.turn_state, TurnState::EditingInput);
@@ -691,9 +663,7 @@ fn controller_opens_theme_picker_for_bare_theme_command() {
     )
     .expect("controller");
 
-    controller
-        .execute_slash_command("/theme")
-        .expect("open theme picker");
+    block_on(controller.execute_slash_command("/theme")).expect("open theme picker");
 
     assert_eq!(
         controller.status_note.as_deref(),
@@ -720,9 +690,7 @@ fn controller_selects_theme_from_picker() {
     )
     .expect("controller");
 
-    controller
-        .execute_slash_command("/theme")
-        .expect("open theme picker");
+    block_on(controller.execute_slash_command("/theme")).expect("open theme picker");
     send_dialog_key(&mut controller, picker_key(KeyCode::Down), None);
     send_dialog_key(
         &mut controller,
@@ -756,9 +724,7 @@ fn controller_shows_theme_notice_dialog() {
     )
     .expect("controller");
 
-    controller
-        .execute_slash_command("/theme show")
-        .expect("show theme");
+    block_on(controller.execute_slash_command("/theme show")).expect("show theme");
 
     assert_eq!(controller.status_note.as_deref(), Some("theme"));
     assert!(matches!(
@@ -787,19 +753,15 @@ fn controller_dismisses_theme_notice_dialog_cleanly() {
     )
     .expect("controller");
 
-    controller
-        .execute_slash_command("/theme show")
-        .expect("show theme");
-    controller
-        .handle_dialog_key(
-            KeyEvent {
-                code: KeyCode::Esc,
-                modifiers: wonder_of_u_tui::KeyModifiers::default(),
-            },
-            None,
-            &mut |_| Ok(()),
-        )
-        .expect("dismiss theme notice");
+    block_on(controller.execute_slash_command("/theme show")).expect("show theme");
+    block_on(controller.handle_dialog_key(
+        KeyEvent {
+            code: KeyCode::Esc,
+            modifiers: wonder_of_u_tui::KeyModifiers::default(),
+        },
+        None,
+    ))
+    .expect("dismiss theme notice");
 
     assert!(controller.dialog.is_none());
     assert_eq!(controller.state.input_mode, InputMode::Prompt);
@@ -897,9 +859,7 @@ fn controller_sets_session_color_from_command() {
     )
     .expect("controller");
 
-    controller
-        .execute_slash_command("/color purple")
-        .expect("set color");
+    block_on(controller.execute_slash_command("/color purple")).expect("set color");
 
     assert_eq!(controller.state.session_color.as_deref(), Some("purple"));
     assert_eq!(controller.status_note.as_deref(), Some("color purple"));
@@ -926,9 +886,7 @@ fn controller_shows_color_notice_dialog() {
     )
     .expect("controller");
 
-    controller
-        .execute_slash_command("/color")
-        .expect("show color");
+    block_on(controller.execute_slash_command("/color")).expect("show color");
 
     assert_eq!(controller.status_note.as_deref(), Some("color"));
     assert!(matches!(
@@ -957,9 +915,7 @@ fn controller_toggles_brief_mode_from_command() {
     )
     .expect("controller");
 
-    controller
-        .execute_slash_command("/brief")
-        .expect("toggle brief");
+    block_on(controller.execute_slash_command("/brief")).expect("toggle brief");
 
     assert!(controller.state.brief_mode);
     assert_eq!(controller.status_note.as_deref(), Some("brief on"));
@@ -986,9 +942,7 @@ fn controller_shows_brief_notice_dialog() {
     )
     .expect("controller");
 
-    controller
-        .execute_slash_command("/brief show")
-        .expect("show brief");
+    block_on(controller.execute_slash_command("/brief show")).expect("show brief");
 
     assert_eq!(controller.status_note.as_deref(), Some("brief"));
     assert!(matches!(
@@ -1017,9 +971,7 @@ fn controller_toggles_fast_mode_from_command() {
     )
     .expect("controller");
 
-    controller
-        .execute_slash_command("/fast")
-        .expect("toggle fast");
+    block_on(controller.execute_slash_command("/fast")).expect("toggle fast");
 
     assert!(controller.state.fast_mode);
     assert_eq!(controller.status_note.as_deref(), Some("fast on"));
@@ -1046,9 +998,7 @@ fn controller_shows_fast_notice_dialog() {
     )
     .expect("controller");
 
-    controller
-        .execute_slash_command("/fast show")
-        .expect("show fast");
+    block_on(controller.execute_slash_command("/fast show")).expect("show fast");
 
     assert_eq!(controller.status_note.as_deref(), Some("fast"));
     assert!(matches!(
@@ -1077,9 +1027,7 @@ fn controller_sets_effort_from_command() {
     )
     .expect("controller");
 
-    controller
-        .execute_slash_command("/effort high")
-        .expect("set effort");
+    block_on(controller.execute_slash_command("/effort high")).expect("set effort");
 
     assert_eq!(controller.state.effort_level.as_deref(), Some("high"));
     assert_eq!(controller.status_note.as_deref(), Some("effort high"));
@@ -1106,9 +1054,7 @@ fn controller_shows_effort_notice_dialog() {
     )
     .expect("controller");
 
-    controller
-        .execute_slash_command("/effort")
-        .expect("show effort");
+    block_on(controller.execute_slash_command("/effort")).expect("show effort");
 
     assert_eq!(controller.status_note.as_deref(), Some("effort"));
     assert!(matches!(
@@ -1137,9 +1083,7 @@ fn controller_shows_feedback_notice_dialog_from_alias() {
     )
     .expect("controller");
 
-    controller
-        .execute_slash_command("/bug parity gap")
-        .expect("show feedback");
+    block_on(controller.execute_slash_command("/bug parity gap")).expect("show feedback");
 
     assert_eq!(controller.status_note.as_deref(), Some("feedback"));
     assert!(matches!(
@@ -1168,9 +1112,7 @@ fn controller_shows_release_notes_notice_dialog() {
     )
     .expect("controller");
 
-    controller
-        .execute_slash_command("/release-notes")
-        .expect("show release notes");
+    block_on(controller.execute_slash_command("/release-notes")).expect("show release notes");
 
     assert_eq!(controller.status_note.as_deref(), Some("release notes"));
     assert!(matches!(
@@ -1199,9 +1141,7 @@ fn controller_shows_version_notice_dialog() {
     )
     .expect("controller");
 
-    controller
-        .execute_slash_command("/version")
-        .expect("show version");
+    block_on(controller.execute_slash_command("/version")).expect("show version");
 
     assert_eq!(controller.status_note.as_deref(), Some("version"));
     assert!(matches!(
@@ -1230,9 +1170,7 @@ fn controller_shows_desktop_notice_dialog() {
     )
     .expect("controller");
 
-    controller
-        .execute_slash_command("/desktop")
-        .expect("show desktop");
+    block_on(controller.execute_slash_command("/desktop")).expect("show desktop");
 
     assert_eq!(controller.status_note.as_deref(), Some("desktop"));
     assert!(matches!(
@@ -1261,9 +1199,7 @@ fn controller_shows_mobile_notice_dialog_from_alias() {
     )
     .expect("controller");
 
-    controller
-        .execute_slash_command("/ios")
-        .expect("show mobile");
+    block_on(controller.execute_slash_command("/ios")).expect("show mobile");
 
     assert_eq!(controller.status_note.as_deref(), Some("mobile"));
     assert!(matches!(
@@ -1292,9 +1228,7 @@ fn controller_shows_chrome_notice_dialog() {
     )
     .expect("controller");
 
-    controller
-        .execute_slash_command("/chrome")
-        .expect("show chrome");
+    block_on(controller.execute_slash_command("/chrome")).expect("show chrome");
 
     assert_eq!(controller.status_note.as_deref(), Some("chrome"));
     assert!(matches!(
@@ -1323,7 +1257,7 @@ fn controller_shows_ide_notice_dialog() {
     )
     .expect("controller");
 
-    controller.execute_slash_command("/ide").expect("show ide");
+    block_on(controller.execute_slash_command("/ide")).expect("show ide");
 
     assert_eq!(controller.status_note.as_deref(), Some("ide integration"));
     assert!(matches!(
@@ -1352,9 +1286,7 @@ fn controller_routes_permissions_shorthand() {
     )
     .expect("controller");
 
-    controller
-        .execute_slash_command("/permissions accept-edits")
-        .expect("set permissions mode");
+    block_on(controller.execute_slash_command("/permissions accept-edits")).expect("set permissions mode");
 
     assert_eq!(
         controller.state.permission_mode,
@@ -1439,9 +1371,7 @@ fn controller_shift_backtab_is_ignored_while_picker_overlay_is_active() {
     )
     .expect("controller");
 
-    controller
-        .execute_slash_command("/permissions")
-        .expect("open permissions picker");
+    block_on(controller.execute_slash_command("/permissions")).expect("open permissions picker");
 
     send_dialog_key(&mut controller, shift_backtab_key(), None);
 
@@ -1496,9 +1426,7 @@ fn controller_adds_additional_working_directory_from_slash_command() {
     )
     .expect("controller");
 
-    controller
-        .execute_slash_command("/add-dir extra")
-        .expect("execute add-dir");
+    block_on(controller.execute_slash_command("/add-dir extra")).expect("execute add-dir");
 
     assert_eq!(controller.state.additional_working_directories.len(), 1);
     assert_eq!(

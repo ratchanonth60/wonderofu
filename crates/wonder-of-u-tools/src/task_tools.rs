@@ -1360,22 +1360,24 @@ mod tests {
         EnvVarGuard::set("WONDER_OF_U_STORAGE_DIR", dir.as_os_str())
     }
 
-    #[test]
-    fn task_create_execute_persists_task_and_returns_success() {
+    #[tokio::test]
+    async fn task_create_execute_persists_task_and_returns_success() {
         let dir = unique_test_dir("tools-task-create-happy");
         let _storage_guard = set_storage_dir(&dir);
         let ctx = tool_context_with_dir(&dir);
         let session_id = ctx.session_id;
 
-        let result = block_on(TaskCreateTool.execute(
-            ctx,
-            ToolUseId::new(),
-            json!({
-                "subject": "Ship release",
-                "description": "Run the release workflow",
-            }),
-        ))
-        .expect("execute");
+        let result = TaskCreateTool
+            .execute(
+                ctx,
+                ToolUseId::new(),
+                json!({
+                    "subject": "Ship release",
+                    "description": "Run the release workflow",
+                }),
+            )
+            .await
+            .expect("execute");
 
         assert!(result.success, "expected success, got: {}", result.content);
         assert_eq!(result.metadata["supported"], true);
@@ -1400,8 +1402,8 @@ mod tests {
         assert_eq!(entry.status, TodoTaskStatus::Pending);
     }
 
-    #[test]
-    fn task_list_execute_returns_visible_tasks_and_hides_deleted() {
+    #[tokio::test]
+    async fn task_list_execute_returns_visible_tasks_and_hides_deleted() {
         let dir = unique_test_dir("tools-task-list-filter");
         let _storage_guard = set_storage_dir(&dir);
         let ctx = tool_context_with_dir(&dir);
@@ -1417,8 +1419,10 @@ mod tests {
         list.tasks.insert("todo-bbbb".into(), e2.clone());
         store.write(&list).expect("seed list");
 
-        let result =
-            block_on(TaskListTool.execute(ctx, ToolUseId::new(), json!({}))).expect("execute");
+        let result = TaskListTool
+            .execute(ctx, ToolUseId::new(), json!({}))
+            .await
+            .expect("execute");
 
         assert!(result.success);
         assert_eq!(result.metadata["count"], 1);
@@ -1432,8 +1436,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn task_get_execute_returns_task_or_not_found() {
+    #[tokio::test]
+    async fn task_get_execute_returns_task_or_not_found() {
         let dir = unique_test_dir("tools-task-get");
         let _storage_guard = set_storage_dir(&dir);
         let ctx = tool_context_with_dir(&dir);
@@ -1452,12 +1456,10 @@ mod tests {
             session_id,
             ..tool_context_with_dir(&dir)
         };
-        let result = block_on(TaskGetTool.execute(
-            ctx2,
-            ToolUseId::new(),
-            json!({ "taskId": "todo-get-1" }),
-        ))
-        .expect("execute get");
+        let result = TaskGetTool
+            .execute(ctx2, ToolUseId::new(), json!({ "taskId": "todo-get-1" }))
+            .await
+            .expect("execute get");
         assert!(result.success);
         assert!(result.content.contains("Get me"));
 
@@ -1466,12 +1468,10 @@ mod tests {
             session_id,
             ..tool_context_with_dir(&dir)
         };
-        let not_found_result = block_on(TaskGetTool.execute(
-            ctx3,
-            ToolUseId::new(),
-            json!({ "taskId": "todo-missing" }),
-        ))
-        .expect("not-found should be a success result, not an error");
+        let not_found_result = TaskGetTool
+            .execute(ctx3, ToolUseId::new(), json!({ "taskId": "todo-missing" }))
+            .await
+            .expect("not-found should be a success result, not an error");
         assert!(
             not_found_result.success,
             "not-found result must be success to avoid cancelling sibling calls"
@@ -1486,8 +1486,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn task_update_execute_applies_scalar_changes() {
+    #[tokio::test]
+    async fn task_update_execute_applies_scalar_changes() {
         let dir = unique_test_dir("tools-task-update-scalar");
         let _storage_guard = set_storage_dir(&dir);
         let store = TodoTaskStore::new(&dir);
@@ -1503,16 +1503,18 @@ mod tests {
             session_id,
             ..tool_context_with_dir(&dir)
         };
-        let result = block_on(TaskUpdateTool.execute(
-            ctx,
-            ToolUseId::new(),
-            json!({
-                "taskId": "todo-u1",
-                "subject": "New subject",
-                "status": "in_progress",
-            }),
-        ))
-        .expect("execute update");
+        let result = TaskUpdateTool
+            .execute(
+                ctx,
+                ToolUseId::new(),
+                json!({
+                    "taskId": "todo-u1",
+                    "subject": "New subject",
+                    "status": "in_progress",
+                }),
+            )
+            .await
+            .expect("execute update");
 
         assert!(result.success);
         let updated = store.read_or_default(session_id).expect("read");
@@ -1521,8 +1523,8 @@ mod tests {
         assert_eq!(entry.status, TodoTaskStatus::InProgress);
     }
 
-    #[test]
-    fn task_update_execute_null_metadata_removes_keys() {
+    #[tokio::test]
+    async fn task_update_execute_null_metadata_removes_keys() {
         let dir = unique_test_dir("tools-task-update-meta-null");
         let _storage_guard = set_storage_dir(&dir);
         let store = TodoTaskStore::new(&dir);

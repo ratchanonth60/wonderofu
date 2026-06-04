@@ -859,7 +859,7 @@ impl ProviderRuntime {
 
 #[cfg(test)]
 mod tests {
-    use std::{collections::BTreeMap, io::Cursor, sync::Mutex};
+    use std::{collections::BTreeMap, sync::Mutex};
 
     use time::OffsetDateTime;
     use wonder_of_u_test_support::unique_test_dir;
@@ -879,7 +879,6 @@ mod tests {
     struct RecordingTransport {
         requests: Mutex<Vec<HttpRequest>>,
         responses: Mutex<Vec<HttpResponse>>,
-        stream_bodies: Mutex<Vec<String>>,
         force_error: Mutex<Option<String>>,
     }
 
@@ -891,7 +890,6 @@ mod tests {
                     status: 200,
                     body: serde_json::to_string(&body).expect("serialize response"),
                 }]),
-                stream_bodies: Mutex::new(Vec::new()),
                 force_error: Mutex::new(None),
             })
         }
@@ -920,7 +918,6 @@ mod tests {
                         })
                         .collect(),
                 ),
-                stream_bodies: Mutex::new(Vec::new()),
                 force_error: Mutex::new(None),
             })
         }
@@ -928,8 +925,10 @@ mod tests {
         fn with_stream_body(body: &str) -> Arc<Self> {
             Arc::new(Self {
                 requests: Mutex::new(Vec::new()),
-                responses: Mutex::new(Vec::new()),
-                stream_bodies: Mutex::new(vec![body.into()]),
+                responses: Mutex::new(vec![HttpResponse {
+                    status: 200,
+                    body: body.to_string(),
+                }]),
                 force_error: Mutex::new(None),
             })
         }
@@ -938,20 +937,20 @@ mod tests {
             json_bodies: Vec<serde_json::Value>,
             stream_bodies: Vec<&str>,
         ) -> Arc<Self> {
+            let mut responses: Vec<HttpResponse> = json_bodies
+                .into_iter()
+                .map(|body| HttpResponse {
+                    status: 200,
+                    body: serde_json::to_string(&body).expect("serialize response"),
+                })
+                .collect();
+            responses.extend(stream_bodies.into_iter().map(|body| HttpResponse {
+                status: 200,
+                body: body.to_string(),
+            }));
             Arc::new(Self {
                 requests: Mutex::new(Vec::new()),
-                responses: Mutex::new(
-                    json_bodies
-                        .into_iter()
-                        .map(|body| HttpResponse {
-                            status: 200,
-                            body: serde_json::to_string(&body).expect("serialize response"),
-                        })
-                        .collect(),
-                ),
-                stream_bodies: Mutex::new(
-                    stream_bodies.into_iter().map(ToString::to_string).collect(),
-                ),
+                responses: Mutex::new(responses),
                 force_error: Mutex::new(None),
             })
         }
@@ -1011,17 +1010,9 @@ mod tests {
         }
 
         fn execute_stream(&self, request: &HttpRequest) -> Result<StreamingHttpResponse> {
-            self.requests
-                .lock()
-                .expect("lock requests")
-                .push(request.clone());
-            let mut stream_bodies = self.stream_bodies.lock().expect("lock stream body");
-            if stream_bodies.is_empty() {
-                return Err(WonderError::internal("missing recorded stream body"));
-            }
-            let body = stream_bodies.remove(0);
+            let response = self.execute(request)?;
             Ok(StreamingHttpResponse {
-                reader: Box::new(Cursor::new(body.into_bytes())),
+                reader: Box::new(std::io::Cursor::new(response.body.into_bytes())),
             })
         }
     }

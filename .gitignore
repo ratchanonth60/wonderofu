@@ -15,3 +15,4 @@ Thumbs.db
 docs/par*.csv
 .claude/*
 .opencode/*
+graphify-*/*

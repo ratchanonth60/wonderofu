@@ -390,9 +390,7 @@ fn controller_cancel_setup_sets_session_flag_and_prevents_reopen() {
         "overlay must be closed after cancel"
     );
 
-    controller
-        .maybe_auto_open_setup()
-        .expect("maybe_auto_open_setup");
+    block_on(controller.maybe_auto_open_setup()).expect("maybe_auto_open_setup");
     assert!(
         controller.pending_setup_overlay.is_none(),
         "session flag must prevent autostart from re-opening the overlay"
@@ -1300,9 +1298,7 @@ fn sidebar_slash_command_bare_toggles() {
 
     let original = controller.sidebar_visible;
 
-    controller
-        .execute_slash_command("/sidebar")
-        .expect("/sidebar must not error");
+    block_on(controller.execute_slash_command("/sidebar")).expect("/sidebar must not error");
 
     assert_eq!(
         controller.sidebar_visible, !original,
@@ -1325,9 +1321,7 @@ fn sidebar_slash_on_off_toggle_subcommands() {
     .expect("controller");
 
     // `/sidebar off` must hide regardless of current state.
-    controller
-        .execute_slash_command("/sidebar off")
-        .expect("/sidebar off must not error");
+    block_on(controller.execute_slash_command("/sidebar off")).expect("/sidebar off must not error");
     assert!(
         !controller.sidebar_visible,
         "/sidebar off must set sidebar_visible=false"
@@ -1339,9 +1333,7 @@ fn sidebar_slash_on_off_toggle_subcommands() {
     );
 
     // `/sidebar on` must restore visibility.
-    controller
-        .execute_slash_command("/sidebar on")
-        .expect("/sidebar on must not error");
+    block_on(controller.execute_slash_command("/sidebar on")).expect("/sidebar on must not error");
     assert!(
         controller.sidebar_visible,
         "/sidebar on must set sidebar_visible=true"
@@ -1353,9 +1345,7 @@ fn sidebar_slash_on_off_toggle_subcommands() {
     );
 
     // `/sidebar toggle` must flip to hidden again.
-    controller
-        .execute_slash_command("/sidebar toggle")
-        .expect("/sidebar toggle must not error");
+    block_on(controller.execute_slash_command("/sidebar toggle")).expect("/sidebar toggle must not error");
     assert!(
         !controller.sidebar_visible,
         "/sidebar toggle must flip to false"
@@ -1484,9 +1474,7 @@ fn controller_provider_failure_appends_error_message_and_clears_prompt() {
     .expect("controller");
 
     controller.prompt.insert_text("trigger provider failure");
-    controller
-        .submit_prompt(&mut |_| Ok(()))
-        .expect("submit_prompt itself must not propagate the provider error");
+    block_on(controller.submit_prompt()).expect("submit_prompt itself must not propagate the provider error");
 
     // The prompt must be cleared — error is visible in history.
     assert_eq!(

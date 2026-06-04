@@ -501,7 +501,6 @@ const fn remote_trigger_action_name(action: RemoteTriggerAction) -> &'static str
 mod tests {
     use std::path::PathBuf;
 
-    use futures::executor::block_on;
     use serde_json::json;
     use wonder_of_u_core::{
         FeatureSet, PermissionDecision, PermissionMode, SessionId, ToolContext, ToolUseId,
@@ -561,18 +560,20 @@ mod tests {
         assert!(error.to_string().contains("non-empty `id`"));
     }
 
-    #[test]
-    fn cron_create_execute_reports_unsupported_runtime() {
-        let result = block_on(CronCreateTool.execute(
-            tool_context(unique_test_dir("tools-cron-create-unsupported")),
-            ToolUseId::new(),
-            json!({
-                "cron": "*/5 * * * *",
-                "prompt": "check the deploy",
-                "recurring": true,
-            }),
-        ))
-        .expect("result");
+    #[tokio::test]
+    async fn cron_create_execute_reports_unsupported_runtime() {
+        let result = CronCreateTool
+            .execute(
+                tool_context(unique_test_dir("tools-cron-create-unsupported")),
+                ToolUseId::new(),
+                json!({
+                    "cron": "*/5 * * * *",
+                    "prompt": "check the deploy",
+                    "recurring": true,
+                }),
+            )
+            .await
+            .expect("result");
 
         assert!(!result.success);
         assert!(result.content.contains("cron_create is unavailable"));
@@ -580,14 +581,16 @@ mod tests {
         assert_eq!(result.metadata["tool"], json!("cron_create"));
     }
 
-    #[test]
-    fn cron_delete_execute_reports_unsupported_runtime() {
-        let result = block_on(CronDeleteTool.execute(
-            tool_context(unique_test_dir("tools-cron-delete-unsupported")),
-            ToolUseId::new(),
-            json!({ "id": "job-1" }),
-        ))
-        .expect("result");
+    #[tokio::test]
+    async fn cron_delete_execute_reports_unsupported_runtime() {
+        let result = CronDeleteTool
+            .execute(
+                tool_context(unique_test_dir("tools-cron-delete-unsupported")),
+                ToolUseId::new(),
+                json!({ "id": "job-1" }),
+            )
+            .await
+            .expect("result");
 
         assert!(!result.success);
         assert!(result.content.contains("cron_delete is unavailable"));
@@ -653,20 +656,22 @@ mod tests {
         assert!(matches!(decision, PermissionDecision::Ask { .. }));
     }
 
-    #[test]
-    fn remote_trigger_execute_reports_unsupported_runtime() {
-        let result = block_on(RemoteTriggerTool.execute(
-            tool_context(unique_test_dir("tools-remote-trigger-unsupported")),
-            ToolUseId::new(),
-            json!({
-                "action": "create",
-                "body": {
-                    "name": "daily sync",
-                    "schedule": "7 * * * *",
-                },
-            }),
-        ))
-        .expect("result");
+    #[tokio::test]
+    async fn remote_trigger_execute_reports_unsupported_runtime() {
+        let result = RemoteTriggerTool
+            .execute(
+                tool_context(unique_test_dir("tools-remote-trigger-unsupported")),
+                ToolUseId::new(),
+                json!({
+                    "action": "create",
+                    "body": {
+                        "name": "daily sync",
+                        "schedule": "7 * * * *",
+                    },
+                }),
+            )
+            .await
+            .expect("result");
 
         assert!(!result.success);
         assert!(result.content.contains("remote_trigger is unavailable"));

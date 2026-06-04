@@ -1,13 +1,13 @@
-use std::{
-    io,
-    time::{Duration, Instant},
-};
+use std::time::{Duration, Instant};
 
 use crossterm::event::{
-    self, Event as CrosstermEvent, KeyCode as CrosstermKeyCode, KeyEvent as CrosstermKeyEvent,
-    KeyEventKind, MouseButton as CrosstermMouseButton, MouseEvent as CrosstermMouseEvent,
-    MouseEventKind as CrosstermMouseEventKind,
+    self, Event as CrosstermEvent, EventStream, KeyCode as CrosstermKeyCode,
+    KeyEvent as CrosstermKeyEvent, KeyEventKind, MouseButton as CrosstermMouseButton,
+    MouseEvent as CrosstermMouseEvent, MouseEventKind as CrosstermMouseEventKind,
 };
+use futures::StreamExt;
+use tokio::time::timeout;
+use wonder_of_u_core::{Result, WonderError};
 /// Enumerates key code
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum KeyCode {
@@ -320,23 +320,30 @@ fn normalize_mouse_kind(kind: CrosstermMouseEventKind) -> MouseEventKind {
 }
 
 /// Defines event source behavior
-pub trait EventSource {
-    /// Handles poll
-    fn poll(&mut self, timeout: Duration) -> io::Result<bool>;
-    /// Handles read
-    fn read(&mut self) -> io::Result<CrosstermEvent>;
+#[async_trait::async_trait]
+pub trait EventSource: Send + Sync {
+    /// Returns the next event, waiting up to `timeout_duration`
+    async fn next_event(&mut self, timeout_duration: Duration) -> Result<CrosstermEvent>;
 }
 /// Represents crossterm event source
 #[derive(Clone, Copy, Debug, Default)]
 pub struct CrosstermEventSource;
 
+#[async_trait::async_trait]
 impl EventSource for CrosstermEventSource {
-    fn poll(&mut self, timeout: Duration) -> io::Result<bool> {
-        event::poll(timeout)
-    }
+    async fn next_event(&mut self, timeout_duration: Duration) -> Result<CrosstermEvent> {
+        let result = timeout(timeout_duration, async {
+            let mut stream = EventStream::new();
+            stream.next().await
+        })
+        .await;
 
-    fn read(&mut self) -> io::Result<CrosstermEvent> {
-        event::read()
+        match result {
+            Ok(Some(Ok(event))) => Ok(event),
+            Ok(Some(Err(e))) => Err(WonderError::internal(format!("crossterm error: {e}"))),
+            Ok(None) => Err(WonderError::internal("crossterm stream ended")),
+            Err(_) => Err(WonderError::internal("event timeout")),
+        }
     }
 }
 /// Enumerates turn state
@@ -444,24 +451,22 @@ impl<S: EventSource> EventLoop<S> {
     }
 
     /// Handles next event
-    pub fn next_event(&mut self) -> io::Result<UiEvent> {
-        self.next_event_at(Instant::now())
+    pub async fn next_event(&mut self) -> Result<UiEvent> {
+        self.next_event_at(Instant::now()).await
     }
 
     /// Handles next event at
-    pub fn next_event_at(&mut self, now: Instant) -> io::Result<UiEvent> {
+    pub async fn next_event_at(&mut self, now: Instant) -> Result<UiEvent> {
         let elapsed = now.saturating_duration_since(self.last_tick);
-        let timeout = self.tick_rate.saturating_sub(elapsed);
+        let timeout_duration = self.tick_rate.saturating_sub(elapsed);
 
-        if self.source.poll(timeout)? {
-            return self
-                .source
-                .read()
-                .map(|event| UiEvent::from_crossterm(event).unwrap_or(UiEvent::Tick));
+        match self.source.next_event(timeout_duration).await {
+            Ok(event) => Ok(UiEvent::from_crossterm(event).unwrap_or(UiEvent::Tick)),
+            Err(_) => {
+                self.last_tick = now;
+                Ok(UiEvent::Tick)
+            }
         }
-
-        self.last_tick = now;
-        Ok(UiEvent::Tick)
     }
 }
 
@@ -473,36 +478,45 @@ mod tests {
 
     #[derive(Debug, Default)]
     struct ScriptedEventSource {
-        polls: VecDeque<bool>,
         events: VecDeque<CrosstermEvent>,
         seen_timeouts: Vec<Duration>,
+        poll_index: usize,
+        poll_results: Vec<bool>,
     }
 
     impl ScriptedEventSource {
-        fn with_events(polls: Vec<bool>, events: Vec<CrosstermEvent>) -> Self {
+        fn with_events(poll_results: Vec<bool>, events: Vec<CrosstermEvent>) -> Self {
             Self {
-                polls: polls.into(),
+                poll_results,
                 events: events.into(),
                 seen_timeouts: Vec::new(),
+                poll_index: 0,
             }
         }
     }
 
+    #[async_trait::async_trait]
     impl EventSource for ScriptedEventSource {
-        fn poll(&mut self, timeout: Duration) -> io::Result<bool> {
-            self.seen_timeouts.push(timeout);
-            Ok(self.polls.pop_front().unwrap_or(false))
-        }
-
-        fn read(&mut self) -> io::Result<CrosstermEvent> {
-            self.events.pop_front().ok_or_else(|| {
-                io::Error::new(io::ErrorKind::UnexpectedEof, "no scripted terminal event")
-            })
+        async fn next_event(&mut self, timeout_duration: Duration) -> Result<CrosstermEvent> {
+            self.seen_timeouts.push(timeout_duration);
+            let has_event = self
+                .poll_results
+                .get(self.poll_index)
+                .copied()
+                .unwrap_or(false);
+            self.poll_index += 1;
+            if has_event {
+                self.events
+                    .pop_front()
+                    .ok_or_else(|| WonderError::internal("no scripted terminal event"))
+            } else {
+                Err(WonderError::internal("event timeout"))
+            }
         }
     }
 
-    #[test]
-    fn normalize_key_event_ignores_releases() {
+    #[tokio::test]
+    async fn normalize_key_event_ignores_releases() {
         let key = CrosstermKeyEvent::new(CrosstermKeyCode::Char('a'), event::KeyModifiers::NONE);
         let release = CrosstermKeyEvent {
             kind: KeyEventKind::Release,
@@ -519,26 +533,23 @@ mod tests {
         assert_eq!(normalize_key_event(release), None);
     }
 
-    #[test]
-    fn event_loop_emits_tick_when_poll_times_out() {
+    #[tokio::test]
+    async fn event_loop_emits_tick_when_poll_times_out() {
         let source = ScriptedEventSource::with_events(vec![false], vec![]);
         let mut event_loop = EventLoop::new(source, Duration::from_millis(50));
-        let now = Instant::now();
 
-        let event = event_loop
-            .next_event_at(now + Duration::from_millis(50))
-            .expect("tick");
+        let event = event_loop.next_event().await.expect("tick");
 
         assert_eq!(event, UiEvent::Tick);
     }
 
-    #[test]
-    fn event_loop_normalizes_keyboard_input() {
+    #[tokio::test]
+    async fn event_loop_normalizes_keyboard_input() {
         let key = CrosstermKeyEvent::new(CrosstermKeyCode::Char('c'), event::KeyModifiers::CONTROL);
         let source = ScriptedEventSource::with_events(vec![true], vec![CrosstermEvent::Key(key)]);
         let mut event_loop = EventLoop::new(source, Duration::from_millis(100));
 
-        let event = event_loop.next_event().expect("key event");
+        let event = event_loop.next_event().await.expect("key event");
 
         assert_eq!(
             event,

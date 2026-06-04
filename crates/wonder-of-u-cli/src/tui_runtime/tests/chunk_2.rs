@@ -637,17 +637,13 @@ fn controller_brief_mode_injects_system_prompt_once() {
     )
     .expect("controller");
 
-    controller
-        .execute_slash_command("/brief")
-        .expect("enable brief");
+    block_on(controller.execute_slash_command("/brief")).expect("enable brief");
     assert!(controller.state.brief_mode, "brief mode should be enabled");
 
     controller
         .state
         .queue_command("hello", wonder_of_u_core::QueuePlacement::Now);
-    controller
-        .drain_queued_commands(&mut |_| Ok(()))
-        .expect("drain prompt");
+    block_on(controller.drain_queued_commands()).expect("drain prompt");
 
     handle.join().expect("server join");
 }
@@ -666,14 +662,10 @@ fn controller_brief_flag_persists_across_clear() {
     )
     .expect("controller");
 
-    controller
-        .execute_slash_command("/brief")
-        .expect("enable brief");
+    block_on(controller.execute_slash_command("/brief")).expect("enable brief");
     assert!(controller.state.brief_mode, "brief mode should be on");
 
-    controller
-        .execute_slash_command("/clear")
-        .expect("clear session");
+    block_on(controller.execute_slash_command("/clear")).expect("clear session");
 
     assert!(
         controller.state.brief_mode,
@@ -848,9 +840,7 @@ fn controller_scroll_state_updates_total_lines_after_slash_command() {
     assert_eq!(controller.scroll_state.last_total_lines, 0);
 
     // Run a command that appends a message to the transcript.
-    controller
-        .execute_slash_command("/model openai:gpt-4.1")
-        .expect("execute slash");
+    block_on(controller.execute_slash_command("/model openai:gpt-4.1")).expect("execute slash");
 
     // After the command a message was persisted → scroll state updated.
     assert!(
@@ -877,7 +867,7 @@ fn controller_scroll_state_stays_following_tail_after_messages() {
         "/theme default",
         "/model openai:gpt-4.1",
     ] {
-        controller.execute_slash_command(cmd).expect("slash cmd");
+        block_on(controller.execute_slash_command(cmd)).expect("slash cmd");
     }
 
     // Never scrolled up → still following tail.
@@ -901,9 +891,7 @@ fn controller_scroll_state_preserves_scrolled_offset_after_new_messages() {
 
     // Generate some messages.
     for _ in 0..3 {
-        controller
-            .execute_slash_command("/model openai:gpt-4.1")
-            .expect("slash cmd");
+        block_on(controller.execute_slash_command("/model openai:gpt-4.1")).expect("slash cmd");
     }
 
     // Simulate a small viewport so max_offset is non-zero.
@@ -916,9 +904,7 @@ fn controller_scroll_state_preserves_scrolled_offset_after_new_messages() {
         let offset_before = controller.scroll_state.offset_from_bottom;
 
         // Add another message.
-        controller
-            .execute_slash_command("/model openai:gpt-4.1")
-            .expect("slash cmd");
+        block_on(controller.execute_slash_command("/model openai:gpt-4.1")).expect("slash cmd");
 
         // Offset is preserved (or clamped to new max), not reset to 0.
         assert_eq!(
@@ -940,15 +926,10 @@ fn controller_resize_event_updates_scroll_state_visible_lines() {
     )
     .expect("controller");
 
-    controller
-        .handle_event(
-            UiEvent::Resize {
+    block_on(controller.handle_event(            UiEvent::Resize {
                 width: 80,
                 height: 40,
-            },
-            |_| Ok(()),
-        )
-        .expect("handle resize");
+            },)).expect("handle resize");
 
     assert!(
         controller.scroll_state.last_visible_lines > 0,
@@ -969,15 +950,10 @@ fn controller_resize_event_preserves_follow_tail_mode() {
     )
     .expect("controller");
 
-    controller
-        .handle_event(
-            UiEvent::Resize {
+    block_on(controller.handle_event(            UiEvent::Resize {
                 width: 80,
                 height: 24,
-            },
-            |_| Ok(()),
-        )
-        .expect("handle resize");
+            },)).expect("handle resize");
 
     assert!(
         controller.scroll_state.is_following_tail(),
@@ -1003,9 +979,7 @@ fn open_setup_overlay_controller() -> (TuiController<'static>, PathBuf) {
         TuiLaunchOptions { session_id: None },
     )
     .expect("controller");
-    controller
-        .execute_slash_command("/setup")
-        .expect("execute /setup");
+    block_on(controller.execute_slash_command("/setup")).expect("execute /setup");
     (controller, dir)
 }
 

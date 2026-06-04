@@ -534,7 +534,6 @@ fn overwrite_text_file(path: &Path, content: &str) -> Result<()> {
 mod tests {
     use std::path::PathBuf;
 
-    use futures::executor::block_on;
     use serde_json::json;
     use wonder_of_u_core::{
         FeatureSet, PermissionDecision, PermissionMode, SessionId, ToolContext, ToolUseId,
@@ -605,58 +604,64 @@ mod tests {
         assert!(matches!(decision, PermissionDecision::Ask { .. }));
     }
 
-    #[test]
-    fn file_read_reads_line_ranges() {
+    #[tokio::test]
+    async fn file_read_reads_line_ranges() {
         let dir = unique_test_dir("tools-file-read");
         let path = dir.join("notes.txt");
         fs::write(&path, "one\ntwo\nthree\n").expect("seed file");
         let tool = FileReadTool;
-        let result = block_on(tool.execute(
-            tool_context(dir),
-            ToolUseId::new(),
-            json!({ "path": "notes.txt", "start_line": 2, "end_line": 3 }),
-        ))
-        .expect("read file");
+        let result = tool
+            .execute(
+                tool_context(dir),
+                ToolUseId::new(),
+                json!({ "path": "notes.txt", "start_line": 2, "end_line": 3 }),
+            )
+            .await
+            .expect("read file");
 
         assert!(result.success);
         assert_eq!(result.content, "2. two\n3. three");
     }
 
-    #[test]
-    fn file_read_uses_source_offset_and_limit() {
+    #[tokio::test]
+    async fn file_read_uses_source_offset_and_limit() {
         let dir = unique_test_dir("tools-file-read-source-range");
         let path = dir.join("notes.txt");
         fs::write(&path, "one\ntwo\nthree\nfour\n").expect("seed file");
         let tool = FileReadTool;
-        let result = block_on(tool.execute(
-            tool_context(dir),
-            ToolUseId::new(),
-            json!({ "file_path": "notes.txt", "offset": 2, "limit": 2 }),
-        ))
-        .expect("read file");
+        let result = tool
+            .execute(
+                tool_context(dir),
+                ToolUseId::new(),
+                json!({ "file_path": "notes.txt", "offset": 2, "limit": 2 }),
+            )
+            .await
+            .expect("read file");
 
         assert!(result.success);
         assert_eq!(result.content, "2. two\n3. three");
     }
 
-    #[test]
-    fn file_write_creates_and_appends() {
+    #[tokio::test]
+    async fn file_write_creates_and_appends() {
         let dir = unique_test_dir("tools-file-write");
         let tool = FileWriteTool;
-        let context = tool_context(dir.clone());
 
-        block_on(tool.execute(
-            context.clone(),
+        tool.execute(
+            tool_context(dir.clone()),
             ToolUseId::new(),
             json!({ "path": "notes.txt", "content": "hello" }),
-        ))
+        )
+        .await
         .expect("create file");
-        let append = block_on(tool.execute(
-            context,
-            ToolUseId::new(),
-            json!({ "path": "notes.txt", "content": " world", "mode": "append" }),
-        ))
-        .expect("append file");
+        let append = tool
+            .execute(
+                tool_context(dir.clone()),
+                ToolUseId::new(),
+                json!({ "path": "notes.txt", "content": " world", "mode": "append" }),
+            )
+            .await
+            .expect("append file");
 
         assert!(append.success);
         assert_eq!(
@@ -665,32 +670,36 @@ mod tests {
         );
     }
 
-    #[test]
-    fn file_edit_requires_replace_all_for_ambiguous_edits() {
+    #[tokio::test]
+    async fn file_edit_requires_replace_all_for_ambiguous_edits() {
         let dir = unique_test_dir("tools-file-edit-ambiguous");
         fs::write(dir.join("notes.txt"), "hello\nhello\n").expect("seed file");
         let tool = FileEditTool;
-        let error = block_on(tool.execute(
-            tool_context(dir),
-            ToolUseId::new(),
-            json!({ "path": "notes.txt", "old_text": "hello", "new_text": "hi" }),
-        ))
-        .expect_err("ambiguous edit");
+        let error = tool
+            .execute(
+                tool_context(dir),
+                ToolUseId::new(),
+                json!({ "path": "notes.txt", "old_text": "hello", "new_text": "hi" }),
+            )
+            .await
+            .expect_err("ambiguous edit");
 
         assert!(error.to_string().contains("replace_all"));
     }
 
-    #[test]
-    fn file_edit_replaces_text() {
+    #[tokio::test]
+    async fn file_edit_replaces_text() {
         let dir = unique_test_dir("tools-file-edit");
         fs::write(dir.join("notes.txt"), "hello\nworld\n").expect("seed file");
         let tool = FileEditTool;
-        let result = block_on(tool.execute(
-            tool_context(dir.clone()),
-            ToolUseId::new(),
-            json!({ "path": "notes.txt", "old_text": "world", "new_text": "rust" }),
-        ))
-        .expect("edit file");
+        let result = tool
+            .execute(
+                tool_context(dir.clone()),
+                ToolUseId::new(),
+                json!({ "path": "notes.txt", "old_text": "world", "new_text": "rust" }),
+            )
+            .await
+            .expect("edit file");
 
         assert!(result.success);
         assert_eq!(

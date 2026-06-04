@@ -403,7 +403,6 @@ fn todo_index(index: Option<u32>, len: usize) -> Result<usize> {
 mod tests {
     use std::{fs, path::PathBuf};
 
-    use futures::executor::block_on;
     use serde_json::json;
     use wonder_of_u_core::{
         FeatureFlag, FeatureSet, PermissionMode, SessionId, ToolContext, ToolUseId,
@@ -440,17 +439,19 @@ mod tests {
         assert!(error.to_string().contains("text"));
     }
 
-    #[test]
-    fn todo_adds_and_lists_items() {
+    #[tokio::test]
+    async fn todo_adds_and_lists_items() {
         let dir = unique_test_dir("tools-todo-add");
         let tool = TodoTool;
 
-        let result = block_on(tool.execute(
-            tool_context(dir.clone()),
-            ToolUseId::new(),
-            json!({ "action": "add", "text": "ship release" }),
-        ))
-        .expect("add todo");
+        let result = tool
+            .execute(
+                tool_context(dir.clone()),
+                ToolUseId::new(),
+                json!({ "action": "add", "text": "ship release" }),
+            )
+            .await
+            .expect("add todo");
 
         assert!(result.success);
         assert_eq!(result.content, "1. [ ] ship release");
@@ -460,73 +461,79 @@ mod tests {
         );
     }
 
-    #[test]
-    fn todo_source_write_alias_replaces_existing_list() {
+    #[tokio::test]
+    async fn todo_source_write_alias_replaces_existing_list() {
         let dir = unique_test_dir("tools-todo-source-write");
         let tool = TodoTool;
 
-        block_on(tool.execute(
+        tool.execute(
             tool_context(dir.clone()),
             ToolUseId::new(),
             json!({ "action": "add", "text": "draft release notes" }),
-        ))
+        )
+        .await
         .expect("seed todo");
 
-        let result = block_on(tool.execute(
-            tool_context(dir.clone()),
-            ToolUseId::new(),
-            json!({
-                "todos": [
-                    {
-                        "content": "draft release notes",
-                        "status": "completed",
-                        "activeForm": "drafting release notes"
-                    },
-                    {
-                        "content": "ship release",
-                        "status": "pending",
-                        "activeForm": "shipping release"
-                    }
-                ]
-            }),
-        ))
-        .expect("replace todos");
+        let result = tool
+            .execute(
+                tool_context(dir.clone()),
+                ToolUseId::new(),
+                json!({
+                    "todos": [
+                        {
+                            "content": "draft release notes",
+                            "status": "completed",
+                            "activeForm": "drafting release notes"
+                        },
+                        {
+                            "content": "ship release",
+                            "status": "pending",
+                            "activeForm": "shipping release"
+                        }
+                    ]
+                }),
+            )
+            .await
+            .expect("replace todos");
 
         assert_eq!(
             result.content,
             "1. [x] draft release notes\n2. [ ] ship release"
         );
         assert_eq!(
-            block_on(tool.execute(
+            tool.execute(
                 tool_context(dir.clone()),
                 ToolUseId::new(),
                 json!({ "action": "list" }),
-            ))
+            )
+            .await
             .expect("list todos")
             .content,
             "1. [x] draft release notes\n2. [ ] ship release"
         );
     }
 
-    #[test]
-    fn todo_source_write_clears_when_everything_is_completed() {
+    #[tokio::test]
+    async fn todo_source_write_clears_when_everything_is_completed() {
         let dir = unique_test_dir("tools-todo-source-clear");
         let tool = TodoTool;
 
-        let result = block_on(tool.execute(
-            tool_context(dir.clone()),
-            ToolUseId::new(),
-            json!({
-                "todos": [
-                    {
-                        "content": "ship release",
-                        "status": "completed",
-                        "activeForm": "shipping release"
-                    }
-                ]
-            }),
-        ))
-        .expect("replace todos");
+        let result = tool
+            .execute(
+                tool_context(dir.clone()),
+                ToolUseId::new(),
+                json!({
+                    "todos": [
+                        {
+                            "content": "ship release",
+                            "status": "completed",
+                            "activeForm": "shipping release"
+                        }
+                    ]
+                }),
+            )
+            .await
+            .expect("replace todos");
 
         assert_eq!(result.content, "No todos.");
         assert_eq!(
@@ -586,25 +593,27 @@ mod tests {
         assert!(error.to_string().contains("out of range"));
     }
 
-    #[test]
-    fn todo_write_executes_source_compatible_replace() {
+    #[tokio::test]
+    async fn todo_write_executes_source_compatible_replace() {
         let dir = unique_test_dir("tools-todo-write-tool");
         let tool = TodoWriteTool;
 
-        let result = block_on(tool.execute(
-            tool_context(dir.clone()),
-            ToolUseId::new(),
-            json!({
-                "todos": [
-                    {
-                        "content": "ship release",
-                        "status": "pending",
-                        "activeForm": "shipping release"
-                    }
-                ]
-            }),
-        ))
-        .expect("todo write");
+        let result = tool
+            .execute(
+                tool_context(dir.clone()),
+                ToolUseId::new(),
+                json!({
+                    "todos": [
+                        {
+                            "content": "ship release",
+                            "status": "pending",
+                            "activeForm": "shipping release"
+                        }
+                    ]
+                }),
+            )
+            .await
+            .expect("todo write");
 
         assert_eq!(result.content, "1. [ ] ship release");
         assert_eq!(

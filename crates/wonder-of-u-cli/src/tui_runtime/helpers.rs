@@ -1,5 +1,6 @@
 use super::*;
 
+#[cfg(test)]
 pub(super) fn run_with_spinner_tick<T>(
     work: impl FnOnce() -> Result<T> + Send + 'static,
     interval: Duration,

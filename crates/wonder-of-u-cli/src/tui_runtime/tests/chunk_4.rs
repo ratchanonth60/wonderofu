@@ -57,9 +57,7 @@ fn login_without_args_opens_setup_overlay() {
     // Dismiss any auto-opened setup overlay first so we start clean.
     controller.pending_setup_overlay = None;
 
-    controller
-        .execute_slash_command("/login")
-        .expect("/login should not error");
+    block_on(controller.execute_slash_command("/login")).expect("/login should not error");
 
     assert!(
         controller.pending_setup_overlay.is_some(),
@@ -83,7 +81,7 @@ fn login_copilot_opens_oauth_dialog() {
     // In a test environment without network we expect it to fail and show an
     // error dialog rather than panicking.  Either outcome proves the interceptor
     // fired (i.e. no clap-args parse error was returned to the caller).
-    let result = controller.execute_slash_command("/login copilot");
+    let result = block_on(controller.execute_slash_command("/login copilot"));
 
     // The interceptor must not bubble up a "missing --provider" clap error.
     // It is fine if the OAuth HTTP call fails in CI (no credentials); the
@@ -443,9 +441,7 @@ fn controller_toggles_optimize_token_mode_from_command() {
     )
     .expect("controller");
 
-    controller
-        .execute_slash_command("/optimize-tonken")
-        .expect("toggle optimize-tonken");
+    block_on(controller.execute_slash_command("/optimize-tonken")).expect("toggle optimize-tonken");
 
     assert!(controller.state.optimize_token_mode);
     assert_eq!(controller.status_note.as_deref(), Some("optimize token on"));
@@ -471,9 +467,7 @@ fn controller_toggles_optimize_token_mode_via_alias() {
     )
     .expect("controller");
 
-    controller
-        .execute_slash_command("/optimize-token")
-        .expect("toggle via alias");
+    block_on(controller.execute_slash_command("/optimize-token")).expect("toggle via alias");
 
     assert!(controller.state.optimize_token_mode);
     assert_eq!(controller.status_note.as_deref(), Some("optimize token on"));
@@ -491,9 +485,7 @@ fn controller_shows_optimize_token_notice_dialog() {
     )
     .expect("controller");
 
-    controller
-        .execute_slash_command("/optimize-tonken show")
-        .expect("show optimize-tonken");
+    block_on(controller.execute_slash_command("/optimize-tonken show")).expect("show optimize-tonken");
 
     assert_eq!(controller.status_note.as_deref(), Some("optimize token"));
     assert!(matches!(
@@ -522,12 +514,10 @@ fn controller_optimize_token_flag_persists_across_clear() {
     )
     .expect("controller");
 
-    controller
-        .execute_slash_command("/optimize-tonken")
-        .expect("enable");
+    block_on(controller.execute_slash_command("/optimize-tonken")).expect("enable");
     assert!(controller.state.optimize_token_mode);
 
-    controller.execute_slash_command("/clear").expect("clear");
+    block_on(controller.execute_slash_command("/clear")).expect("clear");
     assert!(
         controller.state.optimize_token_mode,
         "optimize_token_mode should survive /clear"
@@ -552,9 +542,7 @@ fn controller_model_picker_shows_non_strict_gateway_provider() {
     )
     .expect("controller");
 
-    controller
-        .execute_slash_command("/model")
-        .expect("open model picker");
+    block_on(controller.execute_slash_command("/model")).expect("open model picker");
 
     let picker = controller
         .pending_model_picker
@@ -599,9 +587,7 @@ fn controller_model_picker_always_includes_local_provider() {
     )
     .expect("controller");
 
-    controller
-        .execute_slash_command("/model")
-        .expect("open model picker");
+    block_on(controller.execute_slash_command("/model")).expect("open model picker");
 
     assert!(
         controller.pending_model_picker.is_some(),
@@ -633,9 +619,7 @@ fn controller_set_local_arbitrary_model_via_slash_model() {
     )
     .expect("controller");
 
-    controller
-        .execute_slash_command("/model local:phi3:mini")
-        .expect("set local model");
+    block_on(controller.execute_slash_command("/model local:phi3:mini")).expect("set local model");
 
     // The selection should have been applied; picker should be closed.
     assert!(
@@ -738,9 +722,7 @@ fn doctor_output_includes_all_provider_env_hints() {
     )
     .expect("controller");
 
-    controller
-        .execute_slash_command("/doctor")
-        .expect("run doctor");
+    block_on(controller.execute_slash_command("/doctor")).expect("run doctor");
 
     // The last message should contain the doctor output.
     let output = controller
@@ -1220,9 +1202,7 @@ fn exit_command_does_not_drain_queued_prompts() {
         .queue_command("hello world", QueuePlacement::Later);
     assert_eq!(controller.state.queued_commands.len(), 1);
 
-    controller
-        .execute_slash_command("/exit")
-        .expect("execute /exit");
+    block_on(controller.execute_slash_command("/exit")).expect("execute /exit");
 
     assert_eq!(
         controller.state.queued_commands.len(),
@@ -1263,9 +1243,7 @@ fn non_immediate_command_drains_queued_empty_prompt() {
     assert_eq!(controller.state.queued_commands.len(), 1);
 
     // /model is not immediate — drain runs after execution.
-    controller
-        .execute_slash_command("/model openai:gpt-4.1")
-        .expect("execute /model");
+    block_on(controller.execute_slash_command("/model openai:gpt-4.1")).expect("execute /model");
 
     assert_eq!(
         controller.state.queued_commands.len(),

@@ -1788,7 +1788,6 @@ fn send_os_notification_impl(title: &str, message: &str) -> bool {
 mod tests {
     use std::{collections::BTreeSet, sync::Arc};
 
-    use futures::executor::block_on;
     use serde_json::json;
     use wonder_of_u_core::{
         AdditionalWorkingDirectory, FeatureSet, PermissionMode, SessionId, ToolQuery, ToolRegistry,
@@ -1831,70 +1830,80 @@ mod tests {
         }));
     }
 
-    #[test]
-    fn repl_returns_mode_metadata_and_executes_commands() {
+    #[tokio::test]
+    async fn repl_returns_mode_metadata_and_executes_commands() {
         let tool = ReplTool;
-        let result = block_on(tool.execute(
-            tool_context(unique_test_dir("special-tools-repl")),
-            ToolUseId::new(),
-            json!({}),
-        ))
-        .expect("execute");
+        let result = tool
+            .execute(
+                tool_context(unique_test_dir("special-tools-repl")),
+                ToolUseId::new(),
+                json!({}),
+            )
+            .await
+            .expect("execute");
 
         assert!(result.success);
         assert!(result.content.contains("primitive_tools="));
         assert_eq!(result.metadata["tool"], "repl");
 
-        let executed = block_on(tool.execute(
-            tool_context(unique_test_dir("special-tools-repl-command")),
-            ToolUseId::new(),
-            json!({ "command": "printf 'stdout\\n'; printf 'stderr\\n' >&2" }),
-        ))
-        .expect("execute");
+        let executed = tool
+            .execute(
+                tool_context(unique_test_dir("special-tools-repl-command")),
+                ToolUseId::new(),
+                json!({ "command": "printf 'stdout\\n'; printf 'stderr\\n' >&2" }),
+            )
+            .await
+            .expect("execute");
         assert!(executed.success);
         assert_eq!(executed.content, "exit_code=0\nstdout\nstderr");
         assert_eq!(executed.metadata["exit_code"], 0);
     }
 
-    #[test]
-    fn repl_returns_stderr_for_failed_commands() {
+    #[tokio::test]
+    async fn repl_returns_stderr_for_failed_commands() {
         let tool = ReplTool;
-        let failed = block_on(tool.execute(
-            tool_context(unique_test_dir("special-tools-repl-failure")),
-            ToolUseId::new(),
-            json!({ "command": "printf 'boom\\n' >&2; exit 7" }),
-        ))
-        .expect("execute");
+        let failed = tool
+            .execute(
+                tool_context(unique_test_dir("special-tools-repl-failure")),
+                ToolUseId::new(),
+                json!({ "command": "printf 'boom\\n' >&2; exit 7" }),
+            )
+            .await
+            .expect("execute");
 
         assert!(!failed.success);
         assert_eq!(failed.content, "exit_code=7\nboom");
         assert_eq!(failed.metadata["exit_code"], 7);
     }
 
-    #[test]
-    fn structured_output_echoes_the_json_payload() {
+    #[tokio::test]
+    async fn structured_output_echoes_the_json_payload() {
         let tool = StructuredOutputTool;
-        let result = block_on(tool.execute(
-            tool_context(unique_test_dir("special-tools-structured-output")),
-            ToolUseId::new(),
-            json!({ "status": "ok", "count": 2 }),
-        ))
-        .expect("execute");
+        let result = tool
+            .execute(
+                tool_context(unique_test_dir("special-tools-structured-output")),
+                ToolUseId::new(),
+                json!({ "status": "ok", "count": 2 }),
+            )
+            .await
+            .expect("execute");
 
         assert!(result.success);
         assert_eq!(result.metadata["structured_output"]["status"], "ok");
         assert_eq!(result.metadata["structured_output"]["count"], 2);
     }
 
-    #[test]
-    fn sleep_waits_for_bounded_duration_without_shell() {
+    #[tokio::test]
+    async fn sleep_waits_for_bounded_duration_without_shell() {
         let tool = SleepTool;
-        let result = block_on(tool.execute(
-            tool_context(unique_test_dir("special-tools-sleep")),
-            ToolUseId::new(),
-            json!({ "duration_ms": 1 }),
-        ))
-        .expect("execute");
+        let result = tool
+            .execute(
+                tool_context(unique_test_dir("special-tools-sleep")),
+                ToolUseId::new(),
+                json!({ "duration_ms": 1 }),
+            )
+            .await
+            .expect("execute");
 
         assert!(result.success);
         assert_eq!(result.metadata["tool"], "sleep");
@@ -1902,36 +1911,42 @@ mod tests {
         assert!(tool.validate_input(&json!({ "seconds": 301 })).is_err());
     }
 
-    #[test]
-    fn dynamic_source_tools_return_explicit_unsupported_failures() {
+    #[tokio::test]
+    async fn dynamic_source_tools_return_explicit_unsupported_failures() {
         // McpTool without server+tool → source-compat stub (no dispatch attempted).
-        let mcp_stub = block_on(McpTool.execute(
-            tool_context(unique_test_dir("special-tools-mcp-stub")),
-            ToolUseId::new(),
-            json!({}),
-        ))
-        .expect("execute stub");
+        let mcp_stub = McpTool
+            .execute(
+                tool_context(unique_test_dir("special-tools-mcp-stub")),
+                ToolUseId::new(),
+                json!({}),
+            )
+            .await
+            .expect("execute stub");
         assert!(!mcp_stub.success);
         assert!(mcp_stub.content.contains("server"));
         assert_eq!(mcp_stub.metadata["supported"], false);
 
-        let workflow = block_on(WorkflowTool.execute(
-            tool_context(unique_test_dir("special-tools-workflow")),
-            ToolUseId::new(),
-            json!({ "workflow": "triage", "prompt": "summarize" }),
-        ))
-        .expect("execute");
+        let workflow = WorkflowTool
+            .execute(
+                tool_context(unique_test_dir("special-tools-workflow")),
+                ToolUseId::new(),
+                json!({ "workflow": "triage", "prompt": "summarize" }),
+            )
+            .await
+            .expect("execute");
         // Script doesn't exist in the test dir, so it should fail with not-found.
         assert!(!workflow.success);
         assert!(workflow.content.contains("triage"));
         assert_eq!(workflow.metadata["workflow"], "triage");
 
-        let push = block_on(PushNotificationTool.execute(
-            tool_context(unique_test_dir("special-tools-push")),
-            ToolUseId::new(),
-            json!({ "title": "Done", "body": "Work finished" }),
-        ))
-        .expect("execute");
+        let push = PushNotificationTool
+            .execute(
+                tool_context(unique_test_dir("special-tools-push")),
+                ToolUseId::new(),
+                json!({ "title": "Done", "body": "Work finished" }),
+            )
+            .await
+            .expect("execute");
         // push_notification always succeeds (OS notify or terminal bell fallback).
         assert!(push.success);
         assert!(push.content.contains("Work finished"));
@@ -1941,15 +1956,17 @@ mod tests {
 
     // --- McpTool live dispatch tests ---
 
-    #[test]
-    fn mcp_tool_without_dispatch_fields_returns_stub() {
+    #[tokio::test]
+    async fn mcp_tool_without_dispatch_fields_returns_stub() {
         // Only `server` provided, no `tool` → falls through to stub.
-        let result = block_on(McpTool.execute(
-            tool_context(unique_test_dir("special-tools-mcp-only-server")),
-            ToolUseId::new(),
-            json!({ "server": "demo" }),
-        ))
-        .expect("execute");
+        let result = McpTool
+            .execute(
+                tool_context(unique_test_dir("special-tools-mcp-only-server")),
+                ToolUseId::new(),
+                json!({ "server": "demo" }),
+            )
+            .await
+            .expect("execute");
 
         assert!(!result.success);
         assert_eq!(result.metadata["supported"], false);
@@ -2050,19 +2067,21 @@ mod tests {
         assert_eq!(result.metadata["server"], "project-server");
     }
 
-    #[test]
-    fn send_user_file_reports_resolved_files_without_claiming_delivery() {
+    #[tokio::test]
+    async fn send_user_file_reports_resolved_files_without_claiming_delivery() {
         let dir = unique_test_dir("special-tools-send-user-file");
         let screenshot = dir.join("shot.png");
         fs::write(&screenshot, [1_u8, 2, 3]).expect("attachment");
         let tool = SendUserFileTool;
 
-        let result = block_on(tool.execute(
-            tool_context(dir),
-            ToolUseId::new(),
-            json!({ "files": [screenshot.display().to_string()] }),
-        ))
-        .expect("execute");
+        let result = tool
+            .execute(
+                tool_context(dir),
+                ToolUseId::new(),
+                json!({ "files": [screenshot.display().to_string()] }),
+            )
+            .await
+            .expect("execute");
 
         assert!(!result.success);
         assert_eq!(result.metadata["files"][0]["is_image"], true);
@@ -2103,14 +2122,16 @@ mod tests {
         assert!(render_mcp_auth_failure_message(None).contains("auth_url=null"));
     }
 
-    #[test]
-    fn snip_returns_supported_signal() {
-        let result = block_on(SnipTool.execute(
-            tool_context(unique_test_dir("special-tools-snip")),
-            ToolUseId::new(),
-            json!({}),
-        ))
-        .expect("execute");
+    #[tokio::test]
+    async fn snip_returns_supported_signal() {
+        let result = SnipTool
+            .execute(
+                tool_context(unique_test_dir("special-tools-snip")),
+                ToolUseId::new(),
+                json!({}),
+            )
+            .await
+            .expect("execute");
 
         assert!(result.success);
         assert_eq!(result.content, "signal=snip");
@@ -2128,23 +2149,25 @@ mod tests {
         assert!(matches!(decision, PermissionDecision::Ask { .. }));
     }
 
-    #[test]
-    fn overflow_test_emits_requested_output_size() {
+    #[tokio::test]
+    async fn overflow_test_emits_requested_output_size() {
         let tool = OverflowTestTool;
-        let result = block_on(tool.execute(
-            tool_context(unique_test_dir("special-tools-overflow")),
-            ToolUseId::new(),
-            json!({ "chars": 16 }),
-        ))
-        .expect("execute");
+        let result = tool
+            .execute(
+                tool_context(unique_test_dir("special-tools-overflow")),
+                ToolUseId::new(),
+                json!({ "chars": 16 }),
+            )
+            .await
+            .expect("execute");
 
         assert!(result.success);
         assert_eq!(result.content.len(), 16);
         assert_eq!(result.metadata["chars"], 16);
     }
 
-    #[test]
-    fn ctx_inspect_reports_context_details() {
+    #[tokio::test]
+    async fn ctx_inspect_reports_context_details() {
         let dir = unique_test_dir("special-tools-ctx");
         let extra = dir.join("shared");
         let mut context = tool_context(dir.clone());
@@ -2155,7 +2178,9 @@ mod tests {
                 PermissionRuleSource::Local,
             ));
 
-        let result = block_on(CtxInspectTool.execute(context, ToolUseId::new(), json!({})))
+        let result = CtxInspectTool
+            .execute(context, ToolUseId::new(), json!({}))
+            .await
             .expect("execute");
 
         assert!(result.success);
@@ -2163,34 +2188,40 @@ mod tests {
         assert!(result.content.contains("permission_mode"));
     }
 
-    #[test]
-    fn unsupported_dev_tools_return_explicit_failures() {
-        let monitor = block_on(MonitorTool.execute(
-            tool_context(unique_test_dir("special-tools-monitor")),
-            ToolUseId::new(),
-            json!({}),
-        ))
-        .expect("execute");
+    #[tokio::test]
+    async fn unsupported_dev_tools_return_explicit_failures() {
+        let monitor = MonitorTool
+            .execute(
+                tool_context(unique_test_dir("special-tools-monitor")),
+                ToolUseId::new(),
+                json!({}),
+            )
+            .await
+            .expect("execute");
         assert!(!monitor.success);
         assert!(monitor.content.contains(MONITOR_RUNTIME_UNAVAILABLE));
         assert_eq!(monitor.metadata["task_backend"]["flow"], "monitor");
         assert_eq!(monitor.metadata["task_backend"]["support"], "unsupported");
 
-        let tungsten = block_on(TungstenTool.execute(
-            tool_context(unique_test_dir("special-tools-tungsten")),
-            ToolUseId::new(),
-            json!({ "args": ["test"] }),
-        ))
-        .expect("execute");
+        let tungsten = TungstenTool
+            .execute(
+                tool_context(unique_test_dir("special-tools-tungsten")),
+                ToolUseId::new(),
+                json!({ "args": ["test"] }),
+            )
+            .await
+            .expect("execute");
         assert!(!tungsten.success);
         assert_eq!(tungsten.metadata["args"][0], "test");
 
-        let background_pr = block_on(SuggestBackgroundPrTool.execute(
-            tool_context(unique_test_dir("special-tools-background-pr")),
-            ToolUseId::new(),
-            json!({ "prompt": "summarize" }),
-        ))
-        .expect("execute");
+        let background_pr = SuggestBackgroundPrTool
+            .execute(
+                tool_context(unique_test_dir("special-tools-background-pr")),
+                ToolUseId::new(),
+                json!({ "prompt": "summarize" }),
+            )
+            .await
+            .expect("execute");
         assert!(!background_pr.success);
         assert_eq!(
             background_pr.metadata["task_backend"]["task_type"],
