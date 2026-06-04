@@ -48,6 +48,7 @@ pub(super) struct TuiController<'a> {
     pub(super) global_search_dirty_since: Option<Instant>,
     pub(super) turn_state: TurnState,
     pub(super) loading_frame: u64,
+    tick_counter: u64,
     pub(super) needs_render: bool,
     pub(super) exit_requested: bool,
     pub(super) status_note: Option<String>,
@@ -342,6 +343,7 @@ impl<'a> TuiController<'a> {
             global_search_dirty_since: None,
             turn_state: TurnState::Idle,
             loading_frame: 0,
+            tick_counter: 0,
             needs_render: true,
             exit_requested: false,
             status_note: None,
@@ -457,16 +459,7 @@ impl<'a> TuiController<'a> {
                     self.loading_frame = 0;
                 }
                 // Drain any new lines from the shell progress channel.
-                if let Some(rx) = self.tool_progress_rx.as_mut() {
-                    while let Ok(line) = rx.try_recv() {
-                        if !line.trim().is_empty() {
-                            self.tool_progress_lines.push_back(line);
-                            if self.tool_progress_lines.len() > 8 {
-                                self.tool_progress_lines.pop_front();
-                            }
-                        }
-                    }
-                }
+                self.drain_progress_lines();
                 match self.task_notice_ttl {
                     Some(0) => {
                         self.dismiss_task_notice();
@@ -479,7 +472,8 @@ impl<'a> TuiController<'a> {
                 self.needs_render |= self.notifications.tick();
                 self.tick_copilot_oauth_poll()?;
                 self.needs_render |= self.refresh_global_search_if_ready()?;
-                if self.refresh_runtime_state()? {
+                self.tick_counter = self.tick_counter.wrapping_add(1);
+                if self.tick_counter % 10 == 0 && self.refresh_runtime_state()? {
                     self.needs_render = true;
                 }
                 // Fire background agent-summary generation for running agent tasks.
@@ -1341,12 +1335,15 @@ impl<'a> TuiController<'a> {
             context.progress_tx = Some(progress_tx);
             let arguments = call.provider_call.arguments.clone();
             let use_id = call.use_id;
-            let result = tool
-                .execute(context, use_id, arguments)
-                .await
-                .unwrap_or_else(|e| {
-                    ToolResult::failure(call.use_id, format!("tool execution failed: {e}"))
-                });
+            let tool_arc = tool.clone();
+            let result = tokio::task::spawn_blocking(move || {
+                futures::executor::block_on(tool_arc.execute(context, use_id, arguments))
+            })
+            .await
+            .map_err(|e| WonderError::internal(format!("tool task panicked: {e}")))?
+            .unwrap_or_else(|e| {
+                ToolResult::failure(call.use_id, format!("tool execution failed: {e}"))
+            });
             self.tool_progress_rx = None;
             self.tool_progress_lines.clear();
             self.finalize_tool_result(vec![permission_message], &call.provider_call, result)
@@ -1723,8 +1720,7 @@ impl<'a> TuiController<'a> {
                 let runtime = ProviderRuntime::new();
                 let result =
                     runtime.complete_streaming(&resolved_clone, &request_clone, move |delta| {
-                        let _ = delta_tx
-                            .send(StreamingCompletionEvent::Delta(delta.to_string()));
+                        let _ = delta_tx.send(StreamingCompletionEvent::Delta(delta.to_string()));
                         Ok(())
                     });
                 let _ = tx.send(StreamingCompletionEvent::Done(result));
@@ -1801,16 +1797,7 @@ impl<'a> TuiController<'a> {
                     self.turn_state = TurnState::StreamingResponse;
                     self.status_note = Some(format!("streaming {provider_id} response"));
                     self.loading_frame = self.loading_frame.wrapping_add(1);
-                    if let Some(progress_rx) = self.tool_progress_rx.as_mut() {
-                        while let Ok(line) = progress_rx.try_recv() {
-                            if !line.trim().is_empty() {
-                                self.tool_progress_lines.push_back(line);
-                                if self.tool_progress_lines.len() > 8 {
-                                    self.tool_progress_lines.pop_front();
-                                }
-                            }
-                        }
-                    }
+                    self.drain_progress_lines();
                     self.needs_render = true;
                 }
                 Some(StreamingCompletionEvent::Done(result)) => return result,
@@ -1861,16 +1848,7 @@ impl<'a> TuiController<'a> {
                     self.turn_state = TurnState::StreamingResponse;
                     self.status_note = Some(format!("streaming {} response", stream.provider_id));
                     self.loading_frame = self.loading_frame.wrapping_add(1);
-                    if let Some(progress_rx) = self.tool_progress_rx.as_mut() {
-                        while let Ok(line) = progress_rx.try_recv() {
-                            if !line.trim().is_empty() {
-                                self.tool_progress_lines.push_back(line);
-                                if self.tool_progress_lines.len() > 8 {
-                                    self.tool_progress_lines.pop_front();
-                                }
-                            }
-                        }
-                    }
+                    self.drain_progress_lines();
                     self.needs_render = true;
                 }
                 Ok(StreamingCompletionEvent::Done(result)) => match result {
@@ -2019,7 +1997,9 @@ impl<'a> TuiController<'a> {
                                 .map(|s| s.to_string())
                                 .or_else(|| payload.downcast_ref::<String>().cloned())
                                 .unwrap_or_else(|| "unknown panic".to_string());
-                            Err(WonderError::internal(format!("provider worker panicked: {msg}")))
+                            Err(WonderError::internal(format!(
+                                "provider worker panicked: {msg}"
+                            )))
                         });
                         let _ = tx.send(result);
                     });
@@ -2067,6 +2047,8 @@ impl<'a> TuiController<'a> {
                                     self.maybe_autocompact();
                                     self.trigger_extract_memories(&resolved);
                                     self.trigger_status_line();
+                                    self.turn_state = TurnState::Completed;
+                                    self.state.input_mode = InputMode::Prompt;
                                     return Ok(false);
                                 }
                                 wonder_of_u_agent::ToolUseResponse::ToolCalls(batch) => {
@@ -2136,7 +2118,10 @@ impl<'a> TuiController<'a> {
                             self.active_turn = ActiveTurn::None;
                             self.turn_state = TurnState::Interrupted;
                             self.state.input_mode = InputMode::Prompt;
-                            self.status_note = Some("provider worker exited unexpectedly — check stderr for details".into());
+                            self.status_note = Some(
+                                "provider worker exited unexpectedly — check stderr for details"
+                                    .into(),
+                            );
                             self.needs_render = true;
                             self.mark_autocompact_failed();
                             return Ok(false);
@@ -3027,7 +3012,11 @@ impl<'a> TuiController<'a> {
                 self.status_note = Some("processing queued prompt".into());
                 self.needs_render = true;
                 self.execute_prompt_submission(&command).await?;
-                self.turn_state = TurnState::Completed;
+                if !self.has_active_turn()
+                    && !matches!(self.turn_state, TurnState::ToolPermissionPending)
+                {
+                    self.turn_state = TurnState::Completed;
+                }
             }
         }
         Ok(())
@@ -3087,6 +3076,19 @@ impl<'a> TuiController<'a> {
             progress_tx: None,
             interaction_rx: None,
             fork_context: build_fork_context_snapshot(&self.state, system_prompt.as_deref()),
+        }
+    }
+
+    fn drain_progress_lines(&mut self) {
+        if let Some(rx) = self.tool_progress_rx.as_mut() {
+            while let Ok(line) = rx.try_recv() {
+                if !line.trim().is_empty() {
+                    self.tool_progress_lines.push_back(line);
+                    if self.tool_progress_lines.len() > 8 {
+                        self.tool_progress_lines.pop_front();
+                    }
+                }
+            }
         }
     }
 
@@ -3253,13 +3255,13 @@ impl<'a> TuiController<'a> {
 
         self.needs_render = true;
         let arguments = call.arguments.clone();
-        let use_id_copy = use_id;
-        let result = tool
-            .execute(context, use_id, arguments)
-            .await
-            .unwrap_or_else(|e| {
-                ToolResult::failure(use_id_copy, format!("tool execution failed: {e}"))
-            });
+        let tool_arc = tool.clone();
+        let result = tokio::task::spawn_blocking(move || {
+            futures::executor::block_on(tool_arc.execute(context, use_id, arguments))
+        })
+        .await
+        .map_err(|e| WonderError::internal(format!("tool task panicked: {e}")))?
+        .unwrap_or_else(|e| ToolResult::failure(use_id, format!("tool execution failed: {e}")));
         self.tool_progress_rx = None;
         self.tool_progress_lines.clear();
         self.finalize_tool_result(Vec::new(), call, result).await
