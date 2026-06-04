@@ -19,7 +19,6 @@ use crossterm::{
     execute,
     terminal::{self, EnterAlternateScreen, LeaveAlternateScreen},
 };
-use futures::executor::block_on;
 use ratatui::{
     Frame, Terminal,
     backend::CrosstermBackend,
@@ -132,19 +131,24 @@ pub(crate) fn run_tui<W: Write>(
     };
     let mut controller = TuiController::new(context, registry, storage_dir, options)?;
     let mut term = setup_ratatui_terminal(writer)?;
-    let mut events = EventLoop::new(CrosstermEventSource, Duration::from_millis(500));
+    let mut events = EventLoop::new(CrosstermEventSource, Duration::from_millis(50));
     let initial_size = term.size()?;
     controller.on_terminal_resize(initial_size.width, initial_size.height);
 
     render_tui(&mut term, &controller)?;
     controller.mark_rendered();
 
-    let run_result = (|| -> Result<()> {
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|e| WonderError::internal(format!("tokio runtime: {e}")))?;
+
+    let run_result = rt.block_on(async {
         while !controller.exit_requested() {
-            let event = events.next_event()?;
-            controller.handle_event(event, |c| render_tui(&mut term, c))?;
+            let event = events.next_event().await?;
+            controller.handle_event(event).await?;
+
             if let Some(request) = controller.take_external_editor_request() {
-                // Temporarily leave the TUI while the external editor runs.
                 restore_ratatui_terminal(&mut term);
                 let result = launch_external_editor(&request);
                 terminal::enable_raw_mode()?;
@@ -159,13 +163,24 @@ pub(crate) fn run_tui<W: Write>(
                 term.clear()?;
                 controller.finish_external_editor_request(&request, result);
             }
+
+            if controller.has_active_turn() {
+                controller.poll_active_turn().await?;
+            }
+
             if controller.needs_render() {
                 render_tui(&mut term, &controller)?;
                 controller.mark_rendered();
             }
+
+            // Drain queued commands between turns so chained slash-commands
+            // (e.g. /model + automatic prompt) run without blocking the UI.
+            if !controller.has_active_turn() && !controller.state.queued_commands.is_empty() {
+                controller.drain_queued_commands().await?;
+            }
         }
-        Ok(())
-    })();
+        Ok::<(), WonderError>(())
+    });
 
     restore_ratatui_terminal(&mut term);
     run_result

@@ -1,8 +1,9 @@
-use super::*;
 use super::extract_memories::{ExtractionHandle, maybe_spawn_extract_memories};
 use super::status_line::{StatusLineHandle, maybe_run_status_line};
+use super::*;
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};
+use tokio::sync::mpsc as tokio_mpsc;
 
 use crate::commands::task_runtime::TaskManager;
 
@@ -10,7 +11,6 @@ use crate::commands::task_runtime::TaskManager;
 const MOUSE_SCROLL_LINES: i32 = 3;
 /// Lines scrolled per Alt+Up/Alt+Down keypress.
 const KEYBOARD_SCROLL_LINES: i32 = 3;
-const SPINNER_PROGRESS_INTERVAL: Duration = Duration::from_millis(100);
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 #[allow(dead_code)]
@@ -26,6 +26,8 @@ pub(super) enum ActiveOverlay {
 enum StreamingCompletionEvent {
     Delta(String),
     Done(Result<wonder_of_u_agent::CompletionResponse>),
+    #[allow(dead_code)]
+    Progress,
 }
 
 pub(super) struct TuiController<'a> {
@@ -105,7 +107,7 @@ pub(super) struct TuiController<'a> {
     pub(super) tool_progress_lines: VecDeque<String>,
     /// Receiving end of the shell-tool progress channel.
     /// Drained on every tick while a tool is executing.
-    pub(super) tool_progress_rx: Option<mpsc::Receiver<String>>,
+    pub(super) tool_progress_rx: Option<std::sync::mpsc::Receiver<String>>,
     /// Consecutive auto-compact failures.  When this reaches the circuit-breaker
     /// limit we stop attempting automatic compaction until the session resets.
     pub(super) autocompact_failures: u8,
@@ -130,6 +132,7 @@ pub(super) struct TuiController<'a> {
     pub(super) status_line_command: Option<String>,
     /// Handle for the background status-line command thread.
     pub(super) status_line_handle: StatusLineHandle,
+    pub(super) active_turn: ActiveTurn,
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -261,6 +264,52 @@ pub(super) enum RestoredPromptUiState {
     Status(String),
 }
 
+/// Represents a streaming completion currently in progress.
+#[allow(dead_code)]
+pub(super) struct ActiveStreaming {
+    assistant_index: usize,
+    provider_id: String,
+    event_rx: tokio_mpsc::Receiver<StreamingCompletionEvent>,
+    user_message: MessageEnvelope,
+    resolved: wonder_of_u_agent::ResolvedProviderExecution,
+    input: String,
+}
+
+/// Phases of the tool loop state machine.
+enum ToolLoopPhase {
+    SendRequest {
+        iteration: usize,
+    },
+    AwaitingResponse {
+        iteration: usize,
+        response_rx: tokio_mpsc::Receiver<Result<wonder_of_u_agent::ToolUseResponse>>,
+    },
+    ExecutingTools {
+        iteration: usize,
+        tool_index: usize,
+        local_calls: Vec<LocalToolCall>,
+        round: ToolConversationRound,
+    },
+    PausedForApproval,
+}
+
+pub(super) struct ActiveToolLoop {
+    phase: ToolLoopPhase,
+    request_prompt: String,
+    system_prompt: Option<String>,
+    resolved: wonder_of_u_agent::ResolvedProviderExecution,
+    rounds: Vec<ToolConversationRound>,
+    #[allow(dead_code)]
+    user_message: MessageEnvelope,
+    staged_messages: Vec<MessageEnvelope>,
+}
+
+pub(super) enum ActiveTurn {
+    None,
+    Streaming(ActiveStreaming),
+    ToolLoop(ActiveToolLoop),
+}
+
 impl<'a> TuiController<'a> {
     pub(super) fn new(
         context: CommandContext,
@@ -329,13 +378,14 @@ impl<'a> TuiController<'a> {
             extraction: ExtractionHandle::new(),
             status_line_command: None,
             status_line_handle: StatusLineHandle::new(),
+            active_turn: ActiveTurn::None,
         };
         controller.hydrate_initial_settings()?;
         controller.refresh_runtime_state()?;
         controller.rebuild_ephemeral_state();
         controller.refresh_sidebar_panel_cache();
         controller.persist_state_snapshot()?;
-        controller.maybe_auto_open_setup()?;
+        futures::executor::block_on(controller.maybe_auto_open_setup())?;
         // Ensure auto-memory dir exists so the model can write without checking.
         let mem_dir =
             wonder_of_u_storage::memdir::auto_mem_dir(&controller.state.session.cwd, storage_dir);
@@ -364,12 +414,9 @@ impl<'a> TuiController<'a> {
         Ok(())
     }
 
-    pub(super) fn handle_event<F>(&mut self, event: UiEvent, mut before_blocking: F) -> Result<()>
-    where
-        F: FnMut(&Self) -> Result<()>,
-    {
+    pub(super) async fn handle_event(&mut self, event: UiEvent) -> Result<()> {
         match event {
-            UiEvent::Key(key) => self.handle_key_event(key, &mut before_blocking),
+            UiEvent::Key(key) => self.handle_key_event(key).await,
             UiEvent::Paste(text) => {
                 if !text.is_empty() {
                     if let Some(form) = &mut self.pending_provider_form {
@@ -413,6 +460,17 @@ impl<'a> TuiController<'a> {
                     self.needs_render = true;
                 } else {
                     self.loading_frame = 0;
+                }
+                // Drain any new lines from the shell progress channel.
+                if let Some(rx) = self.tool_progress_rx.as_mut() {
+                    while let Ok(line) = rx.try_recv() {
+                        if !line.trim().is_empty() {
+                            self.tool_progress_lines.push_back(line);
+                            if self.tool_progress_lines.len() > 8 {
+                                self.tool_progress_lines.pop_front();
+                            }
+                        }
+                    }
                 }
                 match self.task_notice_ttl {
                     Some(0) => {
@@ -462,14 +520,7 @@ impl<'a> TuiController<'a> {
         }
     }
 
-    pub(super) fn handle_key_event<F>(
-        &mut self,
-        key: KeyEvent,
-        before_blocking: &mut F,
-    ) -> Result<()>
-    where
-        F: FnMut(&Self) -> Result<()>,
-    {
+    pub(super) async fn handle_key_event(&mut self, key: KeyEvent) -> Result<()> {
         let resolved = self.keymap.resolve(KeyBindingContext::Prompt, key);
         if self.global_search_open {
             return self.handle_global_search_key(key, resolved);
@@ -480,7 +531,7 @@ impl<'a> TuiController<'a> {
         // route to the dialog handler for arrow-key option navigation.
         let skip_dialog_for_interaction = self.is_interaction_free_text();
         if !skip_dialog_for_interaction && self.has_modal_overlay() {
-            return self.handle_dialog_key(key, resolved, before_blocking);
+            return self.handle_dialog_key(key, resolved).await;
         }
         if self.history_search.is_some() {
             return self.handle_history_search_key(key, resolved);
@@ -587,7 +638,7 @@ impl<'a> TuiController<'a> {
             | wonder_of_u_tui::SystemAction::ToggleFastMode),
         )) = resolved
         {
-            return self.handle_prompt_hotkey_system_action(system, before_blocking);
+            return self.handle_prompt_hotkey_system_action(system).await;
         }
 
         let Some(resolved) = resolved else {
@@ -624,10 +675,10 @@ impl<'a> TuiController<'a> {
                     .is_some_and(|s| s.selected().is_some())
                 {
                     self.accept_slash_suggestion();
-                    return self.submit_prompt(before_blocking);
+                    return self.submit_prompt().await;
                 }
                 self.active_suggestions = None;
-                self.submit_prompt(before_blocking)
+                self.submit_prompt().await
             }
             ResolvedKey::Edit(action) => {
                 self.prompt.apply_edit_action(action);
@@ -643,17 +694,13 @@ impl<'a> TuiController<'a> {
         }
     }
 
-    fn handle_prompt_hotkey_system_action<F>(
+    async fn handle_prompt_hotkey_system_action(
         &mut self,
         system: wonder_of_u_tui::SystemAction,
-        before_blocking: &mut F,
-    ) -> Result<()>
-    where
-        F: FnMut(&Self) -> Result<()>,
-    {
+    ) -> Result<()> {
         match system {
             wonder_of_u_tui::SystemAction::OpenModelPicker => {
-                self.execute_slash_command_with("/model", before_blocking)
+                self.execute_slash_command_with("/model").await
             }
             wonder_of_u_tui::SystemAction::ToggleThinking => {
                 let command = if self.state.thinking_enabled {
@@ -661,7 +708,7 @@ impl<'a> TuiController<'a> {
                 } else {
                     "/thinking on"
                 };
-                self.execute_slash_command_with(command, before_blocking)
+                self.execute_slash_command_with(command).await
             }
             wonder_of_u_tui::SystemAction::ToggleFastMode => {
                 let command = if self.state.fast_mode {
@@ -669,7 +716,7 @@ impl<'a> TuiController<'a> {
                 } else {
                     "/fast on"
                 };
-                self.execute_slash_command_with(command, before_blocking)
+                self.execute_slash_command_with(command).await
             }
             _ => self.handle_system_action(system),
         }
@@ -744,6 +791,15 @@ impl<'a> TuiController<'a> {
     ) -> Result<()> {
         match system {
             wonder_of_u_tui::SystemAction::Interrupt => {
+                if self.has_active_turn() {
+                    self.active_turn = ActiveTurn::None;
+                    self.turn_state = TurnState::Interrupted;
+                    self.state.input_mode = InputMode::Prompt;
+                    self.status_note = Some("turn interrupted".into());
+                    self.dismiss_dialog();
+                    self.needs_render = true;
+                    return Ok(());
+                }
                 if self.should_confirm_exit() {
                     self.dialog = Some(DialogView::confirm(
                         "Exit session?",
@@ -820,15 +876,11 @@ impl<'a> TuiController<'a> {
         }
     }
 
-    pub(super) fn handle_dialog_key<F>(
+    pub(super) async fn handle_dialog_key(
         &mut self,
         key: KeyEvent,
         resolved: Option<ResolvedKey>,
-        before_blocking: &mut F,
-    ) -> Result<()>
-    where
-        F: FnMut(&Self) -> Result<()>,
-    {
+    ) -> Result<()> {
         if matches!(
             resolved,
             Some(ResolvedKey::System(wonder_of_u_tui::SystemAction::Redraw))
@@ -849,10 +901,10 @@ impl<'a> TuiController<'a> {
             return self.handle_theme_picker_key(key, resolved);
         }
         if self.pending_model_picker.is_some() {
-            return self.handle_model_picker_key(key, resolved, before_blocking);
+            return self.handle_model_picker_key(key, resolved);
         }
         if self.pending_setup_overlay.is_some() {
-            return self.handle_setup_overlay_key(key, resolved, before_blocking);
+            return self.handle_setup_overlay_key(key, resolved).await;
         }
         if self.pending_provider_form.is_some() {
             return self.handle_provider_form_key(key, resolved);
@@ -862,10 +914,10 @@ impl<'a> TuiController<'a> {
         }
         match self.dialog.as_ref().map(DialogView::kind) {
             Some(wonder_of_u_tui::DialogKind::Permission) => {
-                self.handle_permission_dialog_key(key, resolved, before_blocking)
+                self.handle_permission_dialog_key(key, resolved).await
             }
             Some(wonder_of_u_tui::DialogKind::Interaction) => {
-                self.handle_interaction_dialog_key(key, resolved, before_blocking)
+                self.handle_interaction_dialog_key(key, resolved).await
             }
             Some(wonder_of_u_tui::DialogKind::Confirm)
                 if matches!(resolved, Some(ResolvedKey::Edit(EditAction::InsertNewline))) =>
@@ -922,15 +974,11 @@ impl<'a> TuiController<'a> {
         }
     }
 
-    pub(super) fn handle_model_picker_key<F>(
+    pub(super) fn handle_model_picker_key(
         &mut self,
         key: KeyEvent,
         resolved: Option<ResolvedKey>,
-        _before_blocking: &mut F,
-    ) -> Result<()>
-    where
-        F: FnMut(&Self) -> Result<()>,
-    {
+    ) -> Result<()> {
         match key.code {
             KeyCode::Tab => self.complete_model_picker(),
             KeyCode::Up => {
@@ -1019,15 +1067,11 @@ impl<'a> TuiController<'a> {
         }
     }
 
-    pub(super) fn handle_permission_dialog_key<F>(
+    pub(super) async fn handle_permission_dialog_key(
         &mut self,
         key: KeyEvent,
         resolved: Option<ResolvedKey>,
-        before_blocking: &mut F,
-    ) -> Result<()>
-    where
-        F: FnMut(&Self) -> Result<()>,
-    {
+    ) -> Result<()> {
         // Up / Left: move selection to previous action.
         if matches!(key.code, KeyCode::Up | KeyCode::Left) {
             if let Some(dialog) = &mut self.dialog {
@@ -1051,7 +1095,7 @@ impl<'a> TuiController<'a> {
             || key.code == KeyCode::Char(' ')
         {
             let approved = self.dialog.as_ref().is_none_or(|d| d.selected_is_primary());
-            return self.resolve_pending_tool_approval(approved, before_blocking);
+            return self.resolve_pending_tool_approval(approved).await;
         }
 
         // Legacy y/n shortcuts still work.
@@ -1065,13 +1109,13 @@ impl<'a> TuiController<'a> {
                     ))
             )
         {
-            return self.resolve_pending_tool_approval(false, before_blocking);
+            return self.resolve_pending_tool_approval(false).await;
         }
         if matches!(
             resolved,
             Some(ResolvedKey::InsertChar('y')) | Some(ResolvedKey::InsertChar('Y'))
         ) {
-            return self.resolve_pending_tool_approval(true, before_blocking);
+            return self.resolve_pending_tool_approval(true).await;
         }
         self.needs_render = true;
         Ok(())
@@ -1082,15 +1126,11 @@ impl<'a> TuiController<'a> {
     /// Up/Down navigate the option list.  Enter confirms the selected option.
     /// When the last action ("Other") is selected, Enter switches to free-text
     /// mode — the dialog body is updated and the prompt box becomes active.
-    pub(super) fn handle_interaction_dialog_key<F>(
+    pub(super) async fn handle_interaction_dialog_key(
         &mut self,
         key: KeyEvent,
         resolved: Option<ResolvedKey>,
-        before_blocking: &mut F,
-    ) -> Result<()>
-    where
-        F: FnMut(&Self) -> Result<()>,
-    {
+    ) -> Result<()> {
         // Up: move to previous option.
         if matches!(key.code, KeyCode::Up | KeyCode::Left) {
             if let Some(dialog) = &mut self.dialog {
@@ -1139,20 +1179,13 @@ impl<'a> TuiController<'a> {
             // Deliver selected option label as the answer.
             let answer = selected_label;
             self.interaction_pending_answer = Some(answer);
-            return self.resolve_pending_tool_approval(true, before_blocking);
+            return self.resolve_pending_tool_approval(true).await;
         }
         self.needs_render = true;
         Ok(())
     }
 
-    pub(super) fn resolve_pending_tool_approval<F>(
-        &mut self,
-        approved: bool,
-        before_blocking: &mut F,
-    ) -> Result<()>
-    where
-        F: FnMut(&Self) -> Result<()>,
-    {
+    pub(super) async fn resolve_pending_tool_approval(&mut self, approved: bool) -> Result<()> {
         let Some(pending) = self.state.pending_tool_approval.take() else {
             self.dismiss_dialog();
             return Ok(());
@@ -1162,6 +1195,54 @@ impl<'a> TuiController<'a> {
         self.state.input_mode = InputMode::Prompt;
         self.needs_render = true;
 
+        // If there's an active tool loop in paused state, execute just the pending
+        // tool and transition the phase back so the event loop can continue polling.
+        let is_paused_tool_loop = matches!(
+            self.active_turn,
+            ActiveTurn::ToolLoop(ref tl) if matches!(tl.phase, ToolLoopPhase::PausedForApproval)
+        );
+        if is_paused_tool_loop {
+            let pending_call = local_call_from_pending(&pending.pending_call);
+            let reason = pending.reason.clone();
+            let remaining_count = pending.remaining_calls.len();
+            let remaining_calls: Vec<LocalToolCall> = pending
+                .remaining_calls
+                .iter()
+                .map(local_call_from_pending)
+                .collect();
+            let mut current_round = runtime_round_from_pending(&pending.current_round);
+
+            let registry = self.build_tool_registry()?;
+            let context = self.tool_context();
+            let result = if approved {
+                self.approve_pending_tool_call(&registry, &context, &pending_call, &reason)
+                    .await?
+            } else {
+                self.deny_pending_tool_call(&pending_call, &reason).await?
+            };
+
+            current_round.results.push(result);
+
+            if let ActiveTurn::ToolLoop(tl) = &mut self.active_turn {
+                if remaining_count == 0 {
+                    tl.rounds.push(current_round);
+                    tl.phase = ToolLoopPhase::SendRequest {
+                        iteration: tl.rounds.len(),
+                    };
+                } else {
+                    tl.phase = ToolLoopPhase::ExecutingTools {
+                        iteration: tl.rounds.len(),
+                        tool_index: 0,
+                        local_calls: remaining_calls,
+                        round: current_round,
+                    };
+                }
+            }
+            return Ok(());
+        }
+
+        // No active turn — restored from snapshot or legacy path.
+        // Run the full approval + continuation synchronously.
         let runtime = ProviderRuntime::new();
         let resolved = self.resolve_prompt_execution(&runtime)?;
         self.state.set_provider_context(
@@ -1185,10 +1266,11 @@ impl<'a> TuiController<'a> {
                 &self.tool_context(),
                 &pending_call,
                 &pending.reason,
-                before_blocking,
-            )?
+            )
+            .await?
         } else {
-            self.deny_pending_tool_call(&pending_call, &pending.reason, before_blocking)?
+            self.deny_pending_tool_call(&pending_call, &pending.reason)
+                .await?
         };
         current_round.results.push(first_result);
 
@@ -1198,13 +1280,15 @@ impl<'a> TuiController<'a> {
             .map(local_call_from_pending)
             .collect::<Vec<_>>();
         for (index, call) in remaining_calls.iter().cloned().enumerate() {
-            match self.execute_tool_call(
-                &registry,
-                &self.tool_context(),
-                &call.provider_call,
-                call.use_id,
-                before_blocking,
-            )? {
+            match self
+                .execute_tool_call(
+                    &registry,
+                    &self.tool_context(),
+                    &call.provider_call,
+                    call.use_id,
+                )
+                .await?
+            {
                 ToolExecutionOutcome::Completed(result) => current_round.results.push(result),
                 ToolExecutionOutcome::Paused { reason } => {
                     self.state.pending_tool_approval = Some(PendingToolApprovalState {
@@ -1226,26 +1310,17 @@ impl<'a> TuiController<'a> {
         }
 
         rounds.push(current_round);
-        self.continue_tool_loop_from_rounds(
-            &pending.request_prompt,
-            &runtime,
-            &resolved,
-            rounds,
-            before_blocking,
-        )
+        self.continue_tool_loop_from_rounds(&pending.request_prompt, &runtime, &resolved, rounds)
+            .await
     }
 
-    pub(super) fn approve_pending_tool_call<F>(
+    pub(super) async fn approve_pending_tool_call(
         &mut self,
         registry: &wonder_of_u_core::ToolRegistry,
         context: &ToolContext,
         call: &LocalToolCall,
         reason: &str,
-        before_blocking: &mut F,
-    ) -> Result<ProviderToolResultMessage>
-    where
-        F: FnMut(&Self) -> Result<()>,
-    {
+    ) -> Result<ProviderToolResultMessage> {
         let permission_message = append_contextual_message(
             &mut self.state,
             MessagePayload::Permission {
@@ -1256,37 +1331,31 @@ impl<'a> TuiController<'a> {
         )?;
         let query = ToolQuery::from(context);
         if let Some(tool) = registry.resolve_enabled(&call.provider_call.tool_name, &query) {
-            // Interaction tools: synthesise the result from the stored answer
-            // instead of running the tool (which would block on stdin).
             if tool.spec().kind == ToolKind::Interaction {
                 let answer = self.interaction_pending_answer.take().unwrap_or_default();
-                return self.deliver_interaction_answer(answer, call, before_blocking);
+                return self.deliver_interaction_answer(answer, call).await;
             }
 
             self.turn_state = TurnState::ToolExecuting;
             self.state.input_mode = InputMode::Bash;
             self.status_note = Some(format!("running tool {}", call.provider_call.tool_name));
             self.needs_render = true;
-            before_blocking(self)?;
-            let context = context.clone();
+            let (progress_tx, progress_rx) = std::sync::mpsc::sync_channel::<String>(256);
+            self.tool_progress_rx = Some(progress_rx);
+            let mut context = context.clone();
+            context.progress_tx = Some(progress_tx);
             let arguments = call.provider_call.arguments.clone();
             let use_id = call.use_id;
-            let result = match run_with_spinner_tick(
-                move || block_on(tool.execute(context, use_id, arguments)),
-                SPINNER_PROGRESS_INTERVAL,
-                || self.tick_loading_animation(before_blocking),
-            ) {
-                Ok(result) => result,
-                Err(error) => {
-                    ToolResult::failure(call.use_id, format!("tool execution failed: {error}"))
-                }
-            };
-            self.finalize_tool_result(
-                vec![permission_message],
-                &call.provider_call,
-                result,
-                before_blocking,
-            )
+            let result = tool
+                .execute(context, use_id, arguments)
+                .await
+                .unwrap_or_else(|e| {
+                    ToolResult::failure(call.use_id, format!("tool execution failed: {e}"))
+                });
+            self.tool_progress_rx = None;
+            self.tool_progress_lines.clear();
+            self.finalize_tool_result(vec![permission_message], &call.provider_call, result)
+                .await
         } else {
             self.finalize_tool_result(
                 vec![permission_message],
@@ -1298,20 +1367,16 @@ impl<'a> TuiController<'a> {
                         call.provider_call.tool_name
                     ),
                 ),
-                before_blocking,
             )
+            .await
         }
     }
 
-    pub(super) fn deny_pending_tool_call<F>(
+    pub(super) async fn deny_pending_tool_call(
         &mut self,
         call: &LocalToolCall,
         reason: &str,
-        before_blocking: &mut F,
-    ) -> Result<ProviderToolResultMessage>
-    where
-        F: FnMut(&Self) -> Result<()>,
-    {
+    ) -> Result<ProviderToolResultMessage> {
         let permission_message = append_contextual_message(
             &mut self.state,
             MessagePayload::Permission {
@@ -1330,21 +1395,17 @@ impl<'a> TuiController<'a> {
                 call.use_id,
                 format!("tool execution denied by user: {reason}"),
             ),
-            before_blocking,
         )
+        .await
     }
 
-    pub(super) fn continue_tool_loop_from_rounds<F>(
+    pub(super) async fn continue_tool_loop_from_rounds(
         &mut self,
         request_prompt: &str,
         _runtime: &ProviderRuntime,
         resolved: &wonder_of_u_agent::ResolvedProviderExecution,
         mut rounds: Vec<ToolConversationRound>,
-        before_blocking: &mut F,
-    ) -> Result<()>
-    where
-        F: FnMut(&Self) -> Result<()>,
-    {
+    ) -> Result<()> {
         let registry = self.build_tool_registry()?;
         for iteration in rounds.len()..MAX_TOOL_LOOP_ITERATIONS {
             let provider_tools = provider_tool_specs(&registry, &self.tool_context(), None)
@@ -1359,7 +1420,6 @@ impl<'a> TuiController<'a> {
                 MAX_TOOL_LOOP_ITERATIONS
             ));
             self.needs_render = true;
-            before_blocking(self)?;
 
             let resolved_for_call = resolved.clone();
             let request = ToolUseRequest {
@@ -1371,11 +1431,11 @@ impl<'a> TuiController<'a> {
                 rounds: rounds.clone(),
                 effort_level: self.state.effort_level.clone(),
             };
-            let response = run_with_spinner_tick(
-                move || ProviderRuntime::new().complete_with_tool_use(&resolved_for_call, &request),
-                SPINNER_PROGRESS_INTERVAL,
-                || self.tick_loading_animation(before_blocking),
-            )?;
+            let response = tokio::task::spawn_blocking(move || {
+                ProviderRuntime::new().complete_with_tool_use(&resolved_for_call, &request)
+            })
+            .await
+            .map_err(|e| WonderError::internal(format!("provider task panicked: {e}")))??;
 
             match response {
                 ToolUseResponse::Final(response) => {
@@ -1436,7 +1496,6 @@ impl<'a> TuiController<'a> {
                     }
                     self.persist_messages(&staged_messages)?;
                     self.needs_render = true;
-                    before_blocking(self)?;
 
                     let mut round = ToolConversationRound {
                         assistant_text: batch.assistant_text.filter(|text| !text.trim().is_empty()),
@@ -1444,13 +1503,15 @@ impl<'a> TuiController<'a> {
                         results: Vec::new(),
                     };
                     for (index, call) in local_calls.iter().cloned().enumerate() {
-                        match self.execute_tool_call(
-                            &registry,
-                            &self.tool_context(),
-                            &call.provider_call,
-                            call.use_id,
-                            before_blocking,
-                        )? {
+                        match self
+                            .execute_tool_call(
+                                &registry,
+                                &self.tool_context(),
+                                &call.provider_call,
+                                call.use_id,
+                            )
+                            .await?
+                        {
                             ToolExecutionOutcome::Completed(result) => round.results.push(result),
                             ToolExecutionOutcome::Paused { reason } => {
                                 self.state.pending_tool_approval = Some(PendingToolApprovalState {
@@ -1491,10 +1552,7 @@ impl<'a> TuiController<'a> {
         Ok(())
     }
 
-    pub(super) fn submit_prompt<F>(&mut self, before_blocking: &mut F) -> Result<()>
-    where
-        F: FnMut(&Self) -> Result<()>,
-    {
+    pub(super) async fn submit_prompt(&mut self) -> Result<()> {
         let original = self.prompt.text();
         let input = original.trim().to_string();
 
@@ -1507,7 +1565,7 @@ impl<'a> TuiController<'a> {
             self.prompt = TextBuffer::new(true);
             self.reset_history_recall();
             self.needs_render = true;
-            return self.resolve_pending_tool_approval(true, before_blocking);
+            return self.resolve_pending_tool_approval(true).await;
         }
 
         if input.is_empty() {
@@ -1525,12 +1583,12 @@ impl<'a> TuiController<'a> {
         let is_provider_prompt = !input.starts_with('/');
         let result = if input.starts_with('/') {
             self.turn_state = TurnState::CommandQueued;
-            before_blocking(self)?;
-            self.execute_slash_command_with(&input, before_blocking)
+            self.needs_render = true;
+            self.execute_slash_command_with(&input).await
         } else {
             self.turn_state = TurnState::ModelRequestActive;
-            before_blocking(self)?;
-            self.execute_prompt_submission(&input, before_blocking)
+            self.needs_render = true;
+            self.execute_prompt_submission(&input).await
         };
 
         match result {
@@ -1594,14 +1652,7 @@ impl<'a> TuiController<'a> {
         Ok(())
     }
 
-    pub(super) fn execute_prompt_submission<F>(
-        &mut self,
-        input: &str,
-        on_progress: &mut F,
-    ) -> Result<()>
-    where
-        F: FnMut(&Self) -> Result<()>,
-    {
+    pub(super) async fn execute_prompt_submission(&mut self, input: &str) -> Result<()> {
         // Blocking limit check: if token usage is so high that the API would
         // reject the request anyway, surface a helpful error immediately rather
         // than wasting a round-trip.  Mirrors claude-code autoCompact.ts.
@@ -1621,13 +1672,24 @@ impl<'a> TuiController<'a> {
         );
 
         if runtime.supports_tool_use_for(&resolved) {
-            return self.execute_tool_loop_submission(
-                input,
-                &request_prompt,
-                &runtime,
-                &resolved,
-                on_progress,
-            );
+            let user_message = append_contextual_message(
+                &mut self.state,
+                MessagePayload::UserText {
+                    content: input.to_string(),
+                },
+            )?;
+            self.active_turn = ActiveTurn::ToolLoop(ActiveToolLoop {
+                phase: ToolLoopPhase::SendRequest { iteration: 0 },
+                request_prompt,
+                system_prompt: self.system_prompt_with_memory(),
+                resolved,
+                rounds: Vec::new(),
+                user_message: user_message.clone(),
+                staged_messages: vec![user_message],
+            });
+            self.turn_state = TurnState::ModelRequestActive;
+            self.needs_render = true;
+            return Ok(());
         }
 
         let request = CompletionRequest {
@@ -1642,7 +1704,7 @@ impl<'a> TuiController<'a> {
         let user_message = append_contextual_message(
             &mut self.state,
             MessagePayload::UserText {
-                content: input.into(),
+                content: input.to_string(),
             },
         )?;
         let assistant_index = self.state.messages.len();
@@ -1653,26 +1715,45 @@ impl<'a> TuiController<'a> {
             },
         )?;
         self.needs_render = true;
-        on_progress(self)?;
 
-        let response = if streaming {
-            self.complete_streaming_with_progress(
-                &resolved,
-                request.clone(),
+        if streaming {
+            let provider_id = resolved.provider_id().to_string();
+            let (tx, rx) = tokio_mpsc::channel::<StreamingCompletionEvent>(256);
+            let resolved_clone = resolved.clone();
+            let request_clone = request.clone();
+            tokio::task::spawn_blocking(move || {
+                let delta_tx = tx.clone();
+                let runtime = ProviderRuntime::new();
+                let result =
+                    runtime.complete_streaming(&resolved_clone, &request_clone, move |delta| {
+                        let _ = delta_tx
+                            .blocking_send(StreamingCompletionEvent::Delta(delta.to_string()));
+                        Ok(())
+                    });
+                let _ = tx.blocking_send(StreamingCompletionEvent::Done(result));
+            });
+            self.active_turn = ActiveTurn::Streaming(ActiveStreaming {
                 assistant_index,
-                on_progress,
-            )?
-        } else {
-            let resolved = resolved.clone();
-            let request = request.clone();
-            let response = run_with_spinner_tick(
-                move || ProviderRuntime::new().complete(&resolved, &request),
-                SPINNER_PROGRESS_INTERVAL,
-                || self.tick_loading_animation(on_progress),
-            )?;
-            set_assistant_message_content(&mut self.state, assistant_index, &response.output_text)?;
-            response
-        };
+                provider_id,
+                event_rx: rx,
+                user_message,
+                resolved,
+                input: input.to_string(),
+            });
+            self.turn_state = TurnState::ModelRequestActive;
+            return Ok(());
+        }
+
+        // Non-streaming, non-tool-use: blocking path (rare legacy provider)
+        let resolved_for_ref = resolved.clone();
+        let resolved = resolved.clone();
+        let request = request.clone();
+        let response = tokio::task::spawn_blocking(move || {
+            ProviderRuntime::new().complete(&resolved, &request)
+        })
+        .await
+        .map_err(|e| WonderError::internal(format!("provider task panicked: {e}")))??;
+        set_assistant_message_content(&mut self.state, assistant_index, &response.output_text)?;
 
         self.state
             .set_context_window_size(response.context_window_size);
@@ -1689,54 +1770,58 @@ impl<'a> TuiController<'a> {
             &mut self.persistence,
             &[user_message, assistant_message],
         )?;
-        self.status_note = Some(if streaming {
-            "streamed model response recorded".into()
-        } else {
-            "model response recorded".into()
-        });
-        self.maybe_autocompact(); // may override status_note if threshold crossed
-        self.trigger_extract_memories(&resolved);
+        self.status_note = Some("model response recorded".into());
+        self.maybe_autocompact();
+        self.trigger_extract_memories(&resolved_for_ref);
         self.trigger_status_line();
         Ok(())
     }
 
-    fn complete_streaming_with_progress<F>(
+    #[allow(dead_code)]
+    async fn complete_streaming_with_progress(
         &mut self,
         resolved: &wonder_of_u_agent::ResolvedProviderExecution,
         request: CompletionRequest,
         assistant_index: usize,
-        on_progress: &mut F,
-    ) -> Result<wonder_of_u_agent::CompletionResponse>
-    where
-        F: FnMut(&Self) -> Result<()>,
-    {
+    ) -> Result<wonder_of_u_agent::CompletionResponse> {
         let provider_id = resolved.provider_id().to_string();
         let resolved = resolved.clone();
-        let (tx, rx) = mpsc::channel::<StreamingCompletionEvent>();
-        std::thread::spawn(move || {
-            let runtime = ProviderRuntime::new();
+        let (tx, mut rx) = tokio_mpsc::channel::<StreamingCompletionEvent>(256);
+        let runtime = ProviderRuntime::new();
+        tokio::task::spawn_blocking(move || {
             let delta_tx = tx.clone();
             let result = runtime.complete_streaming(&resolved, &request, move |delta| {
-                delta_tx
-                    .send(StreamingCompletionEvent::Delta(delta.to_string()))
-                    .map_err(|_| WonderError::internal("streaming receiver dropped"))
+                let _ = delta_tx.blocking_send(StreamingCompletionEvent::Delta(delta.to_string()));
+                Ok(())
             });
-            let _ = tx.send(StreamingCompletionEvent::Done(result));
+            let _ = tx.blocking_send(StreamingCompletionEvent::Done(result));
         });
 
         loop {
-            match rx.recv_timeout(SPINNER_PROGRESS_INTERVAL) {
-                Ok(StreamingCompletionEvent::Delta(delta)) => {
+            match rx.recv().await {
+                Some(StreamingCompletionEvent::Delta(delta)) => {
                     append_streamed_text(&mut self.state, assistant_index, &delta)?;
                     self.turn_state = TurnState::StreamingResponse;
                     self.status_note = Some(format!("streaming {provider_id} response"));
-                    self.tick_loading_animation(on_progress)?;
+                    self.loading_frame = self.loading_frame.wrapping_add(1);
+                    if let Some(progress_rx) = self.tool_progress_rx.as_mut() {
+                        while let Ok(line) = progress_rx.try_recv() {
+                            if !line.trim().is_empty() {
+                                self.tool_progress_lines.push_back(line);
+                                if self.tool_progress_lines.len() > 8 {
+                                    self.tool_progress_lines.pop_front();
+                                }
+                            }
+                        }
+                    }
+                    self.needs_render = true;
                 }
-                Ok(StreamingCompletionEvent::Done(result)) => return result,
-                Err(mpsc::RecvTimeoutError::Timeout) => {
-                    self.tick_loading_animation(on_progress)?;
+                Some(StreamingCompletionEvent::Done(result)) => return result,
+                Some(StreamingCompletionEvent::Progress) => {
+                    self.loading_frame = self.loading_frame.wrapping_add(1);
+                    self.needs_render = true;
                 }
-                Err(mpsc::RecvTimeoutError::Disconnected) => {
+                None => {
                     return Err(WonderError::internal(
                         "streaming provider worker exited before returning a result",
                     ));
@@ -1745,17 +1830,393 @@ impl<'a> TuiController<'a> {
         }
     }
 
-    pub(super) fn execute_tool_loop_submission<F>(
+    pub(super) async fn poll_active_turn(&mut self) -> Result<bool> {
+        if matches!(self.active_turn, ActiveTurn::None) {
+            return Ok(false);
+        }
+
+        let mut turn = std::mem::replace(&mut self.active_turn, ActiveTurn::None);
+        match &mut turn {
+            ActiveTurn::None => Ok(false),
+            ActiveTurn::Streaming(stream) => self.poll_streaming_step(stream).await,
+            ActiveTurn::ToolLoop(tl) => self.poll_tool_loop_step(tl).await,
+        }
+    }
+
+    async fn poll_streaming_step(&mut self, stream: &mut ActiveStreaming) -> Result<bool> {
+        loop {
+            match stream.event_rx.try_recv() {
+                Ok(StreamingCompletionEvent::Delta(delta)) => {
+                    append_streamed_text(&mut self.state, stream.assistant_index, &delta)?;
+                    self.turn_state = TurnState::StreamingResponse;
+                    self.status_note = Some(format!("streaming {} response", stream.provider_id));
+                    self.loading_frame = self.loading_frame.wrapping_add(1);
+                    if let Some(progress_rx) = self.tool_progress_rx.as_mut() {
+                        while let Ok(line) = progress_rx.try_recv() {
+                            if !line.trim().is_empty() {
+                                self.tool_progress_lines.push_back(line);
+                                if self.tool_progress_lines.len() > 8 {
+                                    self.tool_progress_lines.pop_front();
+                                }
+                            }
+                        }
+                    }
+                    self.needs_render = true;
+                }
+                Ok(StreamingCompletionEvent::Done(result)) => match result {
+                    Ok(response) => {
+                        let assistant_index = stream.assistant_index;
+                        let user_message = stream.user_message.clone();
+                        let resolved = stream.resolved.clone();
+                        self.active_turn = ActiveTurn::None;
+
+                        self.state
+                            .set_context_window_size(response.context_window_size);
+                        self.state.record_cost_usage(response.usage, None);
+                        let assistant_message = self
+                            .state
+                            .messages
+                            .get(assistant_index)
+                            .cloned()
+                            .ok_or_else(|| {
+                            WonderError::internal("missing streamed assistant message")
+                        })?;
+                        persist_messages_and_state(
+                            self.storage_dir.as_deref(),
+                            &self.state,
+                            &mut self.persistence,
+                            &[user_message, assistant_message],
+                        )?;
+                        self.turn_state = TurnState::Completed;
+                        self.state.input_mode = InputMode::Prompt;
+                        self.status_note = Some("streamed model response recorded".into());
+                        self.needs_render = true;
+                        self.maybe_autocompact();
+                        self.trigger_extract_memories(&resolved);
+                        self.trigger_status_line();
+                        return Ok(false);
+                    }
+                    Err(error) => {
+                        let assistant_index = stream.assistant_index;
+                        self.active_turn = ActiveTurn::None;
+                        if let Some(msg) = self.state.messages.get(assistant_index) {
+                            if matches!(&msg.payload, MessagePayload::AssistantText { content } if content.is_empty())
+                            {
+                                self.state.messages.remove(assistant_index);
+                                if assistant_index > 0 {
+                                    self.state.messages.remove(assistant_index - 1);
+                                }
+                            }
+                        }
+                        let sanitized = sanitize_error_for_display(&error.to_string());
+                        if let Ok(error_msg) = append_contextual_message(
+                            &mut self.state,
+                            MessagePayload::ProviderError {
+                                kind: "provider".into(),
+                                message: sanitized,
+                            },
+                        ) {
+                            let _ = persist_messages_and_state(
+                                self.storage_dir.as_deref(),
+                                &self.state,
+                                &mut self.persistence,
+                                &[error_msg],
+                            );
+                        }
+                        self.turn_state = TurnState::Interrupted;
+                        self.status_note = Some("provider error — see history".into());
+                        self.needs_render = true;
+                        self.mark_autocompact_failed();
+                        return Ok(false);
+                    }
+                },
+                Ok(StreamingCompletionEvent::Progress) => {
+                    self.loading_frame = self.loading_frame.wrapping_add(1);
+                    self.needs_render = true;
+                }
+                Err(tokio_mpsc::error::TryRecvError::Empty) => {
+                    self.active_turn = ActiveTurn::Streaming(ActiveStreaming {
+                        assistant_index: stream.assistant_index,
+                        provider_id: stream.provider_id.clone(),
+                        event_rx: std::mem::replace(
+                            &mut stream.event_rx,
+                            tokio_mpsc::channel::<StreamingCompletionEvent>(1).1,
+                        ),
+                        user_message: stream.user_message.clone(),
+                        resolved: stream.resolved.clone(),
+                        input: stream.input.clone(),
+                    });
+                    return Ok(true);
+                }
+                Err(tokio_mpsc::error::TryRecvError::Disconnected) => {
+                    return Err(WonderError::internal(
+                        "streaming provider worker exited before returning a result",
+                    ));
+                }
+            }
+        }
+    }
+
+    async fn poll_tool_loop_step(&mut self, tl: &mut ActiveToolLoop) -> Result<bool> {
+        loop {
+            match &mut tl.phase {
+                ToolLoopPhase::SendRequest { iteration } => {
+                    let it = *iteration;
+                    let provider_tools = provider_tool_specs(
+                        &self.build_tool_registry()?,
+                        &self.tool_context(),
+                        None,
+                    )
+                    .into_iter()
+                    .map(tool_spec_to_provider_tool)
+                    .collect::<Vec<_>>();
+                    self.turn_state = TurnState::ModelRequestActive;
+                    self.status_note = Some(if it == 0 {
+                        format!("awaiting {} tool-aware response", tl.resolved.provider_id())
+                    } else {
+                        format!(
+                            "continuing tool loop {}/{}",
+                            it + 1,
+                            MAX_TOOL_LOOP_ITERATIONS
+                        )
+                    });
+                    self.needs_render = true;
+
+                    let (tx, rx) =
+                        tokio_mpsc::channel::<Result<wonder_of_u_agent::ToolUseResponse>>(1);
+                    let resolved = tl.resolved.clone();
+                    let prompt = tl.request_prompt.clone();
+                    let system = tl.system_prompt.clone();
+                    let tools = provider_tools;
+                    let rounds = tl.rounds.clone();
+                    let effort = self.state.effort_level.clone();
+                    tokio::task::spawn_blocking(move || {
+                        let request = ToolUseRequest {
+                            prompt,
+                            system_prompt: system,
+                            max_output_tokens: None,
+                            temperature: None,
+                            tools,
+                            rounds,
+                            effort_level: effort,
+                        };
+                        let result =
+                            ProviderRuntime::new().complete_with_tool_use(&resolved, &request);
+                        let _ = tx.blocking_send(result);
+                    });
+
+                    tl.phase = ToolLoopPhase::AwaitingResponse {
+                        iteration: it,
+                        response_rx: rx,
+                    };
+                    return Ok(true);
+                }
+                ToolLoopPhase::AwaitingResponse {
+                    iteration,
+                    response_rx,
+                } => {
+                    let it = *iteration;
+                    match response_rx.try_recv() {
+                        Ok(Ok(response)) => {
+                            let phase = ToolLoopPhase::AwaitingResponse {
+                                iteration: it,
+                                response_rx: tokio_mpsc::channel(1).1,
+                            };
+                            let _old = std::mem::replace(&mut tl.phase, phase);
+                            match response {
+                                wonder_of_u_agent::ToolUseResponse::Final(response) => {
+                                    let resolved = tl.resolved.clone();
+                                    self.active_turn = ActiveTurn::None;
+                                    self.state.pending_tool_approval = None;
+                                    self.state
+                                        .set_context_window_size(response.context_window_size);
+                                    self.state.record_cost_usage(response.usage, None);
+                                    let assistant_message = append_contextual_message(
+                                        &mut self.state,
+                                        MessagePayload::AssistantText {
+                                            content: response.output_text,
+                                        },
+                                    )?;
+                                    let mut msgs = tl.staged_messages.clone();
+                                    msgs.push(assistant_message);
+                                    self.persist_messages(&msgs)?;
+                                    self.status_note = Some(if tl.rounds.is_empty() {
+                                        "model response recorded".into()
+                                    } else {
+                                        "tool loop response recorded".into()
+                                    });
+                                    self.maybe_autocompact();
+                                    self.trigger_extract_memories(&resolved);
+                                    self.trigger_status_line();
+                                    return Ok(false);
+                                }
+                                wonder_of_u_agent::ToolUseResponse::ToolCalls(batch) => {
+                                    self.state
+                                        .set_context_window_size(batch.context_window_size);
+                                    self.state.record_cost_usage(batch.usage, None);
+                                    let local_calls = batch
+                                        .calls
+                                        .iter()
+                                        .map(|call| LocalToolCall {
+                                            provider_call: call.clone(),
+                                            use_id: ToolUseId::new(),
+                                        })
+                                        .collect::<Vec<_>>();
+                                    if let Some(text) = batch
+                                        .assistant_text
+                                        .as_deref()
+                                        .filter(|text| !text.trim().is_empty())
+                                    {
+                                        tl.staged_messages.push(append_contextual_message(
+                                            &mut self.state,
+                                            MessagePayload::AssistantText {
+                                                content: text.to_string(),
+                                            },
+                                        )?);
+                                    }
+                                    for call in &local_calls {
+                                        tl.staged_messages.push(append_contextual_message(
+                                            &mut self.state,
+                                            MessagePayload::AssistantToolUse {
+                                                tool: call.provider_call.tool_name.clone(),
+                                                use_id: call.use_id,
+                                                input: call.provider_call.arguments.clone(),
+                                            },
+                                        )?);
+                                    }
+                                    self.persist_messages(&tl.staged_messages)?;
+                                    tl.staged_messages.clear();
+                                    self.needs_render = true;
+
+                                    let round = ToolConversationRound {
+                                        assistant_text: batch
+                                            .assistant_text
+                                            .filter(|text| !text.trim().is_empty()),
+                                        calls: batch.calls,
+                                        results: Vec::new(),
+                                    };
+                                    tl.phase = ToolLoopPhase::ExecutingTools {
+                                        iteration: it,
+                                        tool_index: 0,
+                                        local_calls,
+                                        round,
+                                    };
+                                }
+                            }
+                        }
+                        Ok(Err(e)) => {
+                            self.active_turn = ActiveTurn::None;
+                            self.turn_state = TurnState::Interrupted;
+                            self.status_note = Some(format!("provider error: {e}"));
+                            self.needs_render = true;
+                            self.mark_autocompact_failed();
+                            return Ok(false);
+                        }
+                        Err(tokio_mpsc::error::TryRecvError::Empty) => return Ok(true),
+                        Err(tokio_mpsc::error::TryRecvError::Disconnected) => {
+                            return Err(WonderError::internal(
+                                "tool loop provider worker exited unexpectedly",
+                            ));
+                        }
+                    }
+                }
+                ToolLoopPhase::PausedForApproval => {
+                    return Ok(false);
+                }
+                _ => {}
+            }
+
+            // Handle ExecutingTools separately (needs ownership take)
+            if matches!(tl.phase, ToolLoopPhase::ExecutingTools { .. }) {
+                let phase = std::mem::replace(&mut tl.phase, ToolLoopPhase::PausedForApproval);
+                let (iteration, tool_index, local_calls, mut round) = match phase {
+                    ToolLoopPhase::ExecutingTools {
+                        iteration,
+                        tool_index,
+                        local_calls,
+                        round,
+                    } => (iteration, tool_index, local_calls, round),
+                    _ => unreachable!(),
+                };
+
+                let it = iteration;
+                let idx = tool_index;
+
+                if idx >= local_calls.len() {
+                    tl.rounds.push(round);
+                    let next = it + 1;
+                    if next >= MAX_TOOL_LOOP_ITERATIONS {
+                        self.active_turn = ActiveTurn::None;
+                        self.state.pending_tool_approval = None;
+                        let limit_message = append_contextual_message(
+                            &mut self.state,
+                            MessagePayload::System {
+                                content: format!(
+                                    "tool loop stopped after {MAX_TOOL_LOOP_ITERATIONS} iterations without a final assistant response"
+                                ),
+                            },
+                        )?;
+                        self.persist_messages(&[limit_message])?;
+                        self.turn_state = TurnState::Completed;
+                        self.state.input_mode = InputMode::Prompt;
+                        self.status_note = Some("tool loop hit iteration limit".into());
+                        return Ok(false);
+                    }
+                    tl.phase = ToolLoopPhase::SendRequest { iteration: next };
+                    continue;
+                }
+
+                let call = local_calls[idx].clone();
+                let registry = self.build_tool_registry()?;
+                let context = self.tool_context();
+                let outcome = self
+                    .execute_tool_call(&registry, &context, &call.provider_call, call.use_id)
+                    .await?;
+
+                match outcome {
+                    ToolExecutionOutcome::Completed(result) => {
+                        round.results.push(result);
+                        tl.phase = ToolLoopPhase::ExecutingTools {
+                            iteration: it,
+                            tool_index: idx + 1,
+                            local_calls,
+                            round,
+                        };
+                    }
+                    ToolExecutionOutcome::Paused { reason } => {
+                        let rounds = tl.rounds.iter().map(pending_round_from_runtime).collect();
+                        let current_round = pending_round_from_runtime(&round);
+                        let pending_call = pending_local_call_from_runtime(&call);
+                        let remaining_calls = local_calls
+                            .iter()
+                            .skip(idx + 1)
+                            .map(pending_local_call_from_runtime)
+                            .collect();
+                        self.state.pending_tool_approval = Some(PendingToolApprovalState {
+                            request_prompt: tl.request_prompt.clone(),
+                            rounds,
+                            current_round,
+                            pending_call,
+                            remaining_calls,
+                            reason,
+                        });
+                        self.persist_state_snapshot()?;
+                        tl.phase = ToolLoopPhase::PausedForApproval;
+                        return Ok(false);
+                    }
+                }
+            }
+        }
+    }
+
+    #[allow(dead_code)]
+    pub(super) async fn execute_tool_loop_submission(
         &mut self,
         input: &str,
         request_prompt: &str,
         _runtime: &ProviderRuntime,
         resolved: &wonder_of_u_agent::ResolvedProviderExecution,
-        on_progress: &mut F,
-    ) -> Result<()>
-    where
-        F: FnMut(&Self) -> Result<()>,
-    {
+    ) -> Result<()> {
         self.state.pending_tool_approval = None;
         let registry = self.build_tool_registry()?;
 
@@ -1767,7 +2228,6 @@ impl<'a> TuiController<'a> {
         )?;
         let mut staged_messages = vec![user_message];
         self.needs_render = true;
-        on_progress(self)?;
 
         let mut rounds = Vec::<ToolConversationRound>::new();
         let system_prompt = self.system_prompt_with_memory();
@@ -1787,7 +2247,6 @@ impl<'a> TuiController<'a> {
                 )
             });
             self.needs_render = true;
-            on_progress(self)?;
 
             let resolved_for_call = resolved.clone();
             let request = ToolUseRequest {
@@ -1799,11 +2258,11 @@ impl<'a> TuiController<'a> {
                 rounds: rounds.clone(),
                 effort_level: self.state.effort_level.clone(),
             };
-            let response = run_with_spinner_tick(
-                move || ProviderRuntime::new().complete_with_tool_use(&resolved_for_call, &request),
-                SPINNER_PROGRESS_INTERVAL,
-                || self.tick_loading_animation(on_progress),
-            )?;
+            let response = tokio::task::spawn_blocking(move || {
+                ProviderRuntime::new().complete_with_tool_use(&resolved_for_call, &request)
+            })
+            .await
+            .map_err(|e| WonderError::internal(format!("provider task panicked: {e}")))??;
 
             match response {
                 ToolUseResponse::Final(response) => {
@@ -1867,7 +2326,6 @@ impl<'a> TuiController<'a> {
                     self.persist_messages(&staged_messages)?;
                     staged_messages.clear();
                     self.needs_render = true;
-                    on_progress(self)?;
 
                     let mut round = ToolConversationRound {
                         assistant_text: batch.assistant_text.filter(|text| !text.trim().is_empty()),
@@ -1875,13 +2333,14 @@ impl<'a> TuiController<'a> {
                         results: Vec::new(),
                     };
                     for (index, call) in local_calls.iter().cloned().enumerate() {
-                        let outcome = self.execute_tool_call(
-                            &registry,
-                            &self.tool_context(),
-                            &call.provider_call,
-                            call.use_id,
-                            on_progress,
-                        )?;
+                        let outcome = self
+                            .execute_tool_call(
+                                &registry,
+                                &self.tool_context(),
+                                &call.provider_call,
+                                call.use_id,
+                            )
+                            .await?;
                         match outcome {
                             ToolExecutionOutcome::Completed(result) => round.results.push(result),
                             ToolExecutionOutcome::Paused { reason } => {
@@ -1951,18 +2410,11 @@ impl<'a> TuiController<'a> {
     }
 
     #[cfg(test)]
-    pub(super) fn execute_slash_command(&mut self, input: &str) -> Result<()> {
-        self.execute_slash_command_with(input, &mut |_| Ok(()))
+    pub(super) async fn execute_slash_command(&mut self, input: &str) -> Result<()> {
+        self.execute_slash_command_with(input).await
     }
 
-    pub(super) fn execute_slash_command_with<F>(
-        &mut self,
-        input: &str,
-        before_blocking: &mut F,
-    ) -> Result<()>
-    where
-        F: FnMut(&Self) -> Result<()>,
-    {
+    pub(super) async fn execute_slash_command_with(&mut self, input: &str) -> Result<()> {
         // Handle /sidebar as a TUI-local toggle that never reaches the command registry.
         let trimmed = input.trim();
         let sub = trimmed
@@ -2105,7 +2557,7 @@ impl<'a> TuiController<'a> {
                     "" => {
                         // No provider specified — open the setup hub so the user can
                         // choose interactively.
-                        return self.execute_slash_command_with("/setup", before_blocking);
+                        return Box::pin(self.execute_slash_command_with("/setup")).await;
                     }
                     "copilot" => {
                         self.open_copilot_oauth_flow();
@@ -2123,7 +2575,7 @@ impl<'a> TuiController<'a> {
                             self.open_provider_form(ProviderFormKind::ApiKey);
                         } else {
                             // Unknown provider — open the setup hub and let the user pick.
-                            return self.execute_slash_command_with("/setup", before_blocking);
+                            return Box::pin(self.execute_slash_command_with("/setup")).await;
                         }
                         return Ok(());
                     }
@@ -2154,7 +2606,7 @@ impl<'a> TuiController<'a> {
         };
         // Capture the immediate flag before consuming `command` via execute.
         let is_immediate = command.spec().immediate;
-        let output = block_on(command.execute(context, invocation.clone()))?;
+        let output = command.execute(context, invocation.clone()).await?;
         let (text, exit_requested) = command_output_text(output);
         if self.persistence.persisted {
             self.restore_current_session()?;
@@ -2179,7 +2631,7 @@ impl<'a> TuiController<'a> {
         // /hooks) must not trigger queued-prompt draining: they act
         // synchronously and their side-effects should not cascade.
         if !is_immediate {
-            self.drain_queued_commands(before_blocking)?;
+            self.drain_queued_commands().await?;
         }
         self.exit_requested |= exit_requested;
         if exit_requested {
@@ -2531,10 +2983,7 @@ impl<'a> TuiController<'a> {
         self.state.set_provider_context(provider, model, auth);
     }
 
-    pub(super) fn drain_queued_commands<F>(&mut self, before_blocking: &mut F) -> Result<()>
-    where
-        F: FnMut(&Self) -> Result<()>,
-    {
+    pub(super) async fn drain_queued_commands(&mut self) -> Result<()> {
         let mut drained = 0usize;
         while let Some(queued) = self.state.queued_commands.pop_front() {
             drained += 1;
@@ -2549,13 +2998,12 @@ impl<'a> TuiController<'a> {
                 continue;
             }
             if command.starts_with('/') {
-                self.execute_slash_command_with(&command, before_blocking)?;
+                Box::pin(self.execute_slash_command_with(&command)).await?;
             } else {
                 self.turn_state = TurnState::ModelRequestActive;
                 self.status_note = Some("processing queued prompt".into());
                 self.needs_render = true;
-                before_blocking(self)?;
-                self.execute_prompt_submission(&command, before_blocking)?;
+                self.execute_prompt_submission(&command).await?;
                 self.turn_state = TurnState::Completed;
             }
         }
@@ -2619,22 +3067,15 @@ impl<'a> TuiController<'a> {
         }
     }
 
-    pub(super) fn execute_tool_call<F>(
+    pub(super) async fn execute_tool_call(
         &mut self,
         registry: &wonder_of_u_core::ToolRegistry,
         context: &ToolContext,
         call: &ProviderToolCall,
         use_id: ToolUseId,
-        on_progress: &mut F,
-    ) -> Result<ToolExecutionOutcome>
-    where
-        F: FnMut(&Self) -> Result<()>,
-    {
+    ) -> Result<ToolExecutionOutcome> {
         let query = ToolQuery::from(context);
         if let Some(tool) = registry.resolve_enabled(&call.tool_name, &query) {
-            // Interaction tools (ask_user): pause and hand off to the TUI event
-            // loop.  When options are provided show a picker; otherwise show a
-            // prompt box.  Mirrors claude-code's AskUserQuestion UI.
             if tool.spec().kind == ToolKind::Interaction {
                 let (question, options) = extract_interaction_info(&call.arguments);
                 self.interaction_question = Some(question.clone());
@@ -2642,7 +3083,6 @@ impl<'a> TuiController<'a> {
                 self.interaction_other_mode = false;
 
                 if options.is_empty() {
-                    // No options: free-text prompt box (unchanged behaviour).
                     self.dialog = Some(DialogView {
                         title: format!("● {}", call.tool_name),
                         body: question
@@ -2659,8 +3099,6 @@ impl<'a> TuiController<'a> {
                     self.state.input_mode = InputMode::Prompt;
                     self.status_note = Some("type answer ↵ to send".into());
                 } else {
-                    // Options provided: picker dialog with arrow-key navigation.
-                    // Always appended "Other" so the user can type a custom answer.
                     let mut actions: Vec<DialogActionView> = options
                         .iter()
                         .map(|opt| DialogActionView::new(opt.clone(), false))
@@ -2677,7 +3115,6 @@ impl<'a> TuiController<'a> {
                 }
                 self.turn_state = TurnState::ToolPermissionPending;
                 self.needs_render = true;
-                on_progress(self)?;
                 return Ok(ToolExecutionOutcome::Paused {
                     reason: format!("ask_user: {question}"),
                 });
@@ -2692,13 +3129,14 @@ impl<'a> TuiController<'a> {
                             use_id,
                             format!("tool input validation failed: {error}"),
                         ),
-                        on_progress,
                     )
+                    .await
                     .map(ToolExecutionOutcome::Completed);
             }
             match tool.permission_decision(context, &call.arguments) {
                 PermissionDecision::Allow { .. } => self
-                    .run_tool_call(tool, context, call, use_id, on_progress)
+                    .run_tool_call(tool, context, call, use_id)
+                    .await
                     .map(ToolExecutionOutcome::Completed),
                 other @ PermissionDecision::Ask { .. } => {
                     let spec = tool.spec();
@@ -2723,7 +3161,6 @@ impl<'a> TuiController<'a> {
                     self.persist_messages(&[permission_message])?;
                     self.status_note = Some(permission_required_status(&call.tool_name));
                     self.needs_render = true;
-                    on_progress(self)?;
                     Ok(ToolExecutionOutcome::Paused { reason })
                 }
                 other @ PermissionDecision::Deny { .. } => {
@@ -2749,8 +3186,8 @@ impl<'a> TuiController<'a> {
                         vec![permission_message],
                         call,
                         ToolResult::failure(use_id, format!("tool execution denied: {reason}")),
-                        on_progress,
                     )
+                    .await
                     .map(ToolExecutionOutcome::Completed)
                 }
             }
@@ -2762,26 +3199,19 @@ impl<'a> TuiController<'a> {
                     use_id,
                     format!("tool `{}` is not available in this session", call.tool_name),
                 ),
-                on_progress,
             )
+            .await
             .map(ToolExecutionOutcome::Completed)
         }
     }
 
-    pub(super) fn run_tool_call<F>(
+    pub(super) async fn run_tool_call(
         &mut self,
         tool: std::sync::Arc<dyn wonder_of_u_core::Tool>,
         context: &ToolContext,
         call: &ProviderToolCall,
         use_id: ToolUseId,
-        on_progress: &mut F,
-    ) -> Result<ProviderToolResultMessage>
-    where
-        F: FnMut(&Self) -> Result<()>,
-    {
-        // Interaction tools (ask_user) must not use raw stdin/stdout in TUI mode.
-        // They are handled by execute_tool_call returning Paused; run_tool_call
-        // is only reached for non-interaction tools.
+    ) -> Result<ProviderToolResultMessage> {
         debug_assert_ne!(
             tool.spec().kind,
             ToolKind::Interaction,
@@ -2793,100 +3223,45 @@ impl<'a> TuiController<'a> {
         self.status_note = Some(format!("running tool {}", call.tool_name));
         self.tool_progress_lines.clear();
 
-        // Set up a bounded channel so shell tools can stream partial stdout.
-        let (progress_tx, progress_rx) = mpsc::sync_channel::<String>(256);
+        let (progress_tx, progress_rx) = std::sync::mpsc::sync_channel::<String>(256);
         self.tool_progress_rx = Some(progress_rx);
         let mut context = context.clone();
         context.progress_tx = Some(progress_tx);
 
         self.needs_render = true;
-        on_progress(self)?;
         let arguments = call.arguments.clone();
-        let result = match run_with_spinner_tick(
-            move || block_on(tool.execute(context, use_id, arguments)),
-            SPINNER_PROGRESS_INTERVAL,
-            || self.tick_loading_animation(on_progress),
-        ) {
-            Ok(result) => result,
-            Err(error) => ToolResult::failure(use_id, format!("tool execution failed: {error}")),
-        };
+        let use_id_copy = use_id;
+        let result = tool
+            .execute(context, use_id, arguments)
+            .await
+            .unwrap_or_else(|e| {
+                ToolResult::failure(use_id_copy, format!("tool execution failed: {e}"))
+            });
         self.tool_progress_rx = None;
         self.tool_progress_lines.clear();
-        self.finalize_tool_result(Vec::new(), call, result, on_progress)
+        self.finalize_tool_result(Vec::new(), call, result).await
     }
 
-    /// Delivers the user's typed answer to a pending interaction tool call and
-    /// synthesises the `ToolResult` without ever running the tool itself.
-    ///
-    /// Called from `approve_pending_tool_call` when the pending call's tool has
-    /// `ToolKind::Interaction`.  The answer was stored in
-    /// `self.interaction_pending_answer` by `submit_prompt`.
-    pub(super) fn deliver_interaction_answer<F>(
+    pub(super) async fn deliver_interaction_answer(
         &mut self,
         answer: String,
         call: &LocalToolCall,
-        before_blocking: &mut F,
-    ) -> Result<ProviderToolResultMessage>
-    where
-        F: FnMut(&Self) -> Result<()>,
-    {
+    ) -> Result<ProviderToolResultMessage> {
         self.interaction_question = None;
         self.interaction_options.clear();
         self.interaction_other_mode = false;
         self.dialog = None;
         let result = ToolResult::success(call.use_id, answer);
-        self.finalize_tool_result(Vec::new(), &call.provider_call, result, before_blocking)
+        self.finalize_tool_result(Vec::new(), &call.provider_call, result)
+            .await
     }
 
-    fn tick_loading_animation<F>(&mut self, on_progress: &mut F) -> Result<()>
-    where
-        F: FnMut(&Self) -> Result<()>,
-    {
-        self.loading_frame = self.loading_frame.wrapping_add(1);
-        // Drain any new lines from the shell progress channel.
-        if let Some(ref rx) = self.tool_progress_rx {
-            while let Ok(line) = rx.try_recv() {
-                if !line.trim().is_empty() {
-                    self.tool_progress_lines.push_back(line);
-                    // Keep only the last 8 lines to avoid unbounded growth.
-                    if self.tool_progress_lines.len() > 8 {
-                        self.tool_progress_lines.pop_front();
-                    }
-                }
-            }
-        }
-        self.needs_render = true;
-        on_progress(self)
-    }
-
-    /// Returns the effective system prompt with the auto-memory section appended.
-    ///
-    /// Reads `MEMORY.md` from `~/.claude/projects/<git-root>/memory/MEMORY.md`
-    /// and injects the memory instructions + index content into the system prompt
-    /// so the model can read and write memories across sessions.
-    pub(super) fn system_prompt_with_memory(&self) -> Option<String> {
-        let base = self.state.effective_system_prompt(None);
-        let memory_section = wonder_of_u_storage::memdir::build_auto_memory_section(
-            &self.state.session.cwd,
-            self.storage_dir.as_deref(),
-        );
-        Some(match base {
-            Some(existing) => format!("{existing}\n\n{memory_section}"),
-            None => memory_section,
-        })
-    }
-
-    pub(super) fn finalize_tool_result<F>(
+    pub(super) async fn finalize_tool_result(
         &mut self,
         mut messages: Vec<MessageEnvelope>,
         call: &ProviderToolCall,
         result: ToolResult,
-        on_progress: &mut F,
-    ) -> Result<ProviderToolResultMessage>
-    where
-        F: FnMut(&Self) -> Result<()>,
-    {
-        // Clone cwd to avoid a simultaneous borrow of self.state.
+    ) -> Result<ProviderToolResultMessage> {
         let cwd = self.state.session.cwd.clone();
         let result = process_tool_effects(
             result,
@@ -2906,10 +3281,26 @@ impl<'a> TuiController<'a> {
         )?);
         self.persist_messages(&messages)?;
         self.needs_render = true;
-        on_progress(self)?;
         Ok(ProviderToolResultMessage {
             call_id: call.call_id.clone(),
             content: render_provider_tool_result(&result),
+        })
+    }
+
+    /// Returns the effective system prompt with the auto-memory section appended.
+    ///
+    /// Reads `MEMORY.md` from `~/.claude/projects/<git-root>/memory/MEMORY.md`
+    /// and injects the memory instructions + index content into the system prompt
+    /// so the model can read and write memories across sessions.
+    pub(super) fn system_prompt_with_memory(&self) -> Option<String> {
+        let base = self.state.effective_system_prompt(None);
+        let memory_section = wonder_of_u_storage::memdir::build_auto_memory_section(
+            &self.state.session.cwd,
+            self.storage_dir.as_deref(),
+        );
+        Some(match base {
+            Some(existing) => format!("{existing}\n\n{memory_section}"),
+            None => memory_section,
         })
     }
 
@@ -4006,10 +4397,7 @@ impl<'a> TuiController<'a> {
     }
 
     /// Confirms the currently highlighted setup item and dispatches its action.
-    pub(super) fn complete_setup_overlay<F>(&mut self, before_blocking: &mut F) -> Result<()>
-    where
-        F: FnMut(&Self) -> Result<()>,
-    {
+    pub(super) async fn complete_setup_overlay(&mut self) -> Result<()> {
         let Some(overlay) = self.pending_setup_overlay.take() else {
             self.dismiss_dialog();
             return Ok(());
@@ -4020,8 +4408,7 @@ impl<'a> TuiController<'a> {
         };
         match item.action {
             SetupItemAction::Dispatch(command) => {
-                // Execute the slash command for this item (e.g. "/model", "/theme").
-                self.execute_slash_command_with(&command, before_blocking)?;
+                self.execute_slash_command_with(&command).await?;
             }
             SetupItemAction::Placeholder(message) => {
                 // Show a notice dialog while the full form is deferred.
@@ -4084,17 +4471,13 @@ impl<'a> TuiController<'a> {
     }
 
     /// Handles keyboard input while the setup overlay is active.
-    pub(super) fn handle_setup_overlay_key<F>(
+    pub(super) async fn handle_setup_overlay_key(
         &mut self,
         key: KeyEvent,
         resolved: Option<ResolvedKey>,
-        before_blocking: &mut F,
-    ) -> Result<()>
-    where
-        F: FnMut(&Self) -> Result<()>,
-    {
+    ) -> Result<()> {
         match key.code {
-            KeyCode::Tab | KeyCode::Enter => self.complete_setup_overlay(before_blocking),
+            KeyCode::Tab | KeyCode::Enter => self.complete_setup_overlay().await,
             KeyCode::Up => {
                 self.step_setup_overlay(-1);
                 Ok(())
@@ -4106,7 +4489,7 @@ impl<'a> TuiController<'a> {
             KeyCode::Esc => self.cancel_setup_overlay(),
             _ => match resolved {
                 Some(ResolvedKey::Edit(EditAction::InsertNewline)) => {
-                    self.complete_setup_overlay(before_blocking)
+                    self.complete_setup_overlay().await
                 }
                 Some(ResolvedKey::System(wonder_of_u_tui::SystemAction::Interrupt)) => {
                     self.cancel_setup_overlay()
@@ -4125,7 +4508,7 @@ impl<'a> TuiController<'a> {
     ///
     /// Called once at the end of [`TuiController::new`]. After the first
     /// successful provider configuration the method becomes a no-op.
-    pub(super) fn maybe_auto_open_setup(&mut self) -> Result<()> {
+    pub(super) async fn maybe_auto_open_setup(&mut self) -> Result<()> {
         if self.setup_cancelled_this_session {
             return Ok(());
         }
@@ -4134,7 +4517,7 @@ impl<'a> TuiController<'a> {
         }
         // Provider is not ready and the user has not cancelled yet - run the
         // slash command so the normal output-parsing path opens the overlay.
-        self.execute_slash_command_with("/setup", &mut |_| Ok(()))
+        Box::pin(self.execute_slash_command_with("/setup")).await
     }
 
     /// Opens a two-stage provider form (API-key or API-base) from the setup hub.
@@ -4572,7 +4955,10 @@ impl<'a> TuiController<'a> {
         }
     }
 
-    fn trigger_extract_memories(&mut self, resolved: &wonder_of_u_agent::ResolvedProviderExecution) {
+    fn trigger_extract_memories(
+        &mut self,
+        resolved: &wonder_of_u_agent::ResolvedProviderExecution,
+    ) {
         maybe_spawn_extract_memories(
             &mut self.extraction,
             &self.state.messages,
@@ -4606,6 +4992,10 @@ impl<'a> TuiController<'a> {
             self.autocompact_failures = self.autocompact_failures.saturating_add(1);
             self.autocompact_pending = false;
         }
+    }
+
+    pub(super) fn has_active_turn(&self) -> bool {
+        !matches!(self.active_turn, ActiveTurn::None)
     }
 
     #[allow(dead_code)]
