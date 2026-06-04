@@ -455,6 +455,8 @@ impl<'a> TuiController<'a> {
                     TurnState::ModelRequestActive
                         | TurnState::CommandQueued
                         | TurnState::ToolPermissionPending
+                        | TurnState::StreamingResponse
+                        | TurnState::ToolExecuting
                 ) {
                     self.loading_frame = self.loading_frame.wrapping_add(1);
                     self.needs_render = true;
@@ -1593,7 +1595,9 @@ impl<'a> TuiController<'a> {
 
         match result {
             Ok(()) => {
-                if !matches!(self.turn_state, TurnState::ToolPermissionPending) {
+                if !self.has_active_turn()
+                    && !matches!(self.turn_state, TurnState::ToolPermissionPending)
+                {
                     self.turn_state = TurnState::Completed;
                 }
                 self.needs_render = true;
@@ -5855,7 +5859,11 @@ impl<'a> TuiController<'a> {
 fn is_loading_turn_state(state: TurnState) -> bool {
     matches!(
         state,
-        TurnState::ModelRequestActive | TurnState::CommandQueued | TurnState::ToolPermissionPending
+        TurnState::ModelRequestActive
+            | TurnState::CommandQueued
+            | TurnState::ToolPermissionPending
+            | TurnState::StreamingResponse
+            | TurnState::ToolExecuting
     )
 }
 
@@ -5864,6 +5872,8 @@ fn loading_verb_label(state: TurnState) -> Option<&'static str> {
         TurnState::ModelRequestActive => Some("thinking"),
         TurnState::CommandQueued => Some("running"),
         TurnState::ToolPermissionPending => Some("waiting"),
+        TurnState::StreamingResponse => Some("streaming"),
+        TurnState::ToolExecuting => Some("executing"),
         _ => None,
     }
 }
