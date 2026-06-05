@@ -180,6 +180,7 @@ impl TuiController<'_> {
                 .iter()
                 .enumerate()
                 .map(|(i, s)| SlashSuggestionEntry {
+                    match_ranges: find_match_chars(&s.display_text, &state.filter),
                     display: s.display_text.clone(),
                     description: s.description.clone().unwrap_or_default(),
                     selected: i == state.selected_index.min(filtered.len().saturating_sub(1)),

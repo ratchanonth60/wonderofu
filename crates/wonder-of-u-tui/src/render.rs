@@ -23,6 +23,8 @@ pub struct SlashSuggestionEntry {
     pub description: String,
     /// Whether this entry is currently highlighted.
     pub selected: bool,
+    /// Char-index ranges in `display` to underline as match highlights.
+    pub match_ranges: Vec<(usize, usize)>,
 }
 
 /// State passed to the renderer when the slash-autocomplete overlay should be visible.

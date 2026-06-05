@@ -51,6 +51,7 @@ use wonder_of_u_tui::{
     KeyEvent, MouseButton, MouseEventKind, NotificationInput, NotificationLifetime,
     NotificationQueue, NotificationSeverity, PermissionSummaryView, PickerListEntry,
     PickerListView, PromptSuggestion, PromptSuggestionState, Rect, ResolvedKey, ShellLayout,
+    find_match_chars,
     ShellView, SlashSuggestionEntry, SlashSuggestionsOverlay, TextBuffer, Theme,
     TranscriptScrollView, TurnState, UiEvent, VimMode, VimState, message::SearchMatch,
     message_lines_for_width, message_lines_for_width_with_cursor, shell_main_area_width,

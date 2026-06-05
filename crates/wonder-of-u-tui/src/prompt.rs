@@ -323,18 +323,27 @@ impl PromptSuggestion {
     }
 
     fn match_score(&self, filter: &str) -> Option<i64> {
-        fuzzy_match_score(
-            filter,
-            &[
-                self.id.as_str(),
-                self.display_text.as_str(),
-                self.replacement.as_str(),
-                self.description.as_deref().unwrap_or_default(),
-                self.tag.as_deref().unwrap_or_default(),
-                &self.keywords.join(" "),
-            ]
-            .join(" "),
-        )
+        // Strip leading '/' so "the" scores as a prefix of "theme", not a mid-string hit.
+        // Score each field independently and take the max so the visible command name
+        // drives ranking rather than the opaque id field.
+        let display = self.display_text.strip_prefix('/').unwrap_or(&self.display_text);
+        let replacement = self.replacement.strip_prefix('/').unwrap_or(&self.replacement);
+        let description = self.description.as_deref().unwrap_or_default();
+        let tag = self.tag.as_deref().unwrap_or_default();
+        let keywords = self.keywords.join(" ");
+
+        [
+            (display, 0i64),
+            (replacement, -100),
+            (self.id.as_str(), -2000),
+            (description, -3000),
+            (tag, -4000),
+            (keywords.as_str(), -4000),
+        ]
+        .iter()
+        .filter(|(f, _)| !f.is_empty())
+        .filter_map(|(f, penalty)| fuzzy_match_score(filter, f).map(|s| s + penalty))
+        .max()
     }
 }
 
@@ -574,6 +583,70 @@ fn fuzzy_subsequence_score(haystack: &str, needle: &str) -> Option<i64> {
 
     score -= haystack.len().saturating_sub(needle.len()) as i64;
     Some(score)
+}
+
+/// Returns char-index ranges in `display` that should be underlined to show the match.
+///
+/// Tries substring match first (a contiguous range); falls back to fuzzy subsequence
+/// positions. The leading `/` in slash commands is skipped during search but its index
+/// is preserved in the returned ranges.
+#[must_use]
+pub fn find_match_chars(display: &str, filter: &str) -> Vec<(usize, usize)> {
+    if filter.is_empty() || display.is_empty() {
+        return Vec::new();
+    }
+
+    let char_offset = usize::from(display.starts_with('/'));
+    let search_target = &display[char_offset..];
+    let target_lower = search_target.to_lowercase();
+    let filter_lower = filter.to_lowercase();
+
+    if let Some(byte_idx) = target_lower.find(&filter_lower) {
+        let char_start = char_offset + target_lower[..byte_idx].chars().count();
+        let char_end = char_start + filter_lower.chars().count();
+        return vec![(char_start, char_end)];
+    }
+
+    let display_chars: Vec<char> = display.chars().collect();
+    let filter_chars: Vec<char> = filter_lower.chars().collect();
+    let mut ranges: Vec<(usize, usize)> = Vec::new();
+    let mut search_start = char_offset;
+
+    for needle_ch in &filter_chars {
+        let found = display_chars[search_start..]
+            .iter()
+            .enumerate()
+            .find_map(|(i, c)| {
+                (c.to_lowercase().next() == Some(*needle_ch)).then_some(search_start + i)
+            });
+        match found {
+            Some(pos) => {
+                ranges.push((pos, pos + 1));
+                search_start = pos + 1;
+            }
+            None => return Vec::new(),
+        }
+    }
+
+    merge_char_ranges(ranges)
+}
+
+fn merge_char_ranges(ranges: Vec<(usize, usize)>) -> Vec<(usize, usize)> {
+    if ranges.len() <= 1 {
+        return ranges;
+    }
+    let mut merged: Vec<(usize, usize)> = Vec::new();
+    let mut current = ranges[0];
+    for &(start, end) in &ranges[1..] {
+        if start <= current.1 {
+            current.1 = current.1.max(end);
+        } else {
+            merged.push(current);
+            current = (start, end);
+        }
+    }
+    merged.push(current);
+    merged
 }
 
 fn queued_command_preview(command: &QueuedCommand, max_preview_chars: usize) -> String {

@@ -161,7 +161,7 @@ pub use permission::{PermissionAccessKind, PermissionDetailView, PermissionSumma
 pub use prompt::{
     PromptAttachmentIndicator, PromptFooterHint, PromptFooterModel, PromptInputModel, PromptLayout,
     PromptModeIndicator, PromptQueueView, PromptQueuedCommandView, PromptSuggestion,
-    PromptSuggestionState,
+    PromptSuggestionState, find_match_chars,
 };
 /// Re-exports items from `render`
 pub use render::{

@@ -322,19 +322,56 @@ fn draw_slash_suggestions(
         .iter()
         .take(MAX_VISIBLE)
         .map(|e| {
-            let text = if e.description.is_empty() {
+            let base_style = if e.selected {
+                theme.prompt.bold()
+            } else {
+                theme.messages
+            };
+            let full_text = if e.description.is_empty() {
                 e.display.clone()
             } else {
                 format!("{} ─ {}", e.display, e.description)
             };
-            StyledLine::plain(
-                text,
-                if e.selected {
-                    theme.prompt.bold()
-                } else {
-                    theme.messages
-                },
-            )
+            if e.match_ranges.is_empty() {
+                return StyledLine::plain(full_text, base_style);
+            }
+            let highlight_style = base_style.underlined();
+            let display_chars: Vec<char> = e.display.chars().collect();
+            let mut spans: Vec<StyledSpan> = Vec::new();
+            let mut pos = 0usize;
+            for &(start, end) in &e.match_ranges {
+                let end = end.min(display_chars.len());
+                if start > pos {
+                    spans.push(StyledSpan {
+                        text: display_chars[pos..start].iter().collect(),
+                        style: base_style,
+                    });
+                }
+                if start < end {
+                    spans.push(StyledSpan {
+                        text: display_chars[start..end].iter().collect(),
+                        style: highlight_style,
+                    });
+                }
+                pos = end;
+            }
+            if pos < display_chars.len() {
+                spans.push(StyledSpan {
+                    text: display_chars[pos..].iter().collect(),
+                    style: base_style,
+                });
+            }
+            if !e.description.is_empty() {
+                spans.push(StyledSpan {
+                    text: format!(" ─ {}", e.description),
+                    style: base_style,
+                });
+            }
+            StyledLine {
+                text: full_text,
+                style: base_style,
+                spans,
+            }
         })
         .collect();
 
