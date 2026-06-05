@@ -63,6 +63,8 @@ pub enum RichMessageView {
     Thinking(ThinkingBlockView),
     /// Represents tool group
     ToolGroup(GroupedToolCallView),
+    /// Represents collapsed read/search group
+    CollapsedReadSearch(CollapsedReadSearchGroupView),
     /// Represents file edit reference
     FileEditReference(FileEditReferenceView),
     /// Represents attachment
@@ -83,6 +85,7 @@ impl RichMessageView {
             Self::Markdown(view) => view.display_lines(max_width),
             Self::Thinking(view) => view.display_lines(max_width),
             Self::ToolGroup(view) => view.display_lines(max_width, expand_output),
+            Self::CollapsedReadSearch(view) => view.display_lines(max_width),
             Self::FileEditReference(view) => view.display_lines(max_width),
             Self::Attachment(view) => view.display_lines(max_width),
             Self::SystemError(view) => view.display_lines(max_width),
@@ -96,23 +99,127 @@ impl RichMessageView {
 #[must_use]
 pub fn rich_message_views(
     messages: &[MessageEnvelope],
-    _expand_output: bool,
+    expand_output: bool,
 ) -> Vec<RichMessageView> {
+    rich_message_views_indexed(messages, expand_output)
+        .into_iter()
+        .map(|(v, _)| v)
+        .collect()
+}
+
+pub(super) fn rich_message_views_indexed(
+    messages: &[MessageEnvelope],
+    expand_output: bool,
+) -> Vec<(RichMessageView, usize)> {
     let mut views = Vec::new();
     let mut index = 0usize;
 
     while index < messages.len() {
         if let Some((group, consumed)) = grouped_tool_call_view(&messages[index..]) {
-            views.push(RichMessageView::ToolGroup(group));
+            views.push((RichMessageView::ToolGroup(group), consumed));
             index = index.saturating_add(consumed);
             continue;
         }
 
-        views.push(single_message_view(&messages[index]));
+        views.push((single_message_view(&messages[index]), 1));
         index = index.saturating_add(1);
     }
 
-    views
+    if expand_output {
+        return views;
+    }
+
+    collapse_consecutive_tool_groups(views)
+}
+
+fn is_collapsible_tool(tool: &str) -> bool {
+    let lower = tool.to_ascii_lowercase();
+    lower == "file_read"
+        || lower == "glob"
+        || lower == "grep"
+        || lower == "rg"
+        || lower == "search"
+        || lower == "find"
+}
+
+fn merge_tool_group_into_collapsed(
+    group: &GroupedToolCallView,
+    collapsed: &mut CollapsedReadSearchGroupView,
+) {
+    let lower = group.tool.to_ascii_lowercase();
+    if lower == "file_read" {
+        collapsed.read_count += group.calls.len();
+        for call in &group.calls {
+            if let Some(input) = &call.input {
+                if let Some(path) = input.get("path").and_then(|v| v.as_str()) {
+                    collapsed.file_paths.push(path.to_string());
+                }
+            }
+        }
+    } else {
+        collapsed.search_count += group.calls.len();
+        for call in &group.calls {
+            if let Some(input) = &call.input {
+                let pattern = input
+                    .get("pattern")
+                    .or_else(|| input.get("query"))
+                    .or_else(|| input.get("prompt"))
+                    .and_then(|v| v.as_str());
+                if let Some(p) = pattern {
+                    collapsed.search_patterns.push(p.to_string());
+                }
+            }
+        }
+    }
+}
+
+fn collapse_consecutive_tool_groups(
+    views: Vec<(RichMessageView, usize)>,
+) -> Vec<(RichMessageView, usize)> {
+    let mut result: Vec<(RichMessageView, usize)> = Vec::new();
+    let mut i = 0;
+
+    while i < views.len() {
+        let current = &views[i];
+        if let RichMessageView::ToolGroup(group) = &current.0 {
+            if is_collapsible_tool(&group.tool) {
+                let mut collapsed = CollapsedReadSearchGroupView::default();
+                let mut total_consumed = 0usize;
+                let mut group_count = 0usize;
+
+                while i < views.len() {
+                    match &views[i].0 {
+                        RichMessageView::ToolGroup(next) if is_collapsible_tool(&next.tool) => {
+                            merge_tool_group_into_collapsed(next, &mut collapsed);
+                            total_consumed += views[i].1;
+                            group_count += 1;
+                            i += 1;
+                        }
+                        _ => break,
+                    }
+                }
+
+                if group_count > 1
+                    || (group_count == 1 && collapsed.read_count + collapsed.search_count > 1)
+                {
+                    result.push((
+                        RichMessageView::CollapsedReadSearch(collapsed),
+                        total_consumed,
+                    ));
+                } else {
+                    result.push((
+                        RichMessageView::ToolGroup(group.clone()),
+                        total_consumed,
+                    ));
+                }
+                continue;
+            }
+        }
+        result.push(views[i].clone());
+        i += 1;
+    }
+
+    result
 }
 
 fn single_message_view(message: &MessageEnvelope) -> RichMessageView {
@@ -1039,6 +1146,52 @@ fn tool_group_summary_verb(tool: &str, calls: &[ToolCallView]) -> String {
             if reads == 1 { "file" } else { "files" },
             if searches == 1 { "path" } else { "paths" }
         ),
+    }
+}
+
+/// Collapses consecutive file read and search tool calls into a single compact summary.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CollapsedReadSearchGroupView {
+    /// Number of file read operations in this group.
+    pub read_count: usize,
+    /// Number of search/grep/glob/find operations in this group.
+    pub search_count: usize,
+    /// Paths of files that were read.
+    pub file_paths: Vec<String>,
+    /// Patterns that were searched for.
+    pub search_patterns: Vec<String>,
+}
+
+impl Default for CollapsedReadSearchGroupView {
+    fn default() -> Self {
+        Self {
+            read_count: 0,
+            search_count: 0,
+            file_paths: Vec::new(),
+            search_patterns: Vec::new(),
+        }
+    }
+}
+
+impl CollapsedReadSearchGroupView {
+    /// Renders the collapsed summary as display lines.
+    pub fn display_lines(&self, _max_width: usize) -> Vec<MessageLineView> {
+        let mut parts = Vec::new();
+        if self.read_count > 0 {
+            let noun = if self.read_count == 1 { "file" } else { "files" };
+            parts.push(format!("Read {} {}", self.read_count, noun));
+        }
+        if self.search_count > 0 {
+            let noun = if self.search_count == 1 { "pattern" } else { "patterns" };
+            parts.push(format!("searched for {} {}", self.search_count, noun));
+        }
+        if parts.is_empty() {
+            return Vec::new();
+        }
+        vec![MessageLineView::new(
+            format!("\u{293f}  {}", parts.join(", ")),
+            MessageRole::Tool,
+        )]
     }
 }
 

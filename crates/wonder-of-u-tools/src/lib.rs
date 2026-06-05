@@ -6,6 +6,7 @@
 mod agent_tool;
 mod ask_user_tool;
 mod bash;
+mod classify_result;
 mod communication_tools;
 mod cron_remote;
 mod extended;
@@ -43,6 +44,8 @@ pub use agent_tool::{
 pub use ask_user_tool::{AskUserInput, AskUserTool};
 /// Re-exports items from `bash`
 pub use bash::{BashInput, BashTool};
+/// Re-exports items from `classify_result`
+pub use classify_result::ClassifyResultTool;
 /// Re-exports items from `communication_tools`
 pub use communication_tools::{
     ListPeersInput, ListPeersTool, SendMessageInput, SendMessageTool, TeamCreateInput,
@@ -191,6 +194,7 @@ pub fn builtin_tools() -> Vec<Arc<dyn Tool>> {
         Arc::new(SubscribePrTool),
         Arc::new(SnipTool),
         Arc::new(TungstenTool),
+        Arc::new(ClassifyResultTool),
     ]
 }
 
@@ -397,7 +401,8 @@ mod tests {
                 "monitor",
                 "subscribe_pr",
                 "snip",
-                "tungsten"
+                "tungsten",
+                "classify_result"
             ]
         );
     }

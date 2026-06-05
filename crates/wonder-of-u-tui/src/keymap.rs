@@ -13,6 +13,8 @@ pub enum KeyBindingContext {
     VimInsert,
     /// Represents vim normal
     VimNormal,
+    /// When navigating messages in the transcript with a cursor.
+    MessageActions,
 }
 /// Enumerates system action
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

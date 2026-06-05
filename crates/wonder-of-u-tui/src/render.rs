@@ -242,6 +242,9 @@ pub struct ShellView {
     ///
     /// Shown in the loading area above the prompt.  Empty when no tool is running.
     pub tool_progress: Vec<String>,
+    /// Index of the message that is currently highlighted by the message cursor.
+    /// `None` when message cursor mode is not active.
+    pub message_cursor_index: Option<usize>,
 }
 
 impl ShellView {
@@ -365,6 +368,7 @@ impl ShellView {
                 app.context_window_size,
             ),
             tool_progress: Vec::new(),
+            message_cursor_index: None,
         }
     }
 }

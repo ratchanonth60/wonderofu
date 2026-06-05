@@ -57,12 +57,12 @@ fn resolve_session_id(store: &TranscriptStore, session_id: Option<&str>) -> Resu
 }
 
 #[cfg(target_os = "macos")]
-fn write_to_clipboard(text: &str) -> Result<()> {
+pub(crate) fn write_to_clipboard(text: &str) -> Result<()> {
     run_clipboard_command("pbcopy", &[], text)
 }
 
 #[cfg(target_os = "linux")]
-fn write_to_clipboard(text: &str) -> Result<()> {
+pub(crate) fn write_to_clipboard(text: &str) -> Result<()> {
     for (command, args) in [
         ("xclip", &["-selection", "clipboard"][..]),
         ("xsel", &["--clipboard", "--input"][..]),
@@ -78,12 +78,12 @@ fn write_to_clipboard(text: &str) -> Result<()> {
 }
 
 #[cfg(target_os = "windows")]
-fn write_to_clipboard(text: &str) -> Result<()> {
+pub(crate) fn write_to_clipboard(text: &str) -> Result<()> {
     run_clipboard_command("clip", &[], text)
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
-fn write_to_clipboard(_text: &str) -> Result<()> {
+pub(crate) fn write_to_clipboard(_text: &str) -> Result<()> {
     Err(WonderError::validation(
         "clipboard copy is unsupported on this platform",
     ))

@@ -81,10 +81,11 @@ pub(super) fn maybe_spawn_extract_memories(
     if !handle.should_run(count) {
         return;
     }
+
+    let new_msgs = count.saturating_sub(handle.last_count);
     handle.last_count = count;
 
     let conversation = build_conversation_text(messages);
-    let new_msgs = count.saturating_sub(handle.last_count.saturating_sub(count));
     let mem_dir = memdir::auto_mem_dir(cwd, storage_dir);
 
     // Ensure memory dir exists — create silently if not.

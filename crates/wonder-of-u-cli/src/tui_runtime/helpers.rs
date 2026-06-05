@@ -305,6 +305,7 @@ pub(super) fn prompt_cursor_position(
         sidebar: None,
         prompt_warning: None,
         tool_progress: Vec::new(),
+        message_cursor_index: None,
     }
     .prompt_height();
     // Apply the same 1/3-terminal cap used by the renderer.
@@ -413,6 +414,7 @@ pub(super) fn history_search_cursor_position(
         sidebar: None,
         prompt_warning: None,
         tool_progress: Vec::new(),
+        message_cursor_index: None,
     }
     .prompt_height();
     let warning_height = u16::from(prompt_warning_visible);
@@ -1339,9 +1341,16 @@ pub(super) fn is_image_file_path(s: &str) -> bool {
         || lower.ends_with(".webp")
 }
 
+/// Maximum file size for image attachments (10 MB).
+const MAX_IMAGE_FILE_SIZE: u64 = 10 * 1024 * 1024;
+
 /// Reads an image file and returns an `ImageAttachment` with base64-encoded data.
 pub(super) fn read_image_file(path: &str) -> Option<wonder_of_u_agent::ImageAttachment> {
     let path = path.trim();
+    let metadata = std::fs::metadata(path).ok()?;
+    if metadata.len() > MAX_IMAGE_FILE_SIZE {
+        return None;
+    }
     let bytes = std::fs::read(path).ok()?;
     let lower = path.to_ascii_lowercase();
     let media_type = if lower.ends_with(".png") {

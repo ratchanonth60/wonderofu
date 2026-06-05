@@ -49,11 +49,11 @@ use wonder_of_u_tui::{
     CrosstermEventSource, DialogActionView, DialogView, EditAction, EventLoop,
     GlobalSearchOverlayView, HistorySearchView, KeyBindingContext, KeyBindingResolver, KeyCode,
     KeyEvent, MouseButton, MouseEventKind, NotificationInput, NotificationLifetime,
-    NotificationQueue,
-    NotificationSeverity, PermissionSummaryView, PickerListEntry, PickerListView, PromptSuggestion,
-    PromptSuggestionState, Rect, ResolvedKey, ShellLayout, ShellView, SlashSuggestionEntry,
-    SlashSuggestionsOverlay, TextBuffer, Theme, TranscriptScrollView, TurnState, UiEvent, VimMode,
-    VimState, message::SearchMatch, message_lines_for_width, shell_main_area_width,
+    NotificationQueue, NotificationSeverity, PermissionSummaryView, PickerListEntry,
+    PickerListView, PromptSuggestion, PromptSuggestionState, Rect, ResolvedKey, ShellLayout,
+    ShellView, SlashSuggestionEntry, SlashSuggestionsOverlay, TextBuffer, Theme,
+    TranscriptScrollView, TurnState, UiEvent, VimMode, VimState, message::SearchMatch,
+    message_lines_for_width, message_lines_for_width_with_cursor, shell_main_area_width,
 };
 
 use crate::commands;
@@ -73,9 +73,11 @@ const PICKER_CONTROLS_NOTE: &str =
 const HISTORY_SEARCH_CONTROLS_NOTE: &str =
     "type to filter, Ctrl+R/Up/Down to cycle, Enter to accept, Esc to cancel";
 /// Number of ticks before an auto-dismissed task notification dialog disappears.
-const TASK_NOTICE_TTL: u8 = 30;
+/// Tick interval is 50 ms, so 300 ticks = ~15 s.
+const TASK_NOTICE_TTL: u16 = 300;
 /// Default lifetime for non-blocking shell overlay notifications.
-const SHELL_NOTIFICATION_TTL: u32 = 30;
+/// Tick interval is 50 ms, so 300 ticks = ~15 s.
+const SHELL_NOTIFICATION_TTL: u32 = 300;
 
 fn keyboard_enhancement_flags() -> KeyboardEnhancementFlags {
     KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
@@ -159,35 +161,38 @@ pub(crate) fn run_tui<W: Write>(
             }
 
             if controller.selection_mode {
-                let ev = crossterm::event::read()
-                    .map_err(|e| WonderError::internal(format!("crossterm read: {e}")))?;
-                if matches!(ev, crossterm::event::Event::Key(_)) {
-                    execute!(term.backend_mut(), EnableMouseCapture)?;
-                    controller.exit_selection_mode();
-                    was_selection_mode = false;
-                    render_tui(&mut term, &controller)?;
-                    controller.mark_rendered();
+                if crossterm::event::poll(Duration::from_millis(50))
+                    .map_err(|e| WonderError::internal(format!("crossterm poll: {e}")))?
+                {
+                    let ev = crossterm::event::read()
+                        .map_err(|e| WonderError::internal(format!("crossterm read: {e}")))?;
+                    if matches!(ev, crossterm::event::Event::Key(_)) {
+                        execute!(term.backend_mut(), EnableMouseCapture)?;
+                        controller.exit_selection_mode();
+                        was_selection_mode = false;
+                        render_tui(&mut term, &controller)?;
+                        controller.mark_rendered();
+                    }
                 }
-                continue;
-            }
+            } else {
+                let event = events.next_event().await?;
+                controller.handle_event(event).await?;
 
-            let event = events.next_event().await?;
-            controller.handle_event(event).await?;
-
-            if let Some(request) = controller.take_external_editor_request() {
-                restore_ratatui_terminal(&mut term);
-                let result = launch_external_editor(&request);
-                terminal::enable_raw_mode()?;
-                execute!(
-                    term.backend_mut(),
-                    EnterAlternateScreen,
-                    Hide,
-                    EnableBracketedPaste,
-                    EnableMouseCapture,
-                    PushKeyboardEnhancementFlags(keyboard_enhancement_flags())
-                )?;
-                term.clear()?;
-                controller.finish_external_editor_request(&request, result);
+                if let Some(request) = controller.take_external_editor_request() {
+                    restore_ratatui_terminal(&mut term);
+                    let result = launch_external_editor(&request);
+                    terminal::enable_raw_mode()?;
+                    execute!(
+                        term.backend_mut(),
+                        EnterAlternateScreen,
+                        Hide,
+                        EnableBracketedPaste,
+                        EnableMouseCapture,
+                        PushKeyboardEnhancementFlags(keyboard_enhancement_flags())
+                    )?;
+                    term.clear()?;
+                    controller.finish_external_editor_request(&request, result);
+                }
             }
 
             if controller.has_active_turn() {
@@ -201,7 +206,10 @@ pub(crate) fn run_tui<W: Write>(
 
             // Drain queued commands between turns so chained slash-commands
             // (e.g. /model + automatic prompt) run without blocking the UI.
-            if !controller.has_active_turn() && !controller.state.queued_commands.is_empty() {
+            if !controller.selection_mode
+                && !controller.has_active_turn()
+                && !controller.state.queued_commands.is_empty()
+            {
                 controller.drain_queued_commands().await?;
             }
         }

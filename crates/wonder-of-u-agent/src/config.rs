@@ -95,6 +95,10 @@ pub struct AgentSettings {
     /// AI response and its stdout replaces the default footer bar text.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub status_line: Option<StatusLineConfig>,
+    /// Whether the user has acknowledged the $5 cost threshold dialog.
+    /// Once acknowledged, the dialog won't appear again.
+    #[serde(default)]
+    pub has_acknowledged_cost_threshold: bool,
 }
 /// Represents provider override
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
@@ -214,6 +218,10 @@ impl SettingsHierarchy {
             // fast_mode: first layer that enables it wins.
             if !merged.fast_mode && s.fast_mode {
                 merged.fast_mode = true;
+            }
+            // has_acknowledged_cost_threshold: first layer that acknowledges wins.
+            if !merged.has_acknowledged_cost_threshold && s.has_acknowledged_cost_threshold {
+                merged.has_acknowledged_cost_threshold = true;
             }
             if merged.effort_level.is_none() {
                 merged.effort_level = s.effort_level.clone();

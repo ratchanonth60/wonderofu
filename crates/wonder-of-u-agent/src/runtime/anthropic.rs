@@ -433,7 +433,7 @@ fn truncate_tool_result(content: &str) -> std::borrow::Cow<'_, str> {
     let byte_end = content
         .char_indices()
         .map(|(i, _)| i)
-        .take_while(|&i| i < MAX_TOOL_RESULT_CHARS)
+        .take_while(|&i| i <= MAX_TOOL_RESULT_CHARS)
         .last()
         .unwrap_or(0);
     let kept = &content[..byte_end];

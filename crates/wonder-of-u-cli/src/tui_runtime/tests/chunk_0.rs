@@ -610,8 +610,8 @@ fn controller_view_loading_elapsed_secs_increases_with_ticks() {
 
     controller.turn_state = TurnState::ModelRequestActive;
 
-    // Fire 4 ticks — each advances loading_frame by 1; elapsed_secs = frame / 2.
-    for _ in 0..4 {
+    // Fire 40 ticks — each advances loading_frame by 1; elapsed_secs = frame / 20.
+    for _ in 0..40 {
         block_on(controller.handle_event(UiEvent::Tick)).expect("tick");
     }
 
@@ -619,7 +619,7 @@ fn controller_view_loading_elapsed_secs_increases_with_ticks() {
     assert!(view.loading, "view must be in loading state");
     assert_eq!(
         view.loading_elapsed_secs, 2,
-        "4 ticks at 500ms each → 2 elapsed seconds"
+        "40 ticks at 50ms each → 2 elapsed seconds"
     );
 }
 

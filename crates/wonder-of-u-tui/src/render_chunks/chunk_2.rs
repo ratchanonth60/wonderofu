@@ -199,7 +199,10 @@ fn message_lines_to_styled(lines: &[MessageLineView], theme: &Theme) -> Vec<Styl
     lines
         .iter()
         .map(|line| {
-            let base_style = style_for_message(theme, line.role);
+            let mut base_style = style_for_message(theme, line.role);
+            if line.highlight {
+                base_style.bg = Some(theme.status.fg.unwrap_or(Color::Cyan));
+            }
             let spans = line
                 .spans
                 .iter()

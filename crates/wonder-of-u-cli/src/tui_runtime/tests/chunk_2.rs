@@ -756,6 +756,7 @@ fn ratatui_message_text_appears_in_frame() {
             role: MessageRole::User,
             text: "test user message".into(),
             spans: Vec::new(),
+            highlight: false,
         }],
         status: "m".into(),
         footer: "f".into(),
