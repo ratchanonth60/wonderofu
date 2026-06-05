@@ -140,13 +140,12 @@ pub use measure::{
 pub use message::{
     AttachmentKind, AttachmentSummaryView, CollapsedReadSearchGroupView, FileEditReferenceView,
     GroupedToolCallView, HistorySearchView, MarkdownBlockView, MarkdownCodeBlockView,
-    MarkdownSummaryView,
-    McpCatalogItemView, McpCatalogKind, McpCatalogSummaryView, MessageLineView, MessageRole,
-    NotebookEditMode, NotebookRejectionSummaryView, PickerListEntry, PickerListView, PickerView,
-    RejectedPermissionSummaryView, RejectedToolMessageKind, RejectedToolMessageView,
-    RichMessageView, SystemErrorKind, SystemErrorView, TaskActivityKind, TaskActivitySummaryView,
-    TaskPanelView, ThinkingBlockView, ToolCallView, ToolResultCounts, ToolResultStatus,
-    TranscriptBoundaryView, UnknownToolOutputView, footer_text, message_lines,
+    MarkdownSummaryView, McpCatalogItemView, McpCatalogKind, McpCatalogSummaryView,
+    MessageLineView, MessageRole, NotebookEditMode, NotebookRejectionSummaryView, PickerListEntry,
+    PickerListView, PickerView, RejectedPermissionSummaryView, RejectedToolMessageKind,
+    RejectedToolMessageView, RichMessageView, SystemErrorKind, SystemErrorView, TaskActivityKind,
+    TaskActivitySummaryView, TaskPanelView, ThinkingBlockView, ToolCallView, ToolResultCounts,
+    ToolResultStatus, TranscriptBoundaryView, UnknownToolOutputView, footer_text, message_lines,
     message_lines_for_width, message_lines_for_width_with_cursor, queued_panel_view,
     rich_message_views, status_text, task_panel_view,
 };
@@ -167,8 +166,9 @@ pub use prompt::{
 /// Re-exports items from `render`
 pub use render::{
     ContextSuggestion, ContextSuggestionsView, GlobalSearchOverlayView, MIN_SIDEBAR_WIDTH,
-    SIDEBAR_WIDTH, ShellView, SidebarView, SlashSuggestionEntry, SlashSuggestionsOverlay,
-    SuggestionSeverity, TranscriptScrollView, render_shell, render_snapshot, shell_main_area_width,
+    PromptWarningSeverity, PromptWarningView, SIDEBAR_WIDTH, ShellView, SidebarView,
+    SlashSuggestionEntry, SlashSuggestionsOverlay, SuggestionSeverity, TranscriptScrollView,
+    render_shell, render_snapshot, shell_main_area_width,
 };
 /// Re-exports items from `security`
 pub use security::{

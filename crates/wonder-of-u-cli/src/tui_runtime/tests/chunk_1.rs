@@ -1359,6 +1359,43 @@ fn controller_queues_external_editor_for_memory_open() {
 }
 
 #[test]
+fn memory_file_selector_confirm_sets_external_editor() {
+    let dir = unique_test_dir("tui-memory-file-selector");
+    let _editor = EnvVarGuard::set("EDITOR", "vi");
+    let registry = commands::registry(Some(dir.clone())).expect("registry");
+    let mut controller = TuiController::new(
+        test_context(&dir),
+        &registry,
+        Some(dir.as_path()),
+        TuiLaunchOptions { session_id: None },
+    )
+    .expect("controller");
+
+    controller.open_memory_file_selector();
+    assert!(controller.pending_memory_file_selector.is_some());
+
+    // Confirm (Enter) selects first entry (project CLAUDE.md)
+    block_on(controller.handle_key_event(wonder_of_u_tui::KeyEvent {
+        code: wonder_of_u_tui::KeyCode::Enter,
+        modifiers: wonder_of_u_tui::KeyModifiers::default(),
+    }))
+    .expect("confirm");
+
+    assert!(controller.pending_memory_file_selector.is_none());
+    assert_eq!(
+        controller.pending_external_editor.as_ref(),
+        Some(&ExternalEditorRequest {
+            cwd: dir.clone(),
+            path: dir.join("CLAUDE.md"),
+        })
+    );
+    assert_eq!(
+        controller.status_note.as_deref(),
+        Some("opening file in editor")
+    );
+}
+
+#[test]
 fn clear_reloads_live_view_without_recording_command_message() {
     let dir = unique_test_dir("tui-slash-clear");
     let registry = commands::registry(Some(dir.clone())).expect("registry");

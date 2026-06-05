@@ -125,6 +125,26 @@ impl TuiController<'_> {
         // Live shell output lines (only populated while a bash/shell tool is running).
         view.tool_progress = self.tool_progress_lines.clone().into();
 
+        // Input length warning: supplement the context warning when the user
+        // has typed a very long prompt that may exceed the model's context window.
+        const INPUT_WARN_CHARS: usize = 8_000;
+        const INPUT_CRITICAL_CHARS: usize = 20_000;
+        let input_chars = self.prompt.text().chars().count();
+        if view.prompt_warning.is_none() && input_chars >= INPUT_WARN_CHARS {
+            let severity = if input_chars >= INPUT_CRITICAL_CHARS {
+                wonder_of_u_tui::PromptWarningSeverity::Critical
+            } else {
+                wonder_of_u_tui::PromptWarningSeverity::Warning
+            };
+            view.prompt_warning = Some(wonder_of_u_tui::PromptWarningView {
+                text: format!(
+                    "Long input ({} chars) — context usage may be high",
+                    input_chars
+                ),
+                severity,
+            });
+        }
+
         // Compact Claude-style footer; verbose cwd/provider/model metadata lives in the sidebar.
         let permission_label = permission_mode_output_label(self.state.permission_mode);
         let vim_hint = if self.vim_enabled {

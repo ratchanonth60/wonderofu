@@ -1437,6 +1437,27 @@ impl TuiController<'_> {
             self.enter_selection_mode();
             return Ok(());
         }
+        // /resume (no args) → interactive session picker
+        if trimmed == "/resume" {
+            self.open_log_selector();
+            return Ok(());
+        }
+        if trimmed == "/export" {
+            self.open_export_dialog();
+            return Ok(());
+        }
+        if trimmed == "/output-style" || trimmed == "/output-style list" {
+            self.open_output_style_picker();
+            return Ok(());
+        }
+        if trimmed == "/memory-files" || trimmed == "/memory files" {
+            self.open_memory_file_selector();
+            return Ok(());
+        }
+        if trimmed == "/hooks-menu" || trimmed == "/hooks menu" {
+            self.open_hooks_menu();
+            return Ok(());
+        }
         let invocation = parse_slash_command(input)
             .ok_or_else(|| WonderError::validation("invalid slash command"))?;
         let context = self.command_context();

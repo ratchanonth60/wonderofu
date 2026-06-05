@@ -85,8 +85,7 @@ impl TuiController<'_> {
                 if matches!(resolved, Some(ResolvedKey::Edit(EditAction::InsertNewline))) {
                     self.confirm_log_selector()?;
                 } else {
-                    self.status_note =
-                        Some("↑↓/j/k navigate  Enter select  Esc cancel".into());
+                    self.status_note = Some("↑↓/j/k navigate  Enter select  Esc cancel".into());
                     self.needs_render = true;
                 }
             }

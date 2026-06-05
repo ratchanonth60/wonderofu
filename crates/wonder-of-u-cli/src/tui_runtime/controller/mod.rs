@@ -163,6 +163,12 @@ pub(super) struct TuiController<'a> {
     pub(super) pending_log_selector: Option<LogSelectorState>,
     /// Ephemeral export dialog state.  Never persisted.
     pub(super) pending_export_dialog: Option<ExportDialogState>,
+    /// Ephemeral output-style picker state.  Never persisted.
+    pub(super) pending_output_style_picker: Option<OutputStylePickerState>,
+    /// Ephemeral memory file selector state.  Never persisted.
+    pub(super) pending_memory_file_selector: Option<MemoryFileSelectorState>,
+    /// Ephemeral hooks config browser state.  Never persisted.
+    pub(super) pending_hooks_menu: Option<HooksMenuState>,
 }
 #[derive(Clone, Debug, Default)]
 pub(super) struct DiffFileEntry {
@@ -196,9 +202,81 @@ pub(super) struct LogSelectorState {
     pub selected_index: usize,
 }
 
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub(super) enum ExportDialogMode {
+    #[default]
+    PickOption,
+    EnterFilename,
+}
+
 #[derive(Clone, Debug)]
 pub(super) struct ExportDialogState {
     pub selected_index: usize,
+    pub mode: ExportDialogMode,
+    pub filename: TextBuffer,
+}
+
+impl Default for ExportDialogState {
+    fn default() -> Self {
+        Self {
+            selected_index: 0,
+            mode: ExportDialogMode::default(),
+            filename: TextBuffer::from_text("transcript.md", false),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) struct OutputStyleOption {
+    pub name: &'static str,
+    pub description: &'static str,
+}
+
+#[derive(Clone, Debug)]
+pub(super) struct OutputStylePickerState {
+    pub selected_index: usize,
+    pub current: String,
+    pub options: Vec<OutputStyleOption>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) struct MemoryFileEntry {
+    pub kind: String,
+    pub label: String,
+    pub path: PathBuf,
+    pub exists: bool,
+    pub depth: usize,
+}
+
+#[derive(Clone, Debug)]
+pub(super) struct MemoryFileSelectorState {
+    pub selected_index: usize,
+    pub entries: Vec<MemoryFileEntry>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) struct HooksMenuEntry {
+    pub event: String,
+    pub matcher: String,
+    pub kind: String,
+    pub target: String,
+    pub condition: Option<String>,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub(super) enum HooksMenuScreen {
+    #[default]
+    Browse,
+    ViewDetail(usize),
+}
+
+#[derive(Clone, Debug)]
+pub(super) struct HooksMenuState {
+    pub entries: Vec<HooksMenuEntry>,
+    pub selected_index: usize,
+    pub screen: HooksMenuScreen,
+    pub disabled: bool,
+    pub config_path: String,
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -391,9 +469,13 @@ pub(super) enum ActiveTurn {
 pub(super) mod autocompact;
 pub(super) mod dialogs;
 pub(super) mod events;
+pub(super) mod export_dialog;
 pub(super) mod history;
+pub(super) mod hooks_menu;
 pub(super) mod log_selector;
+pub(super) mod memory_file_selector;
 pub(super) mod message_cursor;
+pub(super) mod output_style_picker;
 pub(super) mod search;
 pub(super) mod selection;
 pub(super) mod state;
@@ -967,6 +1049,9 @@ impl<'a> TuiController<'a> {
             diff_dialog: None,
             pending_log_selector: None,
             pending_export_dialog: None,
+            pending_output_style_picker: None,
+            pending_memory_file_selector: None,
+            pending_hooks_menu: None,
         };
         controller.hydrate_initial_settings()?;
         controller.refresh_runtime_state()?;
@@ -1278,6 +1363,9 @@ impl<'a> TuiController<'a> {
         self.pending_theme_picker = None;
         self.pending_model_picker = None;
         self.pending_setup_overlay = None;
+        self.pending_output_style_picker = None;
+        self.pending_memory_file_selector = None;
+        self.pending_hooks_menu = None;
     }
     pub(super) fn has_modal_overlay(&self) -> bool {
         self.dialog.is_some()
@@ -1362,6 +1450,9 @@ impl<'a> TuiController<'a> {
             || self.pending_provider_form.is_some()
             || self.pending_message_selector.is_some()
             || self.pending_log_selector.is_some()
+            || self.pending_output_style_picker.is_some()
+            || self.pending_memory_file_selector.is_some()
+            || self.pending_hooks_menu.is_some()
     }
     pub(super) fn current_picker_list_view(&self) -> Option<PickerListView> {
         const PICKER_HINT: &str = "↑↓ navigate  Tab/Enter select  Esc cancel";
@@ -1527,10 +1618,7 @@ impl<'a> TuiController<'a> {
                             entry.title.clone()
                         };
                         let time_label = relative_time_label(entry.updated_at);
-                        let desc = format!(
-                            "{} messages · {}",
-                            entry.message_count, time_label
-                        );
+                        let desc = format!("{} messages · {}", entry.message_count, time_label);
                         let tag = entry.tags.first().map(|t| format!("#{t}"));
                         PickerListEntry {
                             label,
@@ -1562,6 +1650,140 @@ impl<'a> TuiController<'a> {
                     .collect(),
                 hint: "\u{2191}\u{2193} navigate  Tab/Enter rewind  Esc cancel".into(),
             });
+        }
+        if let Some(picker) = &self.pending_export_dialog {
+            if picker.mode == ExportDialogMode::PickOption {
+                return Some(PickerListView {
+                    title: "Export Session".into(),
+                    query: String::new(),
+                    entries: vec![
+                        PickerListEntry {
+                            label: "Copy to clipboard".into(),
+                            description: "Copy full transcript as markdown".into(),
+                            tag: None,
+                            selected: picker.selected_index == 0,
+                            group_header: None,
+                        },
+                        PickerListEntry {
+                            label: "Save to file".into(),
+                            description: "Write transcript to a file".into(),
+                            tag: None,
+                            selected: picker.selected_index == 1,
+                            group_header: None,
+                        },
+                    ],
+                    hint: "\u{2191}\u{2193} navigate  Enter select  Esc cancel".into(),
+                });
+            }
+            // EnterFilename mode: show the filename buffer as query
+            return Some(PickerListView {
+                title: "Save Transcript As".into(),
+                query: picker.filename.text().to_string(),
+                entries: Vec::new(),
+                hint: "Type filename  Enter confirm  Esc back".into(),
+            });
+        }
+        if let Some(picker) = &self.pending_output_style_picker {
+            return Some(PickerListView {
+                title: "Select Output Style".into(),
+                query: String::new(),
+                entries: picker
+                    .options
+                    .iter()
+                    .enumerate()
+                    .map(|(i, opt)| PickerListEntry {
+                        label: opt.name.to_string(),
+                        description: opt.description.to_string(),
+                        tag: (picker.current == opt.name).then(|| "current".into()),
+                        selected: i == picker.selected_index,
+                        group_header: None,
+                    })
+                    .collect(),
+                hint: "\u{2191}\u{2193} navigate  Enter select  Esc cancel".into(),
+            });
+        }
+        if let Some(picker) = &self.pending_memory_file_selector {
+            return Some(PickerListView {
+                title: "Select Memory File".into(),
+                query: String::new(),
+                entries: picker
+                    .entries
+                    .iter()
+                    .enumerate()
+                    .map(|(i, entry)| {
+                        let indent = "  ".repeat(entry.depth);
+                        let exists_tag = if entry.exists {
+                            None
+                        } else {
+                            Some("(new)".into())
+                        };
+                        PickerListEntry {
+                            label: format!("{}{}", indent, entry.label),
+                            description: entry.path.to_string_lossy().into_owned(),
+                            tag: exists_tag,
+                            selected: i == picker.selected_index,
+                            group_header: None,
+                        }
+                    })
+                    .collect(),
+                hint: "\u{2191}\u{2193} navigate  Enter open  Esc cancel".into(),
+            });
+        }
+        if let Some(menu) = &self.pending_hooks_menu {
+            if menu.screen == HooksMenuScreen::Browse {
+                if menu.entries.is_empty() {
+                    return Some(PickerListView {
+                        title: "Hooks Config".into(),
+                        query: String::new(),
+                        entries: vec![PickerListEntry {
+                            label: if menu.disabled {
+                                "All hooks disabled".into()
+                            } else {
+                                "No hooks configured".into()
+                            },
+                            description: format!("Config: {}", menu.config_path),
+                            tag: None,
+                            selected: false,
+                            group_header: None,
+                        }],
+                        hint: "Esc close  /hooks open to configure".into(),
+                    });
+                }
+                let mut last_event: Option<&str> = None;
+                return Some(PickerListView {
+                    title: "Hooks Config".into(),
+                    query: String::new(),
+                    entries: menu
+                        .entries
+                        .iter()
+                        .enumerate()
+                        .map(|(i, entry)| {
+                            let group_header = if last_event != Some(entry.event.as_str()) {
+                                last_event = Some(entry.event.as_str());
+                                Some(entry.event.clone())
+                            } else {
+                                None
+                            };
+                            PickerListEntry {
+                                label: format!(
+                                    "{} → {}",
+                                    if entry.matcher == "*" {
+                                        "(all tools)".to_string()
+                                    } else {
+                                        entry.matcher.clone()
+                                    },
+                                    entry.target.chars().take(40).collect::<String>()
+                                ),
+                                description: entry.kind.clone(),
+                                tag: entry.condition.as_ref().map(|c| format!("if {c}")),
+                                selected: i == menu.selected_index,
+                                group_header,
+                            }
+                        })
+                        .collect(),
+                    hint: "\u{2191}\u{2193} navigate  Enter details  Esc close".into(),
+                });
+            }
         }
         None
     }

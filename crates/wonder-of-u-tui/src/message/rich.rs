@@ -207,10 +207,7 @@ fn collapse_consecutive_tool_groups(
                         total_consumed,
                     ));
                 } else {
-                    result.push((
-                        RichMessageView::ToolGroup(group.clone()),
-                        total_consumed,
-                    ));
+                    result.push((RichMessageView::ToolGroup(group.clone()), total_consumed));
                 }
                 continue;
             }
@@ -1150,7 +1147,7 @@ fn tool_group_summary_verb(tool: &str, calls: &[ToolCallView]) -> String {
 }
 
 /// Collapses consecutive file read and search tool calls into a single compact summary.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct CollapsedReadSearchGroupView {
     /// Number of file read operations in this group.
     pub read_count: usize,
@@ -1162,27 +1159,24 @@ pub struct CollapsedReadSearchGroupView {
     pub search_patterns: Vec<String>,
 }
 
-impl Default for CollapsedReadSearchGroupView {
-    fn default() -> Self {
-        Self {
-            read_count: 0,
-            search_count: 0,
-            file_paths: Vec::new(),
-            search_patterns: Vec::new(),
-        }
-    }
-}
-
 impl CollapsedReadSearchGroupView {
     /// Renders the collapsed summary as display lines.
     pub fn display_lines(&self, _max_width: usize) -> Vec<MessageLineView> {
         let mut parts = Vec::new();
         if self.read_count > 0 {
-            let noun = if self.read_count == 1 { "file" } else { "files" };
+            let noun = if self.read_count == 1 {
+                "file"
+            } else {
+                "files"
+            };
             parts.push(format!("Read {} {}", self.read_count, noun));
         }
         if self.search_count > 0 {
-            let noun = if self.search_count == 1 { "pattern" } else { "patterns" };
+            let noun = if self.search_count == 1 {
+                "pattern"
+            } else {
+                "patterns"
+            };
             parts.push(format!("searched for {} {}", self.search_count, noun));
         }
         if parts.is_empty() {

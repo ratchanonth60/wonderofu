@@ -76,6 +76,21 @@ impl TuiController<'_> {
         if self.pending_provider_form.is_some() {
             return self.handle_provider_form_key(key, resolved);
         }
+        if self.pending_log_selector.is_some() {
+            return self.handle_log_selector_key(key, resolved);
+        }
+        if self.pending_export_dialog.is_some() {
+            return self.handle_export_dialog_key(key, resolved);
+        }
+        if self.pending_output_style_picker.is_some() {
+            return self.handle_output_style_picker_key(key, resolved);
+        }
+        if self.pending_memory_file_selector.is_some() {
+            return self.handle_memory_file_selector_key(key, resolved);
+        }
+        if self.pending_hooks_menu.is_some() {
+            return self.handle_hooks_menu_key(key, resolved);
+        }
         if self.pending_copilot_oauth.is_some() {
             return self.handle_copilot_oauth_dialog_key(key, resolved);
         }
