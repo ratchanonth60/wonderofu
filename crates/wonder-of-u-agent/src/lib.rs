@@ -38,7 +38,7 @@ pub use provider::{
 };
 /// Re-exports items from `runtime`
 pub use runtime::{
-    CompletionRequest, CompletionResponse, ProviderRuntime, ProviderToolCall,
+    CompletionRequest, CompletionResponse, ImageAttachment, ProviderRuntime, ProviderToolCall,
     ProviderToolResultMessage, ProviderToolSpec, ToolCallBatchResponse, ToolConversationRound,
     ToolUseRequest, ToolUseResponse,
 };

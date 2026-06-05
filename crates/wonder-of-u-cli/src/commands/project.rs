@@ -323,41 +323,6 @@ impl Command for CopyCommand {
             })?
             .clone();
 
-        let blocks = extract_code_blocks(&selected.text);
-        if !blocks.is_empty() && context.interactive {
-            let char_count = selected.text.chars().count();
-            let line_count = selected.text.lines().count().max(1);
-            let full_desc = format!("{char_count} chars, {line_count} lines");
-            let mut lines = vec!["copy_picker=true".to_string()];
-            lines.push(format!(
-                "copy_option={}",
-                json!({
-                    "label": "Full response",
-                    "description": full_desc,
-                    "code": selected.text,
-                })
-            ));
-            for block in &blocks {
-                let label = truncate_first_line(&block.code, 60);
-                let mut desc_parts: Vec<String> = Vec::new();
-                if let Some(lang) = &block.lang {
-                    desc_parts.push(lang.clone());
-                }
-                if block.line_count > 1 {
-                    desc_parts.push(format!("{} lines", block.line_count));
-                }
-                lines.push(format!(
-                    "copy_option={}",
-                    json!({
-                        "label": label,
-                        "description": desc_parts.join(", "),
-                        "code": block.code,
-                    })
-                ));
-            }
-            return Ok(CommandOutput::Text(lines.join("\n")));
-        }
-
         let file_path = write_copy_text_to_temp_file(&selected.text, "response.md")?;
         let clipboard = try_copy_to_clipboard(&selected.text);
         let mut lines = vec!["copy=ready".into()];
@@ -633,50 +598,6 @@ fn write_copy_text_to_temp_file(text: &str, filename: &str) -> Result<PathBuf> {
     ));
     fs::write(&path, text)?;
     Ok(path)
-}
-
-struct CopyBlock {
-    lang: Option<String>,
-    code: String,
-    line_count: usize,
-}
-
-fn extract_code_blocks(text: &str) -> Vec<CopyBlock> {
-    let mut blocks = Vec::new();
-    let mut in_block = false;
-    let mut lang: Option<String> = None;
-    let mut code_lines: Vec<&str> = Vec::new();
-    for line in text.lines() {
-        if let Some(rest) = line.strip_prefix("```") {
-            if in_block {
-                let line_count = code_lines.len();
-                blocks.push(CopyBlock {
-                    lang: lang.take(),
-                    code: code_lines.join("\n"),
-                    line_count,
-                });
-                code_lines.clear();
-                in_block = false;
-            } else {
-                let l = rest.trim();
-                lang = (!l.is_empty()).then(|| l.to_string());
-                in_block = true;
-            }
-        } else if in_block {
-            code_lines.push(line);
-        }
-    }
-    blocks
-}
-
-fn truncate_first_line(text: &str, max_chars: usize) -> String {
-    let first = text.lines().next().unwrap_or("");
-    let chars: Vec<char> = first.chars().collect();
-    if chars.len() <= max_chars {
-        return first.to_string();
-    }
-    let truncated: String = chars[..max_chars.saturating_sub(1)].iter().collect();
-    format!("{truncated}…")
 }
 
 fn try_copy_to_clipboard(text: &str) -> Option<String> {

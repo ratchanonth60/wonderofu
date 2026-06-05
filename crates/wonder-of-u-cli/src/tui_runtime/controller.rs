@@ -58,7 +58,6 @@ pub(super) struct TuiController<'a> {
     pub(super) pending_model_picker: Option<ModelPickerState>,
     pub(super) pending_permission_picker: Option<PermissionPickerState>,
     pub(super) pending_memory_picker: Option<MemoryPickerState>,
-    pub(super) pending_copy_picker: Option<CopyPickerState>,
     pub(super) pending_external_editor: Option<ExternalEditorRequest>,
     /// Ephemeral setup hub overlay opened by `/setup`.  Never persisted.
     pub(super) pending_setup_overlay: Option<SetupOverlayState>,
@@ -119,6 +118,14 @@ pub(super) struct TuiController<'a> {
     /// When `true`, mouse capture is disabled so the terminal can handle native
     /// text selection.  Press any key to exit this mode.
     pub(super) selection_mode: bool,
+    /// Sidebar visibility saved when entering selection mode, restored on exit.
+    pub(super) selection_mode_sidebar_was_visible: bool,
+    /// Index into `prompt_history_entries` currently shown via Up/Down recall.
+    /// `None` = not in recall mode.  0 = most recent entry.
+    pub(super) history_recall_index: Option<usize>,
+    /// Prompt text saved when recall started, restored when user presses Down
+    /// past the most recent entry.
+    pub(super) history_recall_saved: String,
     /// When an interaction tool (ask_user) is executing, this sends the user's
     /// typed answer to the waiting tool thread.
     /// Question text displayed to the user while an interaction tool is waiting.
@@ -138,6 +145,10 @@ pub(super) struct TuiController<'a> {
     /// Handle for the background status-line command thread.
     pub(super) status_line_handle: StatusLineHandle,
     pub(super) active_turn: ActiveTurn,
+    /// Images queued to be sent with the next prompt submission.
+    /// Each entry is `(attachment, placeholder_label)` where the label is
+    /// what was inserted into the prompt buffer (e.g. `"[Image: foo.png]"`).
+    pub(super) pending_images: Vec<(wonder_of_u_agent::ImageAttachment, String)>,
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -232,20 +243,6 @@ pub(super) struct MemoryPickerState {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(super) struct CopyPickerOption {
-    pub(super) label: String,
-    pub(super) description: String,
-    pub(super) code: String,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(super) struct CopyPickerState {
-    pub(super) original_input: String,
-    pub(super) options: Vec<CopyPickerOption>,
-    pub(super) selected_index: usize,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) struct HistorySearchState {
     pub(super) query: TextBuffer,
     pub(super) matches: Vec<usize>,
@@ -321,6 +318,8 @@ pub(super) struct ActiveToolLoop {
     #[allow(dead_code)]
     user_message: MessageEnvelope,
     staged_messages: Vec<MessageEnvelope>,
+    /// Images attached to the initial user turn; included only on round 0.
+    images: Vec<wonder_of_u_agent::ImageAttachment>,
 }
 
 pub(super) enum ActiveTurn {
@@ -371,7 +370,6 @@ impl<'a> TuiController<'a> {
             pending_model_picker: None,
             pending_permission_picker: None,
             pending_memory_picker: None,
-            pending_copy_picker: None,
             pending_external_editor: None,
             pending_setup_overlay: None,
             pending_provider_form: None,
@@ -393,6 +391,9 @@ impl<'a> TuiController<'a> {
             autocompact_failures: 0,
             autocompact_pending: false,
             selection_mode: false,
+            selection_mode_sidebar_was_visible: false,
+            history_recall_index: None,
+            history_recall_saved: String::new(),
             interaction_question: None,
             interaction_options: Vec::new(),
             interaction_other_mode: false,
@@ -401,6 +402,7 @@ impl<'a> TuiController<'a> {
             status_line_command: None,
             status_line_handle: StatusLineHandle::new(),
             active_turn: ActiveTurn::None,
+            pending_images: Vec::new(),
         };
         controller.hydrate_initial_settings()?;
         controller.refresh_runtime_state()?;
@@ -440,6 +442,28 @@ impl<'a> TuiController<'a> {
         match event {
             UiEvent::Key(key) => self.handle_key_event(key).await,
             UiEvent::Paste(text) => {
+                // Empty bracketed-paste → terminal couldn't convert clipboard content
+                // to text (common for Ctrl+V on an image). Try wl-paste.
+                if text.is_empty()
+                    && !self.has_picker_overlay()
+                    && !self.global_search_open
+                    && self.history_search.is_none()
+                {
+                    if let Some(img) = read_clipboard_image() {
+                        let label = img
+                            .filename
+                            .as_deref()
+                            .map(|f| format!("[Image: {f}]"))
+                            .unwrap_or_else(|| "[Image: clipboard]".to_string());
+                        self.prompt.insert_text(&label);
+                        self.pending_images.push((img, label));
+                        self.turn_state = TurnState::EditingInput;
+                        self.state.input_mode = InputMode::Prompt;
+                        self.status_note = Some("image attached from clipboard".into());
+                        self.needs_render = true;
+                    }
+                    return Ok(());
+                }
                 if !text.is_empty() {
                     if let Some(form) = &mut self.pending_provider_form {
                         form.input.insert_text(&text);
@@ -461,12 +485,53 @@ impl<'a> TuiController<'a> {
                     } else if self.history_search.is_some() {
                         self.edit_history_search_query_text(&text);
                     } else {
-                        self.prompt.insert_text(&text);
-                        self.turn_state = TurnState::EditingInput;
-                        self.state.input_mode = InputMode::Prompt;
-                        self.reset_history_recall();
-                        self.status_note = None;
-                        self.needs_render = true;
+                        // Split pasted text into image file paths and regular text.
+                        // Image paths end with .png/.jpg/.jpeg/.gif/.webp.
+                        let lines: Vec<&str> = text
+                            .split(['\n', '\r'])
+                            .flat_map(|part| {
+                                // Also split on spaces preceding absolute paths.
+                                part.split_inclusive(' ').collect::<Vec<_>>()
+                            })
+                            .collect();
+                        let (img_lines, text_lines): (Vec<&str>, Vec<&str>) =
+                            lines.iter().partition(|&&l| is_image_file_path(l));
+                        let mut any_image = false;
+                        for &path in &img_lines {
+                            if let Some(img) = read_image_file(path.trim()) {
+                                let label = img
+                                    .filename
+                                    .as_deref()
+                                    .map(|f| format!("[Image: {f}]"))
+                                    .unwrap_or_else(|| "[Image]".to_string());
+                                self.prompt.insert_text(&label);
+                                self.pending_images.push((img, label));
+                                any_image = true;
+                            }
+                        }
+                        let remaining = text_lines.join("");
+                        let remaining = remaining.trim();
+                        if !remaining.is_empty() {
+                            self.prompt.insert_text(remaining);
+                        }
+                        if any_image || !remaining.is_empty() {
+                            self.turn_state = TurnState::EditingInput;
+                            self.state.input_mode = InputMode::Prompt;
+                            self.reset_history_recall();
+                            self.status_note = if any_image {
+                                Some(format!("{} image(s) attached", img_lines.len()))
+                            } else {
+                                None
+                            };
+                            self.needs_render = true;
+                        } else {
+                            self.prompt.insert_text(&text);
+                            self.turn_state = TurnState::EditingInput;
+                            self.state.input_mode = InputMode::Prompt;
+                            self.reset_history_recall();
+                            self.status_note = None;
+                            self.needs_render = true;
+                        }
                     }
                 }
                 Ok(())
@@ -631,6 +696,17 @@ impl<'a> TuiController<'a> {
                     self.needs_render = true;
                     return Ok(());
                 }
+                // Plain Up: history recall when cursor is on the first line.
+                (KeyCode::Up, false, false) => {
+                    if self.prompt.current_line_start() == 0 {
+                        return self.recall_history_prev();
+                    }
+                }
+                // Plain Down: step forward in recall mode.
+                (KeyCode::Down, false, false) if self.history_recall_index.is_some() => {
+                    return self.recall_history_next();
+                }
+                (KeyCode::Down, false, false) => {}
                 _ => {}
             }
         }
@@ -913,9 +989,6 @@ impl<'a> TuiController<'a> {
         }
         if self.pending_memory_picker.is_some() {
             return self.handle_memory_picker_key(key, resolved);
-        }
-        if self.pending_copy_picker.is_some() {
-            return self.handle_copy_picker_key(key, resolved);
         }
         if self.pending_tag_removal.is_some() {
             return self.handle_tag_removal_key(key, resolved);
@@ -1473,6 +1546,7 @@ impl<'a> TuiController<'a> {
                 tools: provider_tools.clone(),
                 rounds: rounds.clone(),
                 effort_level: self.state.effort_level.clone(),
+                images: Vec::new(),
             };
             let response = tokio::task::spawn_blocking(move || {
                 ProviderRuntime::new().complete_with_tool_use(&resolved_for_call, &request)
@@ -1723,6 +1797,7 @@ impl<'a> TuiController<'a> {
                     content: input.to_string(),
                 },
             )?;
+            let images = self.pending_images.drain(..).map(|(img, _)| img).collect();
             self.active_turn = ActiveTurn::ToolLoop(ActiveToolLoop {
                 phase: ToolLoopPhase::SendRequest { iteration: 0 },
                 request_prompt,
@@ -1731,6 +1806,7 @@ impl<'a> TuiController<'a> {
                 rounds: Vec::new(),
                 user_message: user_message.clone(),
                 staged_messages: vec![user_message],
+                images,
             });
             self.turn_state = TurnState::ModelRequestActive;
             self.needs_render = true;
@@ -1743,6 +1819,7 @@ impl<'a> TuiController<'a> {
             max_output_tokens: None,
             temperature: None,
             effort_level: self.state.effort_level.clone(),
+            images: self.pending_images.drain(..).map(|(img, _)| img).collect(),
         };
         let streaming = runtime.supports_streaming(resolved.provider_id());
 
@@ -2029,6 +2106,12 @@ impl<'a> TuiController<'a> {
                     let tools = provider_tools;
                     let rounds = tl.rounds.clone();
                     let effort = self.state.effort_level.clone();
+                    // Pass images only on the first turn; subsequent rounds carry context via `rounds`.
+                    let images = if it == 0 {
+                        tl.images.clone()
+                    } else {
+                        Vec::new()
+                    };
                     tokio::task::spawn_blocking(move || {
                         let request = ToolUseRequest {
                             prompt,
@@ -2038,6 +2121,7 @@ impl<'a> TuiController<'a> {
                             tools,
                             rounds,
                             effort_level: effort,
+                            images,
                         };
                         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                             ProviderRuntime::new().complete_with_tool_use(&resolved, &request)
@@ -2316,6 +2400,7 @@ impl<'a> TuiController<'a> {
                 tools: provider_tools.clone(),
                 rounds: rounds.clone(),
                 effort_level: self.state.effort_level.clone(),
+                images: Vec::new(),
             };
             let response = tokio::task::spawn_blocking(move || {
                 ProviderRuntime::new().complete_with_tool_use(&resolved_for_call, &request)
@@ -2685,7 +2770,6 @@ impl<'a> TuiController<'a> {
             && self.pending_model_picker.is_none()
             && self.pending_permission_picker.is_none()
             && self.pending_memory_picker.is_none()
-            && self.pending_copy_picker.is_none()
             && self.pending_tag_removal.is_none()
             && self.pending_theme_picker.is_none()
             && self.pending_setup_overlay.is_none()
@@ -2764,7 +2848,6 @@ impl<'a> TuiController<'a> {
             self.status_note = Some(format!("color {color}"));
         } else if self.pending_permission_picker.is_some()
             || self.pending_memory_picker.is_some()
-            || self.pending_copy_picker.is_some()
             || self.pending_tag_removal.is_some()
             || self.pending_theme_picker.is_some()
             || self.pending_model_picker.is_some()
@@ -2897,11 +2980,6 @@ impl<'a> TuiController<'a> {
             self.open_memory_picker(picker);
         } else {
             self.pending_memory_picker = None;
-        }
-        if let Some(picker) = parse_copy_picker_state(text) {
-            self.open_copy_picker(picker);
-        } else {
-            self.pending_copy_picker = None;
         }
         if let Some(tag) = parse_tag_remove_confirmation(text) {
             self.open_tag_removal_confirmation(TagRemovalState {
@@ -4460,100 +4538,6 @@ impl<'a> TuiController<'a> {
     // Copy picker
     // -----------------------------------------------------------------------
 
-    pub(super) fn open_copy_picker(&mut self, picker: CopyPickerState) {
-        if picker.options.is_empty() {
-            self.status_note = Some("no copy options available".into());
-            self.dialog = None;
-            self.pending_copy_picker = None;
-            self.needs_render = true;
-            return;
-        }
-        self.clear_picker_overlays();
-        self.pending_copy_picker = Some(picker);
-        self.status_note = None;
-        self.needs_render = true;
-    }
-
-    pub(super) fn step_copy_picker(&mut self, delta: isize) {
-        let Some(picker) = &mut self.pending_copy_picker else {
-            return;
-        };
-        let len = picker.options.len();
-        if len == 0 {
-            return;
-        }
-        picker.selected_index =
-            ((picker.selected_index as isize + delta).rem_euclid(len as isize)) as usize;
-        self.needs_render = true;
-    }
-
-    pub(super) fn complete_copy_picker(&mut self) -> Result<()> {
-        let Some(picker) = self.pending_copy_picker.take() else {
-            self.dismiss_dialog();
-            return Ok(());
-        };
-        let Some(option) = picker.options.get(picker.selected_index) else {
-            self.pending_copy_picker = Some(picker);
-            self.needs_render = true;
-            return Ok(());
-        };
-        self.dialog = None;
-        let copied = clipboard_write(&option.code);
-        let char_count = option.code.chars().count();
-        let line_count = option.code.lines().count().max(1);
-        let status = if copied {
-            format!("copied {char_count} chars, {line_count} lines")
-        } else {
-            format!("copy failed; wrote {char_count} chars, {line_count} lines to fallback")
-        };
-        self.record_command_message(&picker.original_input, Some(&format!("status={status}")))?;
-        self.status_note = Some(status);
-        self.needs_render = true;
-        Ok(())
-    }
-
-    pub(super) fn cancel_copy_picker(&mut self) -> Result<()> {
-        let Some(picker) = self.pending_copy_picker.take() else {
-            self.dismiss_dialog();
-            return Ok(());
-        };
-        self.dialog = None;
-        self.record_command_message(&picker.original_input, Some("status=copy picker cancelled"))?;
-        self.status_note = Some("copy picker cancelled".into());
-        self.needs_render = true;
-        Ok(())
-    }
-
-    pub(super) fn handle_copy_picker_key(
-        &mut self,
-        key: KeyEvent,
-        resolved: Option<ResolvedKey>,
-    ) -> Result<()> {
-        match key.code {
-            KeyCode::Tab => self.complete_copy_picker(),
-            KeyCode::Up => {
-                self.step_copy_picker(-1);
-                Ok(())
-            }
-            KeyCode::Down => {
-                self.step_copy_picker(1);
-                Ok(())
-            }
-            KeyCode::Esc => self.cancel_copy_picker(),
-            _ => match resolved {
-                Some(ResolvedKey::Edit(EditAction::InsertNewline)) => self.complete_copy_picker(),
-                Some(ResolvedKey::System(wonder_of_u_tui::SystemAction::Interrupt)) => {
-                    self.cancel_copy_picker()
-                }
-                _ => {
-                    self.status_note = Some(picker_status_note("copy picker"));
-                    self.needs_render = true;
-                    Ok(())
-                }
-            },
-        }
-    }
-
     // -----------------------------------------------------------------------
     // Setup overlay
     // -----------------------------------------------------------------------
@@ -5119,7 +5103,6 @@ impl<'a> TuiController<'a> {
     fn clear_picker_overlays(&mut self) {
         self.pending_permission_picker = None;
         self.pending_memory_picker = None;
-        self.pending_copy_picker = None;
         self.pending_tag_removal = None;
         self.pending_theme_picker = None;
         self.pending_model_picker = None;
@@ -5214,7 +5197,6 @@ impl<'a> TuiController<'a> {
     pub(super) fn has_picker_overlay(&self) -> bool {
         self.pending_permission_picker.is_some()
             || self.pending_memory_picker.is_some()
-            || self.pending_copy_picker.is_some()
             || self.pending_tag_removal.is_some()
             || self.pending_theme_picker.is_some()
             || self.pending_model_picker.is_some()
@@ -5339,25 +5321,6 @@ impl<'a> TuiController<'a> {
                 hint: PICKER_HINT.into(),
             });
         }
-        if let Some(picker) = &self.pending_copy_picker {
-            return Some(PickerListView {
-                title: "Copy to clipboard".into(),
-                query: String::new(),
-                entries: picker
-                    .options
-                    .iter()
-                    .enumerate()
-                    .map(|(i, opt)| PickerListEntry {
-                        label: opt.label.clone(),
-                        description: opt.description.clone(),
-                        tag: None,
-                        selected: i == picker.selected_index,
-                        group_header: None,
-                    })
-                    .collect(),
-                hint: "↑↓ navigate  Tab/Enter copy  Esc cancel".into(),
-            });
-        }
         if let Some(form) = &self.pending_provider_form {
             return Some(provider_form_picker_view(form));
         }
@@ -5405,6 +5368,56 @@ impl<'a> TuiController<'a> {
 
     pub(super) fn reset_history_recall(&mut self) {
         self.history_search = None;
+        self.history_recall_index = None;
+    }
+
+    /// Step backward in prompt history (Up arrow). Saves the current prompt on
+    /// first press so it can be restored if the user presses Down past index 0.
+    pub(super) fn recall_history_prev(&mut self) -> Result<()> {
+        let entries = prompt_history_entries(&self.state.messages);
+        if entries.is_empty() {
+            return Ok(());
+        }
+        let next_index = match self.history_recall_index {
+            None => {
+                self.history_recall_saved = self.prompt.text();
+                0
+            }
+            Some(i) => (i + 1).min(entries.len().saturating_sub(1)),
+        };
+        if let Some(entry) = entries.get(next_index) {
+            self.history_recall_index = Some(next_index);
+            self.prompt = TextBuffer::from_text(entry, true);
+            self.turn_state = TurnState::EditingInput;
+            self.state.input_mode = InputMode::Prompt;
+            self.needs_render = true;
+        }
+        Ok(())
+    }
+
+    /// Step forward in prompt history (Down arrow). Restores the saved prompt
+    /// when stepping past the most recent entry.
+    pub(super) fn recall_history_next(&mut self) -> Result<()> {
+        let Some(index) = self.history_recall_index else {
+            return Ok(());
+        };
+        if index == 0 {
+            // Past the most recent entry — restore saved prompt.
+            let saved = std::mem::take(&mut self.history_recall_saved);
+            self.history_recall_index = None;
+            self.prompt = TextBuffer::from_text(&saved, true);
+        } else {
+            let entries = prompt_history_entries(&self.state.messages);
+            let next_index = index - 1;
+            if let Some(entry) = entries.get(next_index) {
+                self.history_recall_index = Some(next_index);
+                self.prompt = TextBuffer::from_text(entry, true);
+            }
+        }
+        self.turn_state = TurnState::EditingInput;
+        self.state.input_mode = InputMode::Prompt;
+        self.needs_render = true;
+        Ok(())
     }
 
     pub(super) fn open_or_step_history_search(&mut self) -> Result<()> {
@@ -5984,6 +5997,18 @@ impl<'a> TuiController<'a> {
             return;
         };
 
+        // Left-click in the transcript area enters native selection mode so
+        // the terminal emulator handles drag-select and clipboard copy.
+        if mouse.kind == MouseEventKind::Down(MouseButton::Left)
+            && self.active_overlay() == ActiveOverlay::None
+        {
+            let rect = self.transcript_messages_rect();
+            if rect.contains(mouse.column, mouse.row) {
+                self.enter_selection_mode();
+            }
+            return;
+        }
+
         // Map vertical wheel to signed line deltas.
         // `ScrollUp`   → positive → offset_from_bottom grows  → older content.
         // `ScrollDown` → negative → offset_from_bottom shrinks → newer content.
@@ -6008,14 +6033,16 @@ impl<'a> TuiController<'a> {
     }
 
     pub(super) fn enter_selection_mode(&mut self) {
+        self.selection_mode_sidebar_was_visible = self.sidebar_visible;
+        self.sidebar_visible = false;
         self.selection_mode = true;
-        self.status_note =
-            Some("exiting TUI for native text selection — press any key to return".into());
+        self.status_note = Some("text selection — drag to select, press any key to resume".into());
         self.needs_render = true;
     }
 
     pub(super) fn exit_selection_mode(&mut self) {
         self.selection_mode = false;
+        self.sidebar_visible = self.selection_mode_sidebar_was_visible;
         self.status_note = None;
         self.needs_render = true;
     }

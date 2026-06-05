@@ -141,6 +141,7 @@ fn run_extraction(
             tools: provider_tools.clone(),
             rounds: rounds.clone(),
             effort_level: None,
+            images: Vec::new(),
         };
 
         match ProviderRuntime::new().complete_with_tool_use(resolved, &request)? {

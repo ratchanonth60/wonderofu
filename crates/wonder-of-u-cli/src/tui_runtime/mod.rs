@@ -5,7 +5,7 @@ use std::{
     fs::OpenOptions,
     io::{IsTerminal, Write},
     path::{Path, PathBuf},
-    process::{Command as ProcessCommand, Stdio},
+    process::Command as ProcessCommand,
     sync::mpsc,
     time::Duration,
 };
@@ -48,7 +48,8 @@ use wonder_of_u_tools::provider_tool_specs;
 use wonder_of_u_tui::{
     CrosstermEventSource, DialogActionView, DialogView, EditAction, EventLoop,
     GlobalSearchOverlayView, HistorySearchView, KeyBindingContext, KeyBindingResolver, KeyCode,
-    KeyEvent, MouseEventKind, NotificationInput, NotificationLifetime, NotificationQueue,
+    KeyEvent, MouseButton, MouseEventKind, NotificationInput, NotificationLifetime,
+    NotificationQueue,
     NotificationSeverity, PermissionSummaryView, PickerListEntry, PickerListView, PromptSuggestion,
     PromptSuggestionState, Rect, ResolvedKey, ShellLayout, ShellView, SlashSuggestionEntry,
     SlashSuggestionsOverlay, TextBuffer, Theme, TranscriptScrollView, TurnState, UiEvent, VimMode,
@@ -146,17 +147,14 @@ pub(crate) fn run_tui<W: Write>(
     let run_result = rt.block_on(async {
         let mut was_selection_mode = false;
         while !controller.exit_requested() {
-            // When the user enters selection mode (Ctrl+Y, Ctrl+Shift+C, /select),
-            // temporarily leave the alternate screen and disable raw mode so the
-            // terminal handles mouse click-drag selection and clipboard copy
-            // natively.  Press any key to return to TUI mode.
+            // Selection mode: disable mouse capture so the terminal emulator can
+            // handle click-drag text selection natively while the TUI stays in the
+            // alternate screen.  Press any key to re-enable mouse capture and resume
+            // normal TUI input.
             if controller.selection_mode && !was_selection_mode {
-                // Render one last frame so the user sees the current state, then
-                // restore the terminal to cooked mode.  The last frame becomes
-                // visible as plain text in the normal screen buffer.
                 render_tui(&mut term, &controller)?;
                 controller.mark_rendered();
-                restore_ratatui_terminal(&mut term);
+                execute!(term.backend_mut(), crossterm::event::DisableMouseCapture)?;
                 was_selection_mode = true;
             }
 
@@ -164,17 +162,7 @@ pub(crate) fn run_tui<W: Write>(
                 let ev = crossterm::event::read()
                     .map_err(|e| WonderError::internal(format!("crossterm read: {e}")))?;
                 if matches!(ev, crossterm::event::Event::Key(_)) {
-                    // Re-enter TUI mode: raw mode, alternate screen, mouse capture.
-                    terminal::enable_raw_mode()?;
-                    execute!(
-                        term.backend_mut(),
-                        EnterAlternateScreen,
-                        Hide,
-                        EnableBracketedPaste,
-                        EnableMouseCapture,
-                        PushKeyboardEnhancementFlags(keyboard_enhancement_flags())
-                    )?;
-                    term.clear()?;
+                    execute!(term.backend_mut(), EnableMouseCapture)?;
                     controller.exit_selection_mode();
                     was_selection_mode = false;
                     render_tui(&mut term, &controller)?;

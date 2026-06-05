@@ -418,6 +418,7 @@ pub(crate) fn execute_prompt_turn(
         max_output_tokens: input.max_output_tokens,
         temperature: input.temperature,
         effort_level: None,
+        images: Vec::new(),
     };
 
     let response = runtime.complete(&resolved, &request)?;
@@ -838,6 +839,7 @@ fn execute_prompt_tool_loop(
                 tools: provider_tools.clone(),
                 rounds: rounds.clone(),
                 effort_level: None,
+                images: Vec::new(),
             },
         )?;
 

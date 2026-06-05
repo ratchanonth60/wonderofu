@@ -1325,75 +1325,94 @@ pub(super) fn parse_insights_hint(text: &str) -> bool {
         .any(|line| line.trim() == "insights_prompt_ready=true")
 }
 
-pub(super) fn parse_copy_picker_state(text: &str) -> Option<CopyPickerState> {
-    let enabled = text
-        .lines()
-        .find_map(|line| line.strip_prefix("copy_picker="))?
-        .trim()
-        == "true";
-    if !enabled {
-        return None;
+/// Returns `true` if the trimmed string looks like an image file path.
+pub(super) fn is_image_file_path(s: &str) -> bool {
+    let s = s.trim();
+    if s.is_empty() {
+        return false;
     }
-    let options = text
-        .lines()
-        .filter_map(|line| line.strip_prefix("copy_option="))
-        .filter_map(|json| {
-            let v: serde_json::Value = serde_json::from_str(json).ok()?;
-            Some(CopyPickerOption {
-                label: v.get("label")?.as_str()?.to_string(),
-                description: v
-                    .get("description")
-                    .and_then(|d| d.as_str())
-                    .unwrap_or("")
-                    .to_string(),
-                code: v.get("code")?.as_str()?.to_string(),
-            })
-        })
-        .collect::<Vec<_>>();
-    if options.is_empty() {
+    let lower = s.to_ascii_lowercase();
+    lower.ends_with(".png")
+        || lower.ends_with(".jpg")
+        || lower.ends_with(".jpeg")
+        || lower.ends_with(".gif")
+        || lower.ends_with(".webp")
+}
+
+/// Reads an image file and returns an `ImageAttachment` with base64-encoded data.
+pub(super) fn read_image_file(path: &str) -> Option<wonder_of_u_agent::ImageAttachment> {
+    let path = path.trim();
+    let bytes = std::fs::read(path).ok()?;
+    let lower = path.to_ascii_lowercase();
+    let media_type = if lower.ends_with(".png") {
+        "image/png"
+    } else if lower.ends_with(".jpg") || lower.ends_with(".jpeg") {
+        "image/jpeg"
+    } else if lower.ends_with(".gif") {
+        "image/gif"
+    } else if lower.ends_with(".webp") {
+        "image/webp"
+    } else {
         return None;
-    }
-    Some(CopyPickerState {
-        original_input: "/copy".into(),
-        options,
-        selected_index: 0,
+    };
+    let data = encode_base64(&bytes);
+    let filename = std::path::Path::new(path)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .map(|s| s.to_string());
+    Some(wonder_of_u_agent::ImageAttachment {
+        media_type: media_type.to_string(),
+        data,
+        filename,
     })
 }
 
-pub(super) fn clipboard_write(text: &str) -> bool {
-    for (command, args) in [
-        ("wl-copy", &[][..]),
-        ("xclip", &["-selection", "clipboard"][..]),
-        ("xsel", &["--clipboard", "--input"][..]),
-        ("pbcopy", &[][..]),
-        ("clip", &[][..]),
-    ] {
-        if clipboard_spawn(command, args, text) {
-            return true;
+/// Reads an image from the Wayland clipboard via `wl-paste`.
+/// Tries `image/png` then `image/jpeg`; returns `None` if neither works.
+pub(super) fn read_clipboard_image() -> Option<wonder_of_u_agent::ImageAttachment> {
+    use std::process::Stdio;
+    for (media_type, wl_type) in [("image/png", "image/png"), ("image/jpeg", "image/jpeg")] {
+        let output = ProcessCommand::new("wl-paste")
+            .args(["--type", wl_type, "--no-newline"])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .output();
+        if let Ok(out) = output {
+            if out.status.success() && !out.stdout.is_empty() {
+                return Some(wonder_of_u_agent::ImageAttachment {
+                    media_type: media_type.to_string(),
+                    data: encode_base64(&out.stdout),
+                    filename: None,
+                });
+            }
         }
     }
-    false
+    None
 }
 
-fn clipboard_spawn(command: &str, args: &[&str], text: &str) -> bool {
-    let mut child = match ProcessCommand::new(command)
-        .args(args)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-    {
-        Ok(c) => c,
-        Err(_) => return false,
-    };
-    if let Some(mut stdin) = child.stdin.take() {
-        if stdin.write_all(text.as_bytes()).is_err() {
-            let _ = child.kill();
-            let _ = child.wait();
-            return false;
-        }
+/// Minimal base64 encoder — avoids adding the `base64` crate.
+fn encode_base64(data: &[u8]) -> String {
+    const TABLE: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(data.len().div_ceil(3) * 4);
+    for chunk in data.chunks(3) {
+        let b0 = chunk[0] as usize;
+        let b1 = chunk.get(1).copied().unwrap_or(0) as usize;
+        let b2 = chunk.get(2).copied().unwrap_or(0) as usize;
+        let n = (b0 << 16) | (b1 << 8) | b2;
+        out.push(TABLE[n >> 18] as char);
+        out.push(TABLE[(n >> 12) & 0x3F] as char);
+        out.push(if chunk.len() > 1 {
+            TABLE[(n >> 6) & 0x3F] as char
+        } else {
+            '='
+        });
+        out.push(if chunk.len() > 2 {
+            TABLE[n & 0x3F] as char
+        } else {
+            '='
+        });
     }
-    child.wait().is_ok_and(|s| s.success())
+    out
 }
 
 pub(super) fn parse_session_tags_hint(text: &str) -> Option<Vec<String>> {

@@ -45,6 +45,17 @@ const COPILOT_OAUTH_REFRESH_SKEW_SECONDS: i64 = 60;
 
 // ─── Public types ─────────────────────────────────────────────────────────────
 
+/// An image attachment to include in a user message.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ImageAttachment {
+    /// MIME type, e.g. `"image/png"`, `"image/jpeg"`, `"image/gif"`, `"image/webp"`.
+    pub media_type: String,
+    /// Base64-encoded image bytes.
+    pub data: String,
+    /// Original filename or source hint (shown as placeholder in the prompt).
+    pub filename: Option<String>,
+}
+
 /// Represents completion request
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct CompletionRequest {
@@ -58,6 +69,8 @@ pub struct CompletionRequest {
     pub temperature: Option<f32>,
     /// Stores the effort level
     pub effort_level: Option<String>,
+    /// Images to include in the first user message (Anthropic only for v1).
+    pub images: Vec<ImageAttachment>,
 }
 
 impl CompletionRequest {
@@ -70,6 +83,7 @@ impl CompletionRequest {
             max_output_tokens: None,
             temperature: None,
             effort_level: None,
+            images: Vec::new(),
         }
     }
 }
@@ -167,6 +181,8 @@ pub struct ToolUseRequest {
     pub rounds: Vec<ToolConversationRound>,
     /// Stores the effort level
     pub effort_level: Option<String>,
+    /// Images to include in the first user message (Anthropic only for v1).
+    pub images: Vec<ImageAttachment>,
 }
 
 /// Represents tool call batch response
@@ -1220,6 +1236,7 @@ mod tests {
             max_output_tokens: Some(64),
             temperature: Some(0.2),
             effort_level: None,
+            images: Vec::new(),
         };
 
         let response = runtime
@@ -1295,6 +1312,7 @@ mod tests {
                     max_output_tokens: Some(128),
                     temperature: Some(0.1),
                     effort_level: None,
+                    images: Vec::new(),
                     tools: vec![ProviderToolSpec {
                         name: "file_read".into(),
                         description: "Read a UTF-8 file".into(),
@@ -2880,6 +2898,7 @@ mod tests {
             max_output_tokens: Some(256),
             temperature: Some(0.5),
             effort_level: None,
+            images: Vec::new(),
         };
 
         let response = runtime
@@ -3550,6 +3569,7 @@ mod tests {
             max_output_tokens: Some(128),
             temperature: Some(0.3),
             effort_level: None,
+            images: Vec::new(),
         };
 
         let response = runtime
