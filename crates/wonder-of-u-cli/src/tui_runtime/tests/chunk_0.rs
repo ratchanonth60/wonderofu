@@ -376,14 +376,18 @@ fn controller_cancels_model_picker() {
         controller.status_note.as_deref(),
         Some("model picker cancelled")
     );
-    assert!(matches!(
-        controller.state.messages.last().map(|message| &message.payload),
-        Some(MessagePayload::Command { input, output })
-            if input == "/model"
-                && output
-                    .as_deref()
-                    .is_some_and(|text| text.contains("status=model picker cancelled"))
-    ));
+    // Cancellation goes to notification, not transcript.
+    assert!(
+        !matches!(
+            controller.state.messages.last().map(|m| &m.payload),
+            Some(MessagePayload::Command { input, .. }) if input == "/model"
+        ),
+        "cancel must not record to transcript"
+    );
+    assert!(
+        controller.notifications.dismiss("model-picker-cancelled").is_some(),
+        "cancel must push a notification"
+    );
 }
 
 #[test]

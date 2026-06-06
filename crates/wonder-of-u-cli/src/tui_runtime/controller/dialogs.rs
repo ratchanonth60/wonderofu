@@ -721,15 +721,19 @@ impl TuiController<'_> {
         Ok(())
     }
     pub(in crate::tui_runtime) fn cancel_permission_picker(&mut self) -> Result<()> {
-        let Some(picker) = self.pending_permission_picker.take() else {
+        let Some(_picker) = self.pending_permission_picker.take() else {
             self.dismiss_dialog();
             return Ok(());
         };
         self.dialog = None;
-        self.record_command_message(
-            &picker.original_input,
-            Some("status=permission picker cancelled"),
-        )?;
+        self.push_notification(
+            "permission-picker-cancelled",
+            NotificationSeverity::Info,
+            "Permissions",
+            ["Cancelled — no change made."],
+            Some(SHELL_NOTIFICATION_TTL),
+            false,
+        );
         self.status_note = Some("permission picker cancelled".into());
         self.needs_render = true;
         Ok(())
@@ -881,15 +885,19 @@ impl TuiController<'_> {
         Ok(())
     }
     pub(in crate::tui_runtime) fn cancel_memory_picker(&mut self) -> Result<()> {
-        let Some(picker) = self.pending_memory_picker.take() else {
+        let Some(_picker) = self.pending_memory_picker.take() else {
             self.dismiss_dialog();
             return Ok(());
         };
         self.dialog = None;
-        self.record_command_message(
-            &picker.original_input,
-            Some("status=memory picker cancelled"),
-        )?;
+        self.push_notification(
+            "memory-picker-cancelled",
+            NotificationSeverity::Info,
+            "Memory",
+            ["Cancelled — no change made."],
+            Some(SHELL_NOTIFICATION_TTL),
+            false,
+        );
         self.status_note = Some("memory picker cancelled".into());
         self.needs_render = true;
         Ok(())
@@ -940,10 +948,14 @@ impl TuiController<'_> {
             return Ok(());
         };
         self.dialog = None;
-        self.record_command_message(
-            &pending.original_input,
-            Some(&format!("status=kept tag #{}", pending.tag)),
-        )?;
+        self.push_notification(
+            "tag-removal-cancelled",
+            NotificationSeverity::Info,
+            "Tag",
+            [format!("Kept #{} — no change made.", pending.tag)],
+            Some(SHELL_NOTIFICATION_TTL),
+            false,
+        );
         self.status_note = Some(format!("kept #{}", pending.tag));
         self.needs_render = true;
         Ok(())
@@ -1067,15 +1079,19 @@ impl TuiController<'_> {
         Ok(())
     }
     pub(in crate::tui_runtime) fn cancel_theme_picker(&mut self) -> Result<()> {
-        let Some(picker) = self.pending_theme_picker.take() else {
+        let Some(_picker) = self.pending_theme_picker.take() else {
             self.dismiss_dialog();
             return Ok(());
         };
         self.dialog = None;
-        self.record_command_message(
-            &picker.original_input,
-            Some("status=theme picker cancelled"),
-        )?;
+        self.push_notification(
+            "theme-picker-cancelled",
+            NotificationSeverity::Info,
+            "Theme",
+            ["Cancelled — no change made."],
+            Some(SHELL_NOTIFICATION_TTL),
+            false,
+        );
         self.status_note = Some("theme picker cancelled".into());
         self.needs_render = true;
         Ok(())
@@ -1210,15 +1226,19 @@ impl TuiController<'_> {
         Ok(())
     }
     pub(in crate::tui_runtime) fn cancel_model_picker(&mut self) -> Result<()> {
-        let Some(picker) = self.pending_model_picker.take() else {
+        let Some(_picker) = self.pending_model_picker.take() else {
             self.dismiss_dialog();
             return Ok(());
         };
         self.dialog = None;
-        self.record_command_message(
-            &picker.original_input,
-            Some("status=model picker cancelled"),
-        )?;
+        self.push_notification(
+            "model-picker-cancelled",
+            NotificationSeverity::Info,
+            "Model",
+            ["Cancelled — no change made."],
+            Some(SHELL_NOTIFICATION_TTL),
+            false,
+        );
         self.status_note = Some("model picker cancelled".into());
         self.needs_render = true;
         Ok(())
@@ -1309,14 +1329,21 @@ impl TuiController<'_> {
     /// Cancels the setup overlay, records a status note, and marks this session
     /// so that the autostart logic does not re-open the overlay.
     pub(in crate::tui_runtime) fn cancel_setup_overlay(&mut self) -> Result<()> {
-        let Some(overlay) = self.pending_setup_overlay.take() else {
+        let Some(_overlay) = self.pending_setup_overlay.take() else {
             self.dismiss_dialog();
             return Ok(());
         };
         // Prevent maybe_auto_open_setup from re-opening for the rest of this session.
         self.setup_cancelled_this_session = true;
         self.dialog = None;
-        self.record_command_message(&overlay.original_input, Some("status=setup cancelled"))?;
+        self.push_notification(
+            "setup-cancelled",
+            NotificationSeverity::Info,
+            "Setup",
+            ["Cancelled — no change made."],
+            Some(SHELL_NOTIFICATION_TTL),
+            false,
+        );
         self.status_note = Some("setup cancelled".into());
         self.needs_render = true;
         Ok(())

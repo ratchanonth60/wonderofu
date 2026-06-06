@@ -276,14 +276,18 @@ fn controller_cancels_memory_picker() {
         controller.status_note.as_deref(),
         Some("memory picker cancelled")
     );
-    assert!(matches!(
-        controller.state.messages.last().map(|message| &message.payload),
-        Some(MessagePayload::Command { input, output })
-            if input == "/memory"
-                && output
-                    .as_deref()
-                    .is_some_and(|text| text.contains("status=memory picker cancelled"))
-    ));
+    // Cancellation goes to notification, not transcript.
+    assert!(
+        !matches!(
+            controller.state.messages.last().map(|m| &m.payload),
+            Some(MessagePayload::Command { input, .. }) if input == "/memory"
+        ),
+        "cancel must not record to transcript"
+    );
+    assert!(
+        controller.notifications.dismiss("memory-picker-cancelled").is_some(),
+        "cancel must push a notification"
+    );
 }
 
 #[test]
