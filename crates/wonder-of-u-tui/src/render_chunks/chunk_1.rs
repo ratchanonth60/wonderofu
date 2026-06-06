@@ -125,12 +125,7 @@ fn draw_dialog(frame: &mut FrameBuffer, viewport: Rect, dialog: &DialogView, the
     )
     .unwrap_or(viewport.height)
     .min(viewport.height);
-    let rect = Rect::new(
-        viewport.x + viewport.width.saturating_sub(width) / 2,
-        viewport.y + viewport.height.saturating_sub(height) / 2,
-        width,
-        height,
-    );
+    let rect = viewport.center_within(width, height);
 
     let mut body = plain_lines(&dialog.body, theme.messages);
     body.push(StyledLine::plain(String::new(), theme.footer));
@@ -414,12 +409,7 @@ fn draw_picker_list(
     )
     .unwrap_or(viewport.height);
     let height = desired_height.clamp(MIN_HEIGHT, max_height.max(MIN_HEIGHT));
-    let rect = Rect::new(
-        viewport.x + viewport.width.saturating_sub(width) / 2,
-        viewport.y + viewport.height.saturating_sub(height) / 2,
-        width,
-        height,
-    );
+    let rect = viewport.center_within(width, height);
 
     draw_modal_shadow(frame, rect, viewport, theme);
 
@@ -600,12 +590,7 @@ pub fn draw_global_search_overlay(
 
     let width = (viewport.width.saturating_mul(4) / 5).clamp(MIN_WIDTH, viewport.width);
     let height = (viewport.height.saturating_mul(3) / 5).clamp(MIN_HEIGHT, viewport.height);
-    let rect = Rect::new(
-        viewport.x + viewport.width.saturating_sub(width) / 2,
-        viewport.y + viewport.height.saturating_sub(height) / 2,
-        width,
-        height,
-    );
+    let rect = viewport.center_within(width, height);
 
     draw_modal_shadow(frame, rect, viewport, theme);
 

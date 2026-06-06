@@ -58,6 +58,21 @@ impl Rect {
             height: self.height.saturating_sub(offset),
         }
     }
+
+    /// Returns a rect of `width × height` centered inside `self`.
+    ///
+    /// Clamps to `self` bounds when the requested dimensions exceed available space.
+    #[must_use]
+    pub const fn center_within(self, width: u16, height: u16) -> Self {
+        let w = if width > self.width { self.width } else { width };
+        let h = if height > self.height { self.height } else { height };
+        Self {
+            x: self.x.saturating_add(self.width.saturating_sub(w) / 2),
+            y: self.y.saturating_add(self.height.saturating_sub(h) / 2),
+            width: w,
+            height: h,
+        }
+    }
 }
 /// Represents cell
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
