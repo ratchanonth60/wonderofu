@@ -179,6 +179,7 @@ pub fn message_lines(messages: &[MessageEnvelope], expand_output: bool) -> Vec<M
         DEFAULT_MESSAGE_SUMMARY_WIDTH,
         expand_output,
         None,
+        false,
     )
 }
 
@@ -189,20 +190,24 @@ pub fn message_lines_for_width(
     summary_width: usize,
     expand_output: bool,
 ) -> Vec<MessageLineView> {
-    message_lines_for_width_with_cursor(messages, summary_width, expand_output, None)
+    message_lines_for_width_with_cursor(messages, summary_width, expand_output, None, false)
 }
 
 /// Like [`message_lines_for_width`] but applies a background highlight
 /// to all display lines that belong to the message at `cursor_message_index`.
+/// Pass `is_streaming = true` when the last message is still being streamed so
+/// that partial code fences and header-only tables are held back from structured
+/// rendering until they stabilise.
 #[must_use]
 pub fn message_lines_for_width_with_cursor(
     messages: &[MessageEnvelope],
     summary_width: usize,
     expand_output: bool,
     cursor_message_index: Option<usize>,
+    is_streaming: bool,
 ) -> Vec<MessageLineView> {
     let width = summary_width.max(1);
-    let views = rich::rich_message_views_indexed(messages, expand_output);
+    let views = rich::rich_message_views_indexed(messages, expand_output, is_streaming);
     let mut result: Vec<MessageLineView> = Vec::new();
     let mut prev_turn_role: Option<MessageRole> = None;
     let mut msg_index = 0usize;

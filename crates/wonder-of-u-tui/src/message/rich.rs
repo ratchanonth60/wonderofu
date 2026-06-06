@@ -101,7 +101,7 @@ pub fn rich_message_views(
     messages: &[MessageEnvelope],
     expand_output: bool,
 ) -> Vec<RichMessageView> {
-    rich_message_views_indexed(messages, expand_output)
+    rich_message_views_indexed(messages, expand_output, false)
         .into_iter()
         .map(|(v, _)| v)
         .collect()
@@ -110,9 +110,11 @@ pub fn rich_message_views(
 pub(super) fn rich_message_views_indexed(
     messages: &[MessageEnvelope],
     expand_output: bool,
+    is_streaming: bool,
 ) -> Vec<(RichMessageView, usize)> {
     let mut views = Vec::new();
     let mut index = 0usize;
+    let last_index = messages.len().saturating_sub(1);
 
     while index < messages.len() {
         if let Some((group, consumed)) = grouped_tool_call_view(&messages[index..]) {
@@ -121,7 +123,8 @@ pub(super) fn rich_message_views_indexed(
             continue;
         }
 
-        views.push((single_message_view(&messages[index]), 1));
+        let streaming_this = is_streaming && index == last_index;
+        views.push((single_message_view(&messages[index], streaming_this), 1));
         index = index.saturating_add(1);
     }
 
@@ -219,7 +222,7 @@ fn collapse_consecutive_tool_groups(
     result
 }
 
-fn single_message_view(message: &MessageEnvelope) -> RichMessageView {
+fn single_message_view(message: &MessageEnvelope, is_streaming: bool) -> RichMessageView {
     match &message.payload {
         MessagePayload::UserText { content } => {
             RichMessageView::Markdown(MarkdownSummaryView::new(MessageRole::User, content))
@@ -227,6 +230,11 @@ fn single_message_view(message: &MessageEnvelope) -> RichMessageView {
         MessagePayload::AssistantText { content } => {
             if let Some(view) = SystemErrorView::detect(MessageRole::Assistant, content) {
                 RichMessageView::SystemError(view)
+            } else if is_streaming {
+                RichMessageView::Markdown(MarkdownSummaryView::new_streaming(
+                    MessageRole::Assistant,
+                    content,
+                ))
             } else {
                 RichMessageView::Markdown(MarkdownSummaryView::with_timestamp(
                     MessageRole::Assistant,
@@ -333,12 +341,23 @@ impl MarkdownSummaryView {
         Self::with_timestamp(role, text, None)
     }
 
+    /// Like [`new`] but applies streaming holdback to avoid flicker on partial
+    /// code fences and header-only tables while tokens are still arriving.
+    #[must_use]
+    pub fn new_streaming(role: MessageRole, text: &str) -> Self {
+        Self {
+            role,
+            timestamp: None,
+            blocks: parse_markdown_blocks(text, true),
+        }
+    }
+
     #[must_use]
     fn with_timestamp(role: MessageRole, text: &str, timestamp: Option<OffsetDateTime>) -> Self {
         Self {
             role,
             timestamp,
-            blocks: parse_markdown_blocks(text),
+            blocks: parse_markdown_blocks(text, false),
         }
     }
     /// Handles display lines
@@ -2173,7 +2192,7 @@ pub enum RejectedToolMessageKind {
     Error,
 }
 
-fn parse_markdown_blocks(text: &str) -> Vec<MarkdownBlockView> {
+fn parse_markdown_blocks(text: &str, is_streaming: bool) -> Vec<MarkdownBlockView> {
     let mut blocks = Vec::new();
     let mut paragraph = Vec::new();
     let mut in_code_block = false;
@@ -2225,7 +2244,17 @@ fn parse_markdown_blocks(text: &str) -> Vec<MarkdownBlockView> {
                 index = index.saturating_add(1);
             }
             if let Some(table) = parse_markdown_table(&table_lines) {
-                blocks.push(MarkdownBlockView::Table(table));
+                // During streaming the last table block may be a partial header-only
+                // structure (no data rows yet).  Render it as plain text until at least
+                // one body row has arrived so column widths stabilise first.
+                if is_streaming && table.rows.is_empty() {
+                    for raw in &table_lines {
+                        paragraph.push(raw.to_string());
+                    }
+                    flush_paragraph(&mut blocks, &mut paragraph);
+                } else {
+                    blocks.push(MarkdownBlockView::Table(table));
+                }
             }
             continue;
         }
@@ -2275,12 +2304,27 @@ fn parse_markdown_blocks(text: &str) -> Vec<MarkdownBlockView> {
     }
 
     flush_paragraph(&mut blocks, &mut paragraph);
+
     if in_code_block || code_language.is_some() || !code_lines.is_empty() {
-        blocks.push(MarkdownBlockView::Code(MarkdownCodeBlockView {
-            language: code_language,
-            code: code_lines.join("\n"),
-            line_count: code_lines.len(),
-        }));
+        if is_streaming {
+            // Unclosed code fence during streaming — show accumulated lines as plain
+            // text so the transcript doesn't flicker between paragraph and code-block
+            // rendering while each token arrives.
+            let mut plain = Vec::new();
+            if let Some(lang) = code_language {
+                plain.push(format!("```{lang}"));
+            } else {
+                plain.push("```".to_string());
+            }
+            plain.extend(code_lines);
+            blocks.push(MarkdownBlockView::Paragraph(plain.join(" ")));
+        } else {
+            blocks.push(MarkdownBlockView::Code(MarkdownCodeBlockView {
+                language: code_language,
+                code: code_lines.join("\n"),
+                line_count: code_lines.len(),
+            }));
+        }
     }
 
     blocks
@@ -3897,6 +3941,77 @@ mod tests {
         assert!(
             lines.iter().all(|l| !l.text.contains('└')),
             "Old └ must not appear in any grouped tool line; lines: {lines:?}"
+        );
+    }
+
+    #[test]
+    fn streaming_holdback_treats_unclosed_code_fence_as_paragraph() {
+        // Partial code block — closing fence not yet received.
+        let view = MarkdownSummaryView::new_streaming(
+            MessageRole::Assistant,
+            "before\n```rust\nfn main() {}",
+        );
+        let has_code_block = view
+            .blocks
+            .iter()
+            .any(|b| matches!(b, MarkdownBlockView::Code(_)));
+        assert!(
+            !has_code_block,
+            "Unclosed code fence during streaming must not render as Code block: {:?}",
+            view.blocks
+        );
+    }
+
+    #[test]
+    fn streaming_holdback_treats_header_only_table_as_paragraph() {
+        // Only the header row has arrived — no separator or data rows yet.
+        let view = MarkdownSummaryView::new_streaming(
+            MessageRole::Assistant,
+            "results:\n| Name | Age |",
+        );
+        let has_table = view
+            .blocks
+            .iter()
+            .any(|b| matches!(b, MarkdownBlockView::Table(_)));
+        assert!(
+            !has_table,
+            "Header-only table during streaming must not render as Table block: {:?}",
+            view.blocks
+        );
+    }
+
+    #[test]
+    fn completed_table_renders_normally_even_when_streaming_flag_set() {
+        // A table with a data row is stable — render it even during streaming.
+        let view = MarkdownSummaryView::new_streaming(
+            MessageRole::Assistant,
+            "| Name | Age |\n|------|-----|\n| Alice | 30 |",
+        );
+        let has_table = view
+            .blocks
+            .iter()
+            .any(|b| matches!(b, MarkdownBlockView::Table(_)));
+        assert!(
+            has_table,
+            "Table with body row must render as Table even with streaming holdback: {:?}",
+            view.blocks
+        );
+    }
+
+    #[test]
+    fn non_streaming_code_block_renders_as_code() {
+        let view = MarkdownSummaryView::new(
+            MessageRole::Assistant,
+            "before\n```rust\nfn main() {}",
+        );
+        let has_code_block = view
+            .blocks
+            .iter()
+            .any(|b| matches!(b, MarkdownBlockView::Code(_)));
+        assert!(
+            has_code_block,
+            "Non-streaming path must still render partial code fence as Code block: {:?}",
+            view.blocks
         );
     }
 }

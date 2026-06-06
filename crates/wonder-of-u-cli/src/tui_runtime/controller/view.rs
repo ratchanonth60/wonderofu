@@ -16,11 +16,13 @@ impl TuiController<'_> {
         } else {
             usize::from(shell_main_area_width(terminal_width, self.sidebar_visible)).max(1)
         };
+        let is_streaming = self.has_active_turn() || is_loading_turn_state(self.turn_state);
         view.messages = message_lines_for_width_with_cursor(
             &self.state.messages,
             summary_width,
             self.expand_tool_output,
             self.message_cursor_index,
+            is_streaming,
         );
         view.message_cursor_index = self.message_cursor_index;
         if !self.sidebar_visible {
