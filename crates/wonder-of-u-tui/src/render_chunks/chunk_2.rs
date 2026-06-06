@@ -473,7 +473,12 @@ fn style_for_message(theme: &Theme, role: MessageRole) -> TextStyle {
     match role {
         MessageRole::User => theme.prompt,
         MessageRole::Assistant => theme.messages,
-        MessageRole::System => theme.footer,
+        MessageRole::System => {
+            let mut style = theme.footer;
+            style.dim = true;
+            style.italic = true;
+            style
+        }
         MessageRole::Tool => {
             let mut style = theme.status.fg(Color::Green);
             style.bold = true;

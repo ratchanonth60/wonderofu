@@ -286,26 +286,32 @@ fn draw_prompt_warning(
     frame: &mut FrameBuffer,
     area: Rect,
     warning: &PromptWarningView,
-    theme: &Theme,
+    _theme: &Theme,
 ) {
     if area.is_empty() {
         return;
     }
 
-    frame.fill_rect(area, ' ', theme.background);
-    let style = match warning.severity {
-        PromptWarningSeverity::Warning => TextStyle::default().fg(Color::Yellow).bold(),
-        PromptWarningSeverity::Critical => TextStyle::default().fg(Color::Red).bold(),
+    let (style, bg) = match warning.severity {
+        PromptWarningSeverity::Warning => (
+            TextStyle::default().fg(Color::Black).bold(),
+            Color::DarkYellow,
+        ),
+        PromptWarningSeverity::Critical => (
+            TextStyle::default().fg(Color::White).bold(),
+            Color::Red,
+        ),
     };
-    frame.write_str(area.x, area.y, &warning.text, style, area.width);
+    frame.fill_rect(area, ' ', style.bg(bg));
+    let text = format!(" ⚠  {}", warning.text);
+    frame.write_str(area.x, area.y, &text, style.bg(bg), area.width);
 }
 
 /// Minimum total terminal width required to activate the shell-level sidebar.
 ///
-/// Raised from 100 to 120 so common 100-column terminals keep the full
-/// transcript width (Ink/Claude Code visual parity on standard terminals).
+/// 90 cols = 52-col main area + 1 separator + SIDEBAR_WIDTH (36) + 1 pad.
 /// Below this threshold all content occupies the full terminal width.
-pub const MIN_SIDEBAR_WIDTH: u16 = 120;
+pub const MIN_SIDEBAR_WIDTH: u16 = 90;
 
 /// Column width of the sidebar panel (excluding the `│` separator).
 pub const SIDEBAR_WIDTH: u16 = 36;

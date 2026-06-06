@@ -378,14 +378,14 @@ fn controller_shows_context_notice_dialog() {
         controller.dialog.as_ref(),
         Some(dialog) if dialog.title == "Context Usage"
     ));
-    assert!(matches!(
-        controller.state.messages.last().map(|message| &message.payload),
-        Some(MessagePayload::Command { input, output })
-            if input == "/context"
-                && output
-                    .as_deref()
-                    .is_some_and(|text| text.contains("## Context Usage"))
-    ));
+    // /context output goes to dialog, not transcript.
+    assert!(
+        !matches!(
+            controller.state.messages.last().map(|m| &m.payload),
+            Some(MessagePayload::Command { input, .. }) if input == "/context"
+        ),
+        "/context must not record to transcript"
+    );
 }
 
 #[test]
@@ -415,19 +415,19 @@ fn controller_records_session_stats_in_transcript() {
     block_on(controller.execute_slash_command("/stats")).expect("show stats");
 
     assert_eq!(controller.status_note.as_deref(), Some("session stats"));
-    assert!(controller.dialog.is_none());
-    assert!(matches!(
-        controller.state.messages.last().map(|message| &message.payload),
-        Some(MessagePayload::Command { input, output })
-            if input == "/stats"
-                && output
-                    .as_deref()
-                    .is_some_and(|text| {
-                        text.contains("Session Statistics")
-                            && text.contains("Provider:  openai")
-                            && text.contains("Estimated cost:      $0.4200")
-                    })
-    ));
+    // /stats output goes to dialog, not transcript.
+    assert!(
+        matches!(controller.dialog.as_ref(), Some(dialog) if dialog.title == "/stats"),
+        "dialog must open for /stats; got: {:?}",
+        controller.dialog
+    );
+    assert!(
+        !matches!(
+            controller.state.messages.last().map(|m| &m.payload),
+            Some(MessagePayload::Command { input, .. }) if input == "/stats"
+        ),
+        "/stats must not record to transcript"
+    );
 }
 
 #[test]
@@ -445,24 +445,19 @@ fn controller_records_help_with_system_styled_rows() {
     block_on(controller.execute_slash_command("/help")).expect("show help");
 
     assert_eq!(controller.status_note.as_deref(), Some("help"));
-    assert!(matches!(
-        controller.state.messages.last().map(|message| &message.payload),
-        Some(MessagePayload::Command { input, output })
-            if input == "/help"
-                && output
-                    .as_deref()
-                    .is_some_and(|text| text.contains("Slash Commands") && text.contains("/search"))
-    ));
-
-    let lines = wonder_of_u_tui::message_lines(&controller.state.messages, false);
-    assert!(lines.iter().any(|line| {
-        line.text == "Slash Commands" && line.role == wonder_of_u_tui::MessageRole::System
-    }));
-    assert!(lines.iter().any(|line| {
-        line.text.contains("/search")
-            && line.text.contains("Search workspace files")
-            && line.role == wonder_of_u_tui::MessageRole::System
-    }));
+    // /help output goes to dialog, not transcript.
+    assert!(
+        matches!(controller.dialog.as_ref(), Some(dialog) if dialog.title == "/help"),
+        "dialog must open for /help; got: {:?}",
+        controller.dialog
+    );
+    assert!(
+        !matches!(
+            controller.state.messages.last().map(|m| &m.payload),
+            Some(MessagePayload::Command { input, .. }) if input == "/help"
+        ),
+        "/help must not record to transcript"
+    );
 }
 
 #[test]
@@ -487,14 +482,11 @@ fn thinking_slash_command_toggles_and_reports_state() {
         "expected status to start with 'thinking off', got {:?}",
         controller.status_note
     );
-    assert!(matches!(
-        controller.state.messages.last().map(|message| &message.payload),
-        Some(MessagePayload::Command { input, output })
-            if input == "/thinking"
-                && output
-                    .as_deref()
-                    .is_some_and(|text| text.contains("Thinking is currently disabled"))
-    ));
+    // /thinking is a toggle — output goes to status_note only, not transcript.
+    assert!(
+        controller.state.messages.is_empty(),
+        "/thinking must not record to transcript"
+    );
 
     block_on(controller.execute_slash_command("/thinking on")).expect("enable thinking");
     assert!(controller.state.thinking_enabled);
@@ -506,14 +498,6 @@ fn thinking_slash_command_toggles_and_reports_state() {
         "expected status to start with 'thinking on', got {:?}",
         controller.status_note
     );
-    assert!(matches!(
-        controller.state.messages.last().map(|message| &message.payload),
-        Some(MessagePayload::Command { input, output })
-            if input == "/thinking on"
-                && output
-                    .as_deref()
-                    .is_some_and(|text| text.contains("Thinking enabled"))
-    ));
 
     block_on(controller.execute_slash_command("/thinking off")).expect("disable thinking");
     assert!(!controller.state.thinking_enabled);
@@ -544,10 +528,8 @@ fn controller_meta_t_toggles_thinking_mode() {
     send_prompt_key(&mut controller, alt_key('t'));
     assert!(controller.state.thinking_enabled);
     assert_eq!(controller.status_note.as_deref(), Some("thinking on"));
-    assert!(matches!(
-        controller.state.messages.last().map(|message| &message.payload),
-        Some(MessagePayload::Command { input, .. }) if input == "/thinking on"
-    ));
+    // /thinking toggle goes to status_note only, not transcript.
+    assert!(controller.state.messages.is_empty(), "/thinking must not record to transcript");
 
     send_prompt_key(&mut controller, alt_key('t'));
     assert!(!controller.state.thinking_enabled);
@@ -571,10 +553,12 @@ fn controller_meta_o_toggles_fast_mode() {
     send_prompt_key(&mut controller, alt_key('o'));
     assert!(controller.state.fast_mode);
     assert_eq!(controller.status_note.as_deref(), Some("fast on"));
-    assert!(matches!(
-        controller.state.messages.last().map(|message| &message.payload),
-        Some(MessagePayload::Command { input, .. }) if input == "/fast on"
-    ));
+    // /fast output is machine hints only; no dialog and no transcript entry.
+    assert!(controller.dialog.is_none(), "/fast must not open dialog");
+    assert!(
+        controller.state.messages.is_empty(),
+        "/fast must not record to transcript"
+    );
 
     send_prompt_key(&mut controller, alt_key('o'));
     assert!(!controller.state.fast_mode);

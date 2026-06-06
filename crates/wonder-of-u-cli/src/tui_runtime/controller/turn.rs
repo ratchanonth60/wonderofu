@@ -1335,8 +1335,8 @@ impl TuiController<'_> {
                 _ => {}
             }
             // TODO: Include `self.state.thinking_enabled` in provider completion requests.
-            self.dismiss_dialog();
-            self.record_command_message(input, Some(&output))?;
+            // status_note already set above per arm; no dialog needed for a simple toggle.
+            let _ = output;
             self.needs_render = true;
             return Ok(());
         }
@@ -1348,10 +1348,8 @@ impl TuiController<'_> {
                 ));
             }
             let output = commands::execute_help_command()?;
-            self.dismiss_dialog();
-            self.record_command_message(input, Some(&output))?;
+            self.open_command_output_dialog("/help", &output);
             self.status_note = Some("help".into());
-            self.needs_render = true;
             return Ok(());
         }
         if trimmed == "/stats" || trimmed.starts_with("/stats ") {
@@ -1360,10 +1358,8 @@ impl TuiController<'_> {
                 return Err(WonderError::validation("/stats does not take arguments"));
             }
             let output = commands::execute_stats_command(&self.state)?;
-            self.dismiss_dialog();
-            self.record_command_message(input, Some(&output))?;
+            self.open_command_output_dialog("/stats", &output);
             self.status_note = Some("session stats".into());
-            self.needs_render = true;
             return Ok(());
         }
         if trimmed == "/settings" || trimmed.starts_with("/settings ") {
@@ -1375,10 +1371,8 @@ impl TuiController<'_> {
                 return Err(WonderError::validation("/settings does not take arguments"));
             }
             let output = commands::execute_settings_command(&self.state)?;
-            self.dismiss_dialog();
-            self.record_command_message(input, Some(&output))?;
+            self.open_command_output_dialog("/settings", &output);
             self.status_note = Some("settings".into());
-            self.needs_render = true;
             return Ok(());
         }
         // Handle /login as a TUI-local shortcut when no CLI flags are present.
@@ -1492,7 +1486,14 @@ impl TuiController<'_> {
             && self.pending_theme_picker.is_none()
             && self.pending_setup_overlay.is_none()
         {
-            self.record_command_message(input, text.as_deref())?;
+            if let Some(t) = text.as_deref().filter(|t| !t.is_empty()) {
+                // Only open a dialog for human-readable output. Skip if the text
+                // is entirely machine hints (key=value lines consumed by the hint
+                // parsers above); those are state-change side-effects, not content.
+                if self.dialog.is_none() && !is_all_machine_hints(t) {
+                    self.open_command_output_dialog(format!("/{}", invocation.name), t);
+                }
+            }
         }
         let _ = self.refresh_runtime_state()?;
         // Immediate commands (e.g. /exit, /clear, /color, /effort, /fast,
@@ -1848,6 +1849,17 @@ impl TuiController<'_> {
 
         self.state.set_provider_context(provider, model, auth);
     }
+    pub(in crate::tui_runtime) fn open_command_output_dialog(
+        &mut self,
+        title: impl Into<String>,
+        output: &str,
+    ) {
+        let lines: Vec<String> = output.lines().map(ToString::to_string).collect();
+        self.dismiss_dialog();
+        self.dialog = Some(DialogView::notice(title, lines));
+        self.needs_render = true;
+    }
+
     pub(in crate::tui_runtime) fn record_command_message(
         &mut self,
         input: &str,
@@ -2115,4 +2127,19 @@ impl TuiController<'_> {
             content: render_provider_tool_result(&result),
         })
     }
+}
+
+/// Returns `true` when every non-empty line in `text` is a machine-readable
+/// hint of the form `key=value` — i.e., nothing suitable for a user-facing dialog.
+fn is_all_machine_hints(text: &str) -> bool {
+    text.lines()
+        .filter(|l| !l.is_empty())
+        .all(|l| {
+            l.split_once('=').is_some_and(|(key, _)| {
+                !key.is_empty()
+                    && key
+                        .chars()
+                        .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '.')
+            })
+        })
 }

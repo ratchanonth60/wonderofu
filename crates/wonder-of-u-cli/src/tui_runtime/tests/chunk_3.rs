@@ -1143,16 +1143,16 @@ fn history_search_cursor_wide_terminal_stays_inside_main_area() {
     );
 }
 
-/// Verify that a narrow terminal (width=119, one below the sidebar threshold=120)
+/// Verify that a narrow terminal (width=89, one below the sidebar threshold=90)
 /// is unaffected by the sidebar logic even when sidebar_active=true.  The
 /// prompt layout still spans the full terminal width.
 #[test]
 fn prompt_cursor_position_just_below_sidebar_threshold_uses_full_width() {
-    // At width=119 shell_main_area_width returns 119 regardless of sidebar_active.
+    // At width=89 shell_main_area_width returns 89 regardless of sidebar_active.
     // 10-char prompt, cursor at end → line=0, col=10, x_offset=2.
-    // effective_width=119; CHROME_HEIGHT=1: available=19, messages=15, prompt at y=15.
+    // effective_width=89; CHROME_HEIGHT=1: available=19, messages=15, prompt at y=15.
     // content_y=16, x=1+2+10=13.
-    let (x, y) = prompt_cursor_position(119, 20, &"a".repeat(10), 10, true, false);
+    let (x, y) = prompt_cursor_position(89, 20, &"a".repeat(10), 10, true, false);
     assert_eq!(
         (x, y),
         (13, 16),

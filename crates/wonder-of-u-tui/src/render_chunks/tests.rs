@@ -9,16 +9,15 @@ mod tests {
     use super::*;
     use crate::{dialog::DialogView, message::MessageLineView};
 
-    /// Guard against accidentally lowering `MIN_SIDEBAR_WIDTH` back to 100.
+    /// Guard against accidentally lowering `MIN_SIDEBAR_WIDTH` below 90.
     ///
-    /// The threshold was raised to 120 so that common 100-column terminals keep
-    /// the full main area.  A regression here would reintroduce the narrow-render
-    /// issue reported in the visual parity audit.
+    /// 90 cols is the minimum that gives a usable main area alongside the sidebar.
+    /// Lowering this further would make the transcript area too narrow on standard terminals.
     #[test]
-    fn sidebar_threshold_is_120_columns() {
+    fn sidebar_threshold_is_90_columns() {
         assert_eq!(
-            MIN_SIDEBAR_WIDTH, 120,
-            "MIN_SIDEBAR_WIDTH must be 120; raising or lowering this changes sidebar activation"
+            MIN_SIDEBAR_WIDTH, 90,
+            "MIN_SIDEBAR_WIDTH must be 90; raising or lowering this changes sidebar activation"
         );
     }
 
@@ -1356,7 +1355,7 @@ mod tests {
 
     #[test]
     fn sidebar_absent_on_narrow_terminal_below_min_width() {
-        // Width 119 is one below the MIN_SIDEBAR_WIDTH threshold — the sidebar
+        // Width 89 is one below the MIN_SIDEBAR_WIDTH threshold — the sidebar
         // must not appear even when `view.sidebar` is Some.
         let view = ShellView {
             prompt: "hello".into(),
@@ -1368,7 +1367,7 @@ mod tests {
             ..ShellView::default()
         };
 
-        let frame = render_snapshot(119, 8, &view, &Theme::default());
+        let frame = render_snapshot(89, 8, &view, &Theme::default());
         let text = frame.to_plain_text();
 
         // Sidebar section headers must not appear on a narrow terminal.
@@ -1707,8 +1706,8 @@ mod tests {
 
     #[test]
     fn prompt_spans_full_terminal_width_on_narrow_terminal() {
-        // Width 119 is one below MIN_SIDEBAR_WIDTH=120.  Even when `sidebar` is Some,
-        // no column is carved out — the prompt must use the full 119 columns.
+        // Width 89 is one below MIN_SIDEBAR_WIDTH=90.  Even when `sidebar` is Some,
+        // no column is carved out — the prompt must use the full 89 columns.
         let view = ShellView {
             prompt: "hello".into(),
             sidebar: Some(SidebarView {
@@ -1718,7 +1717,7 @@ mod tests {
             ..ShellView::default()
         };
 
-        let frame = render_snapshot(119, 6, &view, &Theme::default());
+        let frame = render_snapshot(89, 6, &view, &Theme::default());
         let text = frame.to_plain_text();
 
         // Prompt marker must appear inside the rounded box with no sidebar offset.
@@ -1815,8 +1814,8 @@ mod tests {
     }
 
     #[test]
-    fn sidebar_absent_on_narrow_terminal_below_120_cols() {
-        // Narrow terminal (width < MIN_SIDEBAR_WIDTH = 120): sidebar must be
+    fn sidebar_absent_on_narrow_terminal_below_90_cols() {
+        // Narrow terminal (width < MIN_SIDEBAR_WIDTH = 90): sidebar must be
         // completely suppressed even when `sidebar` field is `Some`.
         let view = ShellView {
             prompt: "narrow".into(),
@@ -1828,12 +1827,12 @@ mod tests {
             ..ShellView::default()
         };
 
-        let frame = render_snapshot(119, 8, &view, &Theme::default());
+        let frame = render_snapshot(89, 8, &view, &Theme::default());
         let text = frame.to_plain_text();
 
         assert!(
             !text.contains("─ Providers ─"),
-            "Providers header must NOT appear on narrow (119-col) terminal; rendered:\n{text}"
+            "Providers header must NOT appear on narrow (89-col) terminal; rendered:\n{text}"
         );
         assert!(
             !text.contains("─ Controls ─"),
@@ -2601,8 +2600,8 @@ mod tests {
             ..ShellView::default()
         };
 
-        // Width 119 is one below MIN_SIDEBAR_WIDTH=120 – sidebar is fully suppressed.
-        let frame = render_snapshot(119, 20, &view, &Theme::default());
+        // Width 89 is one below MIN_SIDEBAR_WIDTH=90 – sidebar is fully suppressed.
+        let frame = render_snapshot(89, 20, &view, &Theme::default());
         let text = frame.to_plain_text();
 
         for absent in &["─ Tools ─", "─ MCP ─", "─ LSP ─", "─ Todo ─"] {

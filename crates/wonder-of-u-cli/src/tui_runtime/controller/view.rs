@@ -175,15 +175,25 @@ impl TuiController<'_> {
         view.picker_list = picker_list;
         view.notifications = self.notifications.view(3);
         view.slash_suggestions = self.active_suggestions.as_ref().map(|state| {
+            const MAX_VISIBLE: usize = 8;
             let filtered = state.filtered();
+            let selected = state.selected_index.min(filtered.len().saturating_sub(1));
+            // Scroll the visible window so the selected entry is always on screen.
+            let scroll = if selected >= MAX_VISIBLE {
+                selected + 1 - MAX_VISIBLE
+            } else {
+                0
+            };
             let entries = filtered
                 .iter()
                 .enumerate()
+                .skip(scroll)
+                .take(MAX_VISIBLE)
                 .map(|(i, s)| SlashSuggestionEntry {
                     match_ranges: find_match_chars(&s.display_text, &state.filter),
                     display: s.display_text.clone(),
                     description: s.description.clone().unwrap_or_default(),
-                    selected: i == state.selected_index.min(filtered.len().saturating_sub(1)),
+                    selected: i == selected,
                 })
                 .collect();
             SlashSuggestionsOverlay { entries }
