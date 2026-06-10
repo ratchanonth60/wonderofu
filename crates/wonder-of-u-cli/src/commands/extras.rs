@@ -2175,6 +2175,7 @@ const HELP_SLASH_COMMANDS: &[(&str, &str)] = &[
     ("/help", "Show this help"),
     ("/clear", "Clear conversation history"),
     ("/compact", "Compact conversation context"),
+    ("/autocompact", "Toggle automatic context compaction on/off"),
     ("/thinking", "Toggle extended thinking on/off"),
     ("/brief", "Toggle concise-response mode"),
     (

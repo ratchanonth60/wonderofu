@@ -326,8 +326,14 @@ impl PromptSuggestion {
         // Strip leading '/' so "the" scores as a prefix of "theme", not a mid-string hit.
         // Score each field independently and take the max so the visible command name
         // drives ranking rather than the opaque id field.
-        let display = self.display_text.strip_prefix('/').unwrap_or(&self.display_text);
-        let replacement = self.replacement.strip_prefix('/').unwrap_or(&self.replacement);
+        let display = self
+            .display_text
+            .strip_prefix('/')
+            .unwrap_or(&self.display_text);
+        let replacement = self
+            .replacement
+            .strip_prefix('/')
+            .unwrap_or(&self.replacement);
         let description = self.description.as_deref().unwrap_or_default();
         let tag = self.tag.as_deref().unwrap_or_default();
         let keywords = self.keywords.join(" ");

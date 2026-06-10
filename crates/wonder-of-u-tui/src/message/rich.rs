@@ -378,10 +378,12 @@ impl MarkdownSummaryView {
                         2 => TextStyle::default().fg(Color::Blue).bold(),
                         _ => TextStyle::default().bold(),
                     };
-                    lines.push(MessageLineView::with_spans(
-                        self.role,
-                        vec![MessageSpanView::new(text.clone(), Some(style))],
-                    ));
+                    for segment in wrap_text_hard(text, max_width.max(1)) {
+                        lines.push(MessageLineView::with_spans(
+                            self.role,
+                            vec![MessageSpanView::new(segment, Some(style))],
+                        ));
+                    }
                     continue; // skip first_block = false
                 }
                 MarkdownBlockView::Blockquote(text) => {
@@ -405,8 +407,10 @@ impl MarkdownSummaryView {
                     }
                 }
                 MarkdownBlockView::Paragraph(text) => {
-                    let block_lines =
-                        wrap_summary_lines(text, max_width, MAX_PARAGRAPH_LINES, false);
+                    // Pass unwrapped logical lines: the push helpers wrap at the
+                    // prefix-adjusted width themselves, and pre-wrapping at the
+                    // full width here would re-split lines into orphan fragments.
+                    let block_lines = logical_block_lines(text);
                     let display_prefix = if first_block { prefix } else { "" };
                     if display_prefix.is_empty() {
                         // Continuation blocks (second paragraph onward) and Tool-role
@@ -2654,6 +2658,29 @@ fn truncate_existing_lines(lines: &[MessageLineView], max_width: usize) -> Vec<M
     out
 }
 
+/// Splits text into logical lines without wrapping, trimming trailing
+/// whitespace per line and dropping leading/trailing blank lines.
+fn logical_block_lines(text: &str) -> Vec<String> {
+    let stripped = strip_ansi(text);
+    let mut lines: Vec<String> = stripped
+        .split('\n')
+        .map(|line| line.trim_end().to_string())
+        .collect();
+
+    while lines.first().is_some_and(|l| l.is_empty()) {
+        lines.remove(0);
+    }
+    while lines.last().is_some_and(|l| l.is_empty()) {
+        lines.pop();
+    }
+
+    if lines.is_empty() {
+        return vec![String::new()];
+    }
+
+    lines
+}
+
 fn wrap_summary_lines(
     text: &str,
     max_width: usize,
@@ -2890,6 +2917,44 @@ mod tests {
             lines[2].spans.iter().any(|span| span.style.is_some()),
             "expected syntect to style Rust code: {lines:?}"
         );
+    }
+
+    #[test]
+    fn markdown_paragraph_wraps_once_without_orphan_fragments() {
+        let max_width = 20;
+        // 30 'a's: wraps at the prefix-adjusted width (18), not at the full
+        // width first. Double-wrapping used to leave 1-2 char orphan lines.
+        let view = MarkdownSummaryView::new(MessageRole::Assistant, &"a".repeat(30));
+
+        let lines = view.display_lines(max_width);
+        assert_eq!(lines[0].text, format!("◆ {}", "a".repeat(18)));
+        assert_eq!(lines[1].text, format!("  {}", "a".repeat(12)));
+        assert_eq!(lines.len(), 2);
+        assert!(
+            lines.iter().all(|line| line_width(&line.text) <= max_width),
+            "no line may exceed max_width: {lines:?}"
+        );
+    }
+
+    #[test]
+    fn markdown_heading_wraps_at_max_width() {
+        let max_width = 10;
+        let view =
+            MarkdownSummaryView::new(MessageRole::Assistant, &format!("# {}", "h".repeat(25)));
+
+        let lines = view.display_lines(max_width);
+        assert!(lines.len() >= 3, "long heading must wrap: {lines:?}");
+        for line in &lines {
+            assert!(
+                line_width(&line.text) <= max_width,
+                "heading line overflows: {:?}",
+                line.text
+            );
+            assert!(
+                line.spans.iter().any(|span| span.style.is_some()),
+                "wrapped heading segments keep their style"
+            );
+        }
     }
 
     #[test]
@@ -3965,10 +4030,8 @@ mod tests {
     #[test]
     fn streaming_holdback_treats_header_only_table_as_paragraph() {
         // Only the header row has arrived — no separator or data rows yet.
-        let view = MarkdownSummaryView::new_streaming(
-            MessageRole::Assistant,
-            "results:\n| Name | Age |",
-        );
+        let view =
+            MarkdownSummaryView::new_streaming(MessageRole::Assistant, "results:\n| Name | Age |");
         let has_table = view
             .blocks
             .iter()
@@ -4000,10 +4063,8 @@ mod tests {
 
     #[test]
     fn non_streaming_code_block_renders_as_code() {
-        let view = MarkdownSummaryView::new(
-            MessageRole::Assistant,
-            "before\n```rust\nfn main() {}",
-        );
+        let view =
+            MarkdownSummaryView::new(MessageRole::Assistant, "before\n```rust\nfn main() {}");
         let has_code_block = view
             .blocks
             .iter()

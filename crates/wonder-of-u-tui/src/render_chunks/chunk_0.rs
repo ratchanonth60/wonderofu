@@ -75,8 +75,9 @@ pub fn render_shell(frame: &mut FrameBuffer, view: &ShellView, theme: &Theme) {
     draw_message_view(frame, messages_render_area, view, theme);
 
     // Draw the loading area (live progress lines + spinner row), if active.
+    // Padded like the transcript so the spinner column lines up with messages.
     if let Some(loading_area) = loading_row_area {
-        draw_loading_area(frame, loading_area, view, theme);
+        draw_loading_area(frame, transcript_padded(loading_area), view, theme);
     }
 
     let prompt_area = if let Some(warning) = view
@@ -190,6 +191,10 @@ fn draw_message_view(frame: &mut FrameBuffer, area: Rect, view: &ShellView, them
     }
 
     frame.fill_rect(area, ' ', theme.background);
+
+    // Keep transcript content off the pane edges; the wrap width used to build
+    // the message lines (`transcript_wrap_width`) accounts for this inset.
+    let area = transcript_padded(area);
 
     // Only show the session title header on the welcome / empty-state screen.
     // Once the user has sent messages the transcript starts at the very top of
@@ -343,6 +348,42 @@ pub fn shell_main_area_width(terminal_width: u16, has_sidebar: bool) -> u16 {
     } else {
         terminal_width
     }
+}
+
+/// Horizontal padding (in cells) between the main-pane edges and transcript
+/// content, so message text never touches the terminal border or the sidebar
+/// separator.
+pub const TRANSCRIPT_HPAD: u16 = 1;
+
+/// Width available for wrapping transcript message lines inside a main pane of
+/// `main_area_width` cells — the pane width minus [`TRANSCRIPT_HPAD`] on each
+/// side. Use this wherever message lines are wrapped or counted so the wrap
+/// width always matches the renderer's padded transcript area.
+///
+/// # Examples
+///
+/// ```
+/// use wonder_of_u_tui::{transcript_wrap_width, TRANSCRIPT_HPAD};
+///
+/// assert_eq!(transcript_wrap_width(80), 80 - 2 * TRANSCRIPT_HPAD);
+/// // Degenerate panes never collapse to zero.
+/// assert_eq!(transcript_wrap_width(1), 1);
+/// ```
+pub fn transcript_wrap_width(main_area_width: u16) -> u16 {
+    main_area_width
+        .saturating_sub(2 * TRANSCRIPT_HPAD)
+        .max(1)
+}
+
+/// Insets `area` by [`TRANSCRIPT_HPAD`] on the left and right, leaving the
+/// vertical extent untouched.
+fn transcript_padded(area: Rect) -> Rect {
+    Rect::new(
+        area.x.saturating_add(TRANSCRIPT_HPAD),
+        area.y,
+        area.width.saturating_sub(2 * TRANSCRIPT_HPAD).max(1),
+        area.height,
+    )
 }
 
 /// Draws the right-side sidebar showing keybinding hints and session metadata.

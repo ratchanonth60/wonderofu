@@ -996,6 +996,10 @@ pub struct AppState {
     /// reply.  Injected as a system-prompt prefix so no user message is needed.
     #[serde(default)]
     pub optimize_token_mode: bool,
+    /// Whether automatic context compaction is enabled. Defaults to `true`;
+    /// mirrors `autoCompactEnabled` in the claude-code global config.
+    #[serde(default = "default_auto_compact_enabled")]
+    pub auto_compact_enabled: bool,
     /// Optional advisor/secondary model for multi-model reasoning.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub advisor_model: Option<String>,
@@ -1022,6 +1026,11 @@ pub struct AppState {
     pub injected_task_notifications: BTreeSet<TaskId>,
 }
 
+/// Serde default for [`AppState::auto_compact_enabled`] — on unless disabled.
+const fn default_auto_compact_enabled() -> bool {
+    true
+}
+
 impl AppState {
     /// Creates a new value
     #[must_use]
@@ -1046,6 +1055,7 @@ impl AppState {
             thinking_enabled: false,
             thinking_effort: ThinkingEffort::default(),
             optimize_token_mode: false,
+            auto_compact_enabled: true,
             advisor_model: None,
             auth: AuthState::default(),
             pending_tool_approval: None,
@@ -1140,6 +1150,12 @@ impl AppState {
     /// Handles set thinking effort
     pub fn set_thinking_effort(&mut self, effort: ThinkingEffort) {
         self.thinking_effort = effort;
+        self.session.updated_at = OffsetDateTime::now_utc();
+    }
+
+    /// Handles set auto compact enabled
+    pub fn set_auto_compact_enabled(&mut self, auto_compact_enabled: bool) {
+        self.auto_compact_enabled = auto_compact_enabled;
         self.session.updated_at = OffsetDateTime::now_utc();
     }
 

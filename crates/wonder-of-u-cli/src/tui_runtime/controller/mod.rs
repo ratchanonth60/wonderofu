@@ -107,6 +107,14 @@ pub(super) struct TuiController<'a> {
     /// Receiving end of the shell-tool progress channel.
     /// Drained on every tick while a tool is executing.
     pub(super) tool_progress_rx: Option<std::sync::mpsc::Receiver<String>>,
+    /// Total context tokens reported by the latest provider response
+    /// (input + cache creation + cache read + output).  `None` until the first
+    /// response of the session arrives (or after `/clear` / `/compact`).
+    pub(super) last_context_usage: Option<u64>,
+    /// Number of messages in `state.messages` already covered by
+    /// `last_context_usage`.  Messages at indices `>= anchor` are estimated
+    /// with the character heuristic instead.
+    pub(super) context_usage_anchor: usize,
     /// Consecutive auto-compact failures.  When this reaches the circuit-breaker
     /// limit we stop attempting automatic compaction until the session resets.
     pub(super) autocompact_failures: u8,
@@ -555,11 +563,6 @@ pub(super) fn context_sidebar_lines(used_tokens: u64, max_tokens: Option<u64>) -
             percentage.min(100)
         ),
     ]
-}
-pub(super) fn context_warning_visible(used_tokens: u64, max_tokens: Option<u64>) -> bool {
-    max_tokens
-        .filter(|max_tokens| *max_tokens > 0)
-        .is_some_and(|max_tokens| used_tokens.saturating_mul(100) / max_tokens >= 75)
 }
 /// Mirrors `ShellView::prompt_height()` for a raw prompt string.
 ///
@@ -1027,6 +1030,8 @@ impl<'a> TuiController<'a> {
             task_manager: storage_dir.map(TaskManager::new),
             tool_progress_lines: VecDeque::new(),
             tool_progress_rx: None,
+            last_context_usage: None,
+            context_usage_anchor: 0,
             autocompact_failures: 0,
             autocompact_pending: false,
             selection_mode: false,
@@ -1857,10 +1862,7 @@ impl<'a> TuiController<'a> {
         // scroll_state.last_visible_lines matches the actual messages area.
         let uncapped = controller_prompt_height(&self.prompt.text());
         let cap = (height / 3).max(6); // matches (main_area.height / 3).max(6) in render_shell
-        let warning_height = u16::from(context_warning_visible(
-            self.estimated_context_tokens(),
-            self.state.context_window_size,
-        ));
+        let warning_height = u16::from(self.context_warning_active());
         let prompt_height = uncapped
             .saturating_add(warning_height)
             .min(cap.saturating_add(warning_height));
@@ -1873,7 +1875,10 @@ impl<'a> TuiController<'a> {
             ),
             prompt_height,
         );
-        let total = self.transcript_line_count(shell_main_area_width(width, self.sidebar_visible));
+        let total = self.transcript_line_count(transcript_wrap_width(shell_main_area_width(
+            width,
+            self.sidebar_visible,
+        )));
         // Subtract the loading row from visible height so the scroll max-offset
         // matches the actual renderable area (spinner sits on top of transcripts).
         let loading_row = u16::from(is_loading_turn_state(self.turn_state));
@@ -1886,10 +1891,10 @@ impl<'a> TuiController<'a> {
     /// Call this after any operation that adds or removes messages from
     /// `self.state.messages`.
     pub(super) fn notify_transcript_changed(&mut self) {
-        let total = self.transcript_line_count(shell_main_area_width(
+        let total = self.transcript_line_count(transcript_wrap_width(shell_main_area_width(
             self.last_terminal_size.0.max(1),
             self.sidebar_visible,
-        ));
+        )));
         self.scroll_state.on_messages_changed(total);
     }
     pub(super) fn enter_selection_mode(&mut self) {

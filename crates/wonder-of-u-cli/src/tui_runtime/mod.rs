@@ -36,10 +36,11 @@ use wonder_of_u_core::{
     MessagePayload, PendingLocalToolCall, PendingProviderToolCall, PendingProviderToolResult,
     PendingToolApprovalState, PendingToolConversationRound, PermissionDecision, PermissionMode,
     PermissionRequest, PermissionRuleSource, ProviderReadiness, QueuePlacement, Result, SessionId,
-    TaskState, TaskStatus, TodoTaskStatus, ToolContext, ToolKind, ToolQuery, ToolResult,
-    ToolSource, ToolUseId, WonderError, parse_slash_command, payload_from_task_state,
+    TaskState, TaskStatus, TodoTaskStatus, TokenUsage, ToolContext, ToolKind, ToolQuery,
+    ToolResult, ToolSource, ToolUseId, WonderError, parse_slash_command, payload_from_task_state,
     token_budget::{
-        AUTOCOMPACT_BUFFER_TOKENS, MANUAL_COMPACT_BUFFER_TOKENS, effective_context_window,
+        AUTOCOMPACT_BUFFER_TOKENS, COMPACT_MAX_OUTPUT_TOKENS, MANUAL_COMPACT_BUFFER_TOKENS,
+        WARNING_THRESHOLD_BUFFER_TOKENS, effective_context_window,
     },
 };
 use wonder_of_u_mcp::McpConfigStore;
@@ -51,10 +52,10 @@ use wonder_of_u_tui::{
     KeyEvent, MouseButton, MouseEventKind, NotificationInput, NotificationLifetime,
     NotificationQueue, NotificationSeverity, PermissionSummaryView, PickerListEntry,
     PickerListView, PromptSuggestion, PromptSuggestionState, Rect, ResolvedKey, ShellLayout,
-    find_match_chars,
     ShellView, SlashSuggestionEntry, SlashSuggestionsOverlay, TextBuffer, Theme,
-    TranscriptScrollView, TurnState, UiEvent, VimMode, VimState, message::SearchMatch,
-    message_lines_for_width, message_lines_for_width_with_cursor, shell_main_area_width,
+    TranscriptScrollView, TurnState, UiEvent, VimMode, VimState, find_match_chars,
+    message::SearchMatch, message_lines_for_width, message_lines_for_width_with_cursor,
+    shell_main_area_width, transcript_wrap_width,
 };
 
 use crate::commands;

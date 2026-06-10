@@ -272,6 +272,7 @@ impl TuiController<'_> {
                         },
                     )?;
                     self.persist_messages(&[assistant_message])?;
+                    self.note_context_usage(response.usage);
                     self.turn_state = TurnState::Completed;
                     self.state.input_mode = InputMode::Prompt;
                     self.status_note = Some("tool loop response recorded".into());
@@ -284,6 +285,7 @@ impl TuiController<'_> {
                     self.state
                         .set_context_window_size(batch.context_window_size);
                     self.state.record_cost_usage(batch.usage, None);
+                    self.note_context_usage(batch.usage);
                     let local_calls = batch
                         .calls
                         .iter()
@@ -478,6 +480,10 @@ impl TuiController<'_> {
         &mut self,
         input: &str,
     ) -> Result<()> {
+        // After a long idle gap the provider prompt cache is cold, so clearing
+        // old tool results before this request is free.  Mirrors the
+        // time-based microcompact in claude-code microCompact.ts.
+        self.maybe_time_based_microcompact();
         // Blocking limit check: if token usage is so high that the API would
         // reject the request anyway, surface a helpful error immediately rather
         // than wasting a round-trip.  Mirrors claude-code autoCompact.ts.
@@ -597,6 +603,7 @@ impl TuiController<'_> {
             &mut self.persistence,
             &[user_message, assistant_message],
         )?;
+        self.note_context_usage(response.usage);
         self.status_note = Some("model response recorded".into());
         self.maybe_autocompact();
         self.trigger_extract_memories(&resolved_for_ref);
@@ -684,6 +691,7 @@ impl TuiController<'_> {
                             &mut self.persistence,
                             &[user_message, assistant_message],
                         )?;
+                        self.note_context_usage(response.usage);
                         self.turn_state = TurnState::Completed;
                         self.state.input_mode = InputMode::Prompt;
                         self.status_note = Some("streamed model response recorded".into());
@@ -857,6 +865,7 @@ impl TuiController<'_> {
                                     let mut msgs = tl.staged_messages.clone();
                                     msgs.push(assistant_message);
                                     self.persist_messages(&msgs)?;
+                                    self.note_context_usage(response.usage);
                                     self.status_note = Some(if tl.rounds.is_empty() {
                                         "model response recorded".into()
                                     } else {
@@ -873,6 +882,7 @@ impl TuiController<'_> {
                                     self.state
                                         .set_context_window_size(batch.context_window_size);
                                     self.state.record_cost_usage(batch.usage, None);
+                                    self.note_context_usage(batch.usage);
                                     let local_calls = batch
                                         .calls
                                         .iter()
@@ -1104,6 +1114,7 @@ impl TuiController<'_> {
                     )?;
                     staged_messages.push(assistant_message);
                     self.persist_messages(&staged_messages)?;
+                    self.note_context_usage(response.usage);
                     self.status_note = Some(if rounds.is_empty() {
                         "model response recorded".into()
                     } else {
@@ -1118,6 +1129,7 @@ impl TuiController<'_> {
                     self.state
                         .set_context_window_size(batch.context_window_size);
                     self.state.record_cost_usage(batch.usage, None);
+                    self.note_context_usage(batch.usage);
                     let local_calls = batch
                         .calls
                         .iter()
@@ -1340,6 +1352,39 @@ impl TuiController<'_> {
             self.needs_render = true;
             return Ok(());
         }
+        if trimmed == "/autocompact" || trimmed.starts_with("/autocompact ") {
+            let arg = trimmed
+                .strip_prefix("/autocompact")
+                .map(str::trim)
+                .unwrap_or("");
+            match arg {
+                "on" => {
+                    self.state.set_auto_compact_enabled(true);
+                    self.status_note = Some("autocompact on".into());
+                }
+                "off" => {
+                    self.state.set_auto_compact_enabled(false);
+                    self.status_note = Some("autocompact off".into());
+                }
+                "" => {
+                    self.status_note = Some(format!(
+                        "autocompact {}",
+                        if self.state.auto_compact_enabled {
+                            "on"
+                        } else {
+                            "off"
+                        }
+                    ));
+                }
+                other => {
+                    return Err(WonderError::validation(format!(
+                        "Unknown argument: {other}. Use 'on' or 'off'"
+                    )));
+                }
+            }
+            self.needs_render = true;
+            return Ok(());
+        }
         if trimmed == "/help" || trimmed.starts_with("/help ") {
             let arg = trimmed.strip_prefix("/help").map(str::trim).unwrap_or("");
             if !arg.is_empty() {
@@ -1507,11 +1552,16 @@ impl TuiController<'_> {
             self.status_note = Some("exit requested".into());
         } else if let Some(view_action) = view_action {
             self.status_note = Some(match view_action {
-                ViewActionHint::Clear => "conversation cleared".into(),
+                ViewActionHint::Clear => {
+                    // Messages were rewritten — the recorded usage anchor is stale.
+                    self.reset_context_usage_tracking();
+                    "conversation cleared".into()
+                }
                 ViewActionHint::Compact => {
                     // Compact succeeded — reset the circuit breaker.
                     self.autocompact_failures = 0;
                     self.autocompact_pending = false;
+                    self.reset_context_usage_tracking();
                     "conversation compacted".into()
                 }
             });
@@ -2132,14 +2182,12 @@ impl TuiController<'_> {
 /// Returns `true` when every non-empty line in `text` is a machine-readable
 /// hint of the form `key=value` — i.e., nothing suitable for a user-facing dialog.
 fn is_all_machine_hints(text: &str) -> bool {
-    text.lines()
-        .filter(|l| !l.is_empty())
-        .all(|l| {
-            l.split_once('=').is_some_and(|(key, _)| {
-                !key.is_empty()
-                    && key
-                        .chars()
-                        .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '.')
-            })
+    text.lines().filter(|l| !l.is_empty()).all(|l| {
+        l.split_once('=').is_some_and(|(key, _)| {
+            !key.is_empty()
+                && key
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '.')
         })
+    })
 }

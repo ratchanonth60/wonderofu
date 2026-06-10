@@ -17,10 +17,7 @@ impl TuiController<'_> {
         // mouse wheel events is always consistent with the rendered layout.
         let uncapped = controller_prompt_height(&self.prompt.text());
         let cap = (height / 3).max(6);
-        let warning_height = u16::from(context_warning_visible(
-            self.estimated_context_tokens(),
-            self.state.context_window_size,
-        ));
+        let warning_height = u16::from(self.context_warning_active());
         let prompt_height = uncapped
             .saturating_add(warning_height)
             .min(cap.saturating_add(warning_height));

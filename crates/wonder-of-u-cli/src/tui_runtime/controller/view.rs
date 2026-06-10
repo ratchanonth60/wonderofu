@@ -14,7 +14,10 @@ impl TuiController<'_> {
         let summary_width = if terminal_width == 0 {
             80
         } else {
-            usize::from(shell_main_area_width(terminal_width, self.sidebar_visible)).max(1)
+            usize::from(transcript_wrap_width(shell_main_area_width(
+                terminal_width,
+                self.sidebar_visible,
+            )))
         };
         let is_streaming = self.has_active_turn() || is_loading_turn_state(self.turn_state);
         view.messages = message_lines_for_width_with_cursor(
@@ -65,7 +68,7 @@ impl TuiController<'_> {
 
             sb.context_lines = context_sidebar_lines(
                 self.estimated_context_tokens(),
-                self.state.context_window_size,
+                self.effective_window_or_default(),
             );
 
             // Section 4 – Status: turn-state indicator + last error summary.
@@ -314,10 +317,7 @@ impl TuiController<'_> {
                 &view,
                 search.query.cursor(),
                 sidebar_active,
-                context_warning_visible(
-                    self.estimated_context_tokens(),
-                    self.state.context_window_size,
-                ),
+                self.context_warning_active(),
             );
         }
         prompt_cursor_position(
@@ -326,10 +326,7 @@ impl TuiController<'_> {
             &self.prompt.text(),
             self.prompt.cursor(),
             sidebar_active,
-            context_warning_visible(
-                self.estimated_context_tokens(),
-                self.state.context_window_size,
-            ),
+            self.context_warning_active(),
         )
     }
 }

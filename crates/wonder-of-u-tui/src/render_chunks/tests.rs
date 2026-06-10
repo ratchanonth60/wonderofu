@@ -95,10 +95,10 @@ mod tests {
         assert_eq!(
             frame.to_plain_text(),
             [
-                "▸ wonder-of-u  Empty",
+                " ▸ wonder-of-u  Empty",
                 "",
-                "   ██╗    ██╗  ██████╗  ██╗",
-                "   ██║    ██║ ██╔═══██╗ ██║",
+                "    ██╗    ██╗  ██████╗  ██╗",
+                "    ██║    ██║ ██╔═══██╗ ██║",
                 "╭─ prompt ───────────────────╮",
                 "│›                           │",
                 "│prompt · 0 messages · Enter │",
@@ -152,11 +152,11 @@ mod tests {
         assert_eq!(
             frame.to_plain_text(),
             [
-                "system> ready",
-                "hello",
+                " system> ready",
+                " hello",
                 "",
-                "Tasks",
-                "[running] shell: index workspace",
+                " Tasks",
+                " [running] shell: index workspace",
                 "╭─ prompt ─────────────────────────────────────╮",
                 "│› /status                                     │",
                 "│prompt · 2 messages · Enter send · Shift+Enter│",
@@ -253,13 +253,13 @@ mod tests {
         assert_eq!(
             frame.to_plain_text(),
             [
-                "ready",
+                " ready",
                 "",
                 "",
-                "Queued",
-                "1. /status",
-                "2. draft migration plan",
-                "+2 more queued",
+                " Queued",
+                " 1. /status",
+                " 2. draft migration plan",
+                " +2 more queued",
                 "╭─ prompt ───────────────────────────────╮",
                 "│› /plan                                 │",
                 "│prompt · 1 messages · Enter send · Shift│",
@@ -363,7 +363,7 @@ mod tests {
         assert_eq!(
             frame.to_plain_text(),
             [
-                "ready",
+                " ready",
                 "",
                 "",
                 "",
@@ -433,7 +433,7 @@ mod tests {
         assert_eq!(
             frame.to_plain_text(),
             [
-                "ready",
+                " ready",
                 "",
                 "",
                 "╭─commands─────────────────────╮",
@@ -588,9 +588,9 @@ mod tests {
         assert_eq!(
             frame.to_plain_text(),
             [
-                "● Run(Tests)",
-                "  └ cargo test -p wonder-of-u-tui",
-                "  └ tests passed",
+                " ● Run(Tests)",
+                "   └ cargo test -p wonder-of-u-tui",
+                "   └ tests passed",
                 "",
                 "",
                 "╭─ prompt ─────────────────────────────────────╮",
@@ -652,7 +652,7 @@ mod tests {
         assert_eq!(
             frame.to_plain_text(),
             [
-                "ready",
+                " ready",
                 "                   ╭─info Source status────────╮",
                 "                   │workspace index refreshed  │",
                 "                   ╰───────────────────────────╯",
