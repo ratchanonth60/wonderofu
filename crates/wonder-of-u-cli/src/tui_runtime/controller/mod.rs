@@ -1279,9 +1279,14 @@ impl<'a> TuiController<'a> {
                 self.status_note = Some("processing queued prompt".into());
                 self.needs_render = true;
                 self.execute_prompt_submission(&command).await?;
-                if !self.has_active_turn()
-                    && !matches!(self.turn_state, TurnState::ToolPermissionPending)
-                {
+                if self.has_active_turn() {
+                    // The prompt started a non-blocking ActiveTurn. Stop
+                    // draining so the next queued prompt cannot clobber it;
+                    // the event loop re-enters this drain once the turn
+                    // finishes.
+                    break;
+                }
+                if !matches!(self.turn_state, TurnState::ToolPermissionPending) {
                     self.turn_state = TurnState::Completed;
                 }
             }

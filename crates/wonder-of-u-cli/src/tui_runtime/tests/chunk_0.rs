@@ -210,11 +210,10 @@ fn controller_routes_slash_commands_and_updates_provider_context() {
         controller.state.auth,
         AuthState::missing(wonder_of_u_core::AuthMaterialKind::ApiKey)
     );
-    assert!(matches!(
-        controller.state.messages.last().map(|message| &message.payload),
-        Some(MessagePayload::Command { input, .. })
-            if input == "/model openai:gpt-4.1"
-    ));
+    assert!(
+        controller.state.messages.is_empty(),
+        "/model must not record to transcript"
+    );
 }
 
 #[test]
@@ -735,14 +734,12 @@ fn controller_shows_theme_notice_dialog() {
         controller.dialog.as_ref(),
         Some(dialog) if dialog.title == "Theme"
     ));
-    assert!(matches!(
-        controller.state.messages.last().map(|message| &message.payload),
-        Some(MessagePayload::Command { input, output })
-            if input == "/theme show"
-                && output
-                    .as_deref()
-                    .is_some_and(|text| text.contains("## Theme"))
-    ));
+    assert!(
+        !controller.state.messages.iter().any(|message| {
+            matches!(&message.payload, MessagePayload::Command { .. })
+        }),
+        "/theme show must not record to transcript"
+    );
 }
 
 #[test]
@@ -868,14 +865,12 @@ fn controller_sets_session_color_from_command() {
     assert_eq!(controller.state.session_color.as_deref(), Some("purple"));
     assert_eq!(controller.status_note.as_deref(), Some("color purple"));
     assert!(controller.view().footer.contains("shift+tab to cycle"));
-    assert!(matches!(
-        controller.state.messages.last().map(|message| &message.payload),
-        Some(MessagePayload::Command { input, output })
-            if input == "/color purple"
-                && output
-                    .as_deref()
-                    .is_some_and(|text| text.contains("color=purple"))
-    ));
+    assert!(
+        !controller.state.messages.iter().any(|message| {
+            matches!(&message.payload, MessagePayload::Command { .. })
+        }),
+        "/color purple must not record to transcript"
+    );
 }
 
 #[test]
@@ -897,14 +892,12 @@ fn controller_shows_color_notice_dialog() {
         controller.dialog.as_ref(),
         Some(dialog) if dialog.title == "Color"
     ));
-    assert!(matches!(
-        controller.state.messages.last().map(|message| &message.payload),
-        Some(MessagePayload::Command { input, output })
-            if input == "/color"
-                && output
-                    .as_deref()
-                    .is_some_and(|text| text.contains("## Color"))
-    ));
+    assert!(
+        !controller.state.messages.iter().any(|message| {
+            matches!(&message.payload, MessagePayload::Command { .. })
+        }),
+        "/color must not record to transcript"
+    );
 }
 
 #[test]
@@ -924,14 +917,12 @@ fn controller_toggles_brief_mode_from_command() {
     assert!(controller.state.brief_mode);
     assert_eq!(controller.status_note.as_deref(), Some("brief on"));
     assert!(controller.view().footer.contains("shift+tab to cycle"));
-    assert!(matches!(
-        controller.state.messages.last().map(|message| &message.payload),
-        Some(MessagePayload::Command { input, output })
-            if input == "/brief"
-                && output
-                    .as_deref()
-                    .is_some_and(|text| text.contains("brief_mode=true"))
-    ));
+    assert!(
+        !controller.state.messages.iter().any(|message| {
+            matches!(&message.payload, MessagePayload::Command { .. })
+        }),
+        "/brief must not record to transcript"
+    );
 }
 
 #[test]
@@ -953,14 +944,12 @@ fn controller_shows_brief_notice_dialog() {
         controller.dialog.as_ref(),
         Some(dialog) if dialog.title == "Brief"
     ));
-    assert!(matches!(
-        controller.state.messages.last().map(|message| &message.payload),
-        Some(MessagePayload::Command { input, output })
-            if input == "/brief show"
-                && output
-                    .as_deref()
-                    .is_some_and(|text| text.contains("## Brief"))
-    ));
+    assert!(
+        !controller.state.messages.iter().any(|message| {
+            matches!(&message.payload, MessagePayload::Command { .. })
+        }),
+        "/brief show must not record to transcript"
+    );
 }
 
 #[test]
@@ -980,14 +969,12 @@ fn controller_toggles_fast_mode_from_command() {
     assert!(controller.state.fast_mode);
     assert_eq!(controller.status_note.as_deref(), Some("fast on"));
     assert!(controller.view().footer.contains("shift+tab to cycle"));
-    assert!(matches!(
-        controller.state.messages.last().map(|message| &message.payload),
-        Some(MessagePayload::Command { input, output })
-            if input == "/fast"
-                && output
-                    .as_deref()
-                    .is_some_and(|text| text.contains("fast_mode=true"))
-    ));
+    assert!(
+        !controller.state.messages.iter().any(|message| {
+            matches!(&message.payload, MessagePayload::Command { .. })
+        }),
+        "/fast must not record to transcript"
+    );
 }
 
 #[test]
@@ -1009,14 +996,12 @@ fn controller_shows_fast_notice_dialog() {
         controller.dialog.as_ref(),
         Some(dialog) if dialog.title == "Fast"
     ));
-    assert!(matches!(
-        controller.state.messages.last().map(|message| &message.payload),
-        Some(MessagePayload::Command { input, output })
-            if input == "/fast show"
-                && output
-                    .as_deref()
-                    .is_some_and(|text| text.contains("## Fast"))
-    ));
+    assert!(
+        !controller.state.messages.iter().any(|message| {
+            matches!(&message.payload, MessagePayload::Command { .. })
+        }),
+        "/fast show must not record to transcript"
+    );
 }
 
 #[test]
@@ -1036,14 +1021,12 @@ fn controller_sets_effort_from_command() {
     assert_eq!(controller.state.effort_level.as_deref(), Some("high"));
     assert_eq!(controller.status_note.as_deref(), Some("effort high"));
     assert!(controller.view().footer.contains("shift+tab to cycle"));
-    assert!(matches!(
-        controller.state.messages.last().map(|message| &message.payload),
-        Some(MessagePayload::Command { input, output })
-            if input == "/effort high"
-                && output
-                    .as_deref()
-                    .is_some_and(|text| text.contains("effort_level=high"))
-    ));
+    assert!(
+        !controller.state.messages.iter().any(|message| {
+            matches!(&message.payload, MessagePayload::Command { .. })
+        }),
+        "/effort high must not record to transcript"
+    );
 }
 
 #[test]
@@ -1065,14 +1048,12 @@ fn controller_shows_effort_notice_dialog() {
         controller.dialog.as_ref(),
         Some(dialog) if dialog.title == "Effort"
     ));
-    assert!(matches!(
-        controller.state.messages.last().map(|message| &message.payload),
-        Some(MessagePayload::Command { input, output })
-            if input == "/effort"
-                && output
-                    .as_deref()
-                    .is_some_and(|text| text.contains("## Effort"))
-    ));
+    assert!(
+        !controller.state.messages.iter().any(|message| {
+            matches!(&message.payload, MessagePayload::Command { .. })
+        }),
+        "/effort must not record to transcript"
+    );
 }
 
 #[test]
@@ -1094,14 +1075,12 @@ fn controller_shows_feedback_notice_dialog_from_alias() {
         controller.dialog.as_ref(),
         Some(dialog) if dialog.title == "Feedback"
     ));
-    assert!(matches!(
-        controller.state.messages.last().map(|message| &message.payload),
-        Some(MessagePayload::Command { input, output })
-            if input == "/bug parity gap"
-                && output
-                    .as_deref()
-                    .is_some_and(|text| text.contains("## Feedback") && text.contains("parity gap"))
-    ));
+    assert!(
+        !controller.state.messages.iter().any(|message| {
+            matches!(&message.payload, MessagePayload::Command { .. })
+        }),
+        "/bug parity gap must not record to transcript"
+    );
 }
 
 #[test]
@@ -1123,14 +1102,12 @@ fn controller_shows_release_notes_notice_dialog() {
         controller.dialog.as_ref(),
         Some(dialog) if dialog.title == "Release Notes"
     ));
-    assert!(matches!(
-        controller.state.messages.last().map(|message| &message.payload),
-        Some(MessagePayload::Command { input, output })
-            if input == "/release-notes"
-                && output
-                    .as_deref()
-                    .is_some_and(|text| text.contains("## Release Notes"))
-    ));
+    assert!(
+        !controller.state.messages.iter().any(|message| {
+            matches!(&message.payload, MessagePayload::Command { .. })
+        }),
+        "/release-notes must not record to transcript"
+    );
 }
 
 #[test]
@@ -1152,14 +1129,12 @@ fn controller_shows_version_notice_dialog() {
         controller.dialog.as_ref(),
         Some(dialog) if dialog.title == "Version"
     ));
-    assert!(matches!(
-        controller.state.messages.last().map(|message| &message.payload),
-        Some(MessagePayload::Command { input, output })
-            if input == "/version"
-                && output
-                    .as_deref()
-                    .is_some_and(|text| text.contains("## Version"))
-    ));
+    assert!(
+        !controller.state.messages.iter().any(|message| {
+            matches!(&message.payload, MessagePayload::Command { .. })
+        }),
+        "/version must not record to transcript"
+    );
 }
 
 #[test]
@@ -1181,14 +1156,12 @@ fn controller_shows_desktop_notice_dialog() {
         controller.dialog.as_ref(),
         Some(dialog) if dialog.title == "Desktop"
     ));
-    assert!(matches!(
-        controller.state.messages.last().map(|message| &message.payload),
-        Some(MessagePayload::Command { input, output })
-            if input == "/desktop"
-                && output
-                    .as_deref()
-                    .is_some_and(|text| text.contains("## Desktop") && text.contains("desktop_docs_url="))
-    ));
+    assert!(
+        !controller.state.messages.iter().any(|message| {
+            matches!(&message.payload, MessagePayload::Command { .. })
+        }),
+        "/desktop must not record to transcript"
+    );
 }
 
 #[test]
@@ -1210,14 +1183,12 @@ fn controller_shows_mobile_notice_dialog_from_alias() {
         controller.dialog.as_ref(),
         Some(dialog) if dialog.title == "Mobile"
     ));
-    assert!(matches!(
-        controller.state.messages.last().map(|message| &message.payload),
-        Some(MessagePayload::Command { input, output })
-            if input == "/ios"
-                && output
-                    .as_deref()
-                    .is_some_and(|text| text.contains("## Mobile") && text.contains("ios_qr_text="))
-    ));
+    assert!(
+        !controller.state.messages.iter().any(|message| {
+            matches!(&message.payload, MessagePayload::Command { .. })
+        }),
+        "/ios must not record to transcript"
+    );
 }
 
 #[test]
@@ -1239,14 +1210,12 @@ fn controller_shows_chrome_notice_dialog() {
         controller.dialog.as_ref(),
         Some(dialog) if dialog.title == "Chrome"
     ));
-    assert!(matches!(
-        controller.state.messages.last().map(|message| &message.payload),
-        Some(MessagePayload::Command { input, output })
-            if input == "/chrome"
-                && output
-                    .as_deref()
-                    .is_some_and(|text| text.contains("## Chrome") && text.contains("extension_url="))
-    ));
+    assert!(
+        !controller.state.messages.iter().any(|message| {
+            matches!(&message.payload, MessagePayload::Command { .. })
+        }),
+        "/chrome must not record to transcript"
+    );
 }
 
 #[test]
@@ -1268,14 +1237,12 @@ fn controller_shows_ide_notice_dialog() {
         controller.dialog.as_ref(),
         Some(dialog) if dialog.title == "IDE Integration"
     ));
-    assert!(matches!(
-        controller.state.messages.last().map(|message| &message.payload),
-        Some(MessagePayload::Command { input, output })
-            if input == "/ide"
-                && output
-                    .as_deref()
-                    .is_some_and(|text| text.contains("## IDE Integration") && text.contains("ide_docs_url="))
-    ));
+    assert!(
+        !controller.state.messages.iter().any(|message| {
+            matches!(&message.payload, MessagePayload::Command { .. })
+        }),
+        "/ide must not record to transcript"
+    );
 }
 
 #[test]
@@ -1296,14 +1263,12 @@ fn controller_routes_permissions_shorthand() {
         controller.state.permission_mode,
         PermissionMode::AcceptEdits
     );
-    assert!(matches!(
-        controller.state.messages.last().map(|message| &message.payload),
-        Some(MessagePayload::Command { input, output })
-            if input == "/permissions accept-edits"
-                && output
-                    .as_deref()
-                    .is_some_and(|text| text.contains("status=permission mode updated"))
-    ));
+    assert!(
+        !controller.state.messages.iter().any(|message| {
+            matches!(&message.payload, MessagePayload::Command { .. })
+        }),
+        "/permissions accept-edits must not record to transcript"
+    );
 }
 
 #[test]
@@ -1444,13 +1409,12 @@ fn controller_adds_additional_working_directory_from_slash_command() {
             .len(),
         1
     );
-    assert!(matches!(
-        controller.state.messages.last().map(|message| &message.payload),
-        Some(MessagePayload::Command { input, output })
-            if input == "/add-dir extra"
-                && output
-                    .as_deref()
-                    .is_some_and(|text| text.contains("status=added working directory"))
-    ));
+    // Machine-hint output (`status=…`) is a state-change side effect: it must
+    // open no dialog and record nothing to the transcript.
+    assert!(controller.dialog.is_none());
+    assert!(
+        controller.state.messages.is_empty(),
+        "/add-dir must not record to transcript"
+    );
 }
 

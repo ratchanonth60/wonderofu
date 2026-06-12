@@ -933,10 +933,30 @@ impl TuiController<'_> {
                                 }
                             }
                         }
-                        Ok(Err(e)) => {
+                        Ok(Err(error)) => {
                             self.active_turn = ActiveTurn::None;
+                            // Mirror the streaming error path: persist a
+                            // sanitized ProviderError transcript entry so the
+                            // failure stays visible in history.
+                            let sanitized = sanitize_error_for_display(&error.to_string());
+                            if let Ok(error_msg) = append_contextual_message(
+                                &mut self.state,
+                                MessagePayload::ProviderError {
+                                    kind: "provider".into(),
+                                    message: sanitized,
+                                },
+                            ) {
+                                let _ = persist_messages_and_state(
+                                    self.storage_dir.as_deref(),
+                                    &self.state,
+                                    &mut self.persistence,
+                                    &[error_msg],
+                                );
+                                self.notify_transcript_changed();
+                            }
                             self.turn_state = TurnState::Interrupted;
-                            self.status_note = Some(format!("provider error: {e}"));
+                            self.state.input_mode = InputMode::Prompt;
+                            self.status_note = Some("provider error — see history".into());
                             self.needs_render = true;
                             self.mark_autocompact_failed();
                             return Ok(false);
@@ -1520,6 +1540,11 @@ impl TuiController<'_> {
         }
         self.apply_inline_command_hints(input);
         self.apply_command_output_hints(text.as_deref());
+        // Hint side-effects mutate AppState (brief/fast/effort/provider …).
+        // Persist a snapshot so they survive /clear, resume, and crash
+        // recovery — command output is no longer recorded to the transcript,
+        // so this is the only durable write on this path.
+        self.persist_state_snapshot()?;
         let had_queued_commands = !self.state.queued_commands.is_empty();
         let view_action = parse_view_action_hint(text.as_deref());
         if view_action.is_none()

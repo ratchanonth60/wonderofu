@@ -1475,6 +1475,7 @@ fn controller_provider_failure_appends_error_message_and_clears_prompt() {
 
     controller.prompt.insert_text("trigger provider failure");
     block_on(controller.submit_prompt()).expect("submit_prompt itself must not propagate the provider error");
+    pump_active_turn(&mut controller);
 
     // The prompt must be cleared — error is visible in history.
     assert_eq!(

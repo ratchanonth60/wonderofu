@@ -445,14 +445,12 @@ fn controller_toggles_optimize_token_mode_from_command() {
 
     assert!(controller.state.optimize_token_mode);
     assert_eq!(controller.status_note.as_deref(), Some("optimize token on"));
-    assert!(matches!(
-        controller.state.messages.last().map(|message| &message.payload),
-        Some(MessagePayload::Command { input, output })
-            if input == "/optimize-tonken"
-                && output
-                    .as_deref()
-                    .is_some_and(|text| text.contains("optimize_token_mode=true"))
-    ));
+    assert!(
+        !controller.state.messages.iter().any(|message| {
+            matches!(&message.payload, MessagePayload::Command { .. })
+        }),
+        "/optimize-tonken must not record to transcript"
+    );
 }
 
 #[test]
@@ -492,14 +490,12 @@ fn controller_shows_optimize_token_notice_dialog() {
         controller.dialog.as_ref(),
         Some(dialog) if dialog.title == "Optimize Token"
     ));
-    assert!(matches!(
-        controller.state.messages.last().map(|message| &message.payload),
-        Some(MessagePayload::Command { input, output })
-            if input == "/optimize-tonken show"
-                && output
-                    .as_deref()
-                    .is_some_and(|text| text.contains("## Optimize Token"))
-    ));
+    assert!(
+        !controller.state.messages.iter().any(|message| {
+            matches!(&message.payload, MessagePayload::Command { .. })
+        }),
+        "/optimize-tonken show must not record to transcript"
+    );
 }
 
 #[test]
@@ -724,17 +720,11 @@ fn doctor_output_includes_all_provider_env_hints() {
 
     block_on(controller.execute_slash_command("/doctor")).expect("run doctor");
 
-    // The last message should contain the doctor output.
-    let output = controller
-        .state
-        .messages
-        .iter()
-        .rev()
-        .find_map(|m| match &m.payload {
-            MessagePayload::Command { output, .. } => output.as_deref(),
-            _ => None,
-        })
-        .expect("doctor command output");
+    // Doctor output goes to a dialog, not the transcript.
+    let dialog = controller.dialog.as_ref().expect("doctor dialog");
+    assert_eq!(dialog.title, "/doctor");
+    let output = dialog.body.join("\n");
+    let output = output.as_str();
 
     assert!(
         output.contains("providers_registered="),
