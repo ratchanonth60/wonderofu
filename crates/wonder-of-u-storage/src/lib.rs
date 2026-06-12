@@ -52,6 +52,10 @@ pub use mailbox::MailboxStore;
 pub mod tips;
 pub use tips::{TIPS_HISTORY_SCHEMA_VERSION, TipsHistory, TipsStore};
 
+/// Cross-session thread management store.
+pub mod thread_store;
+pub use thread_store::{Thread, ThreadStatus, ThreadStore, THREAD_SCHEMA_VERSION};
+
 use std::{
     collections::BTreeMap,
     ffi::OsStr,
