@@ -151,12 +151,12 @@ impl Default for Theme {
         Self {
             // No explicit background colour: let the terminal emulator's own
             // background show through (Ink/Claude Code visual parity).
-            background: TextStyle::default().fg(Color::Grey),
-            border: TextStyle::default().fg(Color::DarkBlue),
-            title: TextStyle::default().fg(Color::Blue).bold(),
-            messages: TextStyle::default().fg(Color::White),
+            background: TextStyle::default(),
+            border: TextStyle::default().fg(Color::DarkGrey),
+            title: TextStyle::default().fg(Color::Magenta).bold(),
+            messages: TextStyle::default(),
             prompt: TextStyle::default().fg(Color::Cyan),
-            status: TextStyle::default().fg(Color::Yellow).bold(),
+            status: TextStyle::default().fg(Color::Cyan).bold(),
             footer: TextStyle::default().fg(Color::DarkGrey),
         }
     }

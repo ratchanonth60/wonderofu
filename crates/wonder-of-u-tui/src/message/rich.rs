@@ -1,5 +1,4 @@
-use std::collections::HashMap;
-use std::sync::LazyLock;
+use std::{collections::HashMap, path::PathBuf, sync::LazyLock};
 
 use ratatui::{
     style::{Color as RatatuiColor, Modifier, Style as RatatuiStyle},
@@ -23,9 +22,9 @@ use crate::{
     style::{Color, TextStyle},
 };
 
+use super::markdown_render;
 use super::{MessageLineView, MessageRole, MessageSpanView, render_message};
 
-const MAX_PARAGRAPH_LINES: usize = 6;
 const MAX_THINKING_LINES: usize = 4;
 const MAX_DETAIL_LINES: usize = 3;
 
@@ -224,22 +223,25 @@ fn collapse_consecutive_tool_groups(
 
 fn single_message_view(message: &MessageEnvelope, is_streaming: bool) -> RichMessageView {
     match &message.payload {
-        MessagePayload::UserText { content } => {
-            RichMessageView::Markdown(MarkdownSummaryView::new(MessageRole::User, content))
-        }
+        MessagePayload::UserText { content } => RichMessageView::Markdown(
+            MarkdownSummaryView::new_with_cwd(MessageRole::User, content, message.cwd.clone()),
+        ),
         MessagePayload::AssistantText { content } => {
             if let Some(view) = SystemErrorView::detect(MessageRole::Assistant, content) {
                 RichMessageView::SystemError(view)
             } else if is_streaming {
-                RichMessageView::Markdown(MarkdownSummaryView::new_streaming(
+                RichMessageView::Markdown(MarkdownSummaryView::new_streaming_with_cwd(
                     MessageRole::Assistant,
                     content,
+                    message.cwd.clone(),
                 ))
             } else {
-                RichMessageView::Markdown(MarkdownSummaryView::with_timestamp(
+                RichMessageView::Markdown(MarkdownSummaryView::with_timestamp_and_cwd(
                     MessageRole::Assistant,
                     content,
                     Some(message.timestamp),
+                    message.cwd.clone(),
+                    false,
                 ))
             }
         }
@@ -247,7 +249,11 @@ fn single_message_view(message: &MessageEnvelope, is_streaming: bool) -> RichMes
             if let Some(view) = SystemErrorView::detect(MessageRole::System, content) {
                 RichMessageView::SystemError(view)
             } else {
-                RichMessageView::Markdown(MarkdownSummaryView::new(MessageRole::System, content))
+                RichMessageView::Markdown(MarkdownSummaryView::new_with_cwd(
+                    MessageRole::System,
+                    content,
+                    message.cwd.clone(),
+                ))
             }
         }
         MessagePayload::AssistantThinking { content, collapsed } => {
@@ -330,6 +336,10 @@ pub struct MarkdownSummaryView {
     pub role: MessageRole,
     /// Stores the optional timestamp shown after the first assistant line.
     pub timestamp: Option<OffsetDateTime>,
+    /// Stores the normalized markdown source used by the renderer.
+    pub source: String,
+    /// Stores the working directory used to shorten local file links.
+    pub cwd: Option<PathBuf>,
     /// Stores the blocks
     pub blocks: Vec<MarkdownBlockView>,
 }
@@ -341,113 +351,57 @@ impl MarkdownSummaryView {
         Self::with_timestamp(role, text, None)
     }
 
+    #[must_use]
+    fn new_with_cwd(role: MessageRole, text: &str, cwd: Option<PathBuf>) -> Self {
+        Self::with_timestamp_and_cwd(role, text, None, cwd, false)
+    }
+
     /// Like [`new`] but applies streaming holdback to avoid flicker on partial
     /// code fences and header-only tables while tokens are still arriving.
     #[must_use]
     pub fn new_streaming(role: MessageRole, text: &str) -> Self {
-        Self {
-            role,
-            timestamp: None,
-            blocks: parse_markdown_blocks(text, true),
-        }
+        Self::new_streaming_with_cwd(role, text, None)
+    }
+
+    #[must_use]
+    fn new_streaming_with_cwd(role: MessageRole, text: &str, cwd: Option<PathBuf>) -> Self {
+        Self::with_timestamp_and_cwd(role, text, None, cwd, true)
     }
 
     #[must_use]
     fn with_timestamp(role: MessageRole, text: &str, timestamp: Option<OffsetDateTime>) -> Self {
+        Self::with_timestamp_and_cwd(role, text, timestamp, None, false)
+    }
+
+    #[must_use]
+    fn with_timestamp_and_cwd(
+        role: MessageRole,
+        text: &str,
+        timestamp: Option<OffsetDateTime>,
+        cwd: Option<PathBuf>,
+        is_streaming: bool,
+    ) -> Self {
+        let source = normalized_markdown_source(role, text, is_streaming);
         Self {
             role,
             timestamp,
-            blocks: parse_markdown_blocks(text, false),
+            blocks: parse_markdown_blocks(&source, is_streaming),
+            source,
+            cwd,
         }
     }
+
     /// Handles display lines
     #[must_use]
     pub fn display_lines(&self, max_width: usize) -> Vec<MessageLineView> {
         let prefix = role_prefix(self.role);
-        let mut lines = Vec::new();
-        let mut first_block = true;
-
-        for block in &self.blocks {
-            match block {
-                MarkdownBlockView::Heading { level, text } => {
-                    // Headings render as standalone bold+colored lines.
-                    // They don't consume first_block so the next paragraph still
-                    // gets the role prefix ("▶ "/"◆ ").
-                    let style = match level {
-                        1 => TextStyle::default().fg(Color::Cyan).bold(),
-                        2 => TextStyle::default().fg(Color::Blue).bold(),
-                        _ => TextStyle::default().bold(),
-                    };
-                    for segment in wrap_text_hard(text, max_width.max(1)) {
-                        lines.push(MessageLineView::with_spans(
-                            self.role,
-                            vec![MessageSpanView::new(segment, Some(style))],
-                        ));
-                    }
-                    continue; // skip first_block = false
-                }
-                MarkdownBlockView::Blockquote(text) => {
-                    let block_lines = wrap_summary_lines(
-                        text,
-                        max_width.saturating_sub(2).max(1),
-                        MAX_PARAGRAPH_LINES,
-                        false,
-                    );
-                    for line_text in &block_lines {
-                        lines.push(MessageLineView::with_spans(
-                            self.role,
-                            vec![
-                                MessageSpanView::new(
-                                    "│ ".to_string(),
-                                    Some(TextStyle::default().fg(Color::DarkGrey)),
-                                ),
-                                MessageSpanView::new(line_text.clone(), None),
-                            ],
-                        ));
-                    }
-                }
-                MarkdownBlockView::Paragraph(text) => {
-                    // Pass unwrapped logical lines: the push helpers wrap at the
-                    // prefix-adjusted width themselves, and pre-wrapping at the
-                    // full width here would re-split lines into orphan fragments.
-                    let block_lines = logical_block_lines(text);
-                    let display_prefix = if first_block { prefix } else { "" };
-                    if display_prefix.is_empty() {
-                        // Continuation blocks (second paragraph onward) and Tool-role
-                        // messages stay flush-left; only the first block of a
-                        // User/Assistant message carries the role prefix.
-                        push_unprefixed_block(&mut lines, &block_lines, self.role, max_width);
-                    } else {
-                        push_wrapped_block(
-                            &mut lines,
-                            display_prefix,
-                            &block_lines,
-                            self.role,
-                            max_width,
-                        );
-                    }
-                }
-                MarkdownBlockView::Code(code) => {
-                    if self.role == MessageRole::Assistant {
-                        lines.extend(highlighted_code_lines(code, self.role, max_width));
-                    } else {
-                        let label = code.label();
-                        let preview = code.preview_text();
-                        let mut code_lines = vec![preview];
-                        if code.line_count > 1 {
-                            let hidden = code.line_count.saturating_sub(1);
-                            let noun = if hidden == 1 { "line" } else { "lines" };
-                            code_lines.push(format!("+{hidden} more {noun}"));
-                        }
-                        push_wrapped_block(&mut lines, &label, &code_lines, self.role, max_width);
-                    }
-                }
-                MarkdownBlockView::Table(table) => {
-                    lines.extend(table.display_lines(max_width, MessageRole::Assistant));
-                }
-            }
-            first_block = false;
-        }
+        let mut lines = markdown_render::render_markdown_text_with_width_and_cwd(
+            &self.source,
+            max_width,
+            self.cwd.as_deref(),
+            self.role,
+            prefix,
+        );
 
         if lines.is_empty() {
             lines.push(MessageLineView::new(prefix.to_string(), self.role));
@@ -463,6 +417,14 @@ impl MarkdownSummaryView {
         }
 
         lines
+    }
+}
+
+fn normalized_markdown_source(role: MessageRole, text: &str, is_streaming: bool) -> String {
+    if role == MessageRole::Assistant {
+        markdown_render::normalize_agent_markdown_source(text, is_streaming)
+    } else {
+        text.to_string()
     }
 }
 
@@ -506,23 +468,6 @@ pub struct MarkdownTableView {
     pub rows: Vec<Vec<String>>,
 }
 
-impl MarkdownCodeBlockView {
-    fn label(&self) -> String {
-        match self.language.as_deref() {
-            Some(language) if !language.is_empty() => format!("code[{language}]> "),
-            _ => "code> ".into(),
-        }
-    }
-
-    fn preview_text(&self) -> String {
-        self.code
-            .lines()
-            .map(str::trim)
-            .find(|line| !line.is_empty())
-            .map_or_else(|| "(empty)".into(), |line| truncate_visible_end(line, 48))
-    }
-}
-
 const MIN_TABLE_COLUMN_WIDTH: usize = 3;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -538,13 +483,27 @@ struct TableLayout {
 }
 
 impl MarkdownTableView {
-    fn display_lines(&self, max_width: usize, role: MessageRole) -> Vec<MessageLineView> {
+    pub(super) fn display_lines(
+        &self,
+        max_width: usize,
+        role: MessageRole,
+    ) -> Vec<MessageLineView> {
         let column_count = self
             .headers
             .len()
             .max(self.rows.iter().map(Vec::len).max().unwrap_or(0));
         if column_count == 0 {
             return Vec::new();
+        }
+
+        if !self.rows.is_empty()
+            && (table_min_width(self, TableRenderStyle::Simple) > max_width
+                || (column_count > 2 && table_min_width(self, TableRenderStyle::Box) > max_width))
+        {
+            return render_key_value_table(self, max_width)
+                .into_iter()
+                .map(|line| MessageLineView::new(line, role))
+                .collect();
         }
 
         let style = if table_min_width(self, TableRenderStyle::Box) <= max_width {
@@ -563,6 +522,36 @@ impl MarkdownTableView {
             .map(|line| MessageLineView::new(line, role))
             .collect()
     }
+}
+
+fn render_key_value_table(table: &MarkdownTableView, max_width: usize) -> Vec<String> {
+    let width = max_width.max(1);
+    let mut lines = Vec::new();
+    for (row_index, row) in table.rows.iter().enumerate() {
+        if row_index > 0 {
+            lines.push("─".repeat(width.min(24)));
+        }
+        let column_count = table.headers.len().max(row.len());
+        for column_index in 0..column_count {
+            let header = table
+                .headers
+                .get(column_index)
+                .map_or_else(|| format!("Column {}", column_index + 1), Clone::clone);
+            let value = row.get(column_index).map_or("", String::as_str);
+            let text = if header.trim().is_empty() {
+                value.to_string()
+            } else {
+                format!("{}: {}", header.trim(), value.trim())
+            };
+            let mut wrapped = wrap_text_hard(&text, width);
+            if wrapped.is_empty() {
+                wrapped.push(String::new());
+            }
+            lines.extend(wrapped);
+        }
+    }
+
+    lines
 }
 
 fn table_min_width(table: &MarkdownTableView, style: TableRenderStyle) -> usize {
@@ -897,7 +886,7 @@ fn syntect_style_to_ratatui(style: syntect::highlighting::Style) -> RatatuiStyle
     out
 }
 
-fn highlighted_code_lines(
+pub(super) fn highlighted_code_lines(
     code: &MarkdownCodeBlockView,
     role: MessageRole,
     max_width: usize,
@@ -2600,29 +2589,6 @@ fn push_wrapped_block(
     }
 }
 
-fn push_unprefixed_block(
-    output: &mut Vec<MessageLineView>,
-    source_lines: &[String],
-    role: MessageRole,
-    max_width: usize,
-) {
-    for source in source_lines {
-        let wrapped = wrap_text_hard(source, max_width.max(1));
-        if wrapped.is_empty() {
-            output.push(MessageLineView::new(String::new(), role));
-        } else {
-            for segment in wrapped {
-                let spans = parse_inline_spans(&segment);
-                if spans_have_markup(&spans) {
-                    output.push(MessageLineView::with_spans(role, spans));
-                } else {
-                    output.push(MessageLineView::new(segment, role));
-                }
-            }
-        }
-    }
-}
-
 fn push_line(text: impl Into<String>, role: MessageRole, max_width: usize) -> Vec<MessageLineView> {
     vec![MessageLineView::new(
         truncate_visible_end(&text.into(), max_width.max(1)),
@@ -2656,29 +2622,6 @@ fn truncate_existing_lines(lines: &[MessageLineView], max_width: usize) -> Vec<M
         }
     }
     out
-}
-
-/// Splits text into logical lines without wrapping, trimming trailing
-/// whitespace per line and dropping leading/trailing blank lines.
-fn logical_block_lines(text: &str) -> Vec<String> {
-    let stripped = strip_ansi(text);
-    let mut lines: Vec<String> = stripped
-        .split('\n')
-        .map(|line| line.trim_end().to_string())
-        .collect();
-
-    while lines.first().is_some_and(|l| l.is_empty()) {
-        lines.remove(0);
-    }
-    while lines.last().is_some_and(|l| l.is_empty()) {
-        lines.pop();
-    }
-
-    if lines.is_empty() {
-        return vec![String::new()];
-    }
-
-    lines
 }
 
 fn wrap_summary_lines(
@@ -2983,6 +2926,115 @@ mod tests {
         assert!(lines.iter().any(|line| line.text.contains("val 1")));
         assert!(!lines.iter().any(|line| line.text.contains(":------")));
         assert!(!lines.iter().any(|line| line.text.contains("------:")));
+    }
+
+    #[test]
+    fn markdown_fenced_markdown_table_is_unwrapped_for_agent_messages() {
+        let view = MarkdownSummaryView::new(
+            MessageRole::Assistant,
+            "```markdown\n| Name | Role |\n| --- | --- |\n| Ada | Engineer |\n```",
+        );
+
+        assert!(
+            view.blocks
+                .iter()
+                .any(|block| matches!(block, MarkdownBlockView::Table(_))),
+            "markdown table fence should become a table block: {:?}",
+            view.blocks
+        );
+        let lines = view.display_lines(80);
+        assert!(lines.iter().any(|line| line.text.contains("Ada")));
+        assert!(!lines.iter().any(|line| line.text.contains("```markdown")));
+    }
+
+    #[test]
+    fn non_markdown_fenced_code_stays_code() {
+        let view = MarkdownSummaryView::new(MessageRole::Assistant, "```rust\nfn main() {}\n```");
+
+        assert!(
+            view.blocks
+                .iter()
+                .any(|block| matches!(block, MarkdownBlockView::Code(_))),
+            "rust fence should stay as code: {:?}",
+            view.blocks
+        );
+        let lines = view.display_lines(80);
+        assert_eq!(lines[0].text, "fn main() {}");
+    }
+
+    #[test]
+    fn markdown_inline_styles_and_web_links_are_styled() {
+        let view = MarkdownSummaryView::new(
+            MessageRole::Assistant,
+            "Use **bold**, *italic*, `code`, and https://example.com.",
+        );
+
+        let lines = view.display_lines(120);
+        let spans = &lines[0].spans;
+        assert!(
+            spans
+                .iter()
+                .any(|span| span.text == "bold" && span.style.is_some_and(|style| style.bold)),
+            "bold span missing: {spans:?}"
+        );
+        assert!(
+            spans
+                .iter()
+                .any(|span| span.text == "italic" && span.style.is_some_and(|style| style.italic)),
+            "italic span missing: {spans:?}"
+        );
+        assert!(
+            spans.iter().any(|span| span.text == "code"
+                && span
+                    .style
+                    .is_some_and(|style| style.fg == Some(Color::Cyan))),
+            "inline code span missing: {spans:?}"
+        );
+        assert!(
+            spans.iter().any(|span| span.text == "https://example.com"
+                && span
+                    .style
+                    .is_some_and(|style| style.fg == Some(Color::Cyan) && style.underlined)),
+            "web link span missing: {spans:?}"
+        );
+    }
+
+    #[test]
+    fn local_markdown_links_render_relative_to_cwd() {
+        let view = MarkdownSummaryView::new_with_cwd(
+            MessageRole::Assistant,
+            "See [entry](/workspace/src/main.rs:42).",
+            Some(std::path::PathBuf::from("/workspace")),
+        );
+
+        let lines = view.display_lines(80);
+        assert_eq!(lines[0].text, "◆ See src/main.rs:42.");
+        assert!(
+            lines[0]
+                .spans
+                .iter()
+                .any(|span| span.text == "src/main.rs:42"
+                    && span.style.is_some_and(|style| style.underlined)),
+            "local link span missing: {:?}",
+            lines[0].spans
+        );
+    }
+
+    #[test]
+    fn wide_tables_fall_back_to_key_value_rows_when_narrow() {
+        let view = MarkdownSummaryView::new(
+            MessageRole::Assistant,
+            "| File | Status | Notes |\n| --- | --- | --- |\n| src/message/rich.rs | changed | renderer path |\n",
+        );
+
+        let lines = view.display_lines(24);
+        assert!(lines.iter().any(|line| line.text.starts_with("File:")));
+        assert!(lines.iter().any(|line| line.text.starts_with("Status:")));
+        assert!(lines.iter().any(|line| line.text.starts_with("Notes:")));
+        assert!(
+            lines.iter().all(|line| line_width(&line.text) <= 24),
+            "narrow table fallback overflowed: {lines:?}"
+        );
     }
 
     #[test]

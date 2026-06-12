@@ -7,6 +7,7 @@ use wonder_of_u_core::{
 
 use crate::{prompt::PromptQueueView, style::TextStyle};
 
+mod markdown_render;
 mod rich;
 mod tool_activity;
 
