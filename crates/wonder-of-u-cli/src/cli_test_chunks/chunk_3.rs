@@ -240,6 +240,9 @@
 
     #[test]
     fn clear_and_compact_persist_resume_views() {
+        // Force the mechanical summary so the test never reaches the network,
+        // even when the host environment carries real provider API keys.
+        let _llm_off = EnvVarGuard::set(wonder_of_u_agent::COMPACT_LLM_SUMMARY_ENV, "off");
         let dir = unique_test_dir("cli-session-view-state");
         let storage_dir = dir.to_string_lossy().into_owned();
 

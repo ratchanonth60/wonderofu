@@ -3,6 +3,7 @@
 
 mod agent_summary;
 mod auth;
+mod compact_summary;
 mod config;
 mod permissions;
 mod protocol;
@@ -20,6 +21,11 @@ pub use auth::{
     poll_copilot_access_token, refresh_copilot_access_token, request_copilot_device_code,
     resolve_aws_bearer_from_env, resolve_aws_credentials_from_env, resolve_aws_profile_from_env,
     resolve_gcp_credentials_from_env,
+};
+/// Re-exports items from `compact_summary`
+pub use compact_summary::{
+    COMPACT_LLM_SUMMARY_ENV, extract_summary_block, generate_compact_summary,
+    render_conversation_for_summary,
 };
 /// Re-exports items from `config`
 pub use config::{
