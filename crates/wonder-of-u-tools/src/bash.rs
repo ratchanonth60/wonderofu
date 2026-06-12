@@ -530,6 +530,7 @@ mod tests {
             progress_tx: None,
             interaction_rx: None,
             fork_context: None,
+            file_checkpointer: None,
         }
     }
 
@@ -548,6 +549,7 @@ mod tests {
             progress_tx: None,
             interaction_rx: None,
             fork_context: None,
+            file_checkpointer: None,
         }
     }
 
@@ -747,6 +749,7 @@ mod tests {
             progress_tx: None,
             interaction_rx: None,
             fork_context: None,
+            file_checkpointer: None,
         };
         block_on(tool.execute(
             ctx1,
@@ -770,6 +773,7 @@ mod tests {
             progress_tx: None,
             interaction_rx: None,
             fork_context: None,
+            file_checkpointer: None,
         };
         let result = block_on(tool.execute(
             ctx2,

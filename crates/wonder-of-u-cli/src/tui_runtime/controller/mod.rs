@@ -1309,6 +1309,12 @@ impl<'a> TuiController<'a> {
             progress_tx: None,
             interaction_rx: None,
             fork_context: build_fork_context_snapshot(&self.state, system_prompt.as_deref()),
+            file_checkpointer: self.storage_dir.as_deref().map(|dir| {
+                std::sync::Arc::new(wonder_of_u_storage::SessionFileCheckpointer::new(
+                    dir,
+                    self.state.session.id,
+                )) as std::sync::Arc<dyn wonder_of_u_core::FileCheckpointer>
+            }),
         }
     }
     /// Returns the effective system prompt with the auto-memory section appended.

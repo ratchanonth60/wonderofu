@@ -203,8 +203,8 @@ pub use token_budget::{
 };
 /// Re-exports items from `tool`
 pub use tool::{
-    AgentLaunchSpec, AgentMessageSpec, Tool, ToolContext, ToolEffect, ToolKind, ToolProgress,
-    ToolQuery, ToolRegistry, ToolResult, ToolSchema, ToolSource, ToolSpec,
+    AgentLaunchSpec, AgentMessageSpec, FileCheckpointer, Tool, ToolContext, ToolEffect, ToolKind,
+    ToolProgress, ToolQuery, ToolRegistry, ToolResult, ToolSchema, ToolSource, ToolSpec,
 };
 /// Re-exports items from `treeify`
 pub use treeify::render_path_tree;

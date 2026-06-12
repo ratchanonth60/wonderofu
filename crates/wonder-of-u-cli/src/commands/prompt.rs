@@ -2,6 +2,7 @@ use std::{
     collections::BTreeSet,
     env,
     path::{Path, PathBuf},
+    sync::Arc,
 };
 
 use async_trait::async_trait;
@@ -14,16 +15,16 @@ use wonder_of_u_agent::{
 use wonder_of_u_core::{
     AGENT_TASK_RESULT_SCHEMA_VERSION, AgentTaskResult, AppState, Command, CommandContext,
     CommandInvocation, CommandKind, CommandOutput, CommandSpec, CoordinatorState, FeatureFlag,
-    FleetId, FleetSteeringMessage, ForkContextSnapshot, MessageEnvelope, MessagePayload,
-    PermissionDecision, PermissionMode, PromptSuggestion, QueryState, Result, TaskId, TaskStatus,
-    ToolContext, ToolEffect, ToolQuery, ToolResult, ToolUseId, WONDER_OF_U_FORK_DEPTH_ENV,
-    WonderError, best_prompt_suggestion,
+    FileCheckpointer, FleetId, FleetSteeringMessage, ForkContextSnapshot, MessageEnvelope,
+    MessagePayload, PermissionDecision, PermissionMode, PromptSuggestion, QueryState, Result,
+    TaskId, TaskStatus, ToolContext, ToolEffect, ToolQuery, ToolResult, ToolUseId,
+    WONDER_OF_U_FORK_DEPTH_ENV, WonderError, best_prompt_suggestion,
 };
 use wonder_of_u_core::{MailboxKind, MailboxMessage};
 use wonder_of_u_storage::{
     AgentTaskResultStore, CostStore, FleetStore, MailboxStore, SessionCostLedger,
-    SessionMemoryIndexStore, SessionMetadata, SessionSnapshot, StoragePaths, TaskStore,
-    TranscriptStore,
+    SessionFileCheckpointer, SessionMemoryIndexStore, SessionMetadata, SessionSnapshot,
+    StoragePaths, TaskStore, TranscriptStore,
 };
 use wonder_of_u_tools::{builtin_registry_with_mcp_catalog, provider_tool_specs};
 
@@ -820,7 +821,7 @@ fn execute_prompt_tool_loop(
     for _ in 0..MAX_TOOL_LOOP_ITERATIONS {
         let provider_tools = provider_tool_specs(
             &registry,
-            &tool_context(state, system_prompt.as_deref()),
+            &tool_context(state, storage_dir, system_prompt.as_deref()),
             effective_allowed.as_ref(),
         )
         .into_iter()
@@ -917,7 +918,7 @@ fn execute_prompt_tool_loop(
                         storage_dir,
                         persistence,
                         &registry,
-                        &tool_context(state, system_prompt.as_deref()),
+                        &tool_context(state, storage_dir, system_prompt.as_deref()),
                         &call,
                     )?;
                     round.results.push(result);
@@ -947,7 +948,11 @@ struct LocalToolCall {
     use_id: ToolUseId,
 }
 
-fn tool_context(state: &AppState, system_prompt: Option<&str>) -> ToolContext {
+fn tool_context(
+    state: &AppState,
+    storage_dir: Option<&Path>,
+    system_prompt: Option<&str>,
+) -> ToolContext {
     ToolContext {
         session_id: state.session.id,
         cwd: state.session.cwd.clone(),
@@ -962,6 +967,10 @@ fn tool_context(state: &AppState, system_prompt: Option<&str>) -> ToolContext {
         progress_tx: None,
         interaction_rx: None,
         fork_context: build_fork_context_snapshot(state, system_prompt),
+        file_checkpointer: storage_dir.map(|dir| {
+            Arc::new(SessionFileCheckpointer::new(dir, state.session.id))
+                as Arc<dyn FileCheckpointer>
+        }),
     }
 }
 

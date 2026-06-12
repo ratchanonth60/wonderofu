@@ -13,6 +13,12 @@
 /// Provides memdir support
 pub mod memdir;
 
+/// Pre-modification file checkpoints for rewind restore.
+pub mod checkpoint;
+pub use checkpoint::{
+    FileCheckpointEntry, FileCheckpointStore, RestoredFile, SessionFileCheckpointer,
+};
+
 /// Storage schema migration framework
 pub mod migrations;
 pub use migrations::{Migration, MigrationRunner, StorageVersionFile, default_migration_runner};

@@ -304,6 +304,7 @@ fn build_extraction_context(mem_dir: &Path) -> ToolContext {
         progress_tx: None,
         interaction_rx: None,
         fork_context: None,
+        file_checkpointer: None,
     }
 }
 

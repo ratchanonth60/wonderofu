@@ -1,6 +1,6 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::{Arc, Mutex},
 };
 
@@ -332,6 +332,24 @@ pub struct ToolContext {
     /// Wrapped in `Arc<Mutex>` so that `ToolContext` remains `Clone + Send`.
     /// Only the executing tool thread should ever call `recv()` on it.
     pub interaction_rx: Option<std::sync::Arc<std::sync::Mutex<std::sync::mpsc::Receiver<String>>>>,
+    /// Optional pre-modification file snapshot hook for `/rewind` restore.
+    ///
+    /// When present, file-mutating tools (`file_write`, `file_edit`,
+    /// `notebook_edit`) call [`ToolContext::checkpoint_file_before_write`]
+    /// before changing the file so the runtime can restore its prior state
+    /// when the user rewinds the conversation.  `None` for callers without
+    /// persistent storage (tests, ad-hoc tool calls).
+    pub file_checkpointer: Option<Arc<dyn FileCheckpointer>>,
+}
+
+/// Captures the pre-modification state of files so `/rewind` can restore them.
+///
+/// Implemented by the storage layer; tools only see the trait so the
+/// foundation crates stay free of persistence concerns.
+pub trait FileCheckpointer: Send + Sync + std::fmt::Debug {
+    /// Records the current on-disk state of `path` (including "absent") before
+    /// a tool mutates it.
+    fn checkpoint_file(&self, path: &Path) -> Result<()>;
 }
 
 impl ToolContext {
@@ -343,6 +361,16 @@ impl ToolContext {
             mode: self.permission_mode,
             additional_working_directories: self.additional_working_directories.clone(),
             rules: self.permission_rules.clone(),
+        }
+    }
+
+    /// Snapshots `path` for `/rewind` restore before a tool mutates it.
+    ///
+    /// Best-effort: checkpoint failures must never abort the tool call, so
+    /// errors are swallowed here.
+    pub fn checkpoint_file_before_write(&self, path: &Path) {
+        if let Some(checkpointer) = &self.file_checkpointer {
+            let _ = checkpointer.checkpoint_file(path);
         }
     }
 }
@@ -813,6 +841,7 @@ mod tests {
             progress_tx: None,
             interaction_rx: None,
             fork_context: None,
+            file_checkpointer: None,
         }
     }
 
