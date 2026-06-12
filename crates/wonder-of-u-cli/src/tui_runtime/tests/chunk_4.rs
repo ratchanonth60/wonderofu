@@ -393,6 +393,7 @@ fn tool_sidebar_lines_produces_summary() {
         interaction_rx: None,
         fork_context: None,
             file_checkpointer: None,
+            network_policy: None,
     };
     let lines = tool_sidebar_lines(&context, None);
     // Must not be empty and must not be an error line.

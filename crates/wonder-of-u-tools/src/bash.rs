@@ -1,6 +1,6 @@
 use std::{
     fs,
-    path::PathBuf,
+    path::{Path, PathBuf},
     process::{Command, Stdio},
     time::Duration,
 };
@@ -14,6 +14,7 @@ use wonder_of_u_core::{
     ShellSafetyIssue, ShellSafetyVerdict, TaskState, TaskStatus, Tool, ToolContext, ToolKind,
     ToolResult, ToolSchema, ToolSpec, ToolUseId, WonderError, evaluate_permission, resolve_path,
 };
+use wonder_of_u_sandbox::{SandboxPolicy, SandboxRunner};
 use wonder_of_u_storage::TaskStore;
 
 use crate::{
@@ -269,10 +270,30 @@ impl Tool for BashTool {
         }
 
         // --- One-shot fallback path ---
-        let mut child = shell_command(&input.command);
-        child
-            .current_dir(&cwd)
-            .stdin(Stdio::null())
+        let sandbox_enabled = context.features.contains(FeatureFlag::Sandbox);
+        let disable_sandbox = input.dangerously_disable_sandbox == Some(true);
+
+        let (mut child, sandbox_applied) = if sandbox_enabled
+            && !disable_sandbox
+        {
+            let policy = sandbox_policy_for_cwd(&cwd);
+            let runner = SandboxRunner::new(policy);
+            if runner.sandbox_available() {
+                let (program, args) = sandbox_shell_command(&input.command);
+                let cmd = runner.wrap_command(&program, &args, &cwd);
+                (cmd, true)
+            } else {
+                let mut cmd = shell_command(&input.command);
+                cmd.current_dir(&cwd);
+                (cmd, false)
+            }
+        } else {
+            let mut cmd = shell_command(&input.command);
+            cmd.current_dir(&cwd);
+            (cmd, false)
+        };
+
+        child.stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
         let mut child = child.spawn()?;
@@ -342,6 +363,7 @@ impl Tool for BashTool {
             "cwd": cwd.display().to_string(),
             "exit_code": exit_code,
             "timed_out": timed_out,
+            "sandbox_applied": sandbox_applied,
         });
         Ok(result)
     }
@@ -469,6 +491,20 @@ fn shell_command(command: &str) -> Command {
     cmd
 }
 
+fn sandbox_policy_for_cwd(cwd: &Path) -> SandboxPolicy {
+    SandboxPolicy::workspace_policy(cwd.to_path_buf())
+}
+
+#[cfg(not(windows))]
+fn sandbox_shell_command(command: &str) -> (String, Vec<&str>) {
+    ("sh".into(), vec!["-lc", command])
+}
+
+#[cfg(windows)]
+fn sandbox_shell_command(command: &str) -> (String, Vec<&str>) {
+    ("cmd".into(), vec!["/C", command])
+}
+
 fn render_output(stdout: &str, stderr: &str, exit_code: Option<i32>) -> String {
     let mut sections = Vec::new();
     if !stdout.is_empty() {
@@ -531,6 +567,7 @@ mod tests {
             interaction_rx: None,
             fork_context: None,
             file_checkpointer: None,
+            network_policy: None,
         }
     }
 
@@ -550,6 +587,7 @@ mod tests {
             interaction_rx: None,
             fork_context: None,
             file_checkpointer: None,
+            network_policy: None,
         }
     }
 
@@ -750,6 +788,7 @@ mod tests {
             interaction_rx: None,
             fork_context: None,
             file_checkpointer: None,
+            network_policy: None,
         };
         block_on(tool.execute(
             ctx1,
@@ -774,6 +813,7 @@ mod tests {
             interaction_rx: None,
             fork_context: None,
             file_checkpointer: None,
+            network_policy: None,
         };
         let result = block_on(tool.execute(
             ctx2,

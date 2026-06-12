@@ -47,6 +47,8 @@ pub mod mailbox;
 pub mod memoize;
 /// Provides message support
 pub mod message;
+/// Network egress policy: domain allowlist/denylist for web tools.
+pub mod network_policy;
 /// Provides permission support
 pub mod permission;
 /// Provides plans support

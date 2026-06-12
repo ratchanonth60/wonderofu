@@ -15,9 +15,11 @@ ureq.workspace = true
 uuid.workspace = true
 wait-timeout.workspace = true
 walkdir.workspace = true
+notify.workspace = true
 wonder-of-u-core.workspace = true
 wonder-of-u-mcp.workspace = true
 wonder-of-u-plugins.workspace = true
+wonder-of-u-sandbox.workspace = true
 wonder-of-u-skills.workspace = true
 wonder-of-u-storage.workspace = true
 

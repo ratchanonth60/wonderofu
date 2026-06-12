@@ -61,6 +61,11 @@ impl ExtractionHandle {
     pub(super) fn should_run(&self, current_count: usize) -> bool {
         !self.active.load(Ordering::Relaxed) && current_count >= self.last_count + MIN_NEW_MESSAGES
     }
+
+    /// Returns `true` when a background extraction thread is currently running.
+    pub(super) fn is_active(&self) -> bool {
+        self.active.load(Ordering::Relaxed)
+    }
 }
 
 // ─── Entry point ─────────────────────────────────────────────────────────────
@@ -305,6 +310,7 @@ fn build_extraction_context(mem_dir: &Path) -> ToolContext {
         interaction_rx: None,
         fork_context: None,
         file_checkpointer: None,
+        network_policy: None,
     }
 }
 

@@ -50,6 +50,11 @@ pub enum FeatureFlag {
     ///
     /// Enabled by default; no external service calls are required.
     Fleet,
+    /// OS-level sandboxing for shell command execution.
+    ///
+    /// When enabled, shell commands run inside a bubblewrap container on Linux,
+    /// with controlled filesystem and network access.
+    Sandbox,
 }
 
 /// Deterministic set wrapper for serializable feature gates.
@@ -80,6 +85,7 @@ impl FeatureSet {
             FeatureFlag::BackgroundTasks,
             FeatureFlag::LegacyTodoWrite,
             FeatureFlag::Fleet,
+            FeatureFlag::Sandbox,
         ]))
     }
 

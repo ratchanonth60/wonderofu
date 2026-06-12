@@ -9,6 +9,7 @@ use std::{
 use serde::{Deserialize, Serialize};
 use wonder_of_u_core::{
     Result, WonderError,
+    network_policy::NetworkPolicyConfig,
     permission::{PermissionRule, PermissionRuleBehavior, PermissionRuleSource},
 };
 use wonder_of_u_storage::StoragePaths;
@@ -108,6 +109,10 @@ pub struct AgentSettings {
     /// Streaming idle timeout in milliseconds. Defaults to 300 000 (5 min).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stream_idle_timeout_ms: Option<u64>,
+    /// Network egress policy configuration.
+    /// Controls which hosts web tools may access.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub network_policy: Option<NetworkPolicyConfig>,
 }
 /// Represents provider override
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
@@ -352,10 +357,19 @@ impl SettingsStore {
         write_json_atomically(&self.paths.settings_path(), settings)
     }
 }
-/// Stores credential store
-#[derive(Clone, Debug)]
+/// Stores credential store with optional keyring backend.
+#[derive(Clone)]
 pub struct CredentialStore {
     paths: StoragePaths,
+    keyring_service: String,
+}
+
+impl std::fmt::Debug for CredentialStore {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CredentialStore")
+            .field("paths", &self.paths)
+            .finish()
+    }
 }
 
 impl CredentialStore {
@@ -364,23 +378,58 @@ impl CredentialStore {
     pub fn new(base_dir: impl Into<PathBuf>) -> Self {
         Self {
             paths: StoragePaths::new(base_dir),
+            keyring_service: "wonder-of-u".into(),
         }
     }
 
-    /// Handles read
+    /// Create with a custom keyring service name.
+    #[must_use]
+    pub fn with_keyring_service(base_dir: impl Into<PathBuf>, service: impl Into<String>) -> Self {
+        Self {
+            paths: StoragePaths::new(base_dir),
+            keyring_service: service.into(),
+        }
+    }
+
+    /// Handles read — merges file-based credentials with keyring entries.
+    /// Keyring entries take precedence over file entries for the same provider.
     pub fn read(&self) -> Result<StoredCredentials> {
         let path = self.paths.credentials_path();
-        if !path.exists() {
-            return Ok(StoredCredentials::default());
+        let mut credentials = if path.exists() {
+            serde_json::from_str(&fs::read_to_string(path)?)?
+        } else {
+            StoredCredentials::default()
+        };
+
+        for provider in self.known_provider_names(&credentials) {
+            if let Ok(Some(secret)) = self.try_keyring_get(&provider) {
+                if let Ok(material) = serde_json::from_str::<AuthMaterial>(&secret) {
+                    credentials.providers.insert(provider, material);
+                }
+            }
         }
 
-        serde_json::from_str(&fs::read_to_string(path)?).map_err(Into::into)
+        Ok(credentials)
     }
 
-    /// Handles write
+    /// Handles write — stores to file and attempts keyring for each provider.
     pub fn write(&self, credentials: &StoredCredentials) -> Result<()> {
         fs::create_dir_all(self.paths.config_dir())?;
-        write_json_atomically(&self.paths.credentials_path(), credentials)
+
+        let file_creds = credentials.clone();
+        for (provider, material) in &credentials.providers {
+            if let Ok(json) = serde_json::to_string(material) {
+                let _ = self.try_keyring_set(provider, &json);
+                match material {
+                    AuthMaterial::ApiKey { .. } | AuthMaterial::OAuth { .. } => {}
+                    AuthMaterial::None => {
+                        let _ = self.try_keyring_delete(provider);
+                    }
+                }
+            }
+        }
+
+        write_json_atomically(&self.paths.credentials_path(), &file_creds)
     }
 
     /// Handles set api key
@@ -420,7 +469,47 @@ impl CredentialStore {
         let mut credentials = self.read()?;
         let removed = credentials.providers.remove(provider).is_some();
         self.write(&credentials)?;
+        self.try_keyring_delete(provider).ok();
         Ok(removed)
+    }
+
+    fn keyring_entry_for(&self, provider: &str) -> String {
+        format!("wonder-of-u.{}", provider.to_lowercase())
+    }
+
+    fn try_keyring_get(&self, provider: &str) -> Result<Option<String>> {
+        match keyring::Entry::new(&self.keyring_service, &self.keyring_entry_for(provider)) {
+            Ok(entry) => match entry.get_password() {
+                Ok(password) => Ok(Some(password)),
+                Err(keyring::Error::NoEntry) => Ok(None),
+                Err(_) => Ok(None),
+            },
+            Err(_) => Ok(None),
+        }
+    }
+
+    fn try_keyring_set(&self, provider: &str, value: &str) -> Result<()> {
+        match keyring::Entry::new(&self.keyring_service, &self.keyring_entry_for(provider)) {
+            Ok(entry) => {
+                entry.set_password(value).ok();
+                Ok(())
+            }
+            Err(_) => Ok(()),
+        }
+    }
+
+    fn try_keyring_delete(&self, provider: &str) -> Result<()> {
+        match keyring::Entry::new(&self.keyring_service, &self.keyring_entry_for(provider)) {
+            Ok(entry) => {
+                entry.delete_credential().ok();
+                Ok(())
+            }
+            Err(_) => Ok(()),
+        }
+    }
+
+    fn known_provider_names(&self, credentials: &StoredCredentials) -> Vec<String> {
+        credentials.providers.keys().cloned().collect()
     }
 }
 

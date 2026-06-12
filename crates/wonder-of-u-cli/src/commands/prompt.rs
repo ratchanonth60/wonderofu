@@ -971,6 +971,7 @@ fn tool_context(
             Arc::new(SessionFileCheckpointer::new(dir, state.session.id))
                 as Arc<dyn FileCheckpointer>
         }),
+        network_policy: None,
     }
 }
 

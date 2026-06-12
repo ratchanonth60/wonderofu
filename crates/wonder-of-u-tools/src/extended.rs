@@ -478,6 +478,7 @@ mod tests {
             interaction_rx: None,
             fork_context: None,
             file_checkpointer: None,
+            network_policy: None,
         }
     }
 

@@ -931,6 +931,7 @@ mod tests {
             interaction_rx: None,
             fork_context: None,
             file_checkpointer: None,
+            network_policy: None,
         };
         let use_id = wonder_of_u_core::ToolUseId::new();
         let input = json!({ "prompt": "review this code" });
@@ -1051,6 +1052,7 @@ mod tests {
             interaction_rx: None,
             fork_context: None,
             file_checkpointer: None,
+            network_policy: None,
         };
         let tool = AgentTool;
         let error = tool
@@ -1161,6 +1163,7 @@ mod tests {
             interaction_rx: None,
             fork_context: None, // no fork context provided
             file_checkpointer: None,
+            network_policy: None,
         };
         let tool = AgentTool;
         let error = tool
@@ -1210,6 +1213,7 @@ mod tests {
             interaction_rx: None,
             fork_context: Some(fork_ctx.clone()),
             file_checkpointer: None,
+            network_policy: None,
         };
         let tool = AgentTool;
         let result = tool
@@ -1273,6 +1277,7 @@ mod tests {
             interaction_rx: None,
             fork_context: Some(fork_ctx),
             file_checkpointer: None,
+            network_policy: None,
         };
 
         // Simulate being inside a fork subprocess: depth=1.
@@ -1320,6 +1325,7 @@ mod tests {
             interaction_rx: None,
             fork_context: None,
             file_checkpointer: None,
+            network_policy: None,
         };
 
         let result = AgentTool
@@ -1381,6 +1387,7 @@ mod tests {
             interaction_rx: None,
             fork_context: None,
             file_checkpointer: None,
+            network_policy: None,
         };
         let tool = AgentTool;
         let error = tool
@@ -1436,6 +1443,7 @@ mod tests {
             interaction_rx: None,
             fork_context: None,
             file_checkpointer: None,
+            network_policy: None,
         };
 
         let result = AgentTool
@@ -1485,6 +1493,7 @@ mod tests {
             interaction_rx: None,
             fork_context: None,
             file_checkpointer: None,
+            network_policy: None,
         };
         let tool = AgentTool;
         let result = tool
@@ -1531,6 +1540,7 @@ mod tests {
             interaction_rx: None,
             fork_context: None,
             file_checkpointer: None,
+            network_policy: None,
         };
         let tool = AgentTool;
         let error = tool
@@ -1576,6 +1586,7 @@ mod tests {
                 interaction_rx: None,
                 fork_context: None,
                 file_checkpointer: None,
+                network_policy: None,
             };
             let tool = AgentTool;
             let result = tool

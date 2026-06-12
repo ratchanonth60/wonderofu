@@ -13,6 +13,12 @@
 /// Provides memdir support
 pub mod memdir;
 
+/// Two-phase memory pipeline for cross-session knowledge extraction.
+pub mod memory_pipeline;
+pub use memory_pipeline::{
+    ExtractedMemory, ExtractionJob, ExtractionStatus, MemoryPipelineConfig, MemoryPipelineStore,
+};
+
 /// Pre-modification file checkpoints for rewind restore.
 pub mod checkpoint;
 pub use checkpoint::{

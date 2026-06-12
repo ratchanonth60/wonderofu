@@ -10,6 +10,7 @@ mod classify_result;
 mod communication_tools;
 mod cron_remote;
 mod extended;
+mod file_watcher;
 mod files;
 mod fleet_tools;
 mod orchestration;
@@ -56,6 +57,8 @@ pub use cron_remote::{
     CronCreateInput, CronCreateTool, CronDeleteInput, CronDeleteTool, RemoteTriggerAction,
     RemoteTriggerInput, RemoteTriggerTool,
 };
+/// Re-exports items from `file_watcher`
+pub use file_watcher::{FileChangeEvent, FileChangeKind, FileWatcher};
 /// Re-exports items from `extended`
 pub use extended::{
     CronListTool, NotebookEditInput, NotebookEditTool, PowerShellInput, PowerShellTool,

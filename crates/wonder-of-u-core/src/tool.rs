@@ -13,6 +13,7 @@ use crate::{
     PermissionDecision, PermissionMode, PermissionRequest, PermissionRule, Result,
     RuntimeWorktreeState, SessionId, ShellSessionStore, TaskId, ToolPermissionContext, ToolUseId,
     WonderError, evaluate_permission,
+    network_policy::NetworkPolicyConfig,
 };
 /// Enumerates tool kind
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -340,6 +341,12 @@ pub struct ToolContext {
     /// when the user rewinds the conversation.  `None` for callers without
     /// persistent storage (tests, ad-hoc tool calls).
     pub file_checkpointer: Option<Arc<dyn FileCheckpointer>>,
+    /// Optional network egress policy for web tools.
+    ///
+    /// When `Some`, web tools (`web_fetch`, `web_search`) consult this policy
+    /// to determine whether a host is accessible.  When `None`, web tools
+    /// fall back to their built-in preapproved host lists.
+    pub network_policy: Option<NetworkPolicyConfig>,
 }
 
 /// Captures the pre-modification state of files so `/rewind` can restore them.
@@ -842,6 +849,7 @@ mod tests {
             interaction_rx: None,
             fork_context: None,
             file_checkpointer: None,
+            network_policy: None,
         }
     }
 

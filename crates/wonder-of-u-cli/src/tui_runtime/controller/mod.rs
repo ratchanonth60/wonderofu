@@ -146,6 +146,9 @@ pub(super) struct TuiController<'a> {
     pub(super) interaction_pending_answer: Option<String>,
     /// Background memory extraction state.
     pub(super) extraction: ExtractionHandle,
+    /// Tracks whether extraction was active on the previous tick, for detecting
+    /// completion transitions and pushing a memory-updated notification.
+    extraction_was_active: bool,
     /// Shell command from `settings.statusLine` to run after each AI response.
     pub(super) status_line_command: Option<String>,
     /// Handle for the background status-line command thread.
@@ -1043,6 +1046,7 @@ impl<'a> TuiController<'a> {
             interaction_other_mode: false,
             interaction_pending_answer: None,
             extraction: ExtractionHandle::new(),
+            extraction_was_active: false,
             status_line_command: None,
             status_line_handle: StatusLineHandle::new(),
             active_turn: ActiveTurn::None,
@@ -1098,6 +1102,15 @@ impl<'a> TuiController<'a> {
                     return Ok(());
                 }
                 if !text.is_empty() {
+                    let text = if text.len() > 10_000 {
+                        let head = &text[..500.min(text.len())];
+                        let tail = &text[text.len().saturating_sub(500)..];
+                        self.status_note =
+                            Some("pasted text truncated to 10,000 characters".into());
+                        format!("{head}\n[...truncated...]\n{tail}")
+                    } else {
+                        text
+                    };
                     if let Some(form) = &mut self.pending_provider_form {
                         form.input.insert_text(&text);
                         self.needs_render = true;
@@ -1189,6 +1202,18 @@ impl<'a> TuiController<'a> {
                     None => {}
                 }
                 self.needs_render |= self.notifications.tick();
+                // Push a notification when background memory extraction finishes.
+                if !self.extraction.is_active() && self.extraction_was_active {
+                    self.push_notification(
+                        "memory-updated",
+                        NotificationSeverity::Info,
+                        "Memories updated",
+                        std::iter::empty::<&str>(),
+                        Some(2),
+                        false,
+                    );
+                }
+                self.extraction_was_active = self.extraction.is_active();
                 if !self.cost_threshold_dialog_shown_session
                     && self.dialog.is_none()
                     && self.state.costs.estimated_cost_usd.unwrap_or(0.0) >= 5.0
@@ -1315,6 +1340,7 @@ impl<'a> TuiController<'a> {
                     self.state.session.id,
                 )) as std::sync::Arc<dyn wonder_of_u_core::FileCheckpointer>
             }),
+            network_policy: None,
         }
     }
     /// Returns the effective system prompt with the auto-memory section appended.

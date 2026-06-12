@@ -203,15 +203,33 @@ impl Tool for WebFetchTool {
         match decision {
             PermissionDecision::Allow {
                 reason: PermissionDecisionReason::Mode { mode, detail },
-            } => preapproved_web_host(input).map_or_else(
-                || PermissionDecision::allow(PermissionDecisionReason::Mode { mode, detail }),
-                |host| {
-                    PermissionDecision::allow(PermissionDecisionReason::Mode {
-                        mode: context.permission_mode,
-                        detail: format!("preapproved web host `{host}`"),
-                    })
-                },
-            ),
+            } => {
+                let host = extract_host_from_value(input);
+                if let Some(host) = host {
+                    if let Some(ref policy) = context.network_policy {
+                        if !policy.is_host_allowed(&host) {
+                            return PermissionDecision::deny(
+                                PermissionDecisionReason::Mode {
+                                    mode: context.permission_mode,
+                                    detail: format!(
+                                        "network policy blocks host: {host}"
+                                    ),
+                                },
+                            );
+                        }
+                    }
+                }
+
+                preapproved_web_host(input).map_or_else(
+                    || PermissionDecision::allow(PermissionDecisionReason::Mode { mode, detail }),
+                    |host| {
+                        PermissionDecision::allow(PermissionDecisionReason::Mode {
+                            mode: context.permission_mode,
+                            detail: format!("preapproved web host `{host}`"),
+                        })
+                    },
+                )
+            },
             _ => decision,
         }
     }
@@ -690,6 +708,11 @@ fn not_configured_message() -> String {
     "Rust external web search is not configured — set SERPER_API_KEY or BRAVE_API_KEY. Provider-native web search is unavailable in this runtime context.".into()
 }
 
+fn extract_host_from_value(input: &Value) -> Option<String> {
+    let url = input.get("url")?.as_str()?;
+    parse_url_host_path(url).map(|(host, _)| host)
+}
+
 fn preapproved_web_host(input: &Value) -> Option<String> {
     let url = input.get("url")?.as_str()?;
     let (host, path) = parse_url_host_path(url)?;
@@ -770,6 +793,7 @@ mod tests {
             interaction_rx: None,
             fork_context: None,
             file_checkpointer: None,
+            network_policy: None,
         }
     }
 
