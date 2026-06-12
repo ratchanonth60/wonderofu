@@ -193,10 +193,8 @@ impl<'a> Writer<'a> {
             return;
         }
 
-        if self.table.is_some() {
-            if self.handle_table_event(&event) {
-                return;
-            }
+        if self.table.is_some() && self.handle_table_event(&event) {
+            return;
         }
 
         match event {
@@ -629,7 +627,7 @@ fn push_plain_text_with_urls(spans: &mut Vec<MessageSpanView>, mut text: &str) {
             spans.push(MessageSpanView::new(&text[..start], None));
         }
         let tail = &text[start..];
-        let raw_len = tail.find(char::is_whitespace).unwrap_or_else(|| tail.len());
+        let raw_len = tail.find(char::is_whitespace).unwrap_or(tail.len());
         let (url, punctuation) = split_trailing_url_punctuation(&tail[..raw_len]);
         if !url.is_empty() {
             spans.push(MessageSpanView::new(
@@ -657,7 +655,7 @@ fn find_web_url_start(text: &str) -> Option<usize> {
 }
 
 fn split_trailing_url_punctuation(text: &str) -> (&str, &str) {
-    let trimmed = text.trim_end_matches(|ch: char| matches!(ch, '.' | ',' | ';' | ':'));
+    let trimmed = text.trim_end_matches(['.', ',', ';', ':']);
     text.split_at(trimmed.len())
 }
 
@@ -869,7 +867,7 @@ fn unwrap_markdown_fences(markdown_source: &str) -> Cow<'_, str> {
 
         if !open.is_markdown {
             out.push_str(line);
-            while let Some(candidate) = lines.next() {
+            for candidate in lines.by_ref() {
                 out.push_str(candidate);
                 if is_fence_close(candidate, open.marker, open.len) {
                     break;
