@@ -20,6 +20,7 @@ mod bedrock;
 mod copilot;
 mod gemini;
 mod openai;
+mod retry;
 mod vertex;
 
 use std::{
@@ -219,24 +220,75 @@ struct HttpRequest {
     body: String,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
 struct HttpResponse {
     status: u16,
     body: String,
+    headers: BTreeMap<String, String>,
 }
 
 struct StreamingHttpResponse {
+    status: u16,
+    headers: BTreeMap<String, String>,
     reader: Box<dyn Read + Send>,
 }
 
+/// Transport contract: `Ok` is returned for **all** HTTP statuses (callers
+/// classify and map error statuses via [`ensure_success`] /
+/// [`ensure_stream_success`] after the retry loop); `Err` is reserved for
+/// transport-level failures (connect, DNS, body IO).
 trait HttpTransport: Send + Sync {
     fn execute(&self, request: &HttpRequest) -> Result<HttpResponse>;
     fn execute_stream(&self, request: &HttpRequest) -> Result<StreamingHttpResponse>;
 }
 
+/// Maps an error-status [`HttpResponse`] to the user-facing validation error.
+fn ensure_success(response: HttpResponse) -> Result<HttpResponse> {
+    if response.status >= 400 {
+        Err(WonderError::validation(format!(
+            "provider HTTP request failed with status {}: {}",
+            response.status,
+            provider_error_message(&response.body)
+        )))
+    } else {
+        Ok(response)
+    }
+}
+
+/// Maps an error-status [`StreamingHttpResponse`] to the user-facing
+/// validation error, draining the body for the provider's error message.
+fn ensure_stream_success(mut response: StreamingHttpResponse) -> Result<StreamingHttpResponse> {
+    if response.status >= 400 {
+        let mut body = String::new();
+        let _ = response.reader.read_to_string(&mut body);
+        Err(WonderError::validation(format!(
+            "provider HTTP request failed with status {}: {}",
+            response.status,
+            provider_error_message(&body)
+        )))
+    } else {
+        Ok(response)
+    }
+}
+
+fn capture_headers(response: &ureq::http::Response<ureq::Body>) -> BTreeMap<String, String> {
+    response
+        .headers()
+        .iter()
+        .filter_map(|(name, value)| {
+            let name = name.as_str().to_ascii_lowercase();
+            // Only retain headers the retry/rate-limit layers care about.
+            (name == "retry-after" || name.starts_with("x-ratelimit"))
+                .then(|| value.to_str().ok().map(|v| (name, v.to_string())))
+                .flatten()
+        })
+        .collect()
+}
+
 #[derive(Clone)]
 struct UreqTransport {
     agent: ureq::Agent,
+    streaming_agent: ureq::Agent,
 }
 
 impl Default for UreqTransport {
@@ -245,8 +297,19 @@ impl Default for UreqTransport {
             .timeout_global(Some(Duration::from_secs(60)))
             .http_status_as_error(false)
             .build();
+        // Streaming bodies must outlive the 60s global timeout: liveness is
+        // enforced per-chunk by `IdleTimeoutReader`, with a generous
+        // body-level socket timeout as the backstop so abandoned reader
+        // threads cannot park forever.
+        let streaming_config = ureq::Agent::config_builder()
+            .timeout_connect(Some(Duration::from_secs(10)))
+            .timeout_recv_response(Some(Duration::from_secs(60)))
+            .timeout_recv_body(Some(Duration::from_secs(3600)))
+            .http_status_as_error(false)
+            .build();
         Self {
             agent: config.new_agent(),
+            streaming_agent: streaming_config.new_agent(),
         }
     }
 }
@@ -256,35 +319,28 @@ impl HttpTransport for UreqTransport {
         let mut response = send_ureq_request(&self.agent, request)
             .map_err(|e| WonderError::validation(format!("provider request failed: {e}")))?;
         let status = response.status().as_u16();
+        let headers = capture_headers(&response);
         let body = response
             .body_mut()
             .read_to_string()
             .map_err(|e| WonderError::validation(format!("invalid provider response body: {e}")))?;
-        if status >= 400 {
-            Err(WonderError::validation(format!(
-                "provider HTTP request failed with status {status}: {}",
-                provider_error_message(&body)
-            )))
-        } else {
-            Ok(HttpResponse { status, body })
-        }
+        Ok(HttpResponse {
+            status,
+            body,
+            headers,
+        })
     }
 
     fn execute_stream(&self, request: &HttpRequest) -> Result<StreamingHttpResponse> {
-        let response = send_ureq_request(&self.agent, request)
+        let response = send_ureq_request(&self.streaming_agent, request)
             .map_err(|e| WonderError::validation(format!("provider request failed: {e}")))?;
         let status = response.status().as_u16();
-        if status >= 400 {
-            let body = response.into_body().read_to_string().unwrap_or_default();
-            Err(WonderError::validation(format!(
-                "provider HTTP request failed with status {status}: {}",
-                provider_error_message(&body)
-            )))
-        } else {
-            Ok(StreamingHttpResponse {
-                reader: Box::new(response.into_body().into_reader()),
-            })
-        }
+        let headers = capture_headers(&response);
+        Ok(StreamingHttpResponse {
+            status,
+            headers,
+            reader: Box::new(response.into_body().into_reader()),
+        })
     }
 }
 
@@ -463,10 +519,71 @@ fn wire_protocol_supports_tool_use(protocol: WireProtocol) -> bool {
     )
 }
 
+/// Tunable transport behavior for [`ProviderRuntime`].
+///
+/// All fields have sensible defaults matching codex-rs: 4 request retries,
+/// 5 stream-connect retries, 300s stream idle timeout.
+#[derive(Clone, Debug, PartialEq)]
+pub struct RuntimeOptions {
+    /// Retries for non-streaming provider requests (after the first attempt).
+    pub request_max_retries: u32,
+    /// Retries when establishing a streaming connection.
+    pub stream_max_retries: u32,
+    /// Streaming bodies error out when no bytes arrive within this window.
+    pub stream_idle_timeout: Duration,
+}
+
+impl Default for RuntimeOptions {
+    fn default() -> Self {
+        Self {
+            request_max_retries: retry::DEFAULT_REQUEST_MAX_RETRIES,
+            stream_max_retries: retry::DEFAULT_STREAM_MAX_RETRIES,
+            stream_idle_timeout: Duration::from_millis(retry::DEFAULT_STREAM_IDLE_TIMEOUT_MS),
+        }
+    }
+}
+
+impl RuntimeOptions {
+    /// Builds options from persisted settings, falling back to defaults for
+    /// unset fields.
+    #[must_use]
+    pub fn from_settings(settings: &crate::AgentSettings) -> Self {
+        let defaults = Self::default();
+        Self {
+            request_max_retries: settings
+                .request_max_retries
+                .unwrap_or(defaults.request_max_retries),
+            stream_max_retries: settings
+                .stream_max_retries
+                .unwrap_or(defaults.stream_max_retries),
+            stream_idle_timeout: settings
+                .stream_idle_timeout_ms
+                .map(Duration::from_millis)
+                .unwrap_or(defaults.stream_idle_timeout),
+        }
+    }
+
+    fn request_policy(&self, base_delay: Duration) -> retry::RetryPolicy {
+        retry::RetryPolicy {
+            max_retries: self.request_max_retries,
+            base_delay,
+        }
+    }
+
+    fn stream_policy(&self, base_delay: Duration) -> retry::RetryPolicy {
+        retry::RetryPolicy {
+            max_retries: self.stream_max_retries,
+            base_delay,
+        }
+    }
+}
+
 /// Represents provider runtime
 pub struct ProviderRuntime {
     resolver: ProviderResolver,
     transport: Arc<dyn HttpTransport>,
+    options: RuntimeOptions,
+    backoff_base_delay: Duration,
 }
 
 impl Default for ProviderRuntime {
@@ -479,10 +596,62 @@ impl ProviderRuntime {
     /// Creates a new value
     #[must_use]
     pub fn new() -> Self {
+        Self::with_options(RuntimeOptions::default())
+    }
+
+    /// Creates a runtime with explicit transport options.
+    #[must_use]
+    pub fn with_options(options: RuntimeOptions) -> Self {
         Self {
             resolver: ProviderResolver::builtin(),
             transport: Arc::new(UreqTransport::default()),
+            options,
+            backoff_base_delay: Duration::from_millis(retry::DEFAULT_BASE_DELAY_MS),
         }
+    }
+
+    /// Executes a non-streaming request with retries, then maps error
+    /// statuses to validation errors.
+    fn http_execute(&self, request: &HttpRequest) -> Result<HttpResponse> {
+        let policy = self.options.request_policy(self.backoff_base_delay);
+        let response = retry::execute_with_retry(
+            self.transport.as_ref(),
+            request,
+            &policy,
+            &mut std::thread::sleep,
+        )?;
+        ensure_success(response)
+    }
+
+    /// Establishes a streaming connection with retries, maps error statuses,
+    /// and wraps the body in the idle-timeout guard.
+    fn http_execute_stream(&self, request: &HttpRequest) -> Result<StreamingHttpResponse> {
+        let policy = self.options.stream_policy(self.backoff_base_delay);
+        let mut attempt: u32 = 0;
+        let response = loop {
+            let outcome = self.transport.execute_stream(request);
+            attempt += 1;
+            let retries_left = attempt <= policy.max_retries;
+            match outcome {
+                Ok(response) if retry::is_retryable_status(response.status) && retries_left => {
+                    std::thread::sleep(retry::backoff_delay(&policy, attempt));
+                }
+                Ok(response) => break response,
+                Err(error) if retry::is_retryable_transport_error(&error) && retries_left => {
+                    std::thread::sleep(retry::backoff_delay(&policy, attempt));
+                }
+                Err(error) => return Err(error),
+            }
+        };
+        let response = ensure_stream_success(response)?;
+        Ok(StreamingHttpResponse {
+            status: response.status,
+            headers: response.headers,
+            reader: Box::new(retry::IdleTimeoutReader::new(
+                response.reader,
+                self.options.stream_idle_timeout,
+            )),
+        })
     }
 
     /// Resolves execution
@@ -525,33 +694,33 @@ impl ProviderRuntime {
         match resolved.provider().wire_protocol {
             WireProtocol::OpenAiCompat => {
                 let http_request = openai::build_openai_request(resolved, request)?;
-                let http_response = self.transport.execute(&http_request)?;
+                let http_response = self.http_execute(&http_request)?;
                 openai::parse_openai_response(resolved, &http_response.body)
             }
             WireProtocol::AnthropicCompat => {
                 let http_request = anthropic::build_anthropic_request(resolved, request)?;
-                let http_response = self.transport.execute(&http_request)?;
+                let http_response = self.http_execute(&http_request)?;
                 anthropic::parse_anthropic_response(resolved, &http_response.body)
             }
             WireProtocol::Copilot => self.complete_copilot(resolved, request),
             WireProtocol::BedrockAnthropic => {
                 let http_request = bedrock::build_bedrock_request(resolved, request)?;
-                let http_response = self.transport.execute(&http_request)?;
+                let http_response = self.http_execute(&http_request)?;
                 anthropic::parse_anthropic_response(resolved, &http_response.body)
             }
             WireProtocol::GeminiNative => {
                 let http_request = gemini::build_gemini_request(resolved, request)?;
-                let http_response = self.transport.execute(&http_request)?;
+                let http_response = self.http_execute(&http_request)?;
                 gemini::parse_gemini_response(resolved, &http_response.body)
             }
             WireProtocol::VertexGemini => {
                 let http_request = vertex::build_vertex_request(resolved, request)?;
-                let http_response = self.transport.execute(&http_request)?;
+                let http_response = self.http_execute(&http_request)?;
                 vertex::parse_vertex_response(resolved, &http_response.body)
             }
             WireProtocol::AzureOpenAi => {
                 let http_request = azure::build_azure_request(resolved, request)?;
-                let http_response = self.transport.execute(&http_request)?;
+                let http_response = self.http_execute(&http_request)?;
                 azure::parse_azure_response(resolved, &http_response.body)
             }
             proto => Err(WonderError::validation(format!(
@@ -627,12 +796,12 @@ impl ProviderRuntime {
         match resolved.provider().wire_protocol {
             WireProtocol::OpenAiCompat => {
                 let http_request = openai::build_openai_stream_request(resolved, request)?;
-                let http_response = self.transport.execute_stream(&http_request)?;
+                let http_response = self.http_execute_stream(&http_request)?;
                 openai::parse_openai_stream_response(resolved, http_response, &mut on_text_delta)
             }
             WireProtocol::AnthropicCompat => {
                 let http_request = anthropic::build_anthropic_stream_request(resolved, request)?;
-                let http_response = self.transport.execute_stream(&http_request)?;
+                let http_response = self.http_execute_stream(&http_request)?;
                 anthropic::parse_anthropic_stream_response(
                     resolved,
                     http_response,
@@ -644,7 +813,7 @@ impl ProviderRuntime {
             }
             WireProtocol::BedrockAnthropic => {
                 let http_request = bedrock::build_bedrock_stream_request(resolved, request)?;
-                let http_response = self.transport.execute_stream(&http_request)?;
+                let http_response = self.http_execute_stream(&http_request)?;
                 anthropic::parse_anthropic_stream_response(
                     resolved,
                     http_response,
@@ -653,17 +822,17 @@ impl ProviderRuntime {
             }
             WireProtocol::AzureOpenAi => {
                 let http_request = azure::build_azure_stream_request(resolved, request)?;
-                let http_response = self.transport.execute_stream(&http_request)?;
+                let http_response = self.http_execute_stream(&http_request)?;
                 azure::parse_azure_stream_response(resolved, http_response, &mut on_text_delta)
             }
             WireProtocol::GeminiNative => {
                 let http_request = gemini::build_gemini_stream_request(resolved, request)?;
-                let http_response = self.transport.execute_stream(&http_request)?;
+                let http_response = self.http_execute_stream(&http_request)?;
                 gemini::parse_gemini_stream_response(resolved, http_response, &mut on_text_delta)
             }
             WireProtocol::VertexGemini => {
                 let http_request = vertex::build_vertex_stream_request(resolved, request)?;
-                let http_response = self.transport.execute_stream(&http_request)?;
+                let http_response = self.http_execute_stream(&http_request)?;
                 vertex::parse_vertex_stream_response(resolved, http_response, &mut on_text_delta)
             }
             proto => Err(WonderError::validation(format!(
@@ -688,33 +857,33 @@ impl ProviderRuntime {
         match resolved.provider().wire_protocol {
             WireProtocol::OpenAiCompat => {
                 let http_request = openai::build_openai_tool_use_request(resolved, request)?;
-                let http_response = self.transport.execute(&http_request)?;
+                let http_response = self.http_execute(&http_request)?;
                 openai::parse_openai_tool_use_response(resolved, &http_response.body)
             }
             WireProtocol::AnthropicCompat => {
                 let http_request = anthropic::build_anthropic_tool_use_request(resolved, request)?;
-                let http_response = self.transport.execute(&http_request)?;
+                let http_response = self.http_execute(&http_request)?;
                 anthropic::parse_anthropic_tool_use_response(resolved, &http_response.body)
             }
             WireProtocol::Copilot => self.complete_copilot_with_tool_use(resolved, request),
             WireProtocol::BedrockAnthropic => {
                 let http_request = bedrock::build_bedrock_tool_use_request(resolved, request)?;
-                let http_response = self.transport.execute(&http_request)?;
+                let http_response = self.http_execute(&http_request)?;
                 anthropic::parse_anthropic_tool_use_response(resolved, &http_response.body)
             }
             WireProtocol::AzureOpenAi => {
                 let http_request = azure::build_azure_tool_use_request(resolved, request)?;
-                let http_response = self.transport.execute(&http_request)?;
+                let http_response = self.http_execute(&http_request)?;
                 azure::parse_azure_tool_use_response(resolved, &http_response.body)
             }
             WireProtocol::GeminiNative => {
                 let http_request = gemini::build_gemini_tool_use_request(resolved, request)?;
-                let http_response = self.transport.execute(&http_request)?;
+                let http_response = self.http_execute(&http_request)?;
                 gemini::parse_gemini_tool_use_response(resolved, &http_response.body)
             }
             WireProtocol::VertexGemini => {
                 let http_request = vertex::build_vertex_tool_use_request(resolved, request)?;
-                let http_response = self.transport.execute(&http_request)?;
+                let http_response = self.http_execute(&http_request)?;
                 vertex::parse_vertex_tool_use_response(resolved, &http_response.body)
             }
             proto => Err(WonderError::validation(format!(
@@ -739,7 +908,7 @@ impl ProviderRuntime {
                 &session.api_base,
                 &session.bearer_token,
             )?;
-            let http_response = self.transport.execute(&http_request)?;
+            let http_response = self.http_execute(&http_request)?;
             anthropic::parse_anthropic_response(resolved, &http_response.body)
         } else {
             let http_request = copilot::build_copilot_openai_request(
@@ -749,7 +918,7 @@ impl ProviderRuntime {
                 &session.api_base,
                 &session.bearer_token,
             )?;
-            let http_response = self.transport.execute(&http_request)?;
+            let http_response = self.http_execute(&http_request)?;
             openai::parse_openai_response(resolved, &http_response.body)
         }
     }
@@ -772,7 +941,7 @@ impl ProviderRuntime {
                 &session.api_base,
                 &session.bearer_token,
             )?;
-            let http_response = self.transport.execute_stream(&http_request)?;
+            let http_response = self.http_execute_stream(&http_request)?;
             anthropic::parse_anthropic_stream_response(resolved, http_response, on_text_delta)
         } else {
             let http_request = copilot::build_copilot_openai_request(
@@ -782,7 +951,7 @@ impl ProviderRuntime {
                 &session.api_base,
                 &session.bearer_token,
             )?;
-            let http_response = self.transport.execute_stream(&http_request)?;
+            let http_response = self.http_execute_stream(&http_request)?;
             openai::parse_openai_stream_response(resolved, http_response, on_text_delta)
         }
     }
@@ -808,7 +977,7 @@ impl ProviderRuntime {
                 &session.bearer_token,
             )?
         };
-        let http_response = self.transport.execute(&http_request)?;
+        let http_response = self.http_execute(&http_request)?;
         if copilot::copilot_model_uses_anthropic_path(resolved.model()) {
             anthropic::parse_anthropic_tool_use_response(resolved, &http_response.body)
         } else {
@@ -821,7 +990,7 @@ impl ProviderRuntime {
         resolved: &ResolvedProviderExecution,
     ) -> Result<copilot::CopilotSession> {
         let http_request = copilot::build_copilot_token_exchange_request(resolved)?;
-        let http_response = self.transport.execute(&http_request)?;
+        let http_response = self.http_execute(&http_request)?;
         copilot::parse_copilot_token_exchange_response(resolved, &http_response.body)
     }
 
@@ -848,7 +1017,7 @@ impl ProviderRuntime {
             )
         })?;
         let http_request = copilot::build_copilot_oauth_refresh_request(refresh_token);
-        let http_response = self.transport.execute(&http_request)?;
+        let http_response = self.http_execute(&http_request)?;
         let token = copilot::parse_copilot_oauth_refresh_response(&http_response.body)?;
         CredentialStore::new(storage_dir).set_oauth_token(
             "copilot",
@@ -867,6 +1036,21 @@ impl ProviderRuntime {
         Self {
             resolver: ProviderResolver::builtin(),
             transport,
+            options: RuntimeOptions::default(),
+            // Zero base delay keeps retry-exercising tests instant.
+            backoff_base_delay: Duration::ZERO,
+        }
+    }
+
+    fn with_transport_and_options(
+        transport: Arc<dyn HttpTransport>,
+        options: RuntimeOptions,
+    ) -> Self {
+        Self {
+            resolver: ProviderResolver::builtin(),
+            transport,
+            options,
+            backoff_base_delay: Duration::ZERO,
         }
     }
 }
@@ -895,18 +1079,28 @@ mod tests {
     struct RecordingTransport {
         requests: Mutex<Vec<HttpRequest>>,
         responses: Mutex<Vec<HttpResponse>>,
+        // Replayed when `responses` runs dry so retry loops observe a stable
+        // terminal response instead of an artificial "missing response" error.
+        last_response: Mutex<Option<HttpResponse>>,
         force_error: Mutex<Option<String>>,
+    }
+
+    fn recorded_response(status: u16, body: impl Into<String>) -> HttpResponse {
+        HttpResponse {
+            status,
+            body: body.into(),
+            headers: BTreeMap::new(),
+        }
     }
 
     impl RecordingTransport {
         fn with_json_body(body: serde_json::Value) -> Arc<Self> {
             Arc::new(Self {
-                requests: Mutex::new(Vec::new()),
-                responses: Mutex::new(vec![HttpResponse {
-                    status: 200,
-                    body: serde_json::to_string(&body).expect("serialize response"),
-                }]),
-                force_error: Mutex::new(None),
+                responses: Mutex::new(vec![recorded_response(
+                    200,
+                    serde_json::to_string(&body).expect("serialize response"),
+                )]),
+                ..Self::default()
             })
         }
 
@@ -924,28 +1118,32 @@ mod tests {
 
         fn with_json_responses(bodies: Vec<serde_json::Value>) -> Arc<Self> {
             Arc::new(Self {
-                requests: Mutex::new(Vec::new()),
                 responses: Mutex::new(
                     bodies
                         .into_iter()
-                        .map(|body| HttpResponse {
-                            status: 200,
-                            body: serde_json::to_string(&body).expect("serialize response"),
+                        .map(|body| {
+                            recorded_response(
+                                200,
+                                serde_json::to_string(&body).expect("serialize response"),
+                            )
                         })
                         .collect(),
                 ),
-                force_error: Mutex::new(None),
+                ..Self::default()
+            })
+        }
+
+        fn with_status_responses(responses: Vec<HttpResponse>) -> Arc<Self> {
+            Arc::new(Self {
+                responses: Mutex::new(responses),
+                ..Self::default()
             })
         }
 
         fn with_stream_body(body: &str) -> Arc<Self> {
             Arc::new(Self {
-                requests: Mutex::new(Vec::new()),
-                responses: Mutex::new(vec![HttpResponse {
-                    status: 200,
-                    body: body.to_string(),
-                }]),
-                force_error: Mutex::new(None),
+                responses: Mutex::new(vec![recorded_response(200, body)]),
+                ..Self::default()
             })
         }
 
@@ -955,38 +1153,37 @@ mod tests {
         ) -> Arc<Self> {
             let mut responses: Vec<HttpResponse> = json_bodies
                 .into_iter()
-                .map(|body| HttpResponse {
-                    status: 200,
-                    body: serde_json::to_string(&body).expect("serialize response"),
+                .map(|body| {
+                    recorded_response(
+                        200,
+                        serde_json::to_string(&body).expect("serialize response"),
+                    )
                 })
                 .collect();
-            responses.extend(stream_bodies.into_iter().map(|body| HttpResponse {
-                status: 200,
-                body: body.to_string(),
-            }));
+            responses.extend(
+                stream_bodies
+                    .into_iter()
+                    .map(|body| recorded_response(200, body)),
+            );
             Arc::new(Self {
-                requests: Mutex::new(Vec::new()),
                 responses: Mutex::new(responses),
-                force_error: Mutex::new(None),
+                ..Self::default()
             })
         }
 
         fn with_http_error(status: u16, body: serde_json::Value) -> Arc<Self> {
             Arc::new(Self {
-                responses: Mutex::new(vec![HttpResponse {
+                responses: Mutex::new(vec![recorded_response(
                     status,
-                    body: serde_json::to_string(&body).expect("serialize error body"),
-                }]),
+                    serde_json::to_string(&body).expect("serialize error body"),
+                )]),
                 ..Self::default()
             })
         }
 
         fn with_raw_body(status: u16, body: impl Into<String>) -> Arc<Self> {
             Arc::new(Self {
-                responses: Mutex::new(vec![HttpResponse {
-                    status,
-                    body: body.into(),
-                }]),
+                responses: Mutex::new(vec![recorded_response(status, body)]),
                 ..Self::default()
             })
         }
@@ -997,6 +1194,10 @@ mod tests {
                 ..Self::default()
             })
         }
+
+        fn request_count(&self) -> usize {
+            self.requests.lock().expect("lock requests").len()
+        }
     }
 
     impl HttpTransport for RecordingTransport {
@@ -1005,29 +1206,36 @@ mod tests {
                 .lock()
                 .expect("lock requests")
                 .push(request.clone());
-            if let Some(msg) = self.force_error.lock().expect("lock force_error").take() {
+            // Force-errors repeat so retry loops observe a stable failure.
+            if let Some(msg) = self
+                .force_error
+                .lock()
+                .expect("lock force_error")
+                .as_ref()
+                .cloned()
+            {
                 return Err(WonderError::validation(format!(
                     "provider request failed: {msg}"
                 )));
             }
             let mut responses = self.responses.lock().expect("lock response");
+            let mut last = self.last_response.lock().expect("lock last response");
             if responses.is_empty() {
-                return Err(WonderError::internal("missing recorded response"));
+                return match last.as_ref() {
+                    Some(response) => Ok(response.clone()),
+                    None => Err(WonderError::internal("missing recorded response")),
+                };
             }
             let response = responses.remove(0);
-            if response.status >= 400 {
-                return Err(WonderError::validation(format!(
-                    "provider HTTP request failed with status {}: {}",
-                    response.status,
-                    provider_error_message(&response.body),
-                )));
-            }
+            *last = Some(response.clone());
             Ok(response)
         }
 
         fn execute_stream(&self, request: &HttpRequest) -> Result<StreamingHttpResponse> {
             let response = self.execute(request)?;
             Ok(StreamingHttpResponse {
+                status: response.status,
+                headers: response.headers,
                 reader: Box::new(std::io::Cursor::new(response.body.into_bytes())),
             })
         }
@@ -2426,6 +2634,86 @@ mod tests {
             msg.contains("Rate limit"),
             "error should surface rate-limit message; got: {msg}"
         );
+    }
+
+    #[test]
+    fn openai_429_is_retried_until_success() {
+        let transport = RecordingTransport::with_status_responses(vec![
+            recorded_response(429, r#"{"error":{"message":"slow down"}}"#),
+            recorded_response(
+                200,
+                serde_json::to_string(&serde_json::json!({
+                    "choices": [{"message": {"content": "recovered"}}],
+                    "usage": {"prompt_tokens": 1, "completion_tokens": 1}
+                }))
+                .expect("serialize"),
+            ),
+        ]);
+        let runtime = ProviderRuntime::with_transport(transport.clone() as Arc<dyn HttpTransport>);
+        let resolved = resolved_provider("openai", Some("gpt-4.1"));
+        let request = CompletionRequest::new("ping");
+
+        let response = runtime
+            .complete(&resolved, &request)
+            .expect("429 then 200 should succeed after retry");
+        assert_eq!(response.output_text, "recovered");
+        assert_eq!(transport.request_count(), 2);
+    }
+
+    #[test]
+    fn openai_401_is_not_retried() {
+        let transport = RecordingTransport::with_http_error(
+            401,
+            serde_json::json!({"error": {"message": "Invalid API key"}}),
+        );
+        let runtime = ProviderRuntime::with_transport(transport.clone() as Arc<dyn HttpTransport>);
+        let resolved = resolved_provider("openai", Some("gpt-4.1"));
+        let request = CompletionRequest::new("ping");
+
+        runtime
+            .complete(&resolved, &request)
+            .expect_err("401 should fail");
+        assert_eq!(transport.request_count(), 1);
+    }
+
+    #[test]
+    fn runtime_options_from_settings_overrides_defaults() {
+        let settings = AgentSettings {
+            request_max_retries: Some(0),
+            stream_max_retries: Some(1),
+            stream_idle_timeout_ms: Some(1_000),
+            ..AgentSettings::default()
+        };
+        let options = RuntimeOptions::from_settings(&settings);
+        assert_eq!(options.request_max_retries, 0);
+        assert_eq!(options.stream_max_retries, 1);
+        assert_eq!(options.stream_idle_timeout, Duration::from_secs(1));
+
+        let defaults = RuntimeOptions::from_settings(&AgentSettings::default());
+        assert_eq!(defaults, RuntimeOptions::default());
+    }
+
+    #[test]
+    fn zero_retries_option_disables_retrying() {
+        let transport = RecordingTransport::with_status_responses(vec![recorded_response(
+            429,
+            r#"{"error":{"message":"slow down"}}"#,
+        )]);
+        let runtime = ProviderRuntime::with_transport_and_options(
+            transport.clone() as Arc<dyn HttpTransport>,
+            RuntimeOptions {
+                request_max_retries: 0,
+                ..RuntimeOptions::default()
+            },
+        );
+        let resolved = resolved_provider("openai", Some("gpt-4.1"));
+        let request = CompletionRequest::new("ping");
+
+        let err = runtime
+            .complete(&resolved, &request)
+            .expect_err("429 with zero retries should fail");
+        assert!(err.to_string().contains("429"));
+        assert_eq!(transport.request_count(), 1);
     }
 
     #[test]

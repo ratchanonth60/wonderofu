@@ -392,7 +392,7 @@ pub(crate) fn execute_prompt_turn(
     };
 
     let selection = ProviderSelection::new(input.provider.clone(), input.model.clone());
-    let runtime = ProviderRuntime::new();
+    let runtime = crate::provider_runtime(storage_dir);
     let resolved = runtime.resolve_execution(storage_dir, selection)?;
     state.set_provider_context(
         Some(resolved.provider_id().to_string()),

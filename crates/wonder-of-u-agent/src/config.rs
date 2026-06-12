@@ -99,6 +99,15 @@ pub struct AgentSettings {
     /// Once acknowledged, the dialog won't appear again.
     #[serde(default)]
     pub has_acknowledged_cost_threshold: bool,
+    /// Retries for non-streaming provider requests. Defaults to 4 when unset.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub request_max_retries: Option<u32>,
+    /// Retries when establishing a streaming connection. Defaults to 5.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stream_max_retries: Option<u32>,
+    /// Streaming idle timeout in milliseconds. Defaults to 300 000 (5 min).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stream_idle_timeout_ms: Option<u64>,
 }
 /// Represents provider override
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
@@ -258,6 +267,15 @@ impl SettingsHierarchy {
             }
             if merged.status_line.is_none() {
                 merged.status_line = s.status_line.clone();
+            }
+            if merged.request_max_retries.is_none() {
+                merged.request_max_retries = s.request_max_retries;
+            }
+            if merged.stream_max_retries.is_none() {
+                merged.stream_max_retries = s.stream_max_retries;
+            }
+            if merged.stream_idle_timeout_ms.is_none() {
+                merged.stream_idle_timeout_ms = s.stream_idle_timeout_ms;
             }
         }
 

@@ -23,6 +23,27 @@ mod tui_runtime;
 /// Re-exports items from `commands`
 pub use commands::registry as build_command_registry;
 
+/// Resolves [`wonder_of_u_agent::RuntimeOptions`] from the settings persisted
+/// in `storage_dir` (`request_max_retries`, `stream_max_retries`,
+/// `stream_idle_timeout_ms`), falling back to defaults when settings are
+/// absent or unreadable.
+pub(crate) fn runtime_options(
+    storage_dir: Option<&std::path::Path>,
+) -> wonder_of_u_agent::RuntimeOptions {
+    storage_dir
+        .and_then(|dir| SettingsStore::new(dir).read().ok())
+        .map(|settings| wonder_of_u_agent::RuntimeOptions::from_settings(&settings))
+        .unwrap_or_default()
+}
+
+/// Builds a [`wonder_of_u_agent::ProviderRuntime`] honoring transport
+/// settings persisted in `storage_dir`.
+pub(crate) fn provider_runtime(
+    storage_dir: Option<&std::path::Path>,
+) -> wonder_of_u_agent::ProviderRuntime {
+    wonder_of_u_agent::ProviderRuntime::with_options(runtime_options(storage_dir))
+}
+
 #[derive(Debug, Parser)]
 #[command(
     name = "wonder-of-u",

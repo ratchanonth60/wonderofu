@@ -3,6 +3,12 @@ use super::*;
 use tokio::sync::mpsc as tokio_mpsc;
 
 impl TuiController<'_> {
+    /// Builds a provider runtime honoring persisted transport settings
+    /// (retries, stream idle timeout).
+    pub(in crate::tui_runtime) fn provider_runtime(&self) -> ProviderRuntime {
+        crate::provider_runtime(self.storage_dir.as_deref())
+    }
+
     pub(in crate::tui_runtime) async fn resolve_pending_tool_approval(
         &mut self,
         approved: bool,
@@ -64,7 +70,7 @@ impl TuiController<'_> {
 
         // No active turn — restored from snapshot or legacy path.
         // Run the full approval + continuation synchronously.
-        let runtime = ProviderRuntime::new();
+        let runtime = self.provider_runtime();
         let resolved = self.resolve_prompt_execution(&runtime)?;
         self.state.set_provider_context(
             Some(resolved.provider_id().to_string()),
@@ -253,8 +259,9 @@ impl TuiController<'_> {
                 effort_level: self.state.effort_level.clone(),
                 images: Vec::new(),
             };
+            let runtime = self.provider_runtime();
             let response = tokio::task::spawn_blocking(move || {
-                ProviderRuntime::new().complete_with_tool_use(&resolved_for_call, &request)
+                runtime.complete_with_tool_use(&resolved_for_call, &request)
             })
             .await
             .map_err(|e| WonderError::internal(format!("provider task panicked: {e}")))??;
@@ -494,7 +501,7 @@ impl TuiController<'_> {
         }
 
         let request_prompt = compose_conversation_prompt(&self.state.messages, input);
-        let runtime = ProviderRuntime::new();
+        let runtime = self.provider_runtime();
         let resolved = self.resolve_prompt_execution(&runtime)?;
         self.state.set_provider_context(
             Some(resolved.provider_id().to_string()),
@@ -555,9 +562,9 @@ impl TuiController<'_> {
             let (tx, rx) = std::sync::mpsc::channel::<StreamingCompletionEvent>();
             let resolved_clone = resolved.clone();
             let request_clone = request.clone();
+            let runtime = self.provider_runtime();
             tokio::task::spawn_blocking(move || {
                 let delta_tx = tx.clone();
-                let runtime = ProviderRuntime::new();
                 let result =
                     runtime.complete_streaming(&resolved_clone, &request_clone, move |delta| {
                         let _ = delta_tx.send(StreamingCompletionEvent::Delta(delta.to_string()));
@@ -581,11 +588,10 @@ impl TuiController<'_> {
         let resolved_for_ref = resolved.clone();
         let resolved = resolved.clone();
         let request = request.clone();
-        let response = tokio::task::spawn_blocking(move || {
-            ProviderRuntime::new().complete(&resolved, &request)
-        })
-        .await
-        .map_err(|e| WonderError::internal(format!("provider task panicked: {e}")))??;
+        let runtime = self.provider_runtime();
+        let response = tokio::task::spawn_blocking(move || runtime.complete(&resolved, &request))
+            .await
+            .map_err(|e| WonderError::internal(format!("provider task panicked: {e}")))??;
         set_assistant_message_content(&mut self.state, assistant_index, &response.output_text)?;
 
         self.state
@@ -620,7 +626,7 @@ impl TuiController<'_> {
         let provider_id = resolved.provider_id().to_string();
         let resolved = resolved.clone();
         let (tx, mut rx) = tokio_mpsc::channel::<StreamingCompletionEvent>(256);
-        let runtime = ProviderRuntime::new();
+        let runtime = self.provider_runtime();
         tokio::task::spawn_blocking(move || {
             let delta_tx = tx.clone();
             let result = runtime.complete_streaming(&resolved, &request, move |delta| {
@@ -803,6 +809,7 @@ impl TuiController<'_> {
                     } else {
                         Vec::new()
                     };
+                    let runtime = self.provider_runtime();
                     tokio::task::spawn_blocking(move || {
                         let request = ToolUseRequest {
                             prompt,
@@ -815,7 +822,7 @@ impl TuiController<'_> {
                             images,
                         };
                         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                            ProviderRuntime::new().complete_with_tool_use(&resolved, &request)
+                            runtime.complete_with_tool_use(&resolved, &request)
                         }))
                         .unwrap_or_else(|payload| {
                             let msg = payload
@@ -1114,8 +1121,9 @@ impl TuiController<'_> {
                 effort_level: self.state.effort_level.clone(),
                 images: Vec::new(),
             };
+            let runtime = self.provider_runtime();
             let response = tokio::task::spawn_blocking(move || {
-                ProviderRuntime::new().complete_with_tool_use(&resolved_for_call, &request)
+                runtime.complete_with_tool_use(&resolved_for_call, &request)
             })
             .await
             .map_err(|e| WonderError::internal(format!("provider task panicked: {e}")))??;

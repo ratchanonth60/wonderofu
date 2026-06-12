@@ -16,8 +16,8 @@ use std::{
 use futures::executor::block_on;
 use serde_json::Value;
 use wonder_of_u_agent::{
-    ProviderRuntime, ProviderToolResultMessage, ProviderToolSpec, ResolvedProviderExecution,
-    ToolConversationRound, ToolUseRequest, ToolUseResponse,
+    ProviderToolResultMessage, ProviderToolSpec, ResolvedProviderExecution, ToolConversationRound,
+    ToolUseRequest, ToolUseResponse,
 };
 use wonder_of_u_core::{
     FeatureSet, MessageEnvelope, MessagePayload, PermissionMode, Result, SessionId, ToolContext,
@@ -145,7 +145,7 @@ fn run_extraction(
             images: Vec::new(),
         };
 
-        match ProviderRuntime::new().complete_with_tool_use(resolved, &request)? {
+        match crate::provider_runtime(storage_dir).complete_with_tool_use(resolved, &request)? {
             ToolUseResponse::Final(_) => break,
             ToolUseResponse::ToolCalls(batch) => {
                 let mut results = Vec::new();

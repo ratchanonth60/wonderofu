@@ -45,8 +45,8 @@ pub use provider::{
 /// Re-exports items from `runtime`
 pub use runtime::{
     CompletionRequest, CompletionResponse, ImageAttachment, ProviderRuntime, ProviderToolCall,
-    ProviderToolResultMessage, ProviderToolSpec, ToolCallBatchResponse, ToolConversationRound,
-    ToolUseRequest, ToolUseResponse,
+    ProviderToolResultMessage, ProviderToolSpec, RuntimeOptions, ToolCallBatchResponse,
+    ToolConversationRound, ToolUseRequest, ToolUseResponse,
 };
 /// Re-exports items from `wonder_of_u_tools`
 pub use wonder_of_u_tools::{builtin_registry as builtin_tool_registry, builtin_tools};
