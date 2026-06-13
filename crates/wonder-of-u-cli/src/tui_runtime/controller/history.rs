@@ -17,6 +17,90 @@ impl TuiController<'_> {
             self.active_suggestions = None;
         }
     }
+
+    /// Scan the prompt buffer for an active `@` mention token at the cursor and
+    /// update the file-mention suggestion overlay.
+    pub(in crate::tui_runtime) fn update_file_mentions(&mut self) {
+        let text = self.prompt.text();
+        let cursor = self.prompt.cursor();
+        let cursor_byte = text.chars().take(cursor).map(char::len_utf8).sum::<usize>();
+
+        let at_pos = text[..cursor_byte].rfind('@');
+        let has_whitespace_after_at = at_pos.is_some_and(|pos| {
+            text[pos + '@'.len_utf8()..cursor_byte].contains(char::is_whitespace)
+        });
+
+        if let Some(at_pos) = at_pos
+            && !has_whitespace_after_at
+        {
+            let query = &text[at_pos + '@'.len_utf8()..cursor_byte];
+            if self.file_mention_cache.is_none() {
+                let files = wonder_of_u_tools::list_project_files(&self.state.session.cwd, 2000);
+                self.file_mention_cache = Some(
+                    files
+                        .into_iter()
+                        .map(|path| {
+                            let display = path.display().to_string();
+                            PromptSuggestion::new(display.clone(), display.clone(), display)
+                        })
+                        .collect(),
+                );
+            }
+            let state = self.file_mentions.get_or_insert_with(|| {
+                PromptSuggestionState::new(self.file_mention_cache.clone().unwrap_or_default())
+            });
+            state.set_filter(query);
+            if state.filtered().is_empty() {
+                self.file_mentions = None;
+            }
+        } else {
+            self.file_mentions = None;
+        }
+    }
+
+    /// Move the selection cursor in the file mention list by `delta` (+1 down, -1 up).
+    pub(in crate::tui_runtime) fn navigate_file_mentions(&mut self, delta: i32) {
+        let Some(state) = self.file_mentions.as_mut() else {
+            return;
+        };
+        let count = state.filtered().len();
+        if count == 0 {
+            return;
+        }
+        let current = state.selected_index as i32;
+        let next = (current + delta).rem_euclid(count as i32) as usize;
+        state.selected_index = next;
+        self.needs_render = true;
+    }
+
+    /// Accept the currently selected file mention: delete the `@query` token
+    /// at the cursor and insert `@<replacement>` in its place.
+    pub(in crate::tui_runtime) fn accept_file_mention(&mut self) {
+        let replacement = self
+            .file_mentions
+            .as_ref()
+            .and_then(|s| s.selected())
+            .map(|s| s.replacement.clone());
+        let Some(replacement) = replacement else {
+            return;
+        };
+
+        // Find the @ token range before the cursor
+        let text = self.prompt.text();
+        let cursor = self.prompt.cursor();
+        let cursor_byte = text.chars().take(cursor).map(char::len_utf8).sum::<usize>();
+        if let Some(at_pos) = text[..cursor_byte].rfind('@') {
+            // Delete from @ to cursor, then insert replacement with '@' prefix
+            let at_char_index = text[..at_pos].chars().count();
+            self.prompt.delete_range(at_char_index, cursor);
+            self.prompt
+                .insert_text_at(at_char_index, &format!("@{replacement}"));
+            self.prompt
+                .set_cursor(at_char_index + 1 + replacement.len());
+        }
+        self.file_mentions = None;
+        self.needs_render = true;
+    }
     /// Move the selection cursor in the active suggestion list by `delta` (+1 down, -1 up).
     pub(in crate::tui_runtime) fn navigate_slash_suggestions(&mut self, delta: i32) {
         let Some(state) = self.active_suggestions.as_mut() else {

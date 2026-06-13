@@ -500,7 +500,8 @@ impl TuiController<'_> {
             ));
         }
 
-        let request_prompt = compose_conversation_prompt(&self.state.messages, input);
+        let augmented = expand_mentions(input, &self.state.session.cwd);
+        let request_prompt = compose_conversation_prompt(&self.state.messages, &augmented);
         let runtime = self.provider_runtime();
         let resolved = self.resolve_prompt_execution(&runtime)?;
         self.state.set_provider_context(
@@ -1285,6 +1286,13 @@ impl TuiController<'_> {
         input: &str,
     ) -> Result<()> {
         let trimmed = input.trim();
+
+        // /fleet with no args opens the fleet panel in TUI mode.
+        if trimmed == "/fleet" {
+            self.open_fleet_panel();
+            self.status_note = Some("fleet panel opened".into());
+            return Ok(());
+        }
 
         // /diff opens the interactive diff dialog.
         if trimmed == "/diff" || trimmed.starts_with("/diff ") {
@@ -2215,4 +2223,38 @@ fn is_all_machine_hints(text: &str) -> bool {
                     .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '.')
         })
     })
+}
+
+fn expand_mentions(input: &str, cwd: &Path) -> String {
+    let mut result = input.to_string();
+    let mut assembler = wonder_of_u_core::context_fragments::ContextAssembler::new(100_000);
+
+    let mut seen = std::collections::HashSet::new();
+    for word in input.split_whitespace() {
+        if let Some(stripped) = word.strip_prefix('@') {
+            let path = stripped.trim_end_matches([',', '.', ':', ';']);
+            if path.is_empty() {
+                continue;
+            }
+            let resolved = cwd.join(path);
+            if resolved.is_file() {
+                let key = path.to_string();
+                if seen.contains(&key) {
+                    continue;
+                }
+                seen.insert(key);
+                if let Ok(content) = std::fs::read_to_string(&resolved) {
+                    assembler.add_file_fragment(path, content, 80);
+                }
+            }
+        }
+    }
+
+    if assembler.total_tokens() > 0 {
+        let context = assembler.assemble();
+        result.push_str("\n\n");
+        result.push_str(&context);
+    }
+
+    result
 }

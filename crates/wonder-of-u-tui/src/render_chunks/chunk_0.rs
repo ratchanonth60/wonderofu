@@ -136,6 +136,10 @@ pub fn render_shell(frame: &mut FrameBuffer, view: &ShellView, theme: &Theme) {
             theme,
         );
     }
+
+    if let Some(overlay) = &view.fleet_panel {
+        draw_fleet_panel(frame, layout.messages, overlay, theme);
+    }
 }
 /// Renders snapshot
 #[must_use]

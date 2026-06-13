@@ -87,7 +87,7 @@ pub use plan_tool::{
     PlanReadTool, PlanWriteInput, PlanWriteTool,
 };
 /// Re-exports items from `search`
-pub use search::{GlobEntryType, GlobInput, GlobTool, GrepInput, GrepTool};
+pub use search::{GlobEntryType, GlobInput, GlobTool, GrepInput, GrepTool, list_project_files};
 /// Re-exports items from `shell`
 pub use shell::{ShellInput, ShellTool};
 /// Re-exports items from `shell_stall_watchdog`

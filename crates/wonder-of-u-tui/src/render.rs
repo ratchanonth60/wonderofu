@@ -44,6 +44,18 @@ pub struct GlobalSearchOverlayView {
     /// Highlighted result index.
     pub selected: usize,
 }
+
+/// Pre-rendered lines for the fleet panel overlay.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct FleetPanelOverlay {
+    /// Title of the panel (e.g. "Fleet Runs").
+    pub title: String,
+    /// Pre-rendered lines of fleet run data.
+    pub lines: Vec<String>,
+    /// Currently selected line index (0-based within lines).
+    pub selected_index: usize,
+}
+/// Scroll metadata passed from the controller to the renderer each frame.
 /// Scroll metadata passed from the controller to the renderer each frame.
 ///
 /// The renderer uses this to decide which slice of the transcript to display
@@ -231,6 +243,8 @@ pub struct ShellView {
     pub slash_suggestions: Option<SlashSuggestionsOverlay>,
     /// When `Some`, display the workspace search overlay.
     pub global_search: Option<GlobalSearchOverlayView>,
+    /// When `Some`, display the fleet runs panel overlay.
+    pub fleet_panel: Option<FleetPanelOverlay>,
     /// Scroll position snapshot for windowed transcript rendering.
     pub scroll: TranscriptScrollView,
     /// Right-side companion panel shown beside all shell content on wide terminals.
@@ -362,6 +376,7 @@ impl ShellView {
             notifications: Vec::new(),
             slash_suggestions: None,
             global_search: None,
+            fleet_panel: None,
             // Default to follow-tail; the controller will override this each frame.
             scroll: TranscriptScrollView::default(),
             sidebar: Some(sidebar),

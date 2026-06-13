@@ -18,6 +18,7 @@ pub(super) enum ActiveOverlay {
     Picker,
     ConfirmDialog,
     NoticeDialog,
+    FleetPanel,
     None,
 }
 enum StreamingCompletionEvent {
@@ -70,6 +71,10 @@ pub(super) struct TuiController<'a> {
     pub(super) slash_suggestions: Vec<PromptSuggestion>,
     /// Live filtered state when the user is typing a `/` command.
     pub(super) active_suggestions: Option<PromptSuggestionState>,
+    /// Cached file-mention suggestions (project files). Lazily built.
+    pub(super) file_mention_cache: Option<Vec<PromptSuggestion>>,
+    /// Live filtered state when the user is typing an `@` file mention.
+    pub(super) file_mentions: Option<PromptSuggestionState>,
     /// Ephemeral transcript scroll position; never persisted to `AppState`.
     pub(super) scroll_state: TranscriptScrollState,
     /// Last known terminal dimensions `(width, height)` in columns × rows.
@@ -180,6 +185,10 @@ pub(super) struct TuiController<'a> {
     pub(super) pending_memory_file_selector: Option<MemoryFileSelectorState>,
     /// Ephemeral hooks config browser state.  Never persisted.
     pub(super) pending_hooks_menu: Option<HooksMenuState>,
+    /// Ephemeral fleet panel state.  Never persisted.
+    pub(super) fleet_panel: Option<FleetPanelState>,
+    /// Idempotence keys for fleet completion notifications fired this session.
+    pub(super) fleet_completion_keys: std::collections::BTreeSet<String>,
 }
 #[derive(Clone, Debug, Default)]
 pub(super) struct DiffFileEntry {
@@ -293,6 +302,14 @@ pub(super) struct HooksMenuState {
     pub screen: HooksMenuScreen,
     pub disabled: bool,
     pub config_path: String,
+}
+
+#[derive(Clone, Debug)]
+pub(super) struct FleetPanelState {
+    pub selected_index: usize,
+    pub fleet_views: Vec<wonder_of_u_tui::fleet_view::FleetRunView>,
+    pub selected_run_index: Option<usize>,
+    pub scroll_offset: usize,
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -486,6 +503,7 @@ pub(super) mod autocompact;
 pub(super) mod dialogs;
 pub(super) mod events;
 pub(super) mod export_dialog;
+pub(super) mod fleet_panel;
 pub(super) mod history;
 pub(super) mod hooks_menu;
 pub(super) mod log_selector;
@@ -1028,6 +1046,8 @@ impl<'a> TuiController<'a> {
             notifications: NotificationQueue::new(),
             slash_suggestions: build_slash_suggestions(registry),
             active_suggestions: None,
+            file_mention_cache: None,
+            file_mentions: None,
             scroll_state: TranscriptScrollState::new(),
             last_terminal_size: (0, 0),
             setup_cancelled_this_session: false,
@@ -1066,6 +1086,8 @@ impl<'a> TuiController<'a> {
             pending_output_style_picker: None,
             pending_memory_file_selector: None,
             pending_hooks_menu: None,
+            fleet_panel: None,
+            fleet_completion_keys: std::collections::BTreeSet::new(),
         };
         controller.hydrate_initial_settings()?;
         controller.refresh_runtime_state()?;
@@ -1413,6 +1435,7 @@ impl<'a> TuiController<'a> {
         self.pending_output_style_picker = None;
         self.pending_memory_file_selector = None;
         self.pending_hooks_menu = None;
+        self.fleet_panel = None;
     }
     pub(super) fn has_modal_overlay(&self) -> bool {
         self.dialog.is_some()
@@ -1420,6 +1443,7 @@ impl<'a> TuiController<'a> {
             || self.pending_copilot_oauth.is_some()
             || self.diff_dialog.is_some()
             || self.pending_export_dialog.is_some()
+            || self.fleet_panel.is_some()
     }
     pub(super) fn is_interaction_free_text(&self) -> bool {
         self.interaction_question.is_some()
@@ -1474,6 +1498,9 @@ impl<'a> TuiController<'a> {
         }
         if self.global_search_open {
             return ActiveOverlay::GlobalSearch;
+        }
+        if self.fleet_panel.is_some() {
+            return ActiveOverlay::FleetPanel;
         }
         if self.has_picker_overlay() {
             return ActiveOverlay::Picker;

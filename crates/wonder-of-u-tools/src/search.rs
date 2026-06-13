@@ -352,6 +352,36 @@ fn resolve_search_root(
     Ok(root)
 }
 
+#[allow(dead_code)]
+pub const DEFAULT_FILE_LIST_LIMIT: usize = 2000;
+
+/// Enumerate files under `root` respecting .gitignore, capped at `limit`.
+///
+/// Returns file paths relative to `root`, sorted, and truncated to `limit`.
+/// Uses `ignore::WalkBuilder` with standard filters so `target/`, `.git/`,
+/// and gitignore patterns are excluded automatically.
+pub fn list_project_files(root: &Path, limit: usize) -> Vec<PathBuf> {
+    let mut files: Vec<PathBuf> = ignore::WalkBuilder::new(root)
+        .git_ignore(true)
+        .git_global(true)
+        .git_exclude(true)
+        .require_git(false)
+        .build()
+        .filter_map(|entry| match entry {
+            Ok(entry) if entry.file_type().is_some_and(|ft| ft.is_file()) => entry
+                .path()
+                .strip_prefix(root)
+                .ok()
+                .map(|path| path.to_path_buf()),
+            _ => None,
+        })
+        .filter(|path| path != Path::new(".git") && !path.starts_with(".git/"))
+        .collect();
+    files.sort();
+    files.truncate(limit);
+    files
+}
+
 fn collect_entries(root: &Path) -> Result<Vec<PathBuf>> {
     let mut entries = Vec::new();
     for entry in WalkDir::new(root).min_depth(1) {
@@ -475,6 +505,40 @@ mod tests {
         assert_eq!(
             result.content,
             "src/lib.rs:1:alpha\nsrc/lib.rs:3:alpha beta"
+        );
+    }
+
+    #[test]
+    fn list_project_files_respects_gitignore() {
+        let dir = unique_test_dir("tools-file-list");
+        fs::create_dir_all(dir.join("src")).expect("mkdir src");
+        fs::create_dir_all(dir.join("target/debug")).expect("mkdir target");
+        fs::write(dir.join("src/lib.rs"), "pub fn demo() {}\n").expect("write rs");
+        fs::write(dir.join("target/debug/out.o"), "\n").expect("write out");
+        // Create .gitignore that ignores target/
+        fs::write(dir.join(".gitignore"), "target/\n").expect("write gitignore");
+        // Make it a git repo so ignore respects gitignore
+        std::process::Command::new("git")
+            .args(["init"])
+            .current_dir(&dir)
+            .output()
+            .expect("git init");
+
+        let files = list_project_files(&dir, 200);
+        let paths: Vec<String> = files.iter().map(|p| p.display().to_string()).collect();
+        // src/lib.rs should be included, target/ should be excluded
+        assert!(
+            paths.iter().any(|p| p == "src/lib.rs"),
+            "expected src/lib.rs, got {paths:?}"
+        );
+        assert!(
+            !paths.iter().any(|p| p.starts_with("target/")),
+            "target/ should be excluded, got {paths:?}"
+        );
+        // .git should also be excluded
+        assert!(
+            !paths.iter().any(|p| p.starts_with(".git")),
+            ".git should be excluded, got {paths:?}"
         );
     }
 }

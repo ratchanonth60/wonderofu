@@ -661,6 +661,57 @@ pub fn draw_global_search_overlay(
     draw_lines(frame, list_area, &lines);
 }
 
+/// Draws the fleet panel overlay as a bordered modal panel.
+pub fn draw_fleet_panel(
+    frame: &mut FrameBuffer,
+    viewport: Rect,
+    overlay: &FleetPanelOverlay,
+    theme: &Theme,
+) {
+    const MIN_WIDTH: u16 = 40;
+    const MIN_HEIGHT: u16 = 8;
+
+    if viewport.width < MIN_WIDTH || viewport.height < MIN_HEIGHT {
+        return;
+    }
+
+    let width = (viewport.width.saturating_mul(4) / 5).clamp(MIN_WIDTH, viewport.width);
+    let height = (viewport.height.saturating_mul(3) / 5).clamp(MIN_HEIGHT, viewport.height);
+    let rect = viewport.center_within(width, height);
+
+    draw_modal_shadow(frame, rect, viewport, theme);
+
+    let panel_theme = Theme {
+        border: theme.prompt,
+        title: theme.prompt.bold(),
+        ..*theme
+    };
+
+    let lines = overlay
+        .lines
+        .iter()
+        .enumerate()
+        .map(|(i, line)| {
+            let is_highlighted = line.starts_with("> ")
+                || (i > 0 && overlay.lines[i.saturating_sub(1)].starts_with("> "));
+            let style = if is_highlighted {
+                theme.prompt.reversed()
+            } else {
+                theme.messages
+            };
+            StyledLine::plain(line.as_str(), style)
+        })
+        .collect::<Vec<_>>();
+
+    draw_panel(
+        frame,
+        rect,
+        Some(&overlay.title),
+        &lines,
+        &panel_theme,
+    );
+}
+
 fn draw_modal_shadow(frame: &mut FrameBuffer, rect: Rect, viewport: Rect, theme: &Theme) {
     if rect.width < 2 || rect.height < 2 {
         return;

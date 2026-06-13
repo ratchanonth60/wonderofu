@@ -217,6 +217,9 @@ pub struct FleetRunState {
     /// for it.  Used by `fleet reconcile` to track dependency readiness.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub dispatched_requests: BTreeMap<String, TaskId>,
+    /// Optional thread id grouping this fleet run with its member sessions.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thread_id: Option<String>,
 }
 
 impl FleetRunState {
@@ -239,6 +242,7 @@ impl FleetRunState {
             finished_at: None,
             max_concurrency: None,
             dispatched_requests: BTreeMap::new(),
+            thread_id: None,
         }
     }
 

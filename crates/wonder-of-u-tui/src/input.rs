@@ -434,7 +434,8 @@ impl TextBuffer {
         (range.0 < range.1).then_some(range)
     }
 
-    fn delete_range(&mut self, start: usize, end: usize) {
+    /// Delete a range of characters between `start` (inclusive) and `end` (exclusive).
+    pub fn delete_range(&mut self, start: usize, end: usize) {
         self.chars.drain(start..end);
     }
 

@@ -124,6 +124,114 @@ impl TuiController<'_> {
             self.state.background_tasks = effective_tasks;
             changed = true;
         }
+        // Live fleet sync: detect status transitions and fire completion toasts.
+        // Also drain pending requests for non-terminal fleet runs.
+        if let Some(storage_dir) = self.storage_dir.clone() {
+            let fleet_store = wonder_of_u_storage::FleetStore::new(&storage_dir);
+            if let Ok(runs) = fleet_store.list_runs() {
+                for run in &runs {
+                    let inspector = wonder_of_u_storage::FleetInspector::new(storage_dir.clone());
+                    if let Ok(obs) = inspector.observe(run.id) {
+                        let new_status = match obs.fleet.status {
+                            wonder_of_u_core::FleetRunStatus::Completed => Some("completed"),
+                            wonder_of_u_core::FleetRunStatus::Failed => Some("failed"),
+                            _ => None,
+                        };
+                        if let Some(label) = new_status {
+                            let fleet_id = obs.fleet.id.to_string();
+                            let key = format!("fleet:{fleet_id}:{label}");
+                            if !self.fleet_completion_keys.contains(&key) {
+                                let desc = obs.fleet.description.clone();
+                                self.push_notification(
+                                    key.clone(),
+                                    if label == "failed" {
+                                        wonder_of_u_tui::NotificationSeverity::Error
+                                    } else {
+                                        wonder_of_u_tui::NotificationSeverity::Info
+                                    },
+                                    format!("Fleet {label}"),
+                                    std::iter::once(desc.clone()),
+                                    Some(300u32),
+                                    false,
+                                );
+                                // Persist fleet completion as a system message with aggregated results.
+                                let counts =
+                                    obs.members.iter().fold((0usize, 0usize), |(ok, fail), m| {
+                                        match m.class {
+                                        wonder_of_u_storage::MemberObservationClass::Completed => {
+                                            (ok + 1, fail)
+                                        }
+                                        wonder_of_u_storage::MemberObservationClass::Failed => {
+                                            (ok, fail + 1)
+                                        }
+                                        _ => (ok, fail),
+                                    }
+                                    });
+                                let mut content = format!(
+                                    "Fleet {fleet_id} {label}: \"{desc}\" — {ok_total} members ({ok} completed, {fail} failed)",
+                                    ok_total = obs.members.len(),
+                                    ok = counts.0,
+                                    fail = counts.1,
+                                );
+                                // Include member result excerpts for the model to see.
+                                for m in &obs.members {
+                                    if let Some(ref result) = m.result {
+                                        if !result.output_excerpt.is_empty() {
+                                            content.push_str(&format!(
+                                                "\n  [{}] {}: {}",
+                                                m.class.label(),
+                                                m.task
+                                                    .as_ref()
+                                                    .map(|t| t.description.as_str())
+                                                    .unwrap_or(""),
+                                                result.output_excerpt
+                                            ));
+                                        }
+                                    }
+                                }
+                                if let Ok(msg) = append_contextual_message(
+                                    &mut self.state,
+                                    wonder_of_u_core::MessagePayload::System { content },
+                                ) {
+                                    self.fleet_completion_keys.insert(key);
+                                    let _ = self.persist_messages(&[msg]);
+                                    changed = true;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Refresh the fleet panel if it's currently visible.
+            if self.fleet_panel.is_some() {
+                self.refresh_fleet_panel();
+                self.needs_render = true;
+                changed = true;
+            }
+
+            // Drain pending members from non-terminal fleet runs.
+            if let Ok(runs) = fleet_store.list_runs() {
+                if let Some(tm) = &self.task_manager {
+                    let context = self.command_context();
+                    for run in &runs {
+                        if !run.status.is_terminal() {
+                            if let Ok(report) =
+                                ProviderResolver::builtin().load_report(self.storage_dir.as_deref())
+                            {
+                                let _ = crate::commands::dispatch_ready_members(
+                                    tm,
+                                    &fleet_store,
+                                    &context,
+                                    run.id,
+                                    &report,
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
 
         Ok(changed)
     }
