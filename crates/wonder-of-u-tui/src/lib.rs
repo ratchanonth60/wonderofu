@@ -167,9 +167,9 @@ pub use prompt::{
 pub use render::{
     ContextSuggestion, ContextSuggestionsView, FleetPanelOverlay, GlobalSearchOverlayView,
     MIN_SIDEBAR_WIDTH, PromptWarningSeverity, PromptWarningView, SIDEBAR_WIDTH, ShellView,
-    SidebarView, SlashSuggestionEntry, SlashSuggestionsOverlay, SuggestionSeverity,
-    TRANSCRIPT_HPAD, TranscriptScrollView, render_shell, render_snapshot, shell_main_area_width,
-    transcript_wrap_width,
+    SidebarMode, SidebarSlot, SidebarView, SlashSuggestionEntry, SlashSuggestionsOverlay,
+    SuggestionSeverity, TRANSCRIPT_HPAD, TranscriptScrollView, render_shell, render_snapshot,
+    shell_main_area_width, transcript_wrap_width,
 };
 /// Re-exports items from `security`
 pub use security::{

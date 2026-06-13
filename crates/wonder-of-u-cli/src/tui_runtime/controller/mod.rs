@@ -88,6 +88,13 @@ pub(super) struct TuiController<'a> {
     /// Whether the right-side sidebar companion panel is currently visible.
     /// Ephemeral per TUI session; never persisted.
     pub(super) sidebar_visible: bool,
+    /// Display mode for the sidebar: push (carves column) or overlay (floats).
+    pub(super) sidebar_mode: SidebarMode,
+    /// When `true`, scroll keys target the sidebar panel instead of the transcript.
+    #[allow(dead_code)] // used in Phase 2 (scrollable sidebar)
+    pub(super) sidebar_focused: bool,
+    /// Ephemeral scroll position for the sidebar panel.
+    pub(super) sidebar_scroll_offset: usize,
     /// Whether collapsed tool output previews should render fully expanded inline.
     pub(super) expand_tool_output: bool,
     /// Cached live integration summaries shown in the sidebar.
@@ -189,6 +196,8 @@ pub(super) struct TuiController<'a> {
     pub(super) fleet_panel: Option<FleetPanelState>,
     /// Idempotence keys for fleet completion notifications fired this session.
     pub(super) fleet_completion_keys: std::collections::BTreeSet<String>,
+    /// Plugin-injected sidebar sections. Populated by plugin discovery.
+    pub(super) sidebar_slots: Vec<wonder_of_u_tui::SidebarSlot>,
 }
 #[derive(Clone, Debug, Default)]
 pub(super) struct DiffFileEntry {
@@ -1052,6 +1061,9 @@ impl<'a> TuiController<'a> {
             last_terminal_size: (0, 0),
             setup_cancelled_this_session: false,
             sidebar_visible: true,
+            sidebar_mode: SidebarMode::default(),
+            sidebar_focused: false,
+            sidebar_scroll_offset: 0,
             expand_tool_output: false,
             sidebar_cache: SidebarPanelCache::default(),
             pre_plan_permission_mode: None,
@@ -1088,11 +1100,13 @@ impl<'a> TuiController<'a> {
             pending_hooks_menu: None,
             fleet_panel: None,
             fleet_completion_keys: std::collections::BTreeSet::new(),
+            sidebar_slots: Vec::new(),
         };
         controller.hydrate_initial_settings()?;
         controller.refresh_runtime_state()?;
         controller.rebuild_ephemeral_state();
         controller.refresh_sidebar_panel_cache();
+        controller.hydrate_tui_prefs()?;
         controller.persist_state_snapshot()?;
         futures::executor::block_on(controller.maybe_auto_open_setup())?;
         // Ensure auto-memory dir exists so the model can write without checking.
@@ -1882,11 +1896,144 @@ impl<'a> TuiController<'a> {
     pub(super) fn toggle_sidebar(&mut self) {
         self.sidebar_visible = !self.sidebar_visible;
         self.status_note = Some(if self.sidebar_visible {
-            "sidebar on".into()
+            match self.sidebar_mode {
+                SidebarMode::Push => "sidebar on (push)".into(),
+                SidebarMode::Overlay => "sidebar on (overlay)".into(),
+            }
         } else {
             "sidebar off".into()
         });
+        // Reset scroll and focus when hiding.
+        if !self.sidebar_visible {
+            self.sidebar_scroll_offset = 0;
+            self.sidebar_focused = false;
+        }
+        self.persist_tui_prefs();
         self.needs_render = true;
+    }
+    /// Cycles sidebar display mode: Push → Overlay → Push.
+    pub(super) fn cycle_sidebar_mode(&mut self) {
+        self.sidebar_mode = match self.sidebar_mode {
+            SidebarMode::Push => SidebarMode::Overlay,
+            SidebarMode::Overlay => SidebarMode::Push,
+        };
+        self.persist_tui_prefs();
+        self.status_note = Some(match self.sidebar_mode {
+            SidebarMode::Push => "sidebar push".into(),
+            SidebarMode::Overlay => "sidebar overlay".into(),
+        });
+        self.needs_render = true;
+    }
+    /// Returns `true` when the sidebar is visible AND in Push mode (main area is shrunk).
+    #[must_use]
+    pub(super) fn sidebar_pushes_main_area(&self) -> bool {
+        self.sidebar_visible && self.sidebar_mode == SidebarMode::Push
+    }
+    /// Handles arrow/PgUp/PgDn/j/k keys when the sidebar panel is focused.
+    fn handle_sidebar_scroll_key(&mut self, key: KeyEvent) -> Result<()> {
+        let visible = self.sidebar_visible_height();
+        if visible == 0 {
+            return Ok(());
+        }
+        let total = self.sidebar_total_lines();
+        let max_offset = total.saturating_sub(visible);
+        match key.code {
+            KeyCode::Up | KeyCode::Char('k') => {
+                self.sidebar_scroll_offset = self
+                    .sidebar_scroll_offset
+                    .saturating_sub(KEYBOARD_SCROLL_LINES as usize);
+                self.needs_render = true;
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                self.sidebar_scroll_offset =
+                    (self.sidebar_scroll_offset + KEYBOARD_SCROLL_LINES as usize).min(max_offset);
+                self.needs_render = true;
+            }
+            KeyCode::PageUp => {
+                self.sidebar_scroll_offset =
+                    self.sidebar_scroll_offset.saturating_sub(visible.max(1));
+                self.needs_render = true;
+            }
+            KeyCode::PageDown => {
+                self.sidebar_scroll_offset =
+                    (self.sidebar_scroll_offset + visible.max(1)).min(max_offset);
+                self.needs_render = true;
+            }
+            KeyCode::Home => {
+                self.sidebar_scroll_offset = 0;
+                self.needs_render = true;
+            }
+            KeyCode::End => {
+                self.sidebar_scroll_offset = max_offset;
+                self.needs_render = true;
+            }
+            KeyCode::Esc | KeyCode::Char('q') => {
+                // Leave sidebar focus.
+                self.sidebar_focused = false;
+                self.status_note = Some("sidebar unfocused".into());
+                self.needs_render = true;
+                return Ok(());
+            }
+            _ => {
+                // Any other key unfocuses the sidebar and falls through to normal handling.
+                self.sidebar_focused = false;
+                return Ok(());
+            }
+        }
+        Ok(())
+    }
+    /// Returns the visible inner height (in rows) of the sidebar panel.
+    fn sidebar_visible_height(&self) -> usize {
+        let (terminal_w, terminal_h) = self.last_terminal_size;
+        if terminal_w < MIN_SIDEBAR_WIDTH || !self.sidebar_visible {
+            return 0;
+        }
+        // Sidebar box height matches terminal height; inner height = terminal_h - 2 (borders).
+        terminal_h.saturating_sub(2) as usize
+    }
+    /// Approximates total sidebar content lines for scroll clamping.
+    fn sidebar_total_lines(&self) -> usize {
+        let view = self.view();
+        if let Some(sb) = &view.sidebar {
+            let mut count = 0usize;
+            let non_empty = |v: &[String]| !v.is_empty();
+            let sections: &[&[String]] = &[
+                &sb.session_lines,
+                &sb.status_lines,
+                &sb.context_lines,
+                &sb.tool_lines,
+                &sb.mcp_lines,
+                &sb.lsp_lines,
+                &sb.todo_lines,
+                &sb.provider_lines,
+                &sb.workspace_lines,
+                &sb.control_lines,
+                &sb.task_lines,
+            ];
+            for section in sections {
+                if non_empty(section) {
+                    count += 1; // header
+                    count += section.len();
+                    count += 1; // blank separator after section
+                }
+            }
+            // Suggestions section: header + 2 lines per suggestion
+            if !sb.suggestions.is_empty() {
+                count += 1; // header
+                count += sb.suggestions.len() * 2;
+                count += 1; // separator
+            }
+            // Plugin slots
+            for slot in &sb.slots {
+                if !slot.lines.is_empty() {
+                    count += 1; // header
+                    count += slot.lines.len();
+                    count += 1; // separator
+                }
+            }
+            return count.max(1).saturating_sub(1); // trailing separator removed
+        }
+        0
     }
     /// Flips inline tool output expansion and sets a transient status note.
     pub(super) fn toggle_expand_tool_output(&mut self) {
@@ -1944,20 +2091,58 @@ impl<'a> TuiController<'a> {
             Rect::new(
                 0,
                 0,
-                shell_main_area_width(width, self.sidebar_visible),
+                shell_main_area_width(width, self.sidebar_pushes_main_area()),
                 height,
             ),
             prompt_height,
         );
         let total = self.transcript_line_count(transcript_wrap_width(shell_main_area_width(
             width,
-            self.sidebar_visible,
+            self.sidebar_pushes_main_area(),
         )));
         // Subtract the loading row from visible height so the scroll max-offset
         // matches the actual renderable area (spinner sits on top of transcripts).
         let loading_row = u16::from(is_loading_turn_state(self.turn_state));
         let visible = layout.messages.height.saturating_sub(loading_row);
         self.scroll_state.on_resize(usize::from(visible), total);
+        // Clamp sidebar scroll offset after resize.
+        self.clamp_sidebar_scroll();
+    }
+    /// Clamps sidebar_scroll_offset to the current visible height and content.
+    fn clamp_sidebar_scroll(&mut self) {
+        let visible = self.sidebar_visible_height();
+        let total = self.sidebar_total_lines();
+        let max_offset = total.saturating_sub(visible);
+        self.sidebar_scroll_offset = self.sidebar_scroll_offset.min(max_offset);
+    }
+    /// Seeds sidebar_visible and sidebar_mode from persisted TuiPrefs.
+    fn hydrate_tui_prefs(&mut self) -> Result<()> {
+        if let Some(storage_dir) = &self.storage_dir {
+            let store = wonder_of_u_storage::TuiPrefsStore::new(storage_dir);
+            let prefs = store.read_or_default()?;
+            self.sidebar_visible = prefs.sidebar_visible;
+            self.sidebar_mode = match prefs.sidebar_mode.as_str() {
+                "overlay" => SidebarMode::Overlay,
+                _ => SidebarMode::Push,
+            };
+        }
+        Ok(())
+    }
+    /// Persists current sidebar visibility and mode to disk (best-effort).
+    fn persist_tui_prefs(&mut self) {
+        if let Some(storage_dir) = &self.storage_dir {
+            let mode = match self.sidebar_mode {
+                SidebarMode::Push => "push",
+                SidebarMode::Overlay => "overlay",
+            };
+            let prefs = wonder_of_u_storage::TuiPrefs {
+                schema_version: wonder_of_u_storage::TUI_PREFS_SCHEMA_VERSION,
+                sidebar_visible: self.sidebar_visible,
+                sidebar_mode: mode.into(),
+            };
+            let store = wonder_of_u_storage::TuiPrefsStore::new(storage_dir);
+            let _ = store.write(&prefs);
+        }
     }
     /// Recomputes the total rendered transcript line count and notifies the
     /// scroll state so that follow-tail and scrolled-up modes remain correct.
@@ -1967,7 +2152,7 @@ impl<'a> TuiController<'a> {
     pub(super) fn notify_transcript_changed(&mut self) {
         let total = self.transcript_line_count(transcript_wrap_width(shell_main_area_width(
             self.last_terminal_size.0.max(1),
-            self.sidebar_visible,
+            self.sidebar_pushes_main_area(),
         )));
         self.scroll_state.on_messages_changed(total);
     }

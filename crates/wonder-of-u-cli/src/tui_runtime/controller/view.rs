@@ -16,7 +16,7 @@ impl TuiController<'_> {
         } else {
             usize::from(transcript_wrap_width(shell_main_area_width(
                 terminal_width,
-                self.sidebar_visible,
+                self.sidebar_pushes_main_area(),
             )))
         };
         let is_streaming = self.has_active_turn() || is_loading_turn_state(self.turn_state);
@@ -31,6 +31,7 @@ impl TuiController<'_> {
         if !self.sidebar_visible {
             view.sidebar = None;
         }
+        view.sidebar_mode = self.sidebar_mode;
         view.spinner_frame = self.loading_frame;
         view.history_search = self
             .history_search
@@ -46,6 +47,8 @@ impl TuiController<'_> {
         // visible.  The renderer ignores the sidebar entirely when the terminal is
         // too narrow, so we always fill the data here.
         if let Some(sb) = view.sidebar.as_mut() {
+            sb.scroll_offset = self.sidebar_scroll_offset;
+            sb.slots = self.sidebar_slots.clone();
             // Section 1 – Session: title (or id prefix), turn state, status note.
             let mut session_lines = vec![format!(
                 "◈ {}",
@@ -292,9 +295,9 @@ impl TuiController<'_> {
         }
     }
     pub(in crate::tui_runtime) fn prompt_cursor(&self, width: u16, height: u16) -> (u16, u16) {
-        // Use the live sidebar_visible flag so cursor placement matches the
-        // actual rendered layout (no sidebar column deduction when toggled off).
-        let sidebar_active = self.sidebar_visible;
+        // Use sidebar_pushes_main_area so cursor placement matches the
+        // actual rendered layout (overlay mode = full width, push mode = shrunk).
+        let sidebar_active = self.sidebar_pushes_main_area();
         if self.global_search_open {
             return global_search_cursor_position(
                 width,

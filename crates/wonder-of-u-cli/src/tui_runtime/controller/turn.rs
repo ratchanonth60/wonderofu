@@ -1311,24 +1311,37 @@ impl TuiController<'_> {
             .map(str::trim)
             .unwrap_or("");
         if trimmed == "/sidebar" || trimmed.starts_with("/sidebar ") {
-            let enabled = match sub {
-                "on" => Some(true),
-                "off" => Some(false),
-                "toggle" | "" => None,
-                // Unknown subcommand — treat as a plain toggle.
-                _ => None,
-            };
-            match enabled {
-                Some(v) => {
-                    self.sidebar_visible = v;
-                    self.status_note = Some(if v {
-                        "sidebar on".into()
-                    } else {
-                        "sidebar off".into()
-                    });
+            match sub {
+                "on" => {
+                    self.sidebar_visible = true;
+                    self.persist_tui_prefs();
+                    self.status_note = Some("sidebar on".into());
                     self.needs_render = true;
                 }
-                None => {
+                "off" => {
+                    self.sidebar_visible = false;
+                    self.persist_tui_prefs();
+                    self.status_note = Some("sidebar off".into());
+                    self.needs_render = true;
+                }
+                "overlay" => {
+                    self.sidebar_visible = true;
+                    self.sidebar_mode = wonder_of_u_tui::SidebarMode::Overlay;
+                    self.persist_tui_prefs();
+                    self.status_note = Some("sidebar overlay".into());
+                    self.needs_render = true;
+                }
+                "push" => {
+                    self.sidebar_visible = true;
+                    self.sidebar_mode = wonder_of_u_tui::SidebarMode::Push;
+                    self.persist_tui_prefs();
+                    self.status_note = Some("sidebar push".into());
+                    self.needs_render = true;
+                }
+                "toggle" | "" => {
+                    self.toggle_sidebar();
+                }
+                _ => {
                     self.toggle_sidebar();
                 }
             }

@@ -56,6 +56,10 @@ pub use tips::{TIPS_HISTORY_SCHEMA_VERSION, TipsHistory, TipsStore};
 pub mod thread_store;
 pub use thread_store::{THREAD_SCHEMA_VERSION, Thread, ThreadStatus, ThreadStore};
 
+/// Persistent TUI preferences (sidebar mode, visibility, etc.).
+pub mod tui_prefs;
+pub use tui_prefs::{TUI_PREFS_SCHEMA_VERSION, TuiPrefs, TuiPrefsStore};
+
 use std::{
     collections::BTreeMap,
     ffi::OsStr,

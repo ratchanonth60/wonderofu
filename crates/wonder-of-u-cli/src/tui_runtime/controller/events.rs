@@ -28,6 +28,10 @@ impl TuiController<'_> {
         if self.fleet_panel.is_some() {
             return self.handle_fleet_panel_key(key);
         }
+        // Sidebar-focused: scroll keys target the sidebar panel.
+        if self.sidebar_focused {
+            return self.handle_sidebar_scroll_key(key);
+        }
         // When ask_user is in free-text mode (no options, or "Other" selected),
         // bypass the dialog handler so the user can type in the prompt box.
         // When ask_user has options and the user hasn't picked "Other" yet,
@@ -166,6 +170,24 @@ impl TuiController<'_> {
         // Ctrl+B toggles the sidebar panel.
         if key.is_ctrl_char('b') {
             self.toggle_sidebar();
+            return Ok(());
+        }
+        // Ctrl+Shift+B cycles sidebar push/overlay mode.
+        if key.is_ctrl_char('B') {
+            self.cycle_sidebar_mode();
+            return Ok(());
+        }
+        // Ctrl+G focuses/unfocuses the sidebar for scrolling (when visible).
+        if key.is_ctrl_char('g') {
+            if self.sidebar_visible {
+                self.sidebar_focused = !self.sidebar_focused;
+                self.status_note = Some(if self.sidebar_focused {
+                    "sidebar focused".into()
+                } else {
+                    "sidebar unfocused".into()
+                });
+                self.needs_render = true;
+            }
             return Ok(());
         }
 
