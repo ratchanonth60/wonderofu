@@ -278,13 +278,25 @@ impl TuiController<'_> {
     pub(in crate::tui_runtime) fn refresh_sidebar_panel_cache(&mut self) -> bool {
         let tool_context = self.tool_context();
         let next = SidebarPanelCache {
-            tool_lines: tool_sidebar_lines(&tool_context, self.storage_dir.as_deref()),
-            mcp_lines: mcp_sidebar_lines(self.storage_dir.as_deref(), &self.state.session.cwd),
-            lsp_lines: lsp_sidebar_lines(&self.state.session.cwd),
-            todo_lines: todo_merged_sidebar_lines(
-                &self.state.session.cwd,
-                self.storage_dir.as_deref(),
-                self.state.session.id,
+            tool_lines: sidebar_fallback(
+                tool_sidebar_lines(&tool_context, self.storage_dir.as_deref()),
+                "no tools enabled",
+            ),
+            mcp_lines: sidebar_fallback(
+                mcp_sidebar_lines(self.storage_dir.as_deref(), &self.state.session.cwd),
+                "no MCP servers",
+            ),
+            lsp_lines: sidebar_fallback(
+                lsp_sidebar_lines(&self.state.session.cwd),
+                "no LSP diagnostics",
+            ),
+            todo_lines: sidebar_fallback(
+                todo_merged_sidebar_lines(
+                    &self.state.session.cwd,
+                    self.storage_dir.as_deref(),
+                    self.state.session.id,
+                ),
+                "no todos",
             ),
         };
         if self.sidebar_cache == next {
@@ -333,6 +345,14 @@ impl TuiController<'_> {
             sidebar_active,
             self.context_warning_active(),
         )
+    }
+}
+
+fn sidebar_fallback(lines: Vec<String>, placeholder: &str) -> Vec<String> {
+    if lines.is_empty() {
+        vec![format!("  {placeholder}")]
+    } else {
+        lines
     }
 }
 
