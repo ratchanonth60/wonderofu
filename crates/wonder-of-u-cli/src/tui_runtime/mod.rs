@@ -32,12 +32,13 @@ use wonder_of_u_agent::{
 };
 use wonder_of_u_core::{
     AdditionalWorkingDirectory, AppState, AuthMaterialKind, AuthState, CommandContext,
-    CommandOutput, CommandQuery, CommandRegistry, FeatureSet, InputMode, MessageEnvelope,
-    MessagePayload, PendingLocalToolCall, PendingProviderToolCall, PendingProviderToolResult,
-    PendingToolApprovalState, PendingToolConversationRound, PermissionDecision, PermissionMode,
-    PermissionRequest, PermissionRuleSource, ProviderReadiness, QueuePlacement, Result, SessionId,
-    TaskState, TaskStatus, TodoTaskStatus, TokenUsage, ToolContext, ToolKind, ToolQuery,
-    ToolResult, ToolSource, ToolUseId, WonderError, parse_slash_command, payload_from_task_state,
+    CommandOutput, CommandQuery, CommandRegistry, FeatureFlag, FeatureSet, InputMode,
+    MessageEnvelope, MessagePayload, PendingLocalToolCall, PendingProviderToolCall,
+    PendingProviderToolResult, PendingToolApprovalState, PendingToolConversationRound,
+    PermissionDecision, PermissionMode, PermissionRequest, PermissionRuleSource, ProviderReadiness,
+    QueuePlacement, Result, SessionId, TaskState, TaskStatus, TodoTaskStatus, TokenUsage,
+    ToolContext, ToolKind, ToolQuery, ToolResult, ToolSource, ToolUseId, WonderError,
+    parse_slash_command, payload_from_task_state,
     token_budget::{
         AUTOCOMPACT_BUFFER_TOKENS, COMPACT_MAX_OUTPUT_TOKENS, MANUAL_COMPACT_BUFFER_TOKENS,
         WARNING_THRESHOLD_BUFFER_TOKENS, effective_context_window,
@@ -215,6 +216,8 @@ pub(crate) fn run_tui<W: Write>(
                 controller.drain_queued_commands().await?;
             }
         }
+        controller.shutdown_lsp();
+        controller.persist_state_snapshot()?;
         Ok::<(), WonderError>(())
     });
 

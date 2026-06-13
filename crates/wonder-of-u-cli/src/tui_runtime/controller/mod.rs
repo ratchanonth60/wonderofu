@@ -113,6 +113,13 @@ pub(super) struct TuiController<'a> {
     /// Kept on the controller so that the internal `Arc<Mutex<...>>` timing
     /// state survives across TUI ticks.  `None` when no `storage_dir` is set.
     pub(super) task_manager: Option<TaskManager>,
+    /// LSP language-server manager for live diagnostics.
+    /// Constructed when `FeatureFlag::Lsp` is enabled.  Remains `None` when
+    /// the feature is disabled or no project marker is found.
+    pub(super) lsp: Option<wonder_of_u_lsp::LspManager>,
+    /// Set to `true` after the first lazy-start attempt to avoid spinning
+    /// on project-root checks every tick.
+    lsp_start_attempted: bool,
     /// Live stdout lines received from a running shell tool (bash/shell).
     /// Cleared after each tool call completes. Shown in the loading area.
     pub(super) tool_progress_lines: VecDeque<String>,
@@ -817,12 +824,15 @@ pub(super) fn mcp_sidebar_lines(
     }
     lines
 }
-/// Check PATH for common LSP binaries and return one line per entry.
+/// Build the LSP sidebar section.
 ///
-/// Each line is `✓ Label` when the binary is found or `  Label (not found)`
-/// otherwise.  Never probes network or spawns processes.
-pub(super) fn lsp_sidebar_lines(cwd: &std::path::Path) -> Vec<String> {
-    // Annotate with project-type hints so users know which servers matter.
+/// When `lsp` is `Some` and a server is running, shows live server status
+/// plus aggregated diagnostic counts (errors/warnings).  Falls back to the
+/// old PATH-check stub when no manager is active.
+pub(super) fn lsp_sidebar_lines(
+    cwd: &std::path::Path,
+    lsp: Option<&wonder_of_u_lsp::LspManager>,
+) -> Vec<String> {
     let project_hints: &[(&str, &str)] = &[
         ("Cargo.toml", "rust-analyzer"),
         ("package.json", "typescript-language-server"),
@@ -830,17 +840,59 @@ pub(super) fn lsp_sidebar_lines(cwd: &std::path::Path) -> Vec<String> {
         ("go.mod", "gopls"),
     ];
 
+    if let Some(mgr) = lsp {
+        if mgr.server_count() > 0 {
+            let mut lines = Vec::new();
+            let snap = mgr.snapshot();
+            let total_errors: usize = snap
+                .values()
+                .map(|diags| {
+                    diags
+                        .iter()
+                        .filter(|d| d.severity == Some(lsp_types::DiagnosticSeverity::ERROR))
+                        .count()
+                })
+                .sum();
+            let total_warnings: usize = snap
+                .values()
+                .map(|diags| {
+                    diags
+                        .iter()
+                        .filter(|d| d.severity == Some(lsp_types::DiagnosticSeverity::WARNING))
+                        .count()
+                })
+                .sum();
+
+            for (lang, alive) in mgr.server_statuses() {
+                let icon = if alive { "✓" } else { "⚠" };
+                let status = if alive {
+                    format!("{icon} {lang} ({}✗ {}⚠)", total_errors, total_warnings)
+                } else {
+                    format!("{icon} {lang} (crashed)")
+                };
+                lines.push(status);
+            }
+            return lines;
+        }
+        // Manager exists but no server running yet — starting status.
+        for (marker, lang) in project_hints {
+            if cwd.join(marker).exists() {
+                return vec![format!("◐ {lang} starting…")];
+            }
+        }
+    }
+
+    // Fallback: PATH-only availability check.
+    // Annotate with project-type hints so users know which servers matter.
     let mut lines = Vec::new();
     for (binary, label) in LSP_SERVERS {
         let found = binary_on_path(binary);
-        // Show a hint when the binary is relevant to this project.
         let is_relevant = project_hints
             .iter()
             .any(|(marker, bin)| *bin == *binary && cwd.join(marker).exists());
         if found {
             lines.push(format!("✓ {label}"));
         } else if is_relevant {
-            // Missing but relevant – highlight so users notice.
             lines.push(format!("⚠ {label} (not found)"));
         } else {
             lines.push(format!("  {label} (not found)"));
@@ -1101,6 +1153,8 @@ impl<'a> TuiController<'a> {
             fleet_panel: None,
             fleet_completion_keys: std::collections::BTreeSet::new(),
             sidebar_slots: Vec::new(),
+            lsp: None,
+            lsp_start_attempted: false,
         };
         controller.hydrate_initial_settings()?;
         controller.refresh_runtime_state()?;
@@ -1272,6 +1326,8 @@ impl<'a> TuiController<'a> {
                 if let Some(tm) = &self.task_manager {
                     tm.tick_agent_summaries(self.state.provider.clone(), self.state.model.clone());
                 }
+                // Lazy-start LSP server on first tick when the feature is enabled.
+                self.maybe_start_lsp();
                 if self.refresh_sidebar_panel_cache() {
                     self.needs_render = true;
                 }
@@ -2142,6 +2198,27 @@ impl<'a> TuiController<'a> {
             };
             let store = wonder_of_u_storage::TuiPrefsStore::new(storage_dir);
             let _ = store.write(&prefs);
+        }
+    }
+    /// Lazy-starts an LSP server on the first tick when the feature is enabled
+    /// and a project marker file exists.  Only attempts once per session.
+    fn maybe_start_lsp(&mut self) {
+        if self.lsp.is_some() || self.lsp_start_attempted {
+            return;
+        }
+        self.lsp_start_attempted = true;
+        if !self.state.features.contains(FeatureFlag::Lsp) {
+            return;
+        }
+        let mut mgr = wonder_of_u_lsp::LspManager::new();
+        if let Some(_lang) = mgr.ensure_for_project(&self.state.session.cwd) {
+            self.lsp = Some(mgr);
+        }
+    }
+    /// Shuts down all running LSP servers.
+    pub(super) fn shutdown_lsp(&mut self) {
+        if let Some(ref mut mgr) = self.lsp {
+            mgr.shutdown();
         }
     }
     /// Recomputes the total rendered transcript line count and notifies the

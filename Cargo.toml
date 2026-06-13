@@ -3,6 +3,7 @@ members = [
   "crates/wonder-of-u-agent",
   "crates/wonder-of-u-cli",
   "crates/wonder-of-u-core",
+  "crates/wonder-of-u-lsp",
   "crates/wonder-of-u-mcp",
   "crates/wonder-of-u-plugins",
   "crates/wonder-of-u-prompts",
@@ -63,6 +64,8 @@ notify = "7"
 keyring = "3"
 reqwest = { version = "0.12", features = ["json", "stream"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "process", "io-util", "time", "signal"] }
+lsp-types = "0.97"
+lsp-server = "0.7"
 
 wonder-of-u-core = { path = "crates/wonder-of-u-core" }
 wonder-of-u-agent = { path = "crates/wonder-of-u-agent" }
@@ -75,3 +78,4 @@ wonder-of-u-test-support = { path = "crates/wonder-of-u-test-support" }
 wonder-of-u-sandbox = { path = "crates/wonder-of-u-sandbox" }
 wonder-of-u-tools = { path = "crates/wonder-of-u-tools" }
 wonder-of-u-tui = { path = "crates/wonder-of-u-tui" }
+wonder-of-u-lsp = { path = "crates/wonder-of-u-lsp" }

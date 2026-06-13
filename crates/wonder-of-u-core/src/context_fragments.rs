@@ -203,6 +203,27 @@ impl ContextAssembler {
         });
     }
 
+    /// Add a diagnostics fragment from an LSP source (e.g. `"rust-analyzer"`).
+    pub fn add_diagnostics_fragment(
+        &mut self,
+        source: impl Into<String>,
+        content: impl Into<String>,
+        priority: u8,
+    ) {
+        let source = source.into();
+        let content = content.into();
+        let id = format!("diagnostics:{source}");
+        let token_count = estimate_tokens(&content);
+        self.add(ContextFragment {
+            id,
+            source: FragmentSource::Diagnostics { source },
+            content,
+            priority,
+            token_count,
+            mandatory: false,
+        });
+    }
+
     /// Total token count of all fragments.
     #[must_use]
     pub fn total_tokens(&self) -> usize {

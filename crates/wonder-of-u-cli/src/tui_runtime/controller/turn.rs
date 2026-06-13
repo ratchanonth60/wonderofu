@@ -500,7 +500,7 @@ impl TuiController<'_> {
             ));
         }
 
-        let augmented = expand_mentions(input, &self.state.session.cwd);
+        let augmented = expand_mentions(input, &self.state.session.cwd, self.lsp.as_ref());
         let request_prompt = compose_conversation_prompt(&self.state.messages, &augmented);
         let runtime = self.provider_runtime();
         let resolved = self.resolve_prompt_execution(&runtime)?;
@@ -2238,7 +2238,7 @@ fn is_all_machine_hints(text: &str) -> bool {
     })
 }
 
-fn expand_mentions(input: &str, cwd: &Path) -> String {
+fn expand_mentions(input: &str, cwd: &Path, lsp: Option<&wonder_of_u_lsp::LspManager>) -> String {
     let mut result = input.to_string();
     let mut assembler = wonder_of_u_core::context_fragments::ContextAssembler::new(100_000);
 
@@ -2259,6 +2259,47 @@ fn expand_mentions(input: &str, cwd: &Path) -> String {
                 if let Ok(content) = std::fs::read_to_string(&resolved) {
                     assembler.add_file_fragment(path, content, 80);
                 }
+            }
+        }
+    }
+
+    // Append diagnostics from LSP if active.
+    if let Some(mgr) = lsp {
+        let snap = mgr.snapshot();
+        if !snap.is_empty() {
+            let mut diag_lines: Vec<String> = Vec::new();
+            let mut total = 0usize;
+            for (path, diags) in &snap {
+                for d in diags.iter().take(30) {
+                    let severity = match d.severity {
+                        Some(lsp_types::DiagnosticSeverity::ERROR) => "error",
+                        Some(lsp_types::DiagnosticSeverity::WARNING) => "warning",
+                        _ => "info",
+                    };
+                    let line = d.range.start.line;
+                    let col = d.range.start.character;
+                    let msg = &d.message;
+                    let rel = path.strip_prefix(cwd).unwrap_or(path);
+                    diag_lines.push(format!(
+                        "{}:{}:{} [{}] {}",
+                        rel.display(),
+                        line,
+                        col,
+                        severity,
+                        msg
+                    ));
+                    total += 1;
+                    if total >= 30 {
+                        break;
+                    }
+                }
+                if total >= 30 {
+                    break;
+                }
+            }
+            if !diag_lines.is_empty() {
+                let content = format!("LSP diagnostics:\n{}", diag_lines.join("\n"));
+                assembler.add_diagnostics_fragment("lsp", content, 50);
             }
         }
     }

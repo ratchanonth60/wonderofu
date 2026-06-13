@@ -287,7 +287,7 @@ impl TuiController<'_> {
                 "no MCP servers",
             ),
             lsp_lines: sidebar_fallback(
-                lsp_sidebar_lines(&self.state.session.cwd),
+                lsp_sidebar_lines(&self.state.session.cwd, self.lsp.as_ref()),
                 "no LSP diagnostics",
             ),
             todo_lines: sidebar_fallback(

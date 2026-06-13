@@ -55,6 +55,11 @@ pub enum FeatureFlag {
     /// When enabled, shell commands run inside a bubblewrap container on Linux,
     /// with controlled filesystem and network access.
     Sandbox,
+    /// Live language-server integration for diagnostics (rust-analyzer, etc.).
+    ///
+    /// When enabled, the TUI spawns a language server per project root and
+    /// surfaces diagnostics in the sidebar.
+    Lsp,
 }
 
 /// Deterministic set wrapper for serializable feature gates.
@@ -86,6 +91,7 @@ impl FeatureSet {
             FeatureFlag::LegacyTodoWrite,
             FeatureFlag::Fleet,
             FeatureFlag::Sandbox,
+            FeatureFlag::Lsp,
         ]))
     }
 

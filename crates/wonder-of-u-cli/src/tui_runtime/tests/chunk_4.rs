@@ -415,7 +415,7 @@ fn tool_sidebar_lines_produces_summary() {
 fn lsp_sidebar_lines_never_panics() {
     // Just ensure it runs without panicking; actual binary presence is env-dependent.
     let dir = wonder_of_u_test_support::unique_test_dir("lsp-check");
-    let lines = lsp_sidebar_lines(&dir);
+    let lines = lsp_sidebar_lines(&dir, None);
     assert_eq!(
         lines.len(),
         LSP_SERVERS.len(),
