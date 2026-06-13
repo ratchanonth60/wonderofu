@@ -1206,7 +1206,8 @@ fn sidebar_default_visible() {
 }
 
 /// Calling `toggle_sidebar()` twice must return to the original visible state.
-/// The first call sets status_note to "sidebar off"; the second sets it to "sidebar on".
+/// The first call sets status_note to "sidebar off"; the second sets it to
+/// "sidebar on (push)" when in Push mode (the default).
 #[test]
 fn sidebar_toggle_method_flips_and_restores() {
     let dir = unique_test_dir("tui-sidebar-toggle-method");
@@ -1239,8 +1240,8 @@ fn sidebar_toggle_method_flips_and_restores() {
     );
     assert_eq!(
         controller.status_note.as_deref(),
-        Some("sidebar on"),
-        "status note must read 'sidebar on' after restoring"
+        Some("sidebar on (push)"),
+        "status note must read 'sidebar on (push)' after restoring"
     );
 }
 

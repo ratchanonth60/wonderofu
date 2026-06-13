@@ -49,11 +49,11 @@ use wonder_of_u_tools::provider_tool_specs;
 use wonder_of_u_tui::{
     CrosstermEventSource, DialogActionView, DialogView, EditAction, EventLoop,
     GlobalSearchOverlayView, HistorySearchView, KeyBindingContext, KeyBindingResolver, KeyCode,
-    KeyEvent, MouseButton, MouseEventKind, NotificationInput, NotificationLifetime,
-    NotificationQueue, NotificationSeverity, PermissionSummaryView, PickerListEntry,
-    PickerListView, PromptSuggestion, PromptSuggestionState, Rect, ResolvedKey, ShellLayout,
-    ShellView, SlashSuggestionEntry, SlashSuggestionsOverlay, TextBuffer, Theme,
-    TranscriptScrollView, TurnState, UiEvent, VimMode, VimState, find_match_chars,
+    KeyEvent, MIN_SIDEBAR_WIDTH, MouseButton, MouseEventKind, NotificationInput,
+    NotificationLifetime, NotificationQueue, NotificationSeverity, PermissionSummaryView,
+    PickerListEntry, PickerListView, PromptSuggestion, PromptSuggestionState, Rect, ResolvedKey,
+    ShellLayout, ShellView, SidebarMode, SlashSuggestionEntry, SlashSuggestionsOverlay, TextBuffer,
+    Theme, TranscriptScrollView, TurnState, UiEvent, VimMode, VimState, find_match_chars,
     message::SearchMatch, message_lines_for_width, message_lines_for_width_with_cursor,
     shell_main_area_width, transcript_wrap_width,
 };

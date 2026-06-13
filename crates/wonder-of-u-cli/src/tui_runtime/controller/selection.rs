@@ -25,7 +25,7 @@ impl TuiController<'_> {
             Rect::new(
                 0,
                 0,
-                shell_main_area_width(width, self.sidebar_visible),
+                shell_main_area_width(width, self.sidebar_pushes_main_area()),
                 height,
             ),
             prompt_height,

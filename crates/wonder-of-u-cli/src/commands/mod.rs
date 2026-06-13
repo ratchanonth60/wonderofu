@@ -70,6 +70,7 @@ pub(crate) use extras::{
 };
 use features::FeaturesCommand;
 use fleet::FleetCommand;
+pub(crate) use fleet::dispatch_ready_members;
 use help::HelpCommand;
 use hook_commands::HooksCommand;
 use keybinding_commands::KeybindingsCommand;

@@ -16,7 +16,7 @@ impl TuiController<'_> {
         } else {
             usize::from(transcript_wrap_width(shell_main_area_width(
                 terminal_width,
-                self.sidebar_visible,
+                self.sidebar_pushes_main_area(),
             )))
         };
         let is_streaming = self.has_active_turn() || is_loading_turn_state(self.turn_state);
@@ -31,6 +31,7 @@ impl TuiController<'_> {
         if !self.sidebar_visible {
             view.sidebar = None;
         }
+        view.sidebar_mode = self.sidebar_mode;
         view.spinner_frame = self.loading_frame;
         view.history_search = self
             .history_search
@@ -46,6 +47,8 @@ impl TuiController<'_> {
         // visible.  The renderer ignores the sidebar entirely when the terminal is
         // too narrow, so we always fill the data here.
         if let Some(sb) = view.sidebar.as_mut() {
+            sb.scroll_offset = self.sidebar_scroll_offset;
+            sb.slots = self.sidebar_slots.clone();
             // Section 1 – Session: title (or id prefix), turn state, status note.
             let mut session_lines = vec![format!(
                 "◈ {}",
@@ -179,34 +182,36 @@ impl TuiController<'_> {
         view.picker_view = None;
         view.picker_list = picker_list;
         view.notifications = self.notifications.view(3);
-        view.slash_suggestions = self.active_suggestions.as_ref().map(|state| {
-            const MAX_VISIBLE: usize = 8;
-            let filtered = state.filtered();
-            let selected = state.selected_index.min(filtered.len().saturating_sub(1));
-            // Scroll the visible window so the selected entry is always on screen.
-            let scroll = if selected >= MAX_VISIBLE {
-                selected + 1 - MAX_VISIBLE
-            } else {
-                0
-            };
-            let entries = filtered
-                .iter()
-                .enumerate()
-                .skip(scroll)
-                .take(MAX_VISIBLE)
-                .map(|(i, s)| SlashSuggestionEntry {
-                    match_ranges: find_match_chars(&s.display_text, &state.filter),
-                    display: s.display_text.clone(),
-                    description: s.description.clone().unwrap_or_default(),
-                    selected: i == selected,
-                })
-                .collect();
-            SlashSuggestionsOverlay { entries }
-        });
+        view.slash_suggestions = self
+            .active_suggestions
+            .as_ref()
+            .map(build_suggestion_overlay)
+            .or_else(|| self.file_mentions.as_ref().map(build_suggestion_overlay));
         view.global_search = self.global_search_open.then(|| GlobalSearchOverlayView {
             query: self.global_search_query.clone(),
             results: self.global_search_results.clone(),
             selected: self.global_search_selected,
+        });
+        view.fleet_panel = self.fleet_panel.as_ref().map(|panel| {
+            let mut all_lines: Vec<String> = Vec::new();
+            for (i, fv) in panel.fleet_views.iter().enumerate() {
+                let is_selected = i == panel.selected_index;
+                let prefix = if is_selected { "> " } else { "  " };
+                for line in fv.render_lines() {
+                    all_lines.push(format!("{prefix}{line}"));
+                }
+                if i < panel.fleet_views.len().saturating_sub(1) {
+                    all_lines.push(String::new());
+                }
+            }
+            if all_lines.is_empty() {
+                all_lines.push("No fleet runs found.".into());
+            }
+            wonder_of_u_tui::FleetPanelOverlay {
+                title: "Fleet Runs (↑↓ nav  Enter detail  Esc/q close)".into(),
+                lines: all_lines,
+                selected_index: panel.selected_index,
+            }
         });
         // Wire scroll position so the renderer shows the correct transcript window.
         view.scroll = TranscriptScrollView {
@@ -290,9 +295,9 @@ impl TuiController<'_> {
         }
     }
     pub(in crate::tui_runtime) fn prompt_cursor(&self, width: u16, height: u16) -> (u16, u16) {
-        // Use the live sidebar_visible flag so cursor placement matches the
-        // actual rendered layout (no sidebar column deduction when toggled off).
-        let sidebar_active = self.sidebar_visible;
+        // Use sidebar_pushes_main_area so cursor placement matches the
+        // actual rendered layout (overlay mode = full width, push mode = shrunk).
+        let sidebar_active = self.sidebar_pushes_main_area();
         if self.global_search_open {
             return global_search_cursor_position(
                 width,
@@ -329,4 +334,28 @@ impl TuiController<'_> {
             self.context_warning_active(),
         )
     }
+}
+
+fn build_suggestion_overlay(state: &PromptSuggestionState) -> SlashSuggestionsOverlay {
+    const MAX_VISIBLE: usize = 8;
+    let filtered = state.filtered();
+    let selected = state.selected_index.min(filtered.len().saturating_sub(1));
+    let scroll = if selected >= MAX_VISIBLE {
+        selected + 1 - MAX_VISIBLE
+    } else {
+        0
+    };
+    let entries = filtered
+        .iter()
+        .enumerate()
+        .skip(scroll)
+        .take(MAX_VISIBLE)
+        .map(|(i, s)| SlashSuggestionEntry {
+            match_ranges: find_match_chars(&s.display_text, &state.filter),
+            display: s.display_text.clone(),
+            description: s.description.clone().unwrap_or_default(),
+            selected: i == selected,
+        })
+        .collect();
+    SlashSuggestionsOverlay { entries }
 }

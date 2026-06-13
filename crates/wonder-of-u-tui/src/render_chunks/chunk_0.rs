@@ -7,21 +7,38 @@ pub fn render_shell(frame: &mut FrameBuffer, view: &ShellView, theme: &Theme) {
     // wide and the view carries sidebar data, carve out a right-hand column.
     // All main-content drawing (transcript + prompt box + chrome) is then confined
     // to the narrower left column — the prompt box keeps its full allocated width.
-    let main_area = if let Some(sidebar) = &view.sidebar {
+    let (main_area, sidebar_overlay) = if let Some(sidebar) = &view.sidebar {
         if area.width >= MIN_SIDEBAR_WIDTH {
-            // The sidebar box itself provides the left border, replacing the
-            // old bare │ separator.  Give it SIDEBAR_WIDTH + 1 columns so the
-            // left ╭/│/╰ aligns exactly where the separator used to be.
-            let main_w = area.width.saturating_sub(SIDEBAR_WIDTH + 1);
-            let sep_x = area.x.saturating_add(main_w);
-            let sidebar_area = Rect::new(sep_x, area.y, SIDEBAR_WIDTH + 1, area.height);
-            draw_shell_sidebar(frame, sidebar_area, sidebar, theme);
-            Rect::new(area.x, area.y, main_w, area.height)
+            match view.sidebar_mode {
+                SidebarMode::Push => {
+                    // The sidebar box itself provides the left border, replacing the
+                    // old bare │ separator.  Give it SIDEBAR_WIDTH + 1 columns so the
+                    // left ╭/│/╰ aligns exactly where the separator used to be.
+                    let main_w = area.width.saturating_sub(SIDEBAR_WIDTH + 1);
+                    let sep_x = area.x.saturating_add(main_w);
+                    let sidebar_area = Rect::new(sep_x, area.y, SIDEBAR_WIDTH + 1, area.height);
+                    draw_shell_sidebar(frame, sidebar_area, sidebar, theme);
+                    (Rect::new(area.x, area.y, main_w, area.height), None)
+                }
+                SidebarMode::Overlay => {
+                    // Full-width main area; the sidebar will be drawn as an overlay
+                    // *after* the transcript and prompt, painting over the right edge.
+                    let main_w = area.width;
+                    let sidebar_area =
+                        Rect::new(
+                            area.x.saturating_add(main_w.saturating_sub(SIDEBAR_WIDTH + 1)),
+                            area.y,
+                            SIDEBAR_WIDTH + 1,
+                            area.height,
+                        );
+                    (area, Some((sidebar_area, sidebar)))
+                }
+            }
         } else {
-            area
+            (area, None)
         }
     } else {
-        area
+        (area, None)
     };
 
     // Cap prompt height at roughly one third of the terminal so chat/history
@@ -135,6 +152,15 @@ pub fn render_shell(frame: &mut FrameBuffer, view: &ShellView, theme: &Theme) {
             overlay.selected,
             theme,
         );
+    }
+
+    if let Some(overlay) = &view.fleet_panel {
+        draw_fleet_panel(frame, layout.messages, overlay, theme);
+    }
+
+    // In overlay mode the sidebar is drawn last so it paints over the transcript.
+    if let Some((sidebar_area, sidebar)) = sidebar_overlay {
+        draw_shell_sidebar(frame, sidebar_area, sidebar, theme);
     }
 }
 /// Renders snapshot
@@ -390,7 +416,9 @@ fn transcript_padded(area: Rect) -> Rect {
 ///
 /// The sidebar is drawn inside a rounded-corner box (matching the prompt input
 /// style) so it blends naturally with the rest of the chrome.  Content is
-/// rendered inside the inner area (inset 1 on all sides).
+/// rendered inside the inner area (inset 1 on all sides).  When the total line
+/// count exceeds the visible height, content is windowed by `sidebar.scroll_offset`
+/// and a scroll indicator is drawn on the bottom border.
 fn draw_shell_sidebar(frame: &mut FrameBuffer, area: Rect, sidebar: &SidebarView, theme: &Theme) {
     if area.is_empty() {
         return;
@@ -401,8 +429,37 @@ fn draw_shell_sidebar(frame: &mut FrameBuffer, area: Rect, sidebar: &SidebarView
 
     // Content inside the border (inset 1 on all sides).
     let inner = area.inset(1);
-    if !inner.is_empty() {
-        draw_lines(frame, inner, &sidebar_section_lines(sidebar, theme));
+    if inner.is_empty() {
+        return;
+    }
+
+    let all_lines = sidebar_section_lines(sidebar, theme);
+    let visible = usize::from(inner.height);
+    let total = all_lines.len();
+    let max_offset = total.saturating_sub(visible);
+    let offset = sidebar.scroll_offset.min(max_offset);
+    let slice = if offset < all_lines.len() {
+        &all_lines[offset..(offset + visible).min(all_lines.len())]
+    } else {
+        &[]
+    };
+    draw_lines(frame, inner, slice);
+
+    // Scroll indicator: show on the bottom border when content overflows.
+    if total > visible {
+        let indicator = if offset > 0 && offset < max_offset {
+            format!(" ▲▼ {}/{} ", offset + visible, total)
+        } else if offset > 0 {
+            format!(" ▼ {}/{} ", offset + visible, total)
+        } else {
+            format!(" ▲ {}/{} ", offset + visible, total)
+        };
+        let indicator_x = area
+            .x
+            .saturating_add(2)
+            .min(area.x.saturating_add(area.width).saturating_sub(2));
+        let indicator_y = area.y.saturating_add(area.height).saturating_sub(1);
+        frame.write_str(indicator_x, indicator_y, &indicator, theme.footer, area.width);
     }
 }
 
@@ -529,6 +586,12 @@ fn sidebar_section_lines(sidebar: &SidebarView, theme: &Theme) -> Vec<StyledLine
         accent,
         theme,
     );
+
+    // Plugin-injected sidebar slots
+    for slot in &sidebar.slots {
+        let header = format!("─ {} ─", slot.title);
+        push_sidebar_text_section(&mut out, &header, &slot.lines, dim, accent, theme);
+    }
 
     out
 }

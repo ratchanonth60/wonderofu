@@ -24,6 +24,14 @@ impl TuiController<'_> {
         if self.global_search_open {
             return self.handle_global_search_key(key, resolved);
         }
+        // Fleet panel intercepts navigation keys — must be before modal overlay handler.
+        if self.fleet_panel.is_some() {
+            return self.handle_fleet_panel_key(key);
+        }
+        // Sidebar-focused: scroll keys target the sidebar panel.
+        if self.sidebar_focused {
+            return self.handle_sidebar_scroll_key(key);
+        }
         // When ask_user is in free-text mode (no options, or "Other" selected),
         // bypass the dialog handler so the user can type in the prompt box.
         // When ask_user has options and the user hasn't picked "Other" yet,
@@ -54,6 +62,7 @@ impl TuiController<'_> {
             self.reset_history_recall();
             self.status_note = None;
             self.update_slash_suggestions();
+            self.update_file_mentions();
             self.needs_render = true;
             return Ok(());
         }
@@ -76,6 +85,30 @@ impl TuiController<'_> {
                 }
                 KeyCode::Down => {
                     self.navigate_slash_suggestions(1);
+                    return Ok(());
+                }
+                _ => {}
+            }
+        }
+
+        // File-mention autocomplete intercepts: Tab accepts, Up/Down navigate, Esc dismisses.
+        if self.file_mentions.is_some() {
+            match key.code {
+                KeyCode::Tab => {
+                    self.accept_file_mention();
+                    return Ok(());
+                }
+                KeyCode::Esc => {
+                    self.file_mentions = None;
+                    self.needs_render = true;
+                    return Ok(());
+                }
+                KeyCode::Up => {
+                    self.navigate_file_mentions(-1);
+                    return Ok(());
+                }
+                KeyCode::Down => {
+                    self.navigate_file_mentions(1);
                     return Ok(());
                 }
                 _ => {}
@@ -122,10 +155,8 @@ impl TuiController<'_> {
                     return Ok(());
                 }
                 // Plain Up: history recall when cursor is on the first line.
-                (KeyCode::Up, false, false) => {
-                    if self.prompt.current_line_start() == 0 {
-                        return self.recall_history_prev();
-                    }
+                (KeyCode::Up, false, false) if self.prompt.current_line_start() == 0 => {
+                    return self.recall_history_prev();
                 }
                 // Plain Down: step forward in recall mode.
                 (KeyCode::Down, false, false) if self.history_recall_index.is_some() => {
@@ -139,6 +170,34 @@ impl TuiController<'_> {
         // Ctrl+B toggles the sidebar panel.
         if key.is_ctrl_char('b') {
             self.toggle_sidebar();
+            return Ok(());
+        }
+        // Ctrl+Shift+B cycles sidebar push/overlay mode.
+        if key.is_ctrl_char('B') {
+            self.cycle_sidebar_mode();
+            return Ok(());
+        }
+        // Ctrl+G focuses/unfocuses the sidebar for scrolling (when visible).
+        if key.is_ctrl_char('g') {
+            if self.sidebar_visible {
+                self.sidebar_focused = !self.sidebar_focused;
+                self.status_note = Some(if self.sidebar_focused {
+                    "sidebar focused".into()
+                } else {
+                    "sidebar unfocused".into()
+                });
+                self.needs_render = true;
+            }
+            return Ok(());
+        }
+
+        // Ctrl+F toggles the fleet panel.
+        if key.is_ctrl_char('f') {
+            if self.fleet_panel.is_some() {
+                self.close_fleet_panel();
+            } else {
+                self.open_fleet_panel();
+            }
             return Ok(());
         }
 
@@ -188,6 +247,7 @@ impl TuiController<'_> {
                 self.reset_history_recall();
                 self.status_note = None;
                 self.update_slash_suggestions();
+                self.update_file_mentions();
                 self.needs_render = true;
                 Ok(())
             }
@@ -201,7 +261,16 @@ impl TuiController<'_> {
                     self.accept_slash_suggestion();
                     return self.submit_prompt().await;
                 }
+                if self
+                    .file_mentions
+                    .as_ref()
+                    .is_some_and(|s| s.selected().is_some())
+                {
+                    self.accept_file_mention();
+                    return self.submit_prompt().await;
+                }
                 self.active_suggestions = None;
+                self.file_mentions = None;
                 self.submit_prompt().await
             }
             ResolvedKey::Edit(action) => {
@@ -211,6 +280,7 @@ impl TuiController<'_> {
                 self.reset_history_recall();
                 self.status_note = None;
                 self.update_slash_suggestions();
+                self.update_file_mentions();
                 self.needs_render = true;
                 Ok(())
             }
@@ -252,6 +322,8 @@ impl TuiController<'_> {
         self.turn_state = TurnState::EditingInput;
         self.state.input_mode = InputMode::Prompt;
         self.reset_history_recall();
+        self.update_slash_suggestions();
+        self.update_file_mentions();
         self.status_note = Some(match self.vim.mode() {
             VimMode::Insert => "vim insert".into(),
             VimMode::Normal if self.vim.has_pending_operator() => "vim operator pending".into(),

@@ -14,6 +14,25 @@ use crate::{
     style::{Color, TextStyle, Theme},
 };
 
+/// Sidebar display mode — push shrinks the transcript, overlay floats on top.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum SidebarMode {
+    /// Sidebar carves its own column; the main area is narrowed.
+    #[default]
+    Push,
+    /// Sidebar paints over the right edge of the transcript without reflow.
+    Overlay,
+}
+
+/// A plugin-injected sidebar section.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct SidebarSlot {
+    /// Section title rendered as `"─ {title} ─"`.
+    pub title: String,
+    /// Body lines shown below the header.
+    pub lines: Vec<String>,
+}
+
 /// A single entry shown in the slash-command autocomplete overlay.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SlashSuggestionEntry {
@@ -44,6 +63,18 @@ pub struct GlobalSearchOverlayView {
     /// Highlighted result index.
     pub selected: usize,
 }
+
+/// Pre-rendered lines for the fleet panel overlay.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct FleetPanelOverlay {
+    /// Title of the panel (e.g. "Fleet Runs").
+    pub title: String,
+    /// Pre-rendered lines of fleet run data.
+    pub lines: Vec<String>,
+    /// Currently selected line index (0-based within lines).
+    pub selected_index: usize,
+}
+/// Scroll metadata passed from the controller to the renderer each frame.
 /// Scroll metadata passed from the controller to the renderer each frame.
 ///
 /// The renderer uses this to decide which slice of the transcript to display
@@ -139,6 +170,10 @@ pub struct SidebarView {
     pub control_lines: Vec<String>,
     /// Section 12 – Tasks: background task count + hints.
     pub task_lines: Vec<String>,
+    /// Plugin-injected extra sections rendered after the fixed sections.
+    pub slots: Vec<SidebarSlot>,
+    /// Current scroll offset (lines scrolled down from the top).
+    pub scroll_offset: usize,
 }
 
 /// Context-saving suggestions shown below the context visualization bar.
@@ -231,6 +266,8 @@ pub struct ShellView {
     pub slash_suggestions: Option<SlashSuggestionsOverlay>,
     /// When `Some`, display the workspace search overlay.
     pub global_search: Option<GlobalSearchOverlayView>,
+    /// When `Some`, display the fleet runs panel overlay.
+    pub fleet_panel: Option<FleetPanelOverlay>,
     /// Scroll position snapshot for windowed transcript rendering.
     pub scroll: TranscriptScrollView,
     /// Right-side companion panel shown beside all shell content on wide terminals.
@@ -238,6 +275,8 @@ pub struct ShellView {
     /// `None` suppresses the panel entirely (e.g. when constructed manually in
     /// tests or when no provider context is available yet).
     pub sidebar: Option<SidebarView>,
+    /// Display mode for the sidebar: push (carves column) or overlay (floats).
+    pub sidebar_mode: SidebarMode,
     /// Warning banner shown immediately above the prompt when context usage is high.
     pub prompt_warning: Option<PromptWarningView>,
     /// Live stdout lines from a currently-executing shell tool.
@@ -340,6 +379,8 @@ impl ShellView {
                 status_lines,
                 control_lines,
                 task_lines,
+                slots: Vec::new(),
+                scroll_offset: 0,
             }
         };
         Self {
@@ -362,9 +403,11 @@ impl ShellView {
             notifications: Vec::new(),
             slash_suggestions: None,
             global_search: None,
+            fleet_panel: None,
             // Default to follow-tail; the controller will override this each frame.
             scroll: TranscriptScrollView::default(),
             sidebar: Some(sidebar),
+            sidebar_mode: SidebarMode::default(),
             prompt_warning: context_warning_banner(
                 app.costs.usage.total_tokens(),
                 app.context_window_size,

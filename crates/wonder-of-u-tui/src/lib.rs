@@ -165,11 +165,11 @@ pub use prompt::{
 };
 /// Re-exports items from `render`
 pub use render::{
-    ContextSuggestion, ContextSuggestionsView, GlobalSearchOverlayView, MIN_SIDEBAR_WIDTH,
-    PromptWarningSeverity, PromptWarningView, SIDEBAR_WIDTH, ShellView, SidebarView,
-    SlashSuggestionEntry, SlashSuggestionsOverlay, SuggestionSeverity, TRANSCRIPT_HPAD,
-    TranscriptScrollView, render_shell, render_snapshot, shell_main_area_width,
-    transcript_wrap_width,
+    ContextSuggestion, ContextSuggestionsView, FleetPanelOverlay, GlobalSearchOverlayView,
+    MIN_SIDEBAR_WIDTH, PromptWarningSeverity, PromptWarningView, SIDEBAR_WIDTH, ShellView,
+    SidebarMode, SidebarSlot, SidebarView, SlashSuggestionEntry, SlashSuggestionsOverlay,
+    SuggestionSeverity, TRANSCRIPT_HPAD, TranscriptScrollView, render_shell, render_snapshot,
+    shell_main_area_width, transcript_wrap_width,
 };
 /// Re-exports items from `security`
 pub use security::{
