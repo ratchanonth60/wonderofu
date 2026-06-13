@@ -15,10 +15,10 @@ pub mod agent_name_registry;
 pub mod app;
 /// Provides command support
 pub mod command;
-/// Provides coordinator support
-pub mod coordinator;
 /// Context fragment assembly for token-limited prompt construction.
 pub mod context_fragments;
+/// Provides coordinator support
+pub mod coordinator;
 /// Provides cwd support
 pub mod cwd;
 /// Provides denial tracker and YOLO-mode classifier support

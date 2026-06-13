@@ -273,9 +273,7 @@ impl Tool for BashTool {
         let sandbox_enabled = context.features.contains(FeatureFlag::Sandbox);
         let disable_sandbox = input.dangerously_disable_sandbox == Some(true);
 
-        let (mut child, sandbox_applied) = if sandbox_enabled
-            && !disable_sandbox
-        {
+        let (mut child, sandbox_applied) = if sandbox_enabled && !disable_sandbox {
             let policy = sandbox_policy_for_cwd(&cwd);
             let runner = SandboxRunner::new(policy);
             if runner.sandbox_available() {
@@ -293,7 +291,8 @@ impl Tool for BashTool {
             (cmd, false)
         };
 
-        child.stdin(Stdio::null())
+        child
+            .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
         let mut child = child.spawn()?;

@@ -1,10 +1,11 @@
 use super::TuiController;
 use super::*;
+use crate::commands::hook_trust::{load_hooks_inventory, resolve_hooks_path};
 
 impl TuiController<'_> {
     pub(in crate::tui_runtime) fn open_hooks_menu(&mut self) {
-        let config_path = resolve_hooks_config_path(self.storage_dir.as_deref());
-        let (entries, disabled) = load_hooks_entries(&config_path);
+        let config_path = resolve_hooks_path(self.storage_dir.as_deref());
+        let (entries, disabled) = load_hooks_entries(self.storage_dir.as_deref());
         self.pending_hooks_menu = Some(HooksMenuState {
             entries,
             selected_index: 0,
@@ -115,9 +116,14 @@ impl TuiController<'_> {
         if let Some(menu) = &self.pending_hooks_menu {
             if let Some(entry) = menu.entries.get(idx) {
                 let mut body = vec![
+                    format!("ID:      {}", entry.id),
                     format!("Event:   {}", entry.event),
                     format!("Matcher: {}", entry.matcher),
                     format!("Type:    {}", entry.kind),
+                    format!("Status:  {}", entry.status),
+                    format!("Managed: {}", entry.managed),
+                    format!("Support: {}", if entry.supported { "yes" } else { "no" }),
+                    format!("Hash:    {}", entry.fingerprint),
                     format!("Target:  {}", entry.target),
                 ];
                 if let Some(cond) = &entry.condition {
@@ -131,66 +137,33 @@ impl TuiController<'_> {
     }
 }
 
-fn resolve_hooks_config_path(storage_dir: Option<&std::path::Path>) -> std::path::PathBuf {
-    storage_dir
-        .map(wonder_of_u_storage::StoragePaths::new)
-        .map(|p| p.config_dir())
-        .unwrap_or_else(|| {
-            std::env::var_os("HOME")
-                .map(std::path::PathBuf::from)
-                .unwrap_or_else(|| std::path::PathBuf::from("."))
-                .join(".wonder-of-u")
-                .join("config")
-        })
-        .join("hooks.json")
-}
-
-fn load_hooks_entries(path: &std::path::Path) -> (Vec<HooksMenuEntry>, bool) {
-    if !path.exists() {
-        return (Vec::new(), false);
-    }
-    let Ok(content) = std::fs::read_to_string(path) else {
+fn load_hooks_entries(storage_dir: Option<&std::path::Path>) -> (Vec<HooksMenuEntry>, bool) {
+    let Ok(inventory) = load_hooks_inventory(storage_dir) else {
         return (Vec::new(), false);
     };
-    let value: serde_json::Value = match serde_json::from_str(&content) {
-        Ok(v) => v,
-        Err(_) => return (Vec::new(), false),
-    };
-    let disabled = value
-        .get("disable_all_hooks")
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false);
-    let mut entries = Vec::new();
-    if let Some(hooks_map) = value.get("hooks").and_then(|v| v.as_object()) {
-        for (event, matchers_val) in hooks_map {
-            if let Some(matchers) = matchers_val.as_array() {
-                for matcher_val in matchers {
-                    let matcher = matcher_val
-                        .get("matcher")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("*")
-                        .to_string();
-                    if let Some(hooks) = matcher_val.get("hooks").and_then(|v| v.as_array()) {
-                        for hook in hooks {
-                            let (kind, target) = extract_hook_kind_target(hook);
-                            let condition =
-                                hook.get("if").and_then(|v| v.as_str()).map(str::to_string);
-                            entries.push(HooksMenuEntry {
-                                event: event.clone(),
-                                matcher: matcher.clone(),
-                                kind,
-                                target,
-                                condition,
-                            });
-                        }
-                    }
-                }
+    let entries = inventory
+        .entries
+        .into_iter()
+        .map(|entry| {
+            let status = entry.status_tags().join(",");
+            HooksMenuEntry {
+                id: entry.id,
+                event: entry.event,
+                matcher: entry.matcher,
+                kind: entry.kind,
+                target: entry.target,
+                condition: entry.condition,
+                status,
+                managed: entry.managed,
+                supported: entry.supported,
+                fingerprint: entry.fingerprint,
             }
-        }
-    }
-    (entries, disabled)
+        })
+        .collect();
+    (entries, inventory.disable_all_hooks)
 }
 
+#[cfg(test)]
 pub(super) fn extract_hook_kind_target(hook: &serde_json::Value) -> (String, String) {
     match hook.get("type").and_then(|v| v.as_str()) {
         Some("command") => (
@@ -255,33 +228,36 @@ mod tests {
     #[test]
     fn load_entries_from_valid_json() {
         let dir = wonder_of_u_test_support::unique_test_dir("hooks-load-entries");
-        let path = dir.join("hooks.json");
+        let path = dir.join("config/hooks.json");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(
             &path,
             r#"{"hooks": {"PreToolUse": [{"matcher": "*", "hooks": [{"type": "command", "command": "lint"}]}]}}"#,
         )
         .unwrap();
-        let (entries, disabled) = load_hooks_entries(&path);
+        let (entries, disabled) = load_hooks_entries(Some(dir.as_path()));
         assert!(!disabled);
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].event, "PreToolUse");
         assert_eq!(entries[0].kind, "command");
         assert_eq!(entries[0].target, "lint");
+        assert_eq!(entries[0].status, "untrusted");
     }
 
     #[test]
     fn load_entries_respects_disable_all_hooks() {
         let dir = wonder_of_u_test_support::unique_test_dir("hooks-disabled");
-        let path = dir.join("hooks.json");
+        let path = dir.join("config/hooks.json");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(&path, r#"{"disable_all_hooks": true, "hooks": {}}"#).unwrap();
-        let (_, disabled) = load_hooks_entries(&path);
+        let (_, disabled) = load_hooks_entries(Some(dir.as_path()));
         assert!(disabled);
     }
 
     #[test]
     fn load_entries_missing_file_returns_empty() {
-        let path = std::path::Path::new("/tmp/wonder-of-u-nonexistent-hooks.json");
-        let (entries, disabled) = load_hooks_entries(path);
+        let dir = wonder_of_u_test_support::unique_test_dir("hooks-missing-file");
+        let (entries, disabled) = load_hooks_entries(Some(dir.as_path()));
         assert!(entries.is_empty());
         assert!(!disabled);
     }

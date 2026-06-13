@@ -12,8 +12,7 @@ use crate::{
     AdditionalWorkingDirectory, FeatureFlag, FeatureSet, FleetMemberRequest, ForkContextSnapshot,
     PermissionDecision, PermissionMode, PermissionRequest, PermissionRule, Result,
     RuntimeWorktreeState, SessionId, ShellSessionStore, TaskId, ToolPermissionContext, ToolUseId,
-    WonderError, evaluate_permission,
-    network_policy::NetworkPolicyConfig,
+    WonderError, evaluate_permission, network_policy::NetworkPolicyConfig,
 };
 /// Enumerates tool kind
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]

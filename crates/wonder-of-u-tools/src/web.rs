@@ -208,14 +208,10 @@ impl Tool for WebFetchTool {
                 if let Some(host) = host {
                     if let Some(ref policy) = context.network_policy {
                         if !policy.is_host_allowed(&host) {
-                            return PermissionDecision::deny(
-                                PermissionDecisionReason::Mode {
-                                    mode: context.permission_mode,
-                                    detail: format!(
-                                        "network policy blocks host: {host}"
-                                    ),
-                                },
-                            );
+                            return PermissionDecision::deny(PermissionDecisionReason::Mode {
+                                mode: context.permission_mode,
+                                detail: format!("network policy blocks host: {host}"),
+                            });
                         }
                     }
                 }
@@ -229,7 +225,7 @@ impl Tool for WebFetchTool {
                         })
                     },
                 )
-            },
+            }
             _ => decision,
         }
     }

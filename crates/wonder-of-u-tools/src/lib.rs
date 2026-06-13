@@ -57,13 +57,13 @@ pub use cron_remote::{
     CronCreateInput, CronCreateTool, CronDeleteInput, CronDeleteTool, RemoteTriggerAction,
     RemoteTriggerInput, RemoteTriggerTool,
 };
-/// Re-exports items from `file_watcher`
-pub use file_watcher::{FileChangeEvent, FileChangeKind, FileWatcher};
 /// Re-exports items from `extended`
 pub use extended::{
     CronListTool, NotebookEditInput, NotebookEditTool, PowerShellInput, PowerShellTool,
     TerminalCaptureTool, WorktreeListTool,
 };
+/// Re-exports items from `file_watcher`
+pub use file_watcher::{FileChangeEvent, FileChangeKind, FileWatcher};
 /// Re-exports items from `files`
 pub use files::{
     FileEditInput, FileEditTool, FileReadInput, FileReadTool, FileWriteInput, FileWriteMode,

@@ -267,11 +267,16 @@ pub(super) struct MemoryFileSelectorState {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) struct HooksMenuEntry {
+    pub id: String,
     pub event: String,
     pub matcher: String,
     pub kind: String,
     pub target: String,
     pub condition: Option<String>,
+    pub status: String,
+    pub managed: bool,
+    pub supported: bool,
+    pub fingerprint: String,
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -1816,8 +1821,13 @@ impl<'a> TuiController<'a> {
                                     },
                                     entry.target.chars().take(40).collect::<String>()
                                 ),
-                                description: entry.kind.clone(),
-                                tag: entry.condition.as_ref().map(|c| format!("if {c}")),
+                                description: format!("{} {}", entry.kind, entry.id),
+                                tag: Some(match &entry.condition {
+                                    Some(condition) => {
+                                        format!("{} if {condition}", entry.status)
+                                    }
+                                    None => entry.status.clone(),
+                                }),
                                 selected: i == menu.selected_index,
                                 group_header,
                             }

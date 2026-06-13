@@ -13,10 +13,7 @@
 //! let prompt_context = assembler.assemble();
 //! ```
 
-use std::{
-    collections::HashMap,
-    path::PathBuf,
-};
+use std::{collections::HashMap, path::PathBuf};
 
 use serde::{Deserialize, Serialize};
 
@@ -135,7 +132,12 @@ impl ContextAssembler {
     }
 
     /// Add a file content fragment.
-    pub fn add_file_fragment(&mut self, path: impl Into<PathBuf>, content: impl Into<String>, priority: u8) {
+    pub fn add_file_fragment(
+        &mut self,
+        path: impl Into<PathBuf>,
+        content: impl Into<String>,
+        priority: u8,
+    ) {
         let path = path.into();
         let content = content.into();
         let id = format!("file:{}", path.display());
@@ -182,7 +184,12 @@ impl ContextAssembler {
     }
 
     /// Add a memory fragment.
-    pub fn add_memory(&mut self, memory_id: impl Into<String>, content: impl Into<String>, priority: u8) {
+    pub fn add_memory(
+        &mut self,
+        memory_id: impl Into<String>,
+        content: impl Into<String>,
+        priority: u8,
+    ) {
         let memory_id = memory_id.into();
         let content = content.into();
         let token_count = estimate_tokens(&content);

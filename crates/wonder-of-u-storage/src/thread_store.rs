@@ -283,10 +283,7 @@ impl ThreadStore {
                 .title
                 .as_ref()
                 .is_some_and(|t| t.to_lowercase().contains(&query));
-            let tag_match = entry
-                .tags
-                .iter()
-                .any(|t| t.to_lowercase().contains(&query));
+            let tag_match = entry.tags.iter().any(|t| t.to_lowercase().contains(&query));
             if title_match || tag_match {
                 if let Some(thread) = self.load_thread(&entry.id)? {
                     results.push(thread);

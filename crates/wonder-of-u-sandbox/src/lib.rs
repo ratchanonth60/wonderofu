@@ -11,9 +11,7 @@ mod policy;
 mod runner;
 
 pub use policy::{FileSystemEntry, PolicyDecision, SandboxPolicy};
-pub use runner::{
-    SandboxOutput, SandboxResult, SandboxRunner, build_sandbox_command,
-};
+pub use runner::{SandboxOutput, SandboxResult, SandboxRunner, build_sandbox_command};
 
 #[cfg(test)]
 mod tests;

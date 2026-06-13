@@ -54,7 +54,7 @@ pub use tips::{TIPS_HISTORY_SCHEMA_VERSION, TipsHistory, TipsStore};
 
 /// Cross-session thread management store.
 pub mod thread_store;
-pub use thread_store::{Thread, ThreadStatus, ThreadStore, THREAD_SCHEMA_VERSION};
+pub use thread_store::{THREAD_SCHEMA_VERSION, Thread, ThreadStatus, ThreadStore};
 
 use std::{
     collections::BTreeMap,

@@ -1,27 +1,27 @@
 //! Parity verification: the Rust command registry must cover every command
-//! surface in `claude-leak/commands/`.
+//! surface in `claude-leak/commands/` that we still ship.
+//!
+//! This port intentionally drops the upstream commands that are tied to a
+//! Claude/Anthropic account or product (so they cannot work across every
+//! provider), or that are non-functional cloud/remote stubs and internal
+//! dev/debug helpers. Those names live in [`INTENTIONALLY_OMITTED`] below and
+//! are asserted to be absent, so a future contributor does not "restore parity"
+//! by silently re-adding them.
 
 use std::collections::HashSet;
 
 use wonder_of_u_cli::build_command_registry;
 
-/// All command names (and their canonical display names) from `claude-leak/commands/`.
+/// Upstream `claude-leak/commands/` names we still ship in the Rust registry.
 /// Excludes TypeScript helpers that are not standalone commands.
 const CLAUDE_LEAK_COMMANDS: &[&str] = &[
     "add-dir",
     "advisor",
     "agents",
-    "ant-trace",
     "autofix-pr",
-    "backfill-sessions",
     "branch",
-    "break-cache",
-    "bridge",
-    "bridge-kick",
     "brief",
     "btw",
-    "bughunter",
-    "chrome",
     "clear",
     "color",
     "commit",
@@ -31,81 +31,95 @@ const CLAUDE_LEAK_COMMANDS: &[&str] = &[
     "context",
     "copy",
     "cost",
-    "ctx-viz",
-    "debug-tool-call",
-    "desktop",
     "diff",
     "doctor",
     "effort",
     "env",
     "exit",
     "export",
-    "extra-usage",
     "fast",
-    "feedback",
     "files",
-    "good-claude",
-    "heapdump",
     "help",
     "hooks",
-    "ide",
     "init",
-    "init-verifiers",
     "insights",
-    "install",
-    "install-github-app",
-    "install-slack-app",
-    "issue",
     "keybindings",
     "login",
     "logout",
     "mcp",
     "memory",
-    "mobile",
-    "mock-limits",
     "model",
-    "oauth-refresh",
-    "onboarding",
     "output-style",
-    "passes",
-    "perf-issue",
     "permissions",
     "plan",
     "plugin",
     "pr-comments",
     "privacy-settings",
-    "rate-limit-options",
-    "release-notes",
     "reload-plugins",
-    "remote-env",
-    "remote-setup",
     "rename",
-    "reset-limits",
     "resume",
     "review",
     "rewind",
     "sandbox-toggle",
     "security-review",
     "session",
-    "share",
     "skills",
     "stats",
     "status",
     "statusline",
-    "stickers",
     "summary",
     "tag",
     "tasks",
-    "teleport",
     "terminal-setup",
     "theme",
+    "version",
+    "vim",
+];
+
+/// Upstream commands deliberately removed from this port. They are either tied
+/// to a Claude/Anthropic account/product (so they can't work for every
+/// provider), non-functional cloud/remote stubs, or internal dev/debug helpers.
+/// Do not re-add these without revisiting that decision.
+const INTENTIONALLY_OMITTED: &[&str] = &[
+    "ant-trace",
+    "backfill-sessions",
+    "break-cache",
+    "bridge",
+    "bridge-kick",
+    "bughunter",
+    "chrome",
+    "ctx-viz",
+    "debug-tool-call",
+    "desktop",
+    "extra-usage",
+    "feedback",
+    "good-claude",
+    "heapdump",
+    "ide",
+    "init-verifiers",
+    "install",
+    "install-github-app",
+    "install-slack-app",
+    "issue",
+    "mobile",
+    "mock-limits",
+    "oauth-refresh",
+    "onboarding",
+    "passes",
+    "perf-issue",
+    "rate-limit-options",
+    "release-notes",
+    "remote-env",
+    "remote-setup",
+    "reset-limits",
+    "share",
+    "stickers",
+    "teleport",
     "thinkback",
     "thinkback-play",
     "ultraplan",
     "upgrade",
     "usage",
-    "version",
-    "vim",
     "voice",
     "x402",
 ];
@@ -163,6 +177,26 @@ fn registry_has_no_duplicate_names() {
         duplicates.is_empty(),
         "Duplicate command names/aliases: {:?}",
         duplicates
+    );
+}
+
+#[test]
+fn intentionally_omitted_commands_are_not_registered() {
+    let registered = registry_names();
+
+    let mut unexpected: Vec<&str> = Vec::new();
+    for &cmd in INTENTIONALLY_OMITTED {
+        let with_slash = format!("/{cmd}");
+        if registered.contains(&with_slash) || registered.contains(cmd) {
+            unexpected.push(cmd);
+        }
+    }
+
+    assert!(
+        unexpected.is_empty(),
+        "These commands are intentionally omitted but were found in the registry \
+         (remove them or move them back into CLAUDE_LEAK_COMMANDS):\n  {}",
+        unexpected.join("\n  ")
     );
 }
 
@@ -442,263 +476,6 @@ fn terminal_setup_camel_alias_is_registered() {
 }
 
 // ---------------------------------------------------------------------------
-// Remote / cloud honest-stub parity tests
-// ---------------------------------------------------------------------------
-
-/// /teleport: spec description must advertise local-session listing and note
-/// that remote teleport is not available.
-#[test]
-fn teleport_spec_is_local_first_honest() {
-    let dir = tempfile::tempdir().expect("temp dir");
-    let registry = build_command_registry(Some(dir.path().to_path_buf())).expect("build registry");
-    let cmd = registry
-        .resolve("teleport")
-        .expect("teleport must be registered");
-    let spec = cmd.spec();
-    assert!(
-        spec.description.to_lowercase().contains("local"),
-        "teleport description must mention local sessions; got: {}",
-        spec.description
-    );
-    assert!(
-        spec.description.to_lowercase().contains("not available")
-            || spec.description.to_lowercase().contains("unavailable"),
-        "teleport description must note remote is not available; got: {}",
-        spec.description
-    );
-}
-
-/// /teleport: output header must contain `Local sessions` and the
-/// `remote teleport: not available` note.
-#[test]
-fn teleport_output_header_is_local_sessions_with_unavailable_note() {
-    use futures::executor::block_on;
-    use wonder_of_u_core::{CommandInvocation, CommandOutput};
-
-    let dir = tempfile::tempdir().expect("temp dir");
-    let registry = build_command_registry(Some(dir.path().to_path_buf())).expect("build registry");
-    let cmd = registry
-        .resolve("teleport")
-        .expect("teleport must be registered");
-
-    let result = block_on(cmd.execute(
-        parity_ctx(dir.path()),
-        CommandInvocation {
-            name: "teleport".into(),
-            args: String::new(),
-            raw: "/teleport".into(),
-        },
-    ));
-    let output = result.expect("/teleport must succeed");
-    let CommandOutput::Text(text) = output else {
-        panic!("expected Text output");
-    };
-    assert!(
-        text.to_lowercase().contains("local session"),
-        "/teleport output must contain 'Local session'; got:\n{text}"
-    );
-    assert!(
-        text.to_lowercase().contains("not available"),
-        "/teleport output must note remote teleport is not available; got:\n{text}"
-    );
-}
-
-/// /remote-env (no config stored): output must say remote sessions are not
-/// available and point toward /status.
-#[test]
-fn remote_env_none_output_says_unavailable_and_references_status() {
-    use futures::executor::block_on;
-    use wonder_of_u_core::{CommandInvocation, CommandOutput};
-
-    let dir = tempfile::tempdir().expect("temp dir");
-    let registry = build_command_registry(Some(dir.path().to_path_buf())).expect("build registry");
-    let cmd = registry
-        .resolve("remote-env")
-        .expect("remote-env must be registered");
-
-    let result = block_on(cmd.execute(
-        parity_ctx(dir.path()),
-        CommandInvocation {
-            name: "remote-env".into(),
-            args: String::new(),
-            raw: "/remote-env".into(),
-        },
-    ));
-    let output = result.expect("/remote-env must succeed");
-    let CommandOutput::Text(text) = output else {
-        panic!("expected Text output");
-    };
-    assert!(
-        text.to_lowercase().contains("not available"),
-        "/remote-env (no config) must say remote is not available; got:\n{text}"
-    );
-    assert!(
-        text.contains("/status"),
-        "/remote-env (no config) must point to /status; got:\n{text}"
-    );
-}
-
-/// /remote-env (config stored): output must show host/port/auth but mark
-/// the transport as inactive / inert, not functional.
-#[test]
-fn remote_env_some_output_marks_transport_inactive() {
-    use futures::executor::block_on;
-    use wonder_of_u_core::{CommandInvocation, CommandOutput};
-
-    let dir = tempfile::tempdir().expect("temp dir");
-    let registry = build_command_registry(Some(dir.path().to_path_buf())).expect("build registry");
-    let setup_cmd = registry
-        .resolve("remote-setup")
-        .expect("remote-setup must be registered");
-
-    // Store a config entry first.
-    block_on(setup_cmd.execute(
-        parity_ctx(dir.path()),
-        CommandInvocation {
-            name: "remote-setup".into(),
-            args: "example.com:22 ssh".into(),
-            raw: "/remote-setup example.com:22 ssh".into(),
-        },
-    ))
-    .expect("remote-setup must succeed");
-
-    // Now query remote-env.
-    let env_cmd = registry
-        .resolve("remote-env")
-        .expect("remote-env must be registered");
-    let result = block_on(env_cmd.execute(
-        parity_ctx(dir.path()),
-        CommandInvocation {
-            name: "remote-env".into(),
-            args: String::new(),
-            raw: "/remote-env".into(),
-        },
-    ));
-    let output = result.expect("/remote-env must succeed");
-    let CommandOutput::Text(text) = output else {
-        panic!("expected Text output");
-    };
-    assert!(
-        text.contains("example.com"),
-        "/remote-env must show stored host; got:\n{text}"
-    );
-    assert!(
-        text.to_lowercase().contains("inactive")
-            || text.to_lowercase().contains("inert")
-            || text.to_lowercase().contains("not available"),
-        "/remote-env must mark transport as inactive; got:\n{text}"
-    );
-    // Must not claim the transport is live.
-    assert!(
-        !text.to_lowercase().contains("connected")
-            && !text.to_lowercase().contains("active transport"),
-        "/remote-env must not imply a live connection; got:\n{text}"
-    );
-}
-
-/// `/remote-setup` must say it only stores local config and that remote/web
-/// session transport is unavailable in this Rust build.
-#[test]
-fn remote_setup_output_marks_config_only_and_transport_unavailable() {
-    use futures::executor::block_on;
-    use wonder_of_u_core::{CommandInvocation, CommandOutput};
-
-    let dir = tempfile::tempdir().expect("temp dir");
-    let registry = build_command_registry(Some(dir.path().to_path_buf())).expect("build registry");
-    let cmd = registry
-        .resolve("remote-setup")
-        .expect("remote-setup must be registered");
-
-    let result = block_on(cmd.execute(
-        parity_ctx(dir.path()),
-        CommandInvocation {
-            name: "remote-setup".into(),
-            args: "myhost.example.com:2222 key".into(),
-            raw: "/remote-setup myhost.example.com:2222 key".into(),
-        },
-    ));
-    let output = result.expect("/remote-setup must succeed");
-    let CommandOutput::Text(text) = output else {
-        panic!("expected Text output");
-    };
-    assert!(
-        text.to_lowercase().contains("unavailable"),
-        "/remote-setup must state transport is unavailable; got:\n{text}"
-    );
-    assert!(
-        text.to_lowercase().contains("config stored locally only")
-            || text.to_lowercase().contains("stores config only"),
-        "/remote-setup must mention config-only behavior; got:\n{text}"
-    );
-}
-
-/// `/remote-setup` help/spec text must be explicit that this Rust build stores
-/// config only and does not provide a remote/web session transport.
-#[test]
-fn remote_setup_spec_is_honest_about_config_only_transport() {
-    let dir = tempfile::tempdir().expect("temp dir");
-    let registry = build_command_registry(Some(dir.path().to_path_buf())).expect("build registry");
-    let spec = registry
-        .resolve("remote-setup")
-        .expect("remote-setup must be registered")
-        .spec();
-
-    let description = spec.description.to_lowercase();
-    assert!(
-        description.contains("config"),
-        "remote-setup description must mention config storage; got: {}",
-        spec.description
-    );
-    assert!(
-        description.contains("transport unavailable")
-            || description.contains("transport unavailable in this rust build")
-            || description.contains("transport unavailable in this build"),
-        "remote-setup description must mention unavailable transport; got: {}",
-        spec.description
-    );
-}
-
-/// /bridge-kick: must always return an unavailability message and must NOT
-/// say `restart required` or imply a real bridge process.
-#[test]
-fn bridge_kick_is_noop_unavailable_with_no_restart_language() {
-    use futures::executor::block_on;
-    use wonder_of_u_core::{CommandInvocation, CommandOutput};
-
-    let dir = tempfile::tempdir().expect("temp dir");
-    let registry = build_command_registry(Some(dir.path().to_path_buf())).expect("build registry");
-    let cmd = registry
-        .resolve("bridge-kick")
-        .expect("bridge-kick must be registered");
-
-    let result = block_on(cmd.execute(
-        parity_ctx(dir.path()),
-        CommandInvocation {
-            name: "bridge-kick".into(),
-            args: String::new(),
-            raw: "/bridge-kick".into(),
-        },
-    ));
-    let output = result.expect("/bridge-kick must succeed");
-    let CommandOutput::Text(text) = output else {
-        panic!("expected Text output");
-    };
-    assert!(
-        text.to_lowercase().contains("not available")
-            || text.to_lowercase().contains("not implemented"),
-        "/bridge-kick must report unavailability; got:\n{text}"
-    );
-    assert!(
-        !text.to_lowercase().contains("restart required"),
-        "/bridge-kick must not say 'restart required'; got:\n{text}"
-    );
-    assert!(
-        !text.to_lowercase().contains("restart the bridge process"),
-        "/bridge-kick must not instruct restarting a bridge process; got:\n{text}"
-    );
-}
-
-// ---------------------------------------------------------------------------
 // Telemetry / experiments honest-omission tests  (ADR 0001)
 // ---------------------------------------------------------------------------
 
@@ -806,41 +583,6 @@ fn status_output_marks_cloud_sync_surfaces_as_non_parity() {
         text.contains("team_memory_sync_reason=")
             && text.contains("session memory remains local-only"),
         "/status must explain team memory sync is unsupported; got:\n{text}"
-    );
-}
-
-/// `/ultraplan`: output must mention cloud backend unavailability and that the
-/// flag is stored for local planning guidance only.
-#[test]
-fn ultraplan_output_says_cloud_unavailable_and_local_guidance_only() {
-    use futures::executor::block_on;
-    use wonder_of_u_core::{CommandInvocation, CommandOutput};
-
-    let dir = tempfile::tempdir().expect("temp dir");
-    let registry = build_command_registry(Some(dir.path().to_path_buf())).expect("build registry");
-    let cmd = registry
-        .resolve("ultraplan")
-        .expect("ultraplan must be registered");
-
-    let result = block_on(cmd.execute(
-        parity_ctx(dir.path()),
-        CommandInvocation {
-            name: "ultraplan".into(),
-            args: String::new(),
-            raw: "/ultraplan".into(),
-        },
-    ));
-    let output = result.expect("/ultraplan must succeed");
-    let CommandOutput::Text(text) = output else {
-        panic!("expected Text output");
-    };
-    assert!(
-        text.to_lowercase().contains("not available"),
-        "/ultraplan must say cloud backend is not available; got:\n{text}"
-    );
-    assert!(
-        text.to_lowercase().contains("local"),
-        "/ultraplan must clarify flag is for local planning guidance; got:\n{text}"
     );
 }
 

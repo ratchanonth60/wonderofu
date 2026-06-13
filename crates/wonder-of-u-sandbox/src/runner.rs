@@ -1,7 +1,4 @@
-use std::{
-    path::PathBuf,
-    process::Command,
-};
+use std::{path::PathBuf, process::Command};
 
 use crate::SandboxPolicy;
 
@@ -56,12 +53,7 @@ impl SandboxRunner {
     /// Wrap a shell command in the sandbox.
     /// Returns the wrapped command builder, or the original command
     /// if sandboxing is unavailable.
-    pub fn wrap_command(
-        &self,
-        program: &str,
-        args: &[&str],
-        cwd: &PathBuf,
-    ) -> Command {
+    pub fn wrap_command(&self, program: &str, args: &[&str], cwd: &PathBuf) -> Command {
         build_sandbox_command(program, args, cwd, &self.policy, self.has_bwrap)
     }
 
@@ -140,12 +132,16 @@ pub fn build_sandbox_command(
 
     for entry in &policy.readable_paths {
         let path_str = entry.path.to_string_lossy();
-        cmd.arg("--ro-bind").arg(path_str.as_ref()).arg(path_str.as_ref());
+        cmd.arg("--ro-bind")
+            .arg(path_str.as_ref())
+            .arg(path_str.as_ref());
     }
 
     for entry in &policy.writable_paths {
         let path_str = entry.path.to_string_lossy();
-        cmd.arg("--bind").arg(path_str.as_ref()).arg(path_str.as_ref());
+        cmd.arg("--bind")
+            .arg(path_str.as_ref())
+            .arg(path_str.as_ref());
     }
 
     cmd.arg("--chdir").arg(cwd.to_string_lossy().as_ref());
@@ -165,7 +161,9 @@ mod tests {
         let runner = SandboxRunner::new(policy);
         let result = runner.build_result("hello".into(), String::new(), Some(0), false, false);
         assert!(!result.sandbox_applied);
-        assert!(result.sandbox_mode.contains("unsupported") || result.sandbox_mode.contains("none"));
+        assert!(
+            result.sandbox_mode.contains("unsupported") || result.sandbox_mode.contains("none")
+        );
     }
 
     #[test]

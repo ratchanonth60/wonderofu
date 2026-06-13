@@ -7,8 +7,8 @@
 
 #![warn(missing_docs)]
 
-mod engine;
 mod builtin;
+mod engine;
 
-pub use engine::{PromptTemplate, TemplateEngine, TemplateVariable};
 pub use builtin::BUILTIN_TEMPLATES;
+pub use engine::{PromptTemplate, TemplateEngine, TemplateVariable};

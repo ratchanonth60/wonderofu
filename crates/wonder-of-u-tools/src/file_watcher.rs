@@ -58,25 +58,20 @@ impl FileWatcher {
         let (tx, rx) = mpsc::channel();
 
         let tx_clone = tx.clone();
-        let mut watcher = notify::recommended_watcher(
-            move |res: Result<Event, notify::Error>| {
-                if let Ok(event) = res {
-                    for path in event.paths {
-                        let _ = tx_clone.send(FileChangeEvent {
-                            path,
-                            kind: event.kind.into(),
-                        });
-                    }
+        let mut watcher = notify::recommended_watcher(move |res: Result<Event, notify::Error>| {
+            if let Ok(event) = res {
+                for path in event.paths {
+                    let _ = tx_clone.send(FileChangeEvent {
+                        path,
+                        kind: event.kind.into(),
+                    });
                 }
-            },
-        )
+            }
+        })
         .map_err(|e| format!("failed to create watcher: {e}"))?;
 
         watcher
-            .configure(
-                Config::default()
-                    .with_poll_interval(Duration::from_secs(2)),
-            )
+            .configure(Config::default().with_poll_interval(Duration::from_secs(2)))
             .map_err(|e| format!("failed to configure watcher: {e}"))?;
 
         watcher

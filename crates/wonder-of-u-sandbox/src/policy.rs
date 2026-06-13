@@ -48,12 +48,10 @@ impl SandboxPolicy {
     /// the project root and standard temp directories.
     #[must_use]
     pub fn workspace_policy(project_root: PathBuf) -> Self {
-        let readable = vec![
-            FileSystemEntry {
-                path: PathBuf::from("/"),
-                decision: PolicyDecision::ReadOnly,
-            },
-        ];
+        let readable = vec![FileSystemEntry {
+            path: PathBuf::from("/"),
+            decision: PolicyDecision::ReadOnly,
+        }];
         let writable = vec![
             FileSystemEntry {
                 path: project_root,

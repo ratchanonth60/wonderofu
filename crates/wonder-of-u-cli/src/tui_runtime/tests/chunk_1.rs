@@ -622,33 +622,6 @@ fn controller_meta_e_toggles_tool_output_expansion() {
 }
 
 #[test]
-fn controller_shows_usage_notice_dialog() {
-    let dir = unique_test_dir("tui-usage-notice");
-    let registry = commands::registry(Some(dir.clone())).expect("registry");
-    let mut controller = TuiController::new(
-        test_context(&dir),
-        &registry,
-        Some(dir.as_path()),
-        TuiLaunchOptions { session_id: None },
-    )
-    .expect("controller");
-
-    block_on(controller.execute_slash_command("/usage")).expect("show usage");
-
-    assert_eq!(controller.status_note.as_deref(), Some("usage"));
-    assert!(matches!(
-        controller.dialog.as_ref(),
-        Some(dialog) if dialog.title == "Usage"
-    ));
-    assert!(
-        !controller.state.messages.iter().any(|message| {
-            matches!(&message.payload, MessagePayload::Command { .. })
-        }),
-        "/usage must not record to transcript"
-    );
-}
-
-#[test]
 fn controller_shows_keybindings_notice_dialog() {
     let dir = unique_test_dir("tui-keybindings-notice");
     let registry = commands::registry(Some(dir.clone())).expect("registry");

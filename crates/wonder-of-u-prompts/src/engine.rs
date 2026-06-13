@@ -61,7 +61,12 @@ impl TemplateEngine {
     }
 
     /// Render a template with the given variables.
-    pub fn render(&self, name: &str, model: &str, vars: &HashMap<String, String>) -> Option<String> {
+    pub fn render(
+        &self,
+        name: &str,
+        model: &str,
+        vars: &HashMap<String, String>,
+    ) -> Option<String> {
         let template = self.find(name, model)?;
         Some(render_template(&template.content, vars))
     }

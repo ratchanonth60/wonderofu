@@ -12,35 +12,17 @@
 //! exit is logged as a warning but does not block the tool.
 
 use std::{
-    collections::BTreeMap,
-    fs,
-    path::{Path, PathBuf},
+    path::Path,
     process::{Command as ProcessCommand, Stdio},
     time::Duration,
 };
 
 use serde::Deserialize;
 use serde_json::{Value, json};
-use wonder_of_u_storage::StoragePaths;
+
+use super::hook_trust::{build_hook_entry, load_hook_trust_state, load_hooks_config};
 
 // ── Hook config types (mirrors workflow.rs HooksConfig) ─────────────────────
-
-#[derive(Clone, Debug, Default, Deserialize)]
-struct HooksConfig {
-    #[serde(default)]
-    disable_all_hooks: bool,
-    #[serde(default)]
-    hooks: BTreeMap<String, Vec<HookMatcherConfig>>,
-}
-
-#[derive(Clone, Debug, Default, Deserialize)]
-struct HookMatcherConfig {
-    /// Glob/regex pattern matched against the tool name.  `None` matches all.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    matcher: Option<String>,
-    #[serde(default)]
-    hooks: Vec<HookActionConfig>,
-}
 
 #[derive(Clone, Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -48,23 +30,33 @@ struct HookMatcherConfig {
 enum HookActionConfig {
     Command {
         command: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        shell: Option<String>,
         #[serde(default, rename = "if", skip_serializing_if = "Option::is_none")]
         condition: Option<String>,
+        #[serde(default)]
+        managed: bool,
     },
     Prompt {
         prompt: String,
         #[serde(default, rename = "if", skip_serializing_if = "Option::is_none")]
         condition: Option<String>,
+        #[serde(default)]
+        managed: bool,
     },
     Agent {
         prompt: String,
         #[serde(default, rename = "if", skip_serializing_if = "Option::is_none")]
         condition: Option<String>,
+        #[serde(default)]
+        managed: bool,
     },
     Http {
         url: String,
         #[serde(default, rename = "if", skip_serializing_if = "Option::is_none")]
         condition: Option<String>,
+        #[serde(default)]
+        managed: bool,
     },
 }
 
@@ -147,8 +139,12 @@ pub fn run_hooks(
     cwd: &Path,
     storage_dir: Option<&Path>,
 ) -> HookRunReport {
-    let config = match load_config(storage_dir) {
+    let config = match load_hooks_config(storage_dir) {
         Ok(c) => c,
+        Err(_) => return HookRunReport::allow(),
+    };
+    let state = match load_hook_trust_state(storage_dir) {
+        Ok(s) => s,
         Err(_) => return HookRunReport::allow(),
     };
 
@@ -170,7 +166,15 @@ pub fn run_hooks(
     if let Some(response) = tool_response {
         hook_input["tool_response"] = response.clone();
     }
-    run_matching_hooks(matchers, tool_name, &hook_input, cwd)
+    run_matching_hooks(
+        event,
+        matchers,
+        config.allow_managed_hooks_only,
+        &state,
+        tool_name,
+        &hook_input,
+        cwd,
+    )
 }
 
 /// Runs non-tool lifecycle hooks using a JSON payload.
@@ -181,8 +185,12 @@ pub fn run_lifecycle_hooks(
     cwd: &Path,
     storage_dir: Option<&Path>,
 ) -> HookRunReport {
-    let config = match load_config(storage_dir) {
+    let config = match load_hooks_config(storage_dir) {
         Ok(c) => c,
+        Err(_) => return HookRunReport::allow(),
+    };
+    let state = match load_hook_trust_state(storage_dir) {
+        Ok(s) => s,
         Err(_) => return HookRunReport::allow(),
     };
 
@@ -203,11 +211,22 @@ pub fn run_lifecycle_hooks(
         .get("source")
         .and_then(Value::as_str)
         .unwrap_or(event);
-    run_matching_hooks(matchers, matcher_value, &hook_input, cwd)
+    run_matching_hooks(
+        event,
+        matchers,
+        config.allow_managed_hooks_only,
+        &state,
+        matcher_value,
+        &hook_input,
+        cwd,
+    )
 }
 
 fn run_matching_hooks(
-    matchers: &[HookMatcherConfig],
+    event: &str,
+    matchers: &[super::hook_trust::HookMatcherConfig],
+    allow_managed_hooks_only: bool,
+    state: &super::hook_trust::HookTrustState,
     matcher_value: &str,
     hook_input: &Value,
     cwd: &Path,
@@ -215,13 +234,27 @@ fn run_matching_hooks(
     let hook_input_str = hook_input.to_string();
     let mut report = HookRunReport::allow();
 
-    for matcher in matchers {
+    for (matcher_index, matcher) in matchers.iter().enumerate() {
         if !tool_name_matches(matcher_value, matcher.matcher.as_deref()) {
             continue;
         }
-        for action in &matcher.hooks {
-            let condition = action.condition();
-            match condition_matches(condition, hook_input) {
+        for (hook_index, action_value) in matcher.hooks.iter().enumerate() {
+            let entry = build_hook_entry(
+                event,
+                matcher_index,
+                hook_index,
+                matcher,
+                action_value,
+                state,
+            );
+            if allow_managed_hooks_only && !entry.managed {
+                continue;
+            }
+            if !entry.is_trusted_and_enabled() {
+                continue;
+            }
+
+            match condition_matches(entry.condition.as_deref(), hook_input) {
                 Ok(true) => {}
                 Ok(false) => continue,
                 Err(_) => {
@@ -230,10 +263,19 @@ fn run_matching_hooks(
                 }
             }
 
+            let action = match serde_json::from_value::<HookActionConfig>(action_value.clone()) {
+                Ok(action) => action,
+                Err(_) => {
+                    report.hook_count = report.hook_count.saturating_add(1);
+                    report.success = false;
+                    continue;
+                }
+            };
+
             match action {
                 HookActionConfig::Command { command, .. } => {
                     report.hook_count = report.hook_count.saturating_add(1);
-                    match exec_command_hook(command, &hook_input_str, cwd) {
+                    match exec_command_hook(&command, &hook_input_str, cwd) {
                         CommandHookOutcome::Passed { updated_input } => {
                             // Last hook to emit updatedInput wins.
                             if updated_input.is_some() {
@@ -261,41 +303,7 @@ fn run_matching_hooks(
     report
 }
 
-impl HookActionConfig {
-    fn condition(&self) -> Option<&str> {
-        match self {
-            Self::Command { condition, .. }
-            | Self::Prompt { condition, .. }
-            | Self::Agent { condition, .. }
-            | Self::Http { condition, .. } => condition.as_deref(),
-        }
-    }
-}
-
 // ── Internal helpers ─────────────────────────────────────────────────────────
-
-fn load_config(storage_dir: Option<&Path>) -> Result<HooksConfig, ()> {
-    let path = resolve_hooks_path(storage_dir);
-    if !path.exists() {
-        return Ok(HooksConfig::default());
-    }
-    let content = fs::read_to_string(&path).map_err(|_| ())?;
-    serde_json::from_str(&content).map_err(|_| ())
-}
-
-fn resolve_hooks_path(storage_dir: Option<&Path>) -> PathBuf {
-    storage_dir
-        .map(StoragePaths::new)
-        .map(|p| p.config_dir())
-        .unwrap_or_else(|| {
-            std::env::var_os("HOME")
-                .map(PathBuf::from)
-                .unwrap_or_else(|| PathBuf::from("."))
-                .join(".wonder-of-u")
-                .join("config")
-        })
-        .join("hooks.json")
-}
 
 /// Returns `true` if `tool_name` matches the optional `pattern`.
 ///
@@ -521,6 +529,7 @@ fn parse_updated_input(output: &str) -> Option<Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::commands::hook_trust;
     use std::fs;
     use tempfile::TempDir;
 
@@ -528,6 +537,20 @@ mod tests {
         let config_dir = dir.join("config");
         fs::create_dir_all(&config_dir).unwrap();
         fs::write(config_dir.join("hooks.json"), json).unwrap();
+    }
+
+    fn trust_all_hooks(dir: &Path) {
+        let entries = hook_trust::load_hooks_inventory(Some(dir))
+            .expect("load hook inventory")
+            .entries;
+        for entry in entries {
+            hook_trust::trust_hook(Some(dir), &entry.id).expect("trust hook");
+        }
+    }
+
+    fn write_trusted_hooks(dir: &Path, json: &str) {
+        write_hooks(dir, json);
+        trust_all_hooks(dir);
     }
 
     #[test]
@@ -564,9 +587,150 @@ mod tests {
     }
 
     #[test]
+    fn untrusted_command_hook_is_skipped() {
+        let dir = TempDir::new().unwrap();
+        let out_file = dir.path().join("untrusted-ran");
+        let hooks_config = json!({
+            "hooks": {
+                "PreToolUse": [{
+                    "hooks": [{
+                        "type": "command",
+                        "command": format!("touch '{}'", out_file.display())
+                    }]
+                }]
+            }
+        });
+        write_hooks(dir.path(), &hooks_config.to_string());
+
+        let outcome = run_hooks(
+            PRE_TOOL_USE,
+            "bash",
+            &json!({}),
+            None,
+            dir.path(),
+            Some(dir.path()),
+        );
+
+        assert_eq!(outcome.outcome, HookOutcome::Allow);
+        assert_eq!(outcome.hook_count, 0);
+        assert!(outcome.success);
+        assert!(!out_file.exists(), "untrusted hook must not run");
+    }
+
+    #[test]
+    fn changed_hook_is_skipped_until_retrusted() {
+        let dir = TempDir::new().unwrap();
+        let out_file = dir.path().join("changed-ran");
+        let original = json!({
+            "hooks": {
+                "PreToolUse": [{
+                    "hooks": [{
+                        "type": "command",
+                        "command": "true"
+                    }]
+                }]
+            }
+        });
+        write_trusted_hooks(dir.path(), &original.to_string());
+
+        let changed = json!({
+            "hooks": {
+                "PreToolUse": [{
+                    "hooks": [{
+                        "type": "command",
+                        "command": format!("touch '{}'", out_file.display())
+                    }]
+                }]
+            }
+        });
+        write_hooks(dir.path(), &changed.to_string());
+
+        let outcome = run_hooks(
+            PRE_TOOL_USE,
+            "bash",
+            &json!({}),
+            None,
+            dir.path(),
+            Some(dir.path()),
+        );
+
+        assert_eq!(outcome.outcome, HookOutcome::Allow);
+        assert_eq!(outcome.hook_count, 0);
+        assert!(!out_file.exists(), "changed hook must not run before trust");
+    }
+
+    #[test]
+    fn disabled_trusted_hook_is_skipped() {
+        let dir = TempDir::new().unwrap();
+        write_trusted_hooks(
+            dir.path(),
+            r#"{"hooks": {"PreToolUse": [{"hooks": [{"type": "command", "command": "exit 2"}]}]}}"#,
+        );
+        hook_trust::set_hook_disabled(Some(dir.path()), "pretooluse.0.0", true)
+            .expect("disable hook");
+
+        let outcome = run_hooks(
+            PRE_TOOL_USE,
+            "bash",
+            &json!({}),
+            None,
+            dir.path(),
+            Some(dir.path()),
+        );
+
+        assert_eq!(outcome.outcome, HookOutcome::Allow);
+        assert_eq!(outcome.hook_count, 0);
+        assert!(outcome.success);
+    }
+
+    #[test]
+    fn allow_managed_hooks_only_skips_unmanaged_hooks() {
+        let dir = TempDir::new().unwrap();
+        write_trusted_hooks(
+            dir.path(),
+            r#"{"allow_managed_hooks_only": true, "hooks": {"PreToolUse": [{"hooks": [{"type": "command", "command": "exit 2"}]}]}}"#,
+        );
+
+        let outcome = run_hooks(
+            PRE_TOOL_USE,
+            "bash",
+            &json!({}),
+            None,
+            dir.path(),
+            Some(dir.path()),
+        );
+
+        assert_eq!(outcome.outcome, HookOutcome::Allow);
+        assert_eq!(outcome.hook_count, 0);
+        assert!(outcome.success);
+    }
+
+    #[test]
+    fn allow_managed_hooks_only_runs_managed_trusted_hooks() {
+        let dir = TempDir::new().unwrap();
+        write_trusted_hooks(
+            dir.path(),
+            r#"{"allow_managed_hooks_only": true, "hooks": {"PreToolUse": [{"hooks": [{"type": "command", "managed": true, "command": "true"}]}]}}"#,
+        );
+
+        let outcome = run_hooks(
+            PRE_TOOL_USE,
+            "bash",
+            &json!({}),
+            None,
+            dir.path(),
+            Some(dir.path()),
+        );
+
+        assert_eq!(outcome.outcome, HookOutcome::Allow);
+        assert_eq!(outcome.hook_count, 1);
+        assert!(outcome.success);
+    }
+
+    #[test]
     fn allow_when_no_matching_event() {
         let dir = TempDir::new().unwrap();
-        write_hooks(
+        write_trusted_hooks(
             dir.path(),
             r#"{"hooks": {"PostToolUse": [{"hooks": [{"type": "command", "command": "exit 2"}]}]}}"#,
         );
@@ -586,7 +750,7 @@ mod tests {
     #[test]
     fn allow_when_command_exits_zero() {
         let dir = TempDir::new().unwrap();
-        write_hooks(
+        write_trusted_hooks(
             dir.path(),
             r#"{"hooks": {"PreToolUse": [{"hooks": [{"type": "command", "command": "true"}]}]}}"#,
         );
@@ -606,7 +770,7 @@ mod tests {
     #[test]
     fn block_when_command_exits_2_with_continue_false() {
         let dir = TempDir::new().unwrap();
-        write_hooks(
+        write_trusted_hooks(
             dir.path(),
             r#"{"hooks": {"PreToolUse": [{"hooks": [{"type": "command", "command": "printf '{\"continue\":false,\"stopReason\":\"not allowed\"}'; exit 2"}]}]}}"#,
         );
@@ -632,7 +796,7 @@ mod tests {
     fn allow_when_command_exits_2_without_continue_false() {
         let dir = TempDir::new().unwrap();
         // exit 2 but stdout is not a block JSON → allow
-        write_hooks(
+        write_trusted_hooks(
             dir.path(),
             r#"{"hooks": {"PreToolUse": [{"hooks": [{"type": "command", "command": "exit 2"}]}]}}"#,
         );
@@ -708,7 +872,7 @@ mod tests {
                 "PostToolUse": [{"hooks": [{"type": "command", "command": cmd}]}]
             }
         });
-        write_hooks(dir.path(), &hooks_config.to_string());
+        write_trusted_hooks(dir.path(), &hooks_config.to_string());
         let tool_response = json!({"success": true, "content": "ok"});
         let outcome = run_hooks(
             POST_TOOL_USE,
@@ -744,7 +908,7 @@ mod tests {
                 "PreToolUse": [{"hooks": [{"type": "command", "command": cmd}]}]
             }
         });
-        write_hooks(dir.path(), &hooks_config.to_string());
+        write_trusted_hooks(dir.path(), &hooks_config.to_string());
         run_hooks(
             PRE_TOOL_USE,
             "bash",
@@ -816,7 +980,7 @@ mod tests {
                 }]
             }
         });
-        write_hooks(dir.path(), &hooks_config.to_string());
+        write_trusted_hooks(dir.path(), &hooks_config.to_string());
 
         let report = run_hooks(
             PRE_TOOL_USE,
@@ -843,7 +1007,7 @@ mod tests {
                 "PreToolUse": [{"hooks": [{"type": "command", "command": "true"}]}]
             }
         });
-        write_hooks(dir.path(), &hooks_config.to_string());
+        write_trusted_hooks(dir.path(), &hooks_config.to_string());
 
         let report = run_hooks(
             PRE_TOOL_USE,
@@ -874,7 +1038,7 @@ mod tests {
                 }]
             }
         });
-        write_hooks(dir.path(), &hooks_config.to_string());
+        write_trusted_hooks(dir.path(), &hooks_config.to_string());
 
         let report = run_hooks(
             PRE_TOOL_USE,
@@ -903,7 +1067,7 @@ mod tests {
                 }]
             }
         });
-        write_hooks(dir.path(), &hooks_config.to_string());
+        write_trusted_hooks(dir.path(), &hooks_config.to_string());
 
         let report = run_hooks(
             PRE_TOOL_USE,
@@ -928,7 +1092,7 @@ mod tests {
                 }]
             }
         });
-        write_hooks(dir.path(), &hooks_config.to_string());
+        write_trusted_hooks(dir.path(), &hooks_config.to_string());
 
         let report = run_hooks(
             PRE_TOOL_USE,
@@ -960,7 +1124,7 @@ mod tests {
                 }]
             }
         });
-        write_hooks(dir.path(), &hooks_config.to_string());
+        write_trusted_hooks(dir.path(), &hooks_config.to_string());
 
         let report = run_lifecycle_hooks(
             SESSION_START,
@@ -998,7 +1162,7 @@ mod tests {
                 }]
             }
         });
-        write_hooks(dir.path(), &hooks_config.to_string());
+        write_trusted_hooks(dir.path(), &hooks_config.to_string());
 
         let report = run_hooks(
             PRE_TOOL_USE,
@@ -1028,7 +1192,7 @@ mod tests {
                 }]
             }
         });
-        write_hooks(dir.path(), &hooks_config.to_string());
+        write_trusted_hooks(dir.path(), &hooks_config.to_string());
 
         let report = run_hooks(
             PRE_TOOL_USE,

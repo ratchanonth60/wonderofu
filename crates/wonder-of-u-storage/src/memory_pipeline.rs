@@ -10,10 +10,7 @@
 //! Consolidates Phase 1 outputs into the memory workspace (MEMORY.md,
 //! skills/ dir), resolving conflicts and merging related memories.
 
-use std::{
-    path::PathBuf,
-    time::SystemTime,
-};
+use std::{path::PathBuf, time::SystemTime};
 
 use serde::{Deserialize, Serialize};
 use wonder_of_u_core::Result;
@@ -132,9 +129,7 @@ impl MemoryPipelineStore {
     /// Create a new pipeline store rooted at the given path.
     #[must_use]
     pub fn new(root: impl Into<PathBuf>) -> Self {
-        Self {
-            root: root.into(),
-        }
+        Self { root: root.into() }
     }
 
     fn memories_path(&self) -> PathBuf {
@@ -166,15 +161,14 @@ impl MemoryPipelineStore {
         max_unused_days: u32,
         max_memories: usize,
     ) -> Vec<ExtractedMemory> {
-        let cutoff = SystemTime::now()
-            .checked_sub(std::time::Duration::from_secs(u64::from(max_unused_days) * 86400));
+        let cutoff = SystemTime::now().checked_sub(std::time::Duration::from_secs(
+            u64::from(max_unused_days) * 86400,
+        ));
 
         let mut active: Vec<_> = memories
             .iter()
             .filter(|m| {
-                cutoff.is_none_or(|cutoff| {
-                    m.last_usage.unwrap_or(m.generated_at) >= cutoff
-                })
+                cutoff.is_none_or(|cutoff| m.last_usage.unwrap_or(m.generated_at) >= cutoff)
             })
             .cloned()
             .collect();
@@ -225,8 +219,7 @@ mod tests {
             usage_count: 0,
             source_session: None,
         };
-        let result =
-            MemoryPipelineStore::prune_memories(&[fresh.clone(), stale], 90, 100);
+        let result = MemoryPipelineStore::prune_memories(&[fresh.clone(), stale], 90, 100);
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].id, "fresh");
     }
