@@ -260,6 +260,7 @@ const fn role_prefix(role: MessageRole) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::measure::line_width;
 
     fn texts(lines: &[MessageLineView]) -> Vec<String> {
         lines.iter().map(|line| line.text.clone()).collect()
@@ -464,6 +465,34 @@ mod tests {
             texts(&final_lines),
             texts(&expected),
             "streaming final output must match non-streaming render"
+        );
+    }
+
+    #[test]
+    fn render_wide_table_lines_fit_within_width_after_truncation() {
+        let wide_source = "| Column A | Column B | Column C | Column D | Column E |\n\
+                           |----------|----------|----------|----------|----------|\n\
+                           | value 1  | value 2  | value 3  | value 4  | value 5  |\n\
+                           after\n";
+        let mut collector = StreamMarkdownCollector::new();
+        let mut render = StreamRender::new(40, MessageRole::Assistant, None);
+
+        collector.push_delta(wide_source);
+        while let Some(src) = collector.commit_complete_source() {
+            render.enqueue_committed(src, 40);
+        }
+        render.reveal(usize::MAX);
+        let final_lines = render.lines("", 40);
+
+        assert!(
+            final_lines.len() >= 4,
+            "table at narrow width must produce lines: {:?}",
+            texts(&final_lines)
+        );
+        assert!(
+            final_lines.iter().all(|line| line_width(&line.text) <= 40),
+            "every streaming line must fit within width: {:?}",
+            texts(&final_lines)
         );
     }
 }

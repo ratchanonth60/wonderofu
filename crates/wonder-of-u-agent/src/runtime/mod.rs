@@ -422,7 +422,11 @@ fn context_window_for_model(model: &str) -> u64 {
         || model.contains("claude-3-opus")
     {
         200_000
-    } else if model.contains("gpt-4o") {
+    } else if model.contains("gpt-4o")
+        || model.contains("deepseek")
+        || model.contains("kimi")
+        || model.contains("glm")
+    {
         128_000
     } else {
         200_000

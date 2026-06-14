@@ -674,7 +674,7 @@ pub(super) fn chrome_status_text(state: &AppState) -> String {
     let mut parts = vec![
         model_status_label(state.provider.as_deref(), state.model.as_deref()),
         compact_cwd_label(&state.session.cwd),
-        format!("{} tok", state.costs.usage.total_tokens()),
+        format!("∑{} tok", state.costs.usage.total_tokens()),
         estimated_cost_label(state.costs.estimated_cost_usd),
     ];
 

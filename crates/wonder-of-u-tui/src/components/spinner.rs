@@ -191,7 +191,7 @@ impl SpinnerView {
             parts.push(format_duration(elapsed_ms));
         }
         if let Some(token_count) = self.token_count {
-            parts.push(format!("{token_count} tokens"));
+            parts.push(format!("{token_count} tok"));
         }
         parts
     }
@@ -313,6 +313,6 @@ mod tests {
         assert!(line.contains("Syncing"));
         assert!(line.contains("thinking"));
         assert!(line.contains("01:01"));
-        assert!(line.contains("128 tokens"));
+        assert!(line.contains("128 tok"));
     }
 }
