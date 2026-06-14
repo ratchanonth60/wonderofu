@@ -61,6 +61,12 @@ fn build_openai_request_with_mode(
         .expect("openai request body should be an object");
     if stream {
         body_map.insert("stream".into(), Value::Bool(true));
+        body_map.insert(
+            "stream_options".into(),
+            json!({
+                "include_usage": true,
+            }),
+        );
     }
     if let Some(temperature) = request.temperature {
         body_map.insert("temperature".into(), json!(temperature));

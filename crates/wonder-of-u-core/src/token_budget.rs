@@ -53,7 +53,6 @@ pub const COMPACT_MAX_OUTPUT_TOKENS: usize = 20_000;
 pub fn context_window_for_model(model_id: &str) -> usize {
     let m = model_id.to_ascii_lowercase();
 
-    // 1 M-context models: all Claude Sonnet 4 and Opus 4 variants
     if m.contains("claude-sonnet-4")
         || m.contains("claude-opus-4")
         || m.contains("opus-4-6")
@@ -62,10 +61,25 @@ pub fn context_window_for_model(model_id: &str) -> usize {
         return 1_000_000;
     }
 
-    // All other current Claude 3 / 4 families default to 200 k.
-    // The TS source falls through to MODEL_CONTEXT_WINDOW_DEFAULT for every
-    // model that doesn't match a special case, so we mirror that here rather
-    // than hard-coding per-variant constants that would drift with releases.
+    if m.contains("gpt-4o") {
+        return 128_000;
+    }
+
+    if m.contains("gemini-2.5")
+        || m.contains("gemini-3.")
+        || m.contains("gemini-3-")
+        || m.contains("gemini-pro-latest")
+        || m.contains("gemini-flash-latest")
+        || m.contains("gemini-2.0")
+        || m.contains("gemma-4")
+    {
+        return 1_048_576;
+    }
+
+    if m.contains("deepseek") || m.contains("kimi") || m.contains("glm") {
+        return 128_000;
+    }
+
     MODEL_CONTEXT_WINDOW_DEFAULT
 }
 
@@ -221,9 +235,29 @@ mod tests {
     }
 
     #[test]
+    fn gpt4o_returns_128k() {
+        assert_eq!(context_window_for_model("gpt-4o"), 128_000);
+    }
+
+    #[test]
+    fn deepseek_returns_128k() {
+        assert_eq!(context_window_for_model("deepseek-v4-flash"), 128_000);
+    }
+
+    #[test]
+    fn kimi_returns_128k() {
+        assert_eq!(context_window_for_model("kimi-k2"), 128_000);
+    }
+
+    #[test]
+    fn glm_returns_128k() {
+        assert_eq!(context_window_for_model("glm-4"), 128_000);
+    }
+
+    #[test]
     fn unknown_model_returns_default() {
         assert_eq!(
-            context_window_for_model("gpt-4o"),
+            context_window_for_model("hypothetical-model"),
             MODEL_CONTEXT_WINDOW_DEFAULT
         );
     }

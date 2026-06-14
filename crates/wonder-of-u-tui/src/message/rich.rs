@@ -2562,8 +2562,6 @@ fn truncate_existing_lines(lines: &[MessageLineView], max_width: usize) -> Vec<M
     let width = max_width.max(1);
     let mut out = Vec::new();
     for line in lines {
-        // If the line already fits, preserve it verbatim including any styled
-        // spans. This keeps streaming override lines stable and styled.
         if line_width(&line.text) <= width {
             out.push(line.clone());
             continue;
@@ -2579,15 +2577,38 @@ fn truncate_existing_lines(lines: &[MessageLineView], max_width: usize) -> Vec<M
             );
             continue;
         }
-        let wrapped = wrap_text_hard(&line.text, width);
-        if wrapped.is_empty() {
-            out.push(MessageLineView::new(String::new(), line.role));
+
+        if line.spans.is_empty() {
+            out.push(MessageLineView::new(
+                truncate_visible_end(&line.text, width),
+                line.role,
+            ));
         } else {
-            out.extend(
-                wrapped
-                    .into_iter()
-                    .map(|segment| MessageLineView::new(segment, line.role)),
-            );
+            out.push(MessageLineView::with_spans(
+                line.role,
+                truncate_spans_to_width(&line.spans, width),
+            ));
+        }
+    }
+    out
+}
+
+fn truncate_spans_to_width(spans: &[MessageSpanView], max_width: usize) -> Vec<MessageSpanView> {
+    let mut out = Vec::new();
+    let mut remaining = max_width;
+    for span in spans {
+        let span_width = line_width(&span.text);
+        if span_width <= remaining {
+            out.push(span.clone());
+            remaining = remaining.saturating_sub(span_width);
+        } else if remaining > 0 {
+            let truncated = truncate_visible_end(&span.text, remaining);
+            if !truncated.is_empty() {
+                out.push(MessageSpanView::new(truncated, span.style));
+            }
+            break;
+        } else {
+            break;
         }
     }
     out
@@ -4059,6 +4080,50 @@ mod tests {
             has_code_block,
             "Non-streaming path must still render partial code fence as Code block: {:?}",
             view.blocks
+        );
+    }
+
+    #[test]
+    fn truncate_existing_lines_clips_wide_table_without_garbling() {
+        let wide_source = "| Column A | Column B | Column C | Column D | Column E | Column F |\n\
+                           |----------|----------|----------|----------|----------|----------|\n\
+                           | value 1  | value 2  | value 3  | value 4  | value 5  | value 6  |";
+        let view = MarkdownSummaryView::new(MessageRole::Assistant, wide_source);
+        let lines = view.display_lines(40);
+
+        let truncated = truncate_existing_lines(&lines, 40);
+        assert!(
+            truncated.iter().all(|line| line_width(&line.text) <= 40),
+            "every truncated line must fit within width: {truncated:?}"
+        );
+        assert!(
+            lines.iter().all(|line| line_width(&line.text) <= 40),
+            "every non-streaming line must fit within width: {lines:?}"
+        );
+        assert_eq!(truncated.len(), lines.len());
+    }
+
+    #[test]
+    fn truncate_existing_lines_clips_styled_line_without_splitting() {
+        let styled = vec![MessageLineView::with_spans(
+            MessageRole::Assistant,
+            vec![
+                MessageSpanView::new("pre ", None),
+                MessageSpanView::new("styled bold text here", Some(TextStyle::default().bold())),
+                MessageSpanView::new(" suffix longer", None),
+            ],
+        )];
+        let truncated = truncate_existing_lines(&styled, 20);
+        assert_eq!(truncated.len(), 1, "styled wide line is clipped, not split");
+        assert!(
+            line_width(&truncated[0].text) <= 20,
+            "clipped line must fit: {:?}",
+            truncated[0].text
+        );
+        assert!(
+            truncated[0].spans.iter().any(|s| s.style.is_some()),
+            "styled spans are preserved in clip: {:?}",
+            truncated[0].spans
         );
     }
 }
