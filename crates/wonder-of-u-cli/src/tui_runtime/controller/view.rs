@@ -10,22 +10,21 @@ impl TuiController<'_> {
             .and_then(|search| current_history_search_match(search, &history_entries))
             .map_or_else(|| self.prompt.text(), ToString::to_string);
         let mut view = ShellView::from_app_state(&self.state, prompt, self.expand_tool_output);
-        let terminal_width = self.last_terminal_size.0;
-        let summary_width = if terminal_width == 0 {
-            80
+        let streaming_width = streaming_summary_width(self);
+        let summary_width = usize::from(streaming_width);
+        let streaming_override = if let ActiveTurn::Streaming(stream) = &self.active_turn {
+            let tail = stream.collector.tail_source();
+            let lines = stream.render.lines(tail, streaming_width);
+            Some((stream.assistant_index, lines))
         } else {
-            usize::from(transcript_wrap_width(shell_main_area_width(
-                terminal_width,
-                self.sidebar_pushes_main_area(),
-            )))
+            None
         };
-        let is_streaming = self.has_active_turn() || is_loading_turn_state(self.turn_state);
         view.messages = message_lines_for_width_with_cursor(
             &self.state.messages,
             summary_width,
             self.expand_tool_output,
             self.message_cursor_index,
-            is_streaming,
+            streaming_override,
         );
         view.message_cursor_index = self.message_cursor_index;
         if !self.sidebar_visible {

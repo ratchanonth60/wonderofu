@@ -40,11 +40,25 @@ impl TuiController<'_> {
     }
     pub(in crate::tui_runtime) fn transcript_line_count(&self, terminal_width: u16) -> usize {
         let summary_width = usize::from(terminal_width.max(1));
+        let streaming_width = streaming_summary_width(self);
+        let streaming_override = if let ActiveTurn::Streaming(stream) = &self.active_turn {
+            let tail = stream.collector.tail_source();
+            let lines = stream.render.lines(tail, streaming_width);
+            Some((stream.assistant_index, lines))
+        } else {
+            None
+        };
         let mut total = if self.state.messages.is_empty() {
             0
         } else {
-            message_lines_for_width(&self.state.messages, summary_width, self.expand_tool_output)
-                .len()
+            message_lines_for_width_with_cursor(
+                &self.state.messages,
+                summary_width,
+                self.expand_tool_output,
+                None,
+                streaming_override,
+            )
+            .len()
         };
         if is_loading_turn_state(self.turn_state) {
             total = total.saturating_add(1);

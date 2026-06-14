@@ -100,7 +100,7 @@ pub fn rich_message_views(
     messages: &[MessageEnvelope],
     expand_output: bool,
 ) -> Vec<RichMessageView> {
-    rich_message_views_indexed(messages, expand_output, false)
+    rich_message_views_indexed(messages, expand_output, None)
         .into_iter()
         .map(|(v, _)| v)
         .collect()
@@ -109,21 +109,27 @@ pub fn rich_message_views(
 pub(super) fn rich_message_views_indexed(
     messages: &[MessageEnvelope],
     expand_output: bool,
-    is_streaming: bool,
+    streaming_override: Option<&(usize, Vec<MessageLineView>)>,
 ) -> Vec<(RichMessageView, usize)> {
     let mut views = Vec::new();
     let mut index = 0usize;
-    let last_index = messages.len().saturating_sub(1);
 
     while index < messages.len() {
+        if let Some((override_index, lines)) = streaming_override {
+            if index == *override_index {
+                views.push((RichMessageView::Fallback(lines.clone()), 1));
+                index = index.saturating_add(1);
+                continue;
+            }
+        }
+
         if let Some((group, consumed)) = grouped_tool_call_view(&messages[index..]) {
             views.push((RichMessageView::ToolGroup(group), consumed));
             index = index.saturating_add(consumed);
             continue;
         }
 
-        let streaming_this = is_streaming && index == last_index;
-        views.push((single_message_view(&messages[index], streaming_this), 1));
+        views.push((single_message_view(&messages[index]), 1));
         index = index.saturating_add(1);
     }
 
@@ -221,7 +227,7 @@ fn collapse_consecutive_tool_groups(
     result
 }
 
-fn single_message_view(message: &MessageEnvelope, is_streaming: bool) -> RichMessageView {
+fn single_message_view(message: &MessageEnvelope) -> RichMessageView {
     match &message.payload {
         MessagePayload::UserText { content } => RichMessageView::Markdown(
             MarkdownSummaryView::new_with_cwd(MessageRole::User, content, message.cwd.clone()),
@@ -229,19 +235,12 @@ fn single_message_view(message: &MessageEnvelope, is_streaming: bool) -> RichMes
         MessagePayload::AssistantText { content } => {
             if let Some(view) = SystemErrorView::detect(MessageRole::Assistant, content) {
                 RichMessageView::SystemError(view)
-            } else if is_streaming {
-                RichMessageView::Markdown(MarkdownSummaryView::new_streaming_with_cwd(
-                    MessageRole::Assistant,
-                    content,
-                    message.cwd.clone(),
-                ))
             } else {
                 RichMessageView::Markdown(MarkdownSummaryView::with_timestamp_and_cwd(
                     MessageRole::Assistant,
                     content,
                     Some(message.timestamp),
                     message.cwd.clone(),
-                    false,
                 ))
             }
         }
@@ -353,24 +352,12 @@ impl MarkdownSummaryView {
 
     #[must_use]
     fn new_with_cwd(role: MessageRole, text: &str, cwd: Option<PathBuf>) -> Self {
-        Self::with_timestamp_and_cwd(role, text, None, cwd, false)
-    }
-
-    /// Like [`new`] but applies streaming holdback to avoid flicker on partial
-    /// code fences and header-only tables while tokens are still arriving.
-    #[must_use]
-    pub fn new_streaming(role: MessageRole, text: &str) -> Self {
-        Self::new_streaming_with_cwd(role, text, None)
-    }
-
-    #[must_use]
-    fn new_streaming_with_cwd(role: MessageRole, text: &str, cwd: Option<PathBuf>) -> Self {
-        Self::with_timestamp_and_cwd(role, text, None, cwd, true)
+        Self::with_timestamp_and_cwd(role, text, None, cwd)
     }
 
     #[must_use]
     fn with_timestamp(role: MessageRole, text: &str, timestamp: Option<OffsetDateTime>) -> Self {
-        Self::with_timestamp_and_cwd(role, text, timestamp, None, false)
+        Self::with_timestamp_and_cwd(role, text, timestamp, None)
     }
 
     #[must_use]
@@ -379,13 +366,12 @@ impl MarkdownSummaryView {
         text: &str,
         timestamp: Option<OffsetDateTime>,
         cwd: Option<PathBuf>,
-        is_streaming: bool,
     ) -> Self {
-        let source = normalized_markdown_source(role, text, is_streaming);
+        let source = normalized_markdown_source(role, text);
         Self {
             role,
             timestamp,
-            blocks: parse_markdown_blocks(&source, is_streaming),
+            blocks: parse_markdown_blocks(&source),
             source,
             cwd,
         }
@@ -420,9 +406,9 @@ impl MarkdownSummaryView {
     }
 }
 
-fn normalized_markdown_source(role: MessageRole, text: &str, is_streaming: bool) -> String {
+fn normalized_markdown_source(role: MessageRole, text: &str) -> String {
     if role == MessageRole::Assistant {
-        markdown_render::normalize_agent_markdown_source(text, is_streaming)
+        markdown_render::normalize_agent_markdown_source(text, false)
     } else {
         text.to_string()
     }
@@ -2185,7 +2171,7 @@ pub enum RejectedToolMessageKind {
     Error,
 }
 
-fn parse_markdown_blocks(text: &str, is_streaming: bool) -> Vec<MarkdownBlockView> {
+fn parse_markdown_blocks(text: &str) -> Vec<MarkdownBlockView> {
     let mut blocks = Vec::new();
     let mut paragraph = Vec::new();
     let mut in_code_block = false;
@@ -2237,17 +2223,7 @@ fn parse_markdown_blocks(text: &str, is_streaming: bool) -> Vec<MarkdownBlockVie
                 index = index.saturating_add(1);
             }
             if let Some(table) = parse_markdown_table(&table_lines) {
-                // During streaming the last table block may be a partial header-only
-                // structure (no data rows yet).  Render it as plain text until at least
-                // one body row has arrived so column widths stabilise first.
-                if is_streaming && table.rows.is_empty() {
-                    for raw in &table_lines {
-                        paragraph.push(raw.to_string());
-                    }
-                    flush_paragraph(&mut blocks, &mut paragraph);
-                } else {
-                    blocks.push(MarkdownBlockView::Table(table));
-                }
+                blocks.push(MarkdownBlockView::Table(table));
             }
             continue;
         }
@@ -2299,25 +2275,11 @@ fn parse_markdown_blocks(text: &str, is_streaming: bool) -> Vec<MarkdownBlockVie
     flush_paragraph(&mut blocks, &mut paragraph);
 
     if in_code_block || code_language.is_some() || !code_lines.is_empty() {
-        if is_streaming {
-            // Unclosed code fence during streaming — show accumulated lines as plain
-            // text so the transcript doesn't flicker between paragraph and code-block
-            // rendering while each token arrives.
-            let mut plain = Vec::new();
-            if let Some(lang) = code_language {
-                plain.push(format!("```{lang}"));
-            } else {
-                plain.push("```".to_string());
-            }
-            plain.extend(code_lines);
-            blocks.push(MarkdownBlockView::Paragraph(plain.join(" ")));
-        } else {
-            blocks.push(MarkdownBlockView::Code(MarkdownCodeBlockView {
-                language: code_language,
-                code: code_lines.join("\n"),
-                line_count: code_lines.len(),
-            }));
-        }
+        blocks.push(MarkdownBlockView::Code(MarkdownCodeBlockView {
+            language: code_language,
+            code: code_lines.join("\n"),
+            line_count: code_lines.len(),
+        }));
     }
 
     blocks
@@ -2600,6 +2562,13 @@ fn truncate_existing_lines(lines: &[MessageLineView], max_width: usize) -> Vec<M
     let width = max_width.max(1);
     let mut out = Vec::new();
     for line in lines {
+        // If the line already fits, preserve it verbatim including any styled
+        // spans. This keeps streaming override lines stable and styled.
+        if line_width(&line.text) <= width {
+            out.push(line.clone());
+            continue;
+        }
+
         if let Some((prefix_head, body)) = line.text.split_once("> ") {
             push_wrapped_block(
                 &mut out,
@@ -4062,43 +4031,8 @@ mod tests {
     }
 
     #[test]
-    fn streaming_holdback_treats_unclosed_code_fence_as_paragraph() {
-        // Partial code block — closing fence not yet received.
-        let view = MarkdownSummaryView::new_streaming(
-            MessageRole::Assistant,
-            "before\n```rust\nfn main() {}",
-        );
-        let has_code_block = view
-            .blocks
-            .iter()
-            .any(|b| matches!(b, MarkdownBlockView::Code(_)));
-        assert!(
-            !has_code_block,
-            "Unclosed code fence during streaming must not render as Code block: {:?}",
-            view.blocks
-        );
-    }
-
-    #[test]
-    fn streaming_holdback_treats_header_only_table_as_paragraph() {
-        // Only the header row has arrived — no separator or data rows yet.
-        let view =
-            MarkdownSummaryView::new_streaming(MessageRole::Assistant, "results:\n| Name | Age |");
-        let has_table = view
-            .blocks
-            .iter()
-            .any(|b| matches!(b, MarkdownBlockView::Table(_)));
-        assert!(
-            !has_table,
-            "Header-only table during streaming must not render as Table block: {:?}",
-            view.blocks
-        );
-    }
-
-    #[test]
-    fn completed_table_renders_normally_even_when_streaming_flag_set() {
-        // A table with a data row is stable — render it even during streaming.
-        let view = MarkdownSummaryView::new_streaming(
+    fn completed_table_renders_normally() {
+        let view = MarkdownSummaryView::new(
             MessageRole::Assistant,
             "| Name | Age |\n|------|-----|\n| Alice | 30 |",
         );
@@ -4108,7 +4042,7 @@ mod tests {
             .any(|b| matches!(b, MarkdownBlockView::Table(_)));
         assert!(
             has_table,
-            "Table with body row must render as Table even with streaming holdback: {:?}",
+            "Table with body row must render as Table: {:?}",
             view.blocks
         );
     }

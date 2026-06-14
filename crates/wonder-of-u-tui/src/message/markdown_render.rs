@@ -582,6 +582,36 @@ pub(super) fn normalize_agent_markdown_source(input: &str, is_streaming: bool) -
     }
 }
 
+/// Returns the byte offset where an unclosed code fence starts, if any.
+#[must_use]
+pub(crate) fn unclosed_fence_opening_offset(source: &str) -> Option<usize> {
+    unclosed_fence_opening_offset_impl(source)
+}
+
+/// Returns the byte offset where the trailing table region starts.
+///
+/// A trailing table region is a sequence of consecutive non-empty lines that
+/// all start with `|` at the end of `source`.  Such a region is held back from
+/// the stable commit boundary while streaming because we cannot know whether
+/// more rows will arrive until a non-table line (or EOF) appears.
+#[must_use]
+pub(crate) fn trailing_table_offset(source: &str) -> Option<usize> {
+    let mut table_start: Option<usize> = None;
+    let mut offset = 0usize;
+    for line in source.split_inclusive('\n') {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            table_start = None;
+        } else if trimmed.starts_with('|') {
+            table_start.get_or_insert(offset);
+        } else {
+            table_start = None;
+        }
+        offset += line.len();
+    }
+    table_start
+}
+
 fn heading_style(level: HeadingLevel) -> TextStyle {
     let style = TextStyle::default().bold();
     match level {
@@ -977,7 +1007,7 @@ fn markdown_contains_table(content: &str) -> bool {
 }
 
 fn hold_back_streaming_markdown(source: &str) -> Cow<'_, str> {
-    if let Some(opening_start) = unclosed_fence_opening_offset(source) {
+    if let Some(opening_start) = unclosed_fence_opening_offset_impl(source) {
         let mut out = String::with_capacity(source.len() + 1);
         out.push_str(&source[..opening_start]);
         out.push('\\');
@@ -985,7 +1015,7 @@ fn hold_back_streaming_markdown(source: &str) -> Cow<'_, str> {
         return Cow::Owned(out);
     }
 
-    if has_trailing_header_only_table(source) {
+    if has_trailing_header_only_table_impl(source) {
         let mut out = source.to_string();
         if let Some(offset) = out.rfind('|') {
             out.insert(offset, '\\');
@@ -996,7 +1026,7 @@ fn hold_back_streaming_markdown(source: &str) -> Cow<'_, str> {
     Cow::Borrowed(source)
 }
 
-fn unclosed_fence_opening_offset(source: &str) -> Option<usize> {
+fn unclosed_fence_opening_offset_impl(source: &str) -> Option<usize> {
     let mut active: Option<(char, usize, usize)> = None;
     let mut offset = 0usize;
     for line in source.split_inclusive('\n') {
@@ -1019,7 +1049,7 @@ fn leading_space_bytes(line: &str) -> usize {
         .count()
 }
 
-fn has_trailing_header_only_table(source: &str) -> bool {
+fn has_trailing_header_only_table_impl(source: &str) -> bool {
     let non_empty = source
         .lines()
         .map(str::trim)
