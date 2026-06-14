@@ -9,6 +9,7 @@ use crate::{prompt::PromptQueueView, style::TextStyle};
 
 mod markdown_render;
 mod rich;
+mod stream_markdown;
 mod tool_activity;
 
 /// Re-exports items from `rich`
@@ -19,6 +20,8 @@ pub use rich::{
     SystemErrorView, ThinkingBlockView, ToolCallView, ToolResultStatus, TranscriptBoundaryView,
     highlight_code_block, rich_message_views,
 };
+/// Re-exports streaming markdown types.
+pub use stream_markdown::{REVEAL_LINES_PER_TICK, StreamMarkdownCollector, StreamRender};
 /// Re-exports items from `tool_activity`
 pub use tool_activity::{
     McpCatalogItemView, McpCatalogKind, McpCatalogSummaryView, NotebookEditMode,
@@ -180,7 +183,7 @@ pub fn message_lines(messages: &[MessageEnvelope], expand_output: bool) -> Vec<M
         DEFAULT_MESSAGE_SUMMARY_WIDTH,
         expand_output,
         None,
-        false,
+        None,
     )
 }
 
@@ -191,24 +194,26 @@ pub fn message_lines_for_width(
     summary_width: usize,
     expand_output: bool,
 ) -> Vec<MessageLineView> {
-    message_lines_for_width_with_cursor(messages, summary_width, expand_output, None, false)
+    message_lines_for_width_with_cursor(messages, summary_width, expand_output, None, None)
 }
 
 /// Like [`message_lines_for_width`] but applies a background highlight
 /// to all display lines that belong to the message at `cursor_message_index`.
-/// Pass `is_streaming = true` when the last message is still being streamed so
-/// that partial code fences and header-only tables are held back from structured
-/// rendering until they stabilise.
+///
+/// `streaming_override` is used while an assistant message is being streamed:
+/// when its index is reached, the supplied pre-rendered lines are used instead
+/// of re-parsing the raw message content, so already-frozen lines stay stable.
 #[must_use]
 pub fn message_lines_for_width_with_cursor(
     messages: &[MessageEnvelope],
     summary_width: usize,
     expand_output: bool,
     cursor_message_index: Option<usize>,
-    is_streaming: bool,
+    streaming_override: Option<(usize, Vec<MessageLineView>)>,
 ) -> Vec<MessageLineView> {
     let width = summary_width.max(1);
-    let views = rich::rich_message_views_indexed(messages, expand_output, is_streaming);
+    let views =
+        rich::rich_message_views_indexed(messages, expand_output, streaming_override.as_ref());
     let mut result: Vec<MessageLineView> = Vec::new();
     let mut prev_turn_role: Option<MessageRole> = None;
     let mut msg_index = 0usize;
@@ -575,6 +580,55 @@ mod tests {
     };
 
     use super::*;
+
+    #[test]
+    fn message_lines_streaming_override_preserves_spans() {
+        let session_id = SessionId::new();
+        let messages = vec![
+            MessageEnvelope::new(
+                session_id,
+                MessagePayload::UserText {
+                    content: "hi".into(),
+                },
+            ),
+            MessageEnvelope::new(
+                session_id,
+                MessagePayload::AssistantText {
+                    content: "bold text".into(),
+                },
+            ),
+        ];
+
+        let mut styled_line = MessageLineView::new("◆ hello bold", MessageRole::Assistant);
+        styled_line.spans = vec![
+            MessageSpanView::new("◆ ", None),
+            MessageSpanView::new("hello ", None),
+            MessageSpanView::new("bold", Some(TextStyle::default().bold())),
+        ];
+        let override_lines = vec![styled_line];
+
+        let lines = message_lines_for_width_with_cursor(
+            &messages,
+            80,
+            false,
+            None,
+            Some((1, override_lines)),
+        );
+
+        let assistant_lines: Vec<_> = lines
+            .into_iter()
+            .filter(|line| line.role == MessageRole::Assistant)
+            .collect();
+        assert_eq!(assistant_lines.len(), 1);
+        assert!(
+            assistant_lines[0]
+                .spans
+                .iter()
+                .any(|span| { span.text == "bold" && span.style.is_some_and(|style| style.bold) }),
+            "streaming override should preserve bold span: {:?}",
+            assistant_lines[0].spans
+        );
+    }
 
     #[test]
     fn message_lines_expand_multiline_payloads() {

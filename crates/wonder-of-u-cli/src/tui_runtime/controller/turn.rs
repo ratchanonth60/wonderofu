@@ -573,6 +573,8 @@ impl TuiController<'_> {
                     });
                 let _ = tx.send(StreamingCompletionEvent::Done(result));
             });
+            let summary_width = streaming_summary_width(self);
+            let cwd = self.state.session.cwd.clone();
             self.active_turn = ActiveTurn::Streaming(ActiveStreaming {
                 assistant_index,
                 provider_id,
@@ -580,6 +582,12 @@ impl TuiController<'_> {
                 user_message,
                 resolved,
                 input: input.to_string(),
+                collector: wonder_of_u_tui::StreamMarkdownCollector::new(),
+                render: wonder_of_u_tui::StreamRender::new(
+                    summary_width,
+                    wonder_of_u_tui::MessageRole::Assistant,
+                    Some(&cwd),
+                ),
             });
             self.turn_state = TurnState::ModelRequestActive;
             return Ok(());
@@ -668,17 +676,28 @@ impl TuiController<'_> {
             match stream.event_rx.try_recv() {
                 Ok(StreamingCompletionEvent::Delta(delta)) => {
                     append_streamed_text(&mut self.state, stream.assistant_index, &delta)?;
+                    stream.collector.push_delta(&delta);
+                    let summary_width = streaming_summary_width(self);
+                    while let Some(src) = stream.collector.commit_complete_source() {
+                        stream.render.enqueue_committed(src, summary_width);
+                    }
                     self.turn_state = TurnState::StreamingResponse;
                     self.status_note = Some(format!("streaming {} response", stream.provider_id));
                     self.loading_frame = self.loading_frame.wrapping_add(1);
                     self.drain_progress_lines();
                     self.needs_render = true;
+                    self.notify_transcript_changed();
                 }
                 Ok(StreamingCompletionEvent::Done(result)) => match result {
                     Ok(response) => {
                         let assistant_index = stream.assistant_index;
                         let user_message = stream.user_message.clone();
                         let resolved = stream.resolved.clone();
+                        let summary_width = streaming_summary_width(self);
+                        if let Some(src) = stream.collector.finalize_and_drain_source() {
+                            stream.render.enqueue_committed(src, summary_width);
+                        }
+                        stream.render.reveal(usize::MAX);
                         self.active_turn = ActiveTurn::None;
 
                         self.state
@@ -747,6 +766,8 @@ impl TuiController<'_> {
                     self.needs_render = true;
                 }
                 Err(std::sync::mpsc::TryRecvError::Empty) => {
+                    let summary_width = streaming_summary_width(self);
+                    let cwd = self.state.session.cwd.clone();
                     self.active_turn = ActiveTurn::Streaming(ActiveStreaming {
                         assistant_index: stream.assistant_index,
                         provider_id: stream.provider_id.clone(),
@@ -757,6 +778,18 @@ impl TuiController<'_> {
                         user_message: stream.user_message.clone(),
                         resolved: stream.resolved.clone(),
                         input: stream.input.clone(),
+                        collector: std::mem::replace(
+                            &mut stream.collector,
+                            wonder_of_u_tui::StreamMarkdownCollector::new(),
+                        ),
+                        render: std::mem::replace(
+                            &mut stream.render,
+                            wonder_of_u_tui::StreamRender::new(
+                                summary_width,
+                                wonder_of_u_tui::MessageRole::Assistant,
+                                Some(&cwd),
+                            ),
+                        ),
                     });
                     return Ok(true);
                 }

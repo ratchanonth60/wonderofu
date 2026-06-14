@@ -468,7 +468,6 @@ pub(super) enum RestoredPromptUiState {
 }
 
 /// Represents a streaming completion currently in progress.
-#[allow(dead_code)]
 pub(super) struct ActiveStreaming {
     assistant_index: usize,
     provider_id: String,
@@ -476,6 +475,10 @@ pub(super) struct ActiveStreaming {
     user_message: MessageEnvelope,
     resolved: wonder_of_u_agent::ResolvedProviderExecution,
     input: String,
+    /// Newline-gated collector for the raw assistant markdown source.
+    pub(super) collector: wonder_of_u_tui::StreamMarkdownCollector,
+    /// Frozen/pending render state for stable streaming display.
+    pub(super) render: wonder_of_u_tui::StreamRender,
 }
 
 /// Phases of the tool loop state machine.
@@ -606,6 +609,22 @@ pub(super) fn context_sidebar_lines(used_tokens: u64, max_tokens: Option<u64>) -
         ),
     ]
 }
+/// Width (in columns) used to wrap streaming and static transcript messages.
+///
+/// Mirrors the calculation in `view.rs` so streaming render state and the final
+/// static render agree on line wrapping.
+pub(super) fn streaming_summary_width(controller: &TuiController<'_>) -> u16 {
+    let terminal_width = controller.last_terminal_size.0;
+    if terminal_width == 0 {
+        80
+    } else {
+        wonder_of_u_tui::transcript_wrap_width(wonder_of_u_tui::shell_main_area_width(
+            terminal_width,
+            controller.sidebar_pushes_main_area(),
+        ))
+    }
+}
+
 /// Mirrors `ShellView::prompt_height()` for a raw prompt string.
 ///
 /// Returns the number of rows the prompt box will occupy: one row per logical
@@ -1287,6 +1306,16 @@ impl<'a> TuiController<'a> {
                 }
                 // Drain any new lines from the shell progress channel.
                 self.drain_progress_lines();
+                // Reveal committed streaming markdown lines at a steady rate.
+                let mut streaming_revealed = false;
+                if let ActiveTurn::Streaming(stream) = &mut self.active_turn {
+                    streaming_revealed =
+                        stream.render.reveal(wonder_of_u_tui::REVEAL_LINES_PER_TICK);
+                }
+                if streaming_revealed {
+                    self.needs_render = true;
+                    self.notify_transcript_changed();
+                }
                 match self.task_notice_ttl {
                     Some(0) => {
                         self.dismiss_task_notice();
@@ -2135,6 +2164,13 @@ impl<'a> TuiController<'a> {
     /// so that the scroll state stays accurate without building a full view.
     pub(super) fn on_terminal_resize(&mut self, width: u16, height: u16) {
         self.last_terminal_size = (width, height);
+        // Re-wrap frozen streaming markdown lines at the new width.
+        let streaming_width = streaming_summary_width(self);
+        if let ActiveTurn::Streaming(stream) = &mut self.active_turn {
+            stream
+                .render
+                .reflow(stream.collector.committed_source(), streaming_width);
+        }
         // Mirror ShellView::prompt_height() + the renderer's one-third cap so
         // scroll_state.last_visible_lines matches the actual messages area.
         let uncapped = controller_prompt_height(&self.prompt.text());

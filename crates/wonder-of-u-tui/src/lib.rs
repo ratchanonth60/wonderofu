@@ -142,12 +142,13 @@ pub use message::{
     GroupedToolCallView, HistorySearchView, MarkdownBlockView, MarkdownCodeBlockView,
     MarkdownSummaryView, McpCatalogItemView, McpCatalogKind, McpCatalogSummaryView,
     MessageLineView, MessageRole, NotebookEditMode, NotebookRejectionSummaryView, PickerListEntry,
-    PickerListView, PickerView, RejectedPermissionSummaryView, RejectedToolMessageKind,
-    RejectedToolMessageView, RichMessageView, SystemErrorKind, SystemErrorView, TaskActivityKind,
-    TaskActivitySummaryView, TaskPanelView, ThinkingBlockView, ToolCallView, ToolResultCounts,
-    ToolResultStatus, TranscriptBoundaryView, UnknownToolOutputView, footer_text, message_lines,
-    message_lines_for_width, message_lines_for_width_with_cursor, queued_panel_view,
-    rich_message_views, status_text, task_panel_view,
+    PickerListView, PickerView, REVEAL_LINES_PER_TICK, RejectedPermissionSummaryView,
+    RejectedToolMessageKind, RichMessageView, StreamMarkdownCollector, StreamRender,
+    SystemErrorKind, SystemErrorView, TaskActivityKind, TaskActivitySummaryView, TaskPanelView,
+    ThinkingBlockView, ToolCallView, ToolResultCounts, ToolResultStatus, TranscriptBoundaryView,
+    UnknownToolOutputView, footer_text, message_lines, message_lines_for_width,
+    message_lines_for_width_with_cursor, queued_panel_view, rich_message_views, status_text,
+    task_panel_view,
 };
 /// Re-exports items from `notification`
 pub use notification::{

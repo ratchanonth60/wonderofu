@@ -55,8 +55,8 @@ use wonder_of_u_tui::{
     PickerListEntry, PickerListView, PromptSuggestion, PromptSuggestionState, Rect, ResolvedKey,
     ShellLayout, ShellView, SidebarMode, SlashSuggestionEntry, SlashSuggestionsOverlay, TextBuffer,
     Theme, TranscriptScrollView, TurnState, UiEvent, VimMode, VimState, find_match_chars,
-    message::SearchMatch, message_lines_for_width, message_lines_for_width_with_cursor,
-    shell_main_area_width, transcript_wrap_width,
+    message::SearchMatch, message_lines_for_width_with_cursor, shell_main_area_width,
+    transcript_wrap_width,
 };
 
 use crate::commands;
