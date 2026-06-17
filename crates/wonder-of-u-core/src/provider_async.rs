@@ -53,7 +53,7 @@ impl ModelRequest {
 ///
 /// Errors yielded by the stream are surfaced to the client as
 /// `EventMsg::Error(ErrorEvent { fatal: true, ... })` in Phase 1.3.
-pub type EventMsgStream = Pin<Box<dyn Stream<Item = Result<EventMsg>> + Send>>;
+pub type EventMsgStream = Pin<Box<dyn Stream<Item = crate::Result<EventMsg>> + Send>>;
 
 /// Async model provider.
 ///
@@ -105,7 +105,7 @@ impl ModelProvider for MockProvider {
         // Collect into an owned `Vec` so the returned Stream is `'static`.
         // The `async_trait`-generated future borrows `&self`; an `iter` over
         // `&self.script` would tether the Stream to that borrow.
-        let items: Vec<Result<EventMsg>> = self.script.iter().cloned().map(Ok).collect();
+        let items: Vec<crate::Result<EventMsg>> = self.script.iter().cloned().map(Ok).collect();
         Ok(Box::pin(stream::iter(items)))
     }
 }

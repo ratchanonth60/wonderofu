@@ -92,6 +92,10 @@ pub mod token_budget;
 pub mod tool;
 /// Provides treeify support
 pub mod treeify;
+/// Turn driver — async agent loop (Phase 1.3 of the codex-rs port). Gated
+/// behind the `wonder-of-u-async` cargo feature.
+#[cfg(feature = "wonder-of-u-async")]
+pub mod turn;
 /// Provides xdg support
 pub mod xdg;
 /// Provides xml support
@@ -229,6 +233,9 @@ pub use tool::{
 };
 /// Re-exports items from `treeify`
 pub use treeify::render_path_tree;
+/// Re-exports items from `turn` (async path only).
+#[cfg(feature = "wonder-of-u-async")]
+pub use turn::{spawn_turn_driver, turn_driver};
 /// Re-exports items from `xdg`
 pub use xdg::{
     XdgError, xdg_cache_home, xdg_cache_home_from, xdg_config_home, xdg_config_home_from,
