@@ -3525,17 +3525,23 @@ dependencies = [
 name = "wonder-of-u-agent"
 version = "0.1.3"
 dependencies = [
+ "async-trait",
+ "bytes",
+ "futures",
  "hex",
  "hmac",
  "keyring",
  "percent-encoding",
+ "reqwest",
  "serde",
  "serde_json",
  "sha2 0.11.0",
  "tempfile",
  "time",
+ "tokio",
  "ureq",
  "wonder-of-u-core",
+ "wonder-of-u-protocol",
  "wonder-of-u-storage",
  "wonder-of-u-test-support",
  "wonder-of-u-tools",

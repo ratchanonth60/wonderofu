@@ -2,6 +2,10 @@
 #![warn(missing_docs)]
 
 mod agent_summary;
+/// Async Anthropic Messages API provider (Phase 1.5 of the codex-rs port).
+/// Gated behind the `wonder-of-u-async` cargo feature.
+#[cfg(feature = "wonder-of-u-async")]
+pub mod anthropic_async;
 mod auth;
 mod compact_summary;
 mod config;
