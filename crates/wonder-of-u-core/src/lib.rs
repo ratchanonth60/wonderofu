@@ -63,6 +63,11 @@ pub mod plans;
 pub mod prompt_suggestion;
 /// Provides provider support
 pub mod provider;
+/// Async `ModelProvider` trait + mock (Phase 1.2 of the codex-rs port).
+/// Gated behind the `wonder-of-u-async` cargo feature — see CLAUDE.md
+/// pitfall #1.
+#[cfg(feature = "wonder-of-u-async")]
+pub mod provider_async;
 /// Provides query support
 pub mod query;
 /// Provides sanitization support
@@ -180,6 +185,11 @@ pub use prompt_suggestion::{
 };
 /// Re-exports items from `provider`
 pub use provider::{AuthMaterialKind, AuthSource, AuthState, AuthStatus, ProviderReadiness};
+/// Re-exports items from `provider_async` (async path only).
+#[cfg(feature = "wonder-of-u-async")]
+pub use provider_async::{
+    EventMsgStream, MockProvider, ModelInput, ModelProvider, ModelRequest, collect,
+};
 /// Re-exports items from `query`
 pub use query::{QueryPhase, QueryState};
 /// Re-exports items from `sanitization`
