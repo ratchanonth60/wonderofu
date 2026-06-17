@@ -6,6 +6,56 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 `wonder-of-u` is a Rust port of the Claude interactive CLI with a full ratatui TUI. It's a multi-crate workspace (edition 2024, MSRV 1.85) that ships a single binary for interactive AI agent conversations with tool execution, provider management, and persistent sessions.
 
+**Active direction: codex-rs port.** The project is being rebuilt (in phases, behind the `wonder-of-u-async` cargo feature) to mirror the architecture of openai/codex `codex-rs`: a tokio Submission-Queue / Event-Queue core, a TUI with composer + transcript + inline approvals + slash popups, and a multitool clap CLI. The legacy blocking build remains the default and must keep passing while the port lands. See `docs/codex-port.md` for the phased plan.
+
+## Codex Port — Async Foundation (Phase 0+)
+
+This port reverses the legacy "blocking runtime" decision. The new architecture is a tokio event loop speaking a **Submission Queue (SQ) / Event Queue (EQ) protocol**:
+
+- **TUI/CLI → core**: send `Op`s over `mpsc` (e.g. `Op::UserInput`, `Op::Interrupt`, `Op::ExecApproval`, `Op::Compact`).
+- **Core → TUI/CLI**: stream `Event { id, msg: EventMsg }` back (e.g. `AgentMessage`, `ExecCommandBegin`, `ExecCommandOutputDelta`, `ExecCommandEnd`, `ExecApprovalRequest`, `TokenCount`).
+- **Channels**: app-events + per-thread event channel + terminal events + app-server events, multiplexed via `tokio::select!`.
+
+### Feature flag: `wonder-of-u-async`
+
+The async path is opt-in via a workspace cargo feature. Default is OFF so the existing blocking build keeps passing throughout the port:
+
+```bash
+# Default build (legacy blocking path)
+cargo build --workspace
+
+# Async path (incremental, crate-by-crate as the port lands)
+cargo build -p wonder-of-u-protocol --features wonder-of-u-async
+cargo build -p wonder-of-u-core --features wonder-of-u-async
+# ...etc
+```
+
+When the port stabilizes, the legacy blocking path will be removed and `wonder-of-u-async` becomes the default. Until then, both must coexist.
+
+### `wonder-of-u-protocol` crate (Phase 0)
+
+New crate at `crates/wonder-of-u-protocol/`. Holds the wire contract:
+- `Submission { id, op, ... }` — SQ entry
+- `Op` — user→agent operations
+- `Event { id, msg }` — EQ entry
+- `EventMsg` — agent→user events
+
+No behavior, no I/O — pure data types with serde. Phase 0 must round-trip every `Op`/`EventMsg` variant via serde JSON.
+
+### Phased rollout (full plan in `docs/codex-port.md`)
+
+| Phase | Scope | Status |
+| --- | --- | --- |
+| 0 | `wonder-of-u-protocol` crate + tokio stub + feature flag | in progress |
+| 1 | Core agent loop on SQ/EQ (reqwest async SSE, turn driver, interrupt, approval) | pending |
+| 2 | CLI multitool rebuild (exec, login, mcp, session cmds, doctor, completion) | pending |
+| 3 | TUI rewrite (codex look, no sidebar, composer + transcript + popups) | pending |
+| 4 | Slash commands (codex set minus pets/app/cloud/feedback/personality) | pending |
+| 5 | State / threads / sessions (thread-store + rollout) | pending |
+| 6 | MCP server + polish | pending |
+
+Branch: `feat/codex-port`. The blocking path is the merge blocker — every phase must keep `cargo build --workspace`, `cargo test --workspace -- --test-threads=1`, and the existing TUI passing without the feature.
+
 ## Build, Test, and Development Commands
 
 ### Building and Running
@@ -79,6 +129,7 @@ cargo test -p wonder-of-u-tools <test-name> -- --nocapture
 The workspace follows a strict layered architecture. Lower layers must never depend on upper layers:
 
 **Foundation Layer:**
+- `wonder-of-u-protocol`: SQ/EQ wire contract (Submission/Op, Event/EventMsg) — pure data types with serde. No I/O. Used by every upper layer.
 - `wonder-of-u-core`: Framework-neutral contracts, data models (messages, sessions, tools, permissions, providers), shared state types, error definitions
 - `wonder-of-u-storage`: Persistence layer with append-only JSONL transcripts + atomic JSON snapshots for sessions, tasks, costs, and pastes
 
@@ -173,9 +224,23 @@ pub trait Tool: Send + Sync {
 - `thiserror` for `derive(Error)` across all crates
 
 #### Async Patterns
-- Tools use `#[async_trait]` but runtime is **blocking** (`futures::executor::block_on`)
-- No tokio in core runtime (only in dev-dependencies for tests)
-- HTTP via ureq (blocking, single-threaded)
+
+The runtime is in transition. There are two paths; the legacy blocking path is the default today, and the async path is being ported in phases.
+
+**Legacy blocking path (default):**
+- Tools use `#[async_trait]` but the runtime is blocking (`futures::executor::block_on`)
+- HTTP via ureq (blocking, single-threaded, 60s timeout)
+- Streaming SSE responses are assembled into a finished string before returning
+
+**Async path (`wonder-of-u-async` feature):**
+- Tokio runtime (`#[tokio::main]`) driving an async event loop
+- `ConversationManager` owns the thread and exposes a Submission Queue (SQ) / Event Queue (EQ) protocol
+- TUI/CLI send `Op`s (e.g. `UserInput`, `Interrupt`, `ExecApproval`, `Compact`) over `mpsc`
+- Core streams back `Event { id, msg: EventMsg }` (e.g. `AgentMessage`, `ExecCommandBegin`, `ExecCommandOutputDelta`, `ExecCommandEnd`, `ExecApprovalRequest`, `TokenCount`)
+- Channels multiplexed via `tokio::select!`: app-events + per-thread event channel + terminal events + app-server events
+- HTTP via `reqwest` (async) + `tokio` SSE for streaming deltas
+
+Both paths must coexist during the port. The async path is opt-in via the `wonder-of-u-async` feature; do not enable it on crates that haven't been ported.
 
 ## Git Flow and Branching
 
@@ -277,7 +342,7 @@ pub fn load_snapshot(store: &Store, id: Uuid) -> Result<Snapshot> {
 
 ## Common Pitfalls
 
-1. **Don't add tokio to core runtime** - The runtime is intentionally blocking. Only use tokio in dev-dependencies for tests.
+1. **Don't use the async core path without the `wonder-of-u-async` cargo feature** - The async runtime (tokio, ConversationManager, SQ/EQ host, async provider) is feature-gated. With the feature off, the legacy blocking path remains the only runnable code. Toggle the feature only on crates that opt in (`wonder-of-u-protocol`, `wonder-of-u-core`, `wonder-of-u-agent`, `wonder-of-u-tui`, `wonder-of-u-cli`). Leaving it off by default keeps `cargo build` and existing tests green while the port lands.
 
 2. **Don't mutate AppState from TUI layer** - All mutations happen in controller event handlers. TUI components are pure functions.
 

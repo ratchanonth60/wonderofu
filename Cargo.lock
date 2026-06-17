@@ -3638,6 +3638,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "wonder-of-u-protocol"
+version = "0.1.3"
+dependencies = [
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "uuid",
+]
+
+[[package]]
 name = "wonder-of-u-sandbox"
 version = "0.1.3"
 dependencies = [

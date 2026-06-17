@@ -7,6 +7,7 @@ members = [
   "crates/wonder-of-u-mcp",
   "crates/wonder-of-u-plugins",
   "crates/wonder-of-u-prompts",
+  "crates/wonder-of-u-protocol",
   "crates/wonder-of-u-sandbox",
   "crates/wonder-of-u-skills",
   "crates/wonder-of-u-storage",
@@ -72,6 +73,7 @@ wonder-of-u-agent = { path = "crates/wonder-of-u-agent" }
 wonder-of-u-mcp = { path = "crates/wonder-of-u-mcp" }
 wonder-of-u-plugins = { path = "crates/wonder-of-u-plugins" }
 wonder-of-u-prompts = { path = "crates/wonder-of-u-prompts" }
+wonder-of-u-protocol = { path = "crates/wonder-of-u-protocol" }
 wonder-of-u-skills = { path = "crates/wonder-of-u-skills" }
 wonder-of-u-storage = { path = "crates/wonder-of-u-storage" }
 wonder-of-u-test-support = { path = "crates/wonder-of-u-test-support" }
