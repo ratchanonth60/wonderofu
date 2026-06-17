@@ -17,6 +17,10 @@ pub mod app;
 pub mod command;
 /// Context fragment assembly for token-limited prompt construction.
 pub mod context_fragments;
+/// Async SQ/EQ conversation host (Phase 1+ of the codex-rs port). Gated
+/// behind the `wonder-of-u-async` cargo feature — see CLAUDE.md pitfall #1.
+#[cfg(feature = "wonder-of-u-async")]
+pub mod conversation;
 /// Provides coordinator support
 pub mod coordinator;
 /// Provides cwd support
@@ -59,6 +63,11 @@ pub mod plans;
 pub mod prompt_suggestion;
 /// Provides provider support
 pub mod provider;
+/// Async `ModelProvider` trait + mock (Phase 1.2 of the codex-rs port).
+/// Gated behind the `wonder-of-u-async` cargo feature — see CLAUDE.md
+/// pitfall #1.
+#[cfg(feature = "wonder-of-u-async")]
+pub mod provider_async;
 /// Provides query support
 pub mod query;
 /// Provides sanitization support
@@ -83,6 +92,10 @@ pub mod token_budget;
 pub mod tool;
 /// Provides treeify support
 pub mod treeify;
+/// Turn driver — async agent loop (Phase 1.3 of the codex-rs port). Gated
+/// behind the `wonder-of-u-async` cargo feature.
+#[cfg(feature = "wonder-of-u-async")]
+pub mod turn;
 /// Provides xdg support
 pub mod xdg;
 /// Provides xml support
@@ -113,6 +126,9 @@ pub use command::{
     Command, CommandContext, CommandInvocation, CommandKind, CommandOutput, CommandQuery,
     CommandRegistry, CommandSource, CommandSpec, parse_slash_command,
 };
+/// Re-exports items from `conversation` (async path only).
+#[cfg(feature = "wonder-of-u-async")]
+pub use conversation::{ConversationConfig, ConversationHandle, ConversationManager};
 /// Re-exports items from `coordinator`
 pub use coordinator::{
     CoordinatorMode, CoordinatorState, CoordinatorSupport, CoordinatorSurfaceStatus,
@@ -173,6 +189,11 @@ pub use prompt_suggestion::{
 };
 /// Re-exports items from `provider`
 pub use provider::{AuthMaterialKind, AuthSource, AuthState, AuthStatus, ProviderReadiness};
+/// Re-exports items from `provider_async` (async path only).
+#[cfg(feature = "wonder-of-u-async")]
+pub use provider_async::{
+    EventMsgStream, MockProvider, ModelInput, ModelProvider, ModelRequest, collect,
+};
 /// Re-exports items from `query`
 pub use query::{QueryPhase, QueryState};
 /// Re-exports items from `sanitization`
@@ -212,6 +233,9 @@ pub use tool::{
 };
 /// Re-exports items from `treeify`
 pub use treeify::render_path_tree;
+/// Re-exports items from `turn` (async path only).
+#[cfg(feature = "wonder-of-u-async")]
+pub use turn::{PendingApproval, TurnDriverState, spawn_turn_driver, turn_driver};
 /// Re-exports items from `xdg`
 pub use xdg::{
     XdgError, xdg_cache_home, xdg_cache_home_from, xdg_config_home, xdg_config_home_from,
