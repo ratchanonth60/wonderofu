@@ -48,6 +48,8 @@ impl TuiController<'_> {
         if let Some(sb) = view.sidebar.as_mut() {
             sb.scroll_offset = self.sidebar_scroll_offset;
             sb.slots = self.sidebar_slots.clone();
+            // Pinned bottom-band branding: "wonder-of-u vX.Y.Z" (opencode-style footer).
+            sb.footer_brand = format!("wonder-of-u v{}", env!("CARGO_PKG_VERSION"));
             // Section 1 – Session: title (or id prefix), turn state, status note.
             let mut session_lines = vec![format!(
                 "◈ {}",

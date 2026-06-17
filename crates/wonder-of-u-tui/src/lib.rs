@@ -170,7 +170,7 @@ pub use render::{
     MIN_SIDEBAR_WIDTH, PromptWarningSeverity, PromptWarningView, SIDEBAR_WIDTH, ShellView,
     SidebarMode, SidebarSlot, SidebarView, SlashSuggestionEntry, SlashSuggestionsOverlay,
     SuggestionSeverity, TRANSCRIPT_HPAD, TranscriptScrollView, render_shell, render_snapshot,
-    shell_main_area_width, transcript_wrap_width,
+    shell_main_area_width, sidebar_scroll_geometry, transcript_wrap_width,
 };
 /// Re-exports items from `security`
 pub use security::{

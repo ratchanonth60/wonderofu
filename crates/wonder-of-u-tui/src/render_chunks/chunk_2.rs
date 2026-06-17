@@ -8,25 +8,6 @@ fn footer_badges(text: &str) -> String {
     badges.join("·")
 }
 
-fn status_line_text(view: &ShellView) -> String {
-    let indicator = if view.loading { '●' } else { '○' };
-    let base = if view.status.is_empty() {
-        indicator.to_string()
-    } else {
-        format!("{indicator} {}", view.status)
-    };
-
-    // Append a compact scroll indicator when the user has scrolled up from tail.
-    if !view.scroll.is_following_tail() {
-        format!(
-            "{}  ↑ {} lines · Ctrl+End bottom",
-            base, view.scroll.offset_from_bottom
-        )
-    } else {
-        base
-    }
-}
-
 /// Builds the single compact footer row displayed at the bottom of the shell.
 ///
 /// Combines the caller-supplied hint text from [`ShellView::footer`] with a

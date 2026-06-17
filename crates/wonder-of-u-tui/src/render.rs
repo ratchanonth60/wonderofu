@@ -101,10 +101,16 @@ impl TranscriptScrollView {
 /// Sectioned data model for the right-side companion panel shown on wide
 /// terminals (≥ [`MIN_SIDEBAR_WIDTH`] columns).
 ///
-/// Each field is one *section*; non-empty sections are rendered with a styled
-/// section-header row (`"─ Name ─"`) followed by their body lines, separated by
-/// blank rows.  Empty sections are silently omitted so callers do not need to
-/// check before populating.
+/// Rendered as three fixed vertical bands, opencode-style: a pinned **title**
+/// band (`session_lines` only) at the top, a **scrollable** middle band
+/// (every other section), and a pinned single-row **footer** band
+/// (`footer_brand`) at the bottom.  The panel itself has a solid background
+/// fill (`theme.panel`) instead of a border.
+///
+/// Each section field is rendered with a styled section-header row
+/// (`"─ Name ─"`) followed by its body lines, separated by blank rows.  Empty
+/// sections are silently omitted so callers do not need to check before
+/// populating.
 ///
 /// All strings are intentionally plain so the renderer has no coupling to
 /// `wonder-of-u-core` types.  Special line prefixes drive extra colour:
@@ -117,63 +123,70 @@ impl TranscriptScrollView {
 ///
 /// ## Render order (OpenCode-style integration panel)
 ///
-/// Status is rendered second (immediately below Session) so that the
-/// real-time turn state is visible at a glance without scrolling.
+/// `session_lines` is pinned to the top title band.  Status is the first
+/// section in the scrollable middle band so the real-time turn state is
+/// visible at a glance with minimal scrolling.
 ///
 /// ```text
-/// ─ Session ─       (session_lines)
-/// ─ Status ─        (status_lines)   ← promoted: most-urgent real-time info
-/// ─ Context ─       (context_lines)
-/// ─ Tools ─         (tool_lines)
-/// ─ MCP ─           (mcp_lines)
-/// ─ LSP ─           (lsp_lines)
-/// ─ Todo ─          (todo_lines)
-/// ─ Suggestions ─   (suggestions)
-/// ─ Providers ─     (provider_lines)
-/// ─ Workspace ─     (workspace_lines)
-/// ─ Controls ─      (control_lines)
-/// ─ Tasks ─         (task_lines)
+/// ─ Session ─       (session_lines)    ← pinned title band
+/// ─ Status ─        (status_lines)     ┐
+/// ─ Context ─       (context_lines)    │
+/// ─ Tools ─         (tool_lines)       │
+/// ─ MCP ─           (mcp_lines)        │
+/// ─ LSP ─           (lsp_lines)        │ scrollable middle band
+/// ─ Todo ─          (todo_lines)       │
+/// ─ Suggestions ─   (suggestions)      │
+/// ─ Providers ─     (provider_lines)   │
+/// ─ Workspace ─     (workspace_lines)  │
+/// ─ Controls ─      (control_lines)    │
+/// ─ Tasks ─         (task_lines)       ┘
+/// ● wonder-of-u vX.Y.Z (footer_brand)  ← pinned footer band
 /// ```
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct SidebarView {
-    /// Section 1 – Session: turn state, title, status note etc.
+    /// Session: turn state, title, status note etc.
     /// Each entry is one display row.
     pub session_lines: Vec<String>,
-    /// Section 2 – Context: token/cost usage summary.
+    /// Context: token/cost usage summary.
     pub context_lines: Vec<String>,
-    /// Section 3 – Tools: active built-in tool names / call counts.
+    /// Tools: active built-in tool names / call counts.
     ///
     /// Populated by the controller each frame from the live tool-use registry.
     /// Each entry is one display row, e.g. `"✓ Bash"` or `"⚠ FileWrite (3)"`.
     pub tool_lines: Vec<String>,
-    /// Section 4 – MCP: connected MCP server names and connection state.
+    /// MCP: connected MCP server names and connection state.
     ///
     /// Each entry is one display row, e.g. `"✓ filesystem"` or `"⚠ github (reconnecting)"`.
     pub mcp_lines: Vec<String>,
-    /// Section 5 – LSP: active language-server diagnostics summary.
+    /// LSP: active language-server diagnostics summary.
     ///
     /// Each entry is one display row, e.g. `"✓ rust-analyzer"` or `"⚠ 3 errors"`.
     pub lsp_lines: Vec<String>,
-    /// Section 6 – Todo: in-session task checklist items.
+    /// Todo: in-session task checklist items.
     ///
     /// Each entry is one display row, e.g. `"✓ Write tests"` or `"◈ Refactor module"`.
     pub todo_lines: Vec<String>,
-    /// Section 7 – Suggestions: proactive context-saving hints.
+    /// Suggestions: proactive context-saving hints.
     pub suggestions: Vec<ContextSuggestion>,
-    /// Section 8 – Providers: one entry per line, active model marked with `◈`.
+    /// Providers: one entry per line, active model marked with `◈`.
     pub provider_lines: Vec<String>,
-    /// Section 9 – Workspace: cwd, git, storage, runtime labels.
+    /// Workspace: cwd, git, storage, runtime labels.
     pub workspace_lines: Vec<String>,
-    /// Section 10 – Status: turn detail, loading verb, error snippets.
+    /// Status: turn detail, loading verb, error snippets.
     pub status_lines: Vec<String>,
-    /// Section 11 – Controls: compact keybindings.
+    /// Controls: compact keybindings.
     pub control_lines: Vec<String>,
-    /// Section 12 – Tasks: background task count + hints.
+    /// Tasks: background task count + hints.
     pub task_lines: Vec<String>,
     /// Plugin-injected extra sections rendered after the fixed sections.
     pub slots: Vec<SidebarSlot>,
     /// Current scroll offset (lines scrolled down from the top).
     pub scroll_offset: usize,
+    /// Branded footer line pinned to the bottom band, e.g. `"wonder-of-u v0.1.3"`.
+    ///
+    /// Rendered as `● {footer_brand}` (green dot + dim version text), matching
+    /// opencode's `● OpenCode vX.Y.Z` sidebar footer.
+    pub footer_brand: String,
 }
 
 /// Context-saving suggestions shown below the context visualization bar.
@@ -311,7 +324,7 @@ impl ShellView {
         expand_tool_output: bool,
     ) -> Self {
         let sidebar = {
-            // Section 1 – Session: show a short session id prefix.
+            // Session: show a short session id prefix.
             let session_lines = vec![format!(
                 "◈ {}",
                 app.session
@@ -322,30 +335,30 @@ impl ShellView {
                     .collect::<String>()
             )];
 
-            // Section 2 – Context: current token usage summary.
+            // Context: current token usage summary.
             let context_lines =
                 context_sidebar_lines(app.costs.usage.total_tokens(), app.context_window_size);
 
-            // Section 3 – Suggestions: proactive context-saving hints.
+            // Suggestions: proactive context-saving hints.
             let suggestions = context_suggestions(app);
 
-            // Section 4 – Providers: one line combining provider and model.
+            // Providers: one line combining provider and model.
             let provider_lines = match (&app.provider, &app.model) {
                 (Some(provider), Some(model)) => vec![format!("{provider} · {model}")],
                 _ => Vec::new(),
             };
 
-            // Section 5 – Status: stub idle line; controller overwrites this each frame.
+            // Status: stub idle line; controller overwrites this each frame.
             let status_lines = vec!["● idle".into()];
 
-            // Section 6 – Controls: compact keybinding reference.
+            // Controls: compact keybinding reference.
             let control_lines = vec![
                 "↵ send  ⇧↵ newline".into(),
                 "⎋ cancel  ? help".into(),
                 "⌃B sidebar  ⌃C exit".into(),
             ];
 
-            // Section 7 – Workspace: git branch and short cwd label.
+            // Workspace: git branch and short cwd label.
             let mut workspace_lines: Vec<String> = Vec::new();
             if let Some(branch) = &app.session.git_branch {
                 workspace_lines.push(format!("⎇  {branch}"));
@@ -355,7 +368,7 @@ impl ShellView {
                 workspace_lines.push(format!("  {cwd}"));
             }
 
-            // Section 8 – Tasks: background task count (omitted when none).
+            // Tasks: background task count (omitted when none).
             let task_lines = if app.background_tasks.is_empty() {
                 Vec::new()
             } else {
@@ -381,6 +394,8 @@ impl ShellView {
                 task_lines,
                 slots: Vec::new(),
                 scroll_offset: 0,
+                // Hydrated per-frame by the controller from CARGO_PKG_VERSION.
+                footer_brand: String::new(),
             }
         };
         Self {
