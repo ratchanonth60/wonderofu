@@ -125,12 +125,7 @@ fn draw_dialog(frame: &mut FrameBuffer, viewport: Rect, dialog: &DialogView, the
     )
     .unwrap_or(viewport.height)
     .min(viewport.height);
-    let rect = Rect::new(
-        viewport.x + viewport.width.saturating_sub(width) / 2,
-        viewport.y + viewport.height.saturating_sub(height) / 2,
-        width,
-        height,
-    );
+    let rect = viewport.center_within(width, height);
 
     let mut body = plain_lines(&dialog.body, theme.messages);
     body.push(StyledLine::plain(String::new(), theme.footer));
@@ -198,6 +193,7 @@ fn draw_notification(
         prompt: theme.prompt,
         status: theme.status,
         footer: theme.footer,
+        panel: theme.panel,
     };
     draw_panel(frame, area, Some(title), lines, &panel_theme);
 }
@@ -322,19 +318,56 @@ fn draw_slash_suggestions(
         .iter()
         .take(MAX_VISIBLE)
         .map(|e| {
-            let text = if e.description.is_empty() {
+            let base_style = if e.selected {
+                theme.prompt.bold()
+            } else {
+                theme.messages
+            };
+            let full_text = if e.description.is_empty() {
                 e.display.clone()
             } else {
                 format!("{} ─ {}", e.display, e.description)
             };
-            StyledLine::plain(
-                text,
-                if e.selected {
-                    theme.prompt.bold()
-                } else {
-                    theme.messages
-                },
-            )
+            if e.match_ranges.is_empty() {
+                return StyledLine::plain(full_text, base_style);
+            }
+            let highlight_style = base_style.underlined();
+            let display_chars: Vec<char> = e.display.chars().collect();
+            let mut spans: Vec<StyledSpan> = Vec::new();
+            let mut pos = 0usize;
+            for &(start, end) in &e.match_ranges {
+                let end = end.min(display_chars.len());
+                if start > pos {
+                    spans.push(StyledSpan {
+                        text: display_chars[pos..start].iter().collect(),
+                        style: base_style,
+                    });
+                }
+                if start < end {
+                    spans.push(StyledSpan {
+                        text: display_chars[start..end].iter().collect(),
+                        style: highlight_style,
+                    });
+                }
+                pos = end;
+            }
+            if pos < display_chars.len() {
+                spans.push(StyledSpan {
+                    text: display_chars[pos..].iter().collect(),
+                    style: base_style,
+                });
+            }
+            if !e.description.is_empty() {
+                spans.push(StyledSpan {
+                    text: format!(" ─ {}", e.description),
+                    style: base_style,
+                });
+            }
+            StyledLine {
+                text: full_text,
+                style: base_style,
+                spans,
+            }
         })
         .collect();
 
@@ -377,12 +410,7 @@ fn draw_picker_list(
     )
     .unwrap_or(viewport.height);
     let height = desired_height.clamp(MIN_HEIGHT, max_height.max(MIN_HEIGHT));
-    let rect = Rect::new(
-        viewport.x + viewport.width.saturating_sub(width) / 2,
-        viewport.y + viewport.height.saturating_sub(height) / 2,
-        width,
-        height,
-    );
+    let rect = viewport.center_within(width, height);
 
     draw_modal_shadow(frame, rect, viewport, theme);
 
@@ -563,12 +591,7 @@ pub fn draw_global_search_overlay(
 
     let width = (viewport.width.saturating_mul(4) / 5).clamp(MIN_WIDTH, viewport.width);
     let height = (viewport.height.saturating_mul(3) / 5).clamp(MIN_HEIGHT, viewport.height);
-    let rect = Rect::new(
-        viewport.x + viewport.width.saturating_sub(width) / 2,
-        viewport.y + viewport.height.saturating_sub(height) / 2,
-        width,
-        height,
-    );
+    let rect = viewport.center_within(width, height);
 
     draw_modal_shadow(frame, rect, viewport, theme);
 
@@ -639,6 +662,57 @@ pub fn draw_global_search_overlay(
     draw_lines(frame, list_area, &lines);
 }
 
+/// Draws the fleet panel overlay as a bordered modal panel.
+pub fn draw_fleet_panel(
+    frame: &mut FrameBuffer,
+    viewport: Rect,
+    overlay: &FleetPanelOverlay,
+    theme: &Theme,
+) {
+    const MIN_WIDTH: u16 = 40;
+    const MIN_HEIGHT: u16 = 8;
+
+    if viewport.width < MIN_WIDTH || viewport.height < MIN_HEIGHT {
+        return;
+    }
+
+    let width = (viewport.width.saturating_mul(4) / 5).clamp(MIN_WIDTH, viewport.width);
+    let height = (viewport.height.saturating_mul(3) / 5).clamp(MIN_HEIGHT, viewport.height);
+    let rect = viewport.center_within(width, height);
+
+    draw_modal_shadow(frame, rect, viewport, theme);
+
+    let panel_theme = Theme {
+        border: theme.prompt,
+        title: theme.prompt.bold(),
+        ..*theme
+    };
+
+    let lines = overlay
+        .lines
+        .iter()
+        .enumerate()
+        .map(|(i, line)| {
+            let is_highlighted = line.starts_with("> ")
+                || (i > 0 && overlay.lines[i.saturating_sub(1)].starts_with("> "));
+            let style = if is_highlighted {
+                theme.prompt.reversed()
+            } else {
+                theme.messages
+            };
+            StyledLine::plain(line.as_str(), style)
+        })
+        .collect::<Vec<_>>();
+
+    draw_panel(
+        frame,
+        rect,
+        Some(&overlay.title),
+        &lines,
+        &panel_theme,
+    );
+}
+
 fn draw_modal_shadow(frame: &mut FrameBuffer, rect: Rect, viewport: Rect, theme: &Theme) {
     if rect.width < 2 || rect.height < 2 {
         return;
@@ -663,15 +737,6 @@ fn draw_modal_shadow(frame: &mut FrameBuffer, rect: Rect, viewport: Rect, theme:
         frame.fill_rect(shadow, ' ', shadow_style);
     }
     frame.fill_rect(rect, ' ', theme.background);
-}
-
-fn draw_status_line(frame: &mut FrameBuffer, area: Rect, text: &str, style: TextStyle) {
-    if area.is_empty() {
-        return;
-    }
-
-    frame.fill_rect(area, ' ', style);
-    frame.write_str(area.x, area.y, text, style, area.width);
 }
 
 fn draw_footer_line(frame: &mut FrameBuffer, area: Rect, text: &str, theme: &Theme) {

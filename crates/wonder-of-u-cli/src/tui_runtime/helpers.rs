@@ -216,6 +216,9 @@ pub(super) fn theme_for_state(name: Option<&str>, session_color: Option<&str>) -
                 .fg(wonder_of_u_tui::Color::Yellow)
                 .bold(),
             footer: wonder_of_u_tui::TextStyle::default().fg(wonder_of_u_tui::Color::DarkCyan),
+            // Slightly elevated shade of the midnight background.
+            panel: wonder_of_u_tui::TextStyle::default()
+                .bg(wonder_of_u_tui::Color::Rgb(24, 20, 32)),
         },
         Some("light") => Theme {
             // No explicit background for light theme either: the terminal
@@ -233,6 +236,9 @@ pub(super) fn theme_for_state(name: Option<&str>, session_color: Option<&str>) -
                 .fg(wonder_of_u_tui::Color::DarkBlue)
                 .bold(),
             footer: wonder_of_u_tui::TextStyle::default().fg(wonder_of_u_tui::Color::DarkGrey),
+            // Slightly elevated (darker) shade for contrast against the light background.
+            panel: wonder_of_u_tui::TextStyle::default()
+                .bg(wonder_of_u_tui::Color::Rgb(225, 225, 230)),
         },
         _ => Theme::default(),
     };
@@ -301,10 +307,13 @@ pub(super) fn prompt_cursor_position(
         notifications: Vec::new(),
         slash_suggestions: None,
         global_search: None,
+        fleet_panel: None,
         scroll: wonder_of_u_tui::TranscriptScrollView::default(),
         sidebar: None,
+        sidebar_mode: wonder_of_u_tui::SidebarMode::default(),
         prompt_warning: None,
         tool_progress: Vec::new(),
+        message_cursor_index: None,
     }
     .prompt_height();
     // Apply the same 1/3-terminal cap used by the renderer.
@@ -409,10 +418,13 @@ pub(super) fn history_search_cursor_position(
         notifications: Vec::new(),
         slash_suggestions: None,
         global_search: None,
+        fleet_panel: None,
         scroll: wonder_of_u_tui::TranscriptScrollView::default(),
         sidebar: None,
+        sidebar_mode: wonder_of_u_tui::SidebarMode::default(),
         prompt_warning: None,
         tool_progress: Vec::new(),
+        message_cursor_index: None,
     }
     .prompt_height();
     let warning_height = u16::from(prompt_warning_visible);
@@ -1325,6 +1337,103 @@ pub(super) fn parse_insights_hint(text: &str) -> bool {
         .any(|line| line.trim() == "insights_prompt_ready=true")
 }
 
+/// Returns `true` if the trimmed string looks like an image file path.
+pub(super) fn is_image_file_path(s: &str) -> bool {
+    let s = s.trim();
+    if s.is_empty() {
+        return false;
+    }
+    let lower = s.to_ascii_lowercase();
+    lower.ends_with(".png")
+        || lower.ends_with(".jpg")
+        || lower.ends_with(".jpeg")
+        || lower.ends_with(".gif")
+        || lower.ends_with(".webp")
+}
+
+/// Maximum file size for image attachments (10 MB).
+const MAX_IMAGE_FILE_SIZE: u64 = 10 * 1024 * 1024;
+
+/// Reads an image file and returns an `ImageAttachment` with base64-encoded data.
+pub(super) fn read_image_file(path: &str) -> Option<wonder_of_u_agent::ImageAttachment> {
+    let path = path.trim();
+    let metadata = std::fs::metadata(path).ok()?;
+    if metadata.len() > MAX_IMAGE_FILE_SIZE {
+        return None;
+    }
+    let bytes = std::fs::read(path).ok()?;
+    let lower = path.to_ascii_lowercase();
+    let media_type = if lower.ends_with(".png") {
+        "image/png"
+    } else if lower.ends_with(".jpg") || lower.ends_with(".jpeg") {
+        "image/jpeg"
+    } else if lower.ends_with(".gif") {
+        "image/gif"
+    } else if lower.ends_with(".webp") {
+        "image/webp"
+    } else {
+        return None;
+    };
+    let data = encode_base64(&bytes);
+    let filename = std::path::Path::new(path)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .map(|s| s.to_string());
+    Some(wonder_of_u_agent::ImageAttachment {
+        media_type: media_type.to_string(),
+        data,
+        filename,
+    })
+}
+
+/// Reads an image from the Wayland clipboard via `wl-paste`.
+/// Tries `image/png` then `image/jpeg`; returns `None` if neither works.
+pub(super) fn read_clipboard_image() -> Option<wonder_of_u_agent::ImageAttachment> {
+    use std::process::Stdio;
+    for (media_type, wl_type) in [("image/png", "image/png"), ("image/jpeg", "image/jpeg")] {
+        let output = ProcessCommand::new("wl-paste")
+            .args(["--type", wl_type, "--no-newline"])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .output();
+        if let Ok(out) = output {
+            if out.status.success() && !out.stdout.is_empty() {
+                return Some(wonder_of_u_agent::ImageAttachment {
+                    media_type: media_type.to_string(),
+                    data: encode_base64(&out.stdout),
+                    filename: None,
+                });
+            }
+        }
+    }
+    None
+}
+
+/// Minimal base64 encoder — avoids adding the `base64` crate.
+fn encode_base64(data: &[u8]) -> String {
+    const TABLE: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(data.len().div_ceil(3) * 4);
+    for chunk in data.chunks(3) {
+        let b0 = chunk[0] as usize;
+        let b1 = chunk.get(1).copied().unwrap_or(0) as usize;
+        let b2 = chunk.get(2).copied().unwrap_or(0) as usize;
+        let n = (b0 << 16) | (b1 << 8) | b2;
+        out.push(TABLE[n >> 18] as char);
+        out.push(TABLE[(n >> 12) & 0x3F] as char);
+        out.push(if chunk.len() > 1 {
+            TABLE[(n >> 6) & 0x3F] as char
+        } else {
+            '='
+        });
+        out.push(if chunk.len() > 2 {
+            TABLE[n & 0x3F] as char
+        } else {
+            '='
+        });
+    }
+    out
+}
+
 pub(super) fn parse_session_tags_hint(text: &str) -> Option<Vec<String>> {
     let value = text
         .lines()
@@ -1561,21 +1670,13 @@ pub(super) fn parse_known_notice(text: &str) -> Option<(String, Vec<String>, &'s
     [
         ("## Context Usage", "Context Usage", "context usage"),
         ("## Activity Stats", "Activity Stats", "activity stats"),
-        ("## Usage", "Usage", "usage"),
         ("## Theme", "Theme", "theme"),
         ("## Color", "Color", "color"),
         ("## Fast", "Fast", "fast"),
         ("## Brief", "Brief", "brief"),
         ("## Optimize Token", "Optimize Token", "optimize token"),
         ("## Effort", "Effort", "effort"),
-        ("## Feedback", "Feedback", "feedback"),
         ("## Insights", "Insights", "insights"),
-        ("## Upgrade", "Upgrade", "upgrade"),
-        ("## Desktop", "Desktop", "desktop"),
-        ("## Mobile", "Mobile", "mobile"),
-        ("## Chrome", "Chrome", "chrome"),
-        ("## IDE Integration", "IDE Integration", "ide integration"),
-        ("## Release Notes", "Release Notes", "release notes"),
         ("## Version", "Version", "version"),
         ("## Hooks", "Hooks", "hooks"),
         ("## Keybindings", "Keybindings", "keybindings"),

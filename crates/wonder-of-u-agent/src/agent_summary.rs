@@ -131,6 +131,7 @@ pub fn generate_agent_summary(
         max_output_tokens: Some(MAX_SUMMARY_TOKENS),
         temperature: Some(0.0),
         effort_level: None,
+        images: Vec::new(),
     };
 
     match runtime.complete_with_storage(Some(storage_dir), selection, &request) {

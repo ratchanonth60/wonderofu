@@ -2,7 +2,12 @@
 #![warn(missing_docs)]
 
 mod agent_summary;
+/// Async Anthropic Messages API provider (Phase 1.5 of the codex-rs port).
+/// Gated behind the `wonder-of-u-async` cargo feature.
+#[cfg(feature = "wonder-of-u-async")]
+pub mod anthropic_async;
 mod auth;
+mod compact_summary;
 mod config;
 mod permissions;
 mod protocol;
@@ -21,6 +26,11 @@ pub use auth::{
     resolve_aws_bearer_from_env, resolve_aws_credentials_from_env, resolve_aws_profile_from_env,
     resolve_gcp_credentials_from_env,
 };
+/// Re-exports items from `compact_summary`
+pub use compact_summary::{
+    COMPACT_LLM_SUMMARY_ENV, extract_summary_block, generate_compact_summary,
+    render_conversation_for_summary,
+};
 /// Re-exports items from `config`
 pub use config::{
     AgentSettings, CredentialStore, ProviderOverride, SettingsHierarchy, SettingsLayer,
@@ -38,9 +48,9 @@ pub use provider::{
 };
 /// Re-exports items from `runtime`
 pub use runtime::{
-    CompletionRequest, CompletionResponse, ProviderRuntime, ProviderToolCall,
-    ProviderToolResultMessage, ProviderToolSpec, ToolCallBatchResponse, ToolConversationRound,
-    ToolUseRequest, ToolUseResponse,
+    CompletionRequest, CompletionResponse, ImageAttachment, ProviderRuntime, ProviderToolCall,
+    ProviderToolResultMessage, ProviderToolSpec, RuntimeOptions, ToolCallBatchResponse,
+    ToolConversationRound, ToolUseRequest, ToolUseResponse,
 };
 /// Re-exports items from `wonder_of_u_tools`
 pub use wonder_of_u_tools::{builtin_registry as builtin_tool_registry, builtin_tools};

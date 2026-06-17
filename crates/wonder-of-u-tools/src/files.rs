@@ -354,7 +354,14 @@ impl Tool for FileWriteTool {
                 path.display()
             )));
         }
+        if input.mode == FileWriteMode::Create && path.exists() {
+            return Err(WonderError::validation(format!(
+                "file_write target already exists: {}",
+                path.display()
+            )));
+        }
 
+        context.checkpoint_file_before_write(&path);
         let mut file = open_for_write(&path, input.mode)?;
         file.write_all(input.content.as_bytes())?;
         file.sync_all()?;
@@ -452,6 +459,7 @@ impl Tool for FileEditTool {
         } else {
             text.replacen(&input.old_text, &input.new_text, 1)
         };
+        context.checkpoint_file_before_write(&path);
         overwrite_text_file(&path, &updated)?;
 
         let mut result = ToolResult::success(
@@ -532,15 +540,43 @@ fn overwrite_text_file(path: &Path, content: &str) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use std::path::PathBuf;
+    use std::{
+        path::{Path, PathBuf},
+        sync::{Arc, Mutex},
+    };
 
     use serde_json::json;
     use wonder_of_u_core::{
-        FeatureSet, PermissionDecision, PermissionMode, SessionId, ToolContext, ToolUseId,
+        FeatureSet, FileCheckpointer, PermissionDecision, PermissionMode, SessionId, ToolContext,
+        ToolUseId,
     };
     use wonder_of_u_test_support::unique_test_dir;
 
     use super::*;
+
+    #[derive(Debug)]
+    struct RecordingCheckpointer {
+        snapshots: Mutex<Vec<(PathBuf, String)>>,
+    }
+
+    impl RecordingCheckpointer {
+        fn new() -> Self {
+            Self {
+                snapshots: Mutex::new(Vec::new()),
+            }
+        }
+    }
+
+    impl FileCheckpointer for RecordingCheckpointer {
+        fn checkpoint_file(&self, path: &Path) -> Result<()> {
+            let content = fs::read_to_string(path).unwrap_or_default();
+            self.snapshots
+                .lock()
+                .expect("snapshot lock")
+                .push((path.to_path_buf(), content));
+            Ok(())
+        }
+    }
 
     fn tool_context(cwd: PathBuf) -> ToolContext {
         ToolContext {
@@ -557,6 +593,8 @@ mod tests {
             progress_tx: None,
             interaction_rx: None,
             fork_context: None,
+            file_checkpointer: None,
+            network_policy: None,
         }
     }
 
@@ -706,6 +744,29 @@ mod tests {
             fs::read_to_string(dir.join("notes.txt")).expect("load"),
             "hello\nrust\n"
         );
+    }
+
+    #[tokio::test]
+    async fn file_edit_checkpoints_original_content_before_write() {
+        let dir = unique_test_dir("tools-file-edit-checkpoint");
+        fs::write(dir.join("notes.txt"), "hello\nworld\n").expect("seed file");
+        let tool = FileEditTool;
+        let checkpointer = Arc::new(RecordingCheckpointer::new());
+        let mut context = tool_context(dir.clone());
+        context.file_checkpointer = Some(checkpointer.clone());
+
+        tool.execute(
+            context,
+            ToolUseId::new(),
+            json!({ "path": "notes.txt", "old_text": "world", "new_text": "rust" }),
+        )
+        .await
+        .expect("edit file");
+
+        let snapshots = checkpointer.snapshots.lock().expect("snapshot lock");
+        assert_eq!(snapshots.len(), 1);
+        assert_eq!(snapshots[0].0, dir.join("notes.txt"));
+        assert_eq!(snapshots[0].1, "hello\nworld\n");
     }
 
     #[test]

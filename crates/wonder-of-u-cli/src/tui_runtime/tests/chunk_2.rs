@@ -643,7 +643,7 @@ fn controller_brief_mode_injects_system_prompt_once() {
     controller
         .state
         .queue_command("hello", wonder_of_u_core::QueuePlacement::Now);
-    block_on(controller.drain_queued_commands()).expect("drain prompt");
+    drain_and_pump(&mut controller);
 
     handle.join().expect("server join");
 }
@@ -756,6 +756,7 @@ fn ratatui_message_text_appears_in_frame() {
             role: MessageRole::User,
             text: "test user message".into(),
             spans: Vec::new(),
+            highlight: false,
         }],
         status: "m".into(),
         footer: "f".into(),
@@ -839,10 +840,13 @@ fn controller_scroll_state_updates_total_lines_after_slash_command() {
     // No messages yet; total_lines starts at 0.
     assert_eq!(controller.scroll_state.last_total_lines, 0);
 
-    // Run a command that appends a message to the transcript.
-    block_on(controller.execute_slash_command("/model openai:gpt-4.1")).expect("execute slash");
+    // Record a command message to the transcript (slash commands themselves
+    // no longer write transcript entries; picker confirmations do).
+    controller
+        .record_command_message("/model", Some("provider_selection=openai:gpt-4.1"))
+        .expect("record command message");
 
-    // After the command a message was persisted → scroll state updated.
+    // After the message is persisted the scroll state must update.
     assert!(
         controller.scroll_state.last_total_lines > 0,
         "total_lines should be > 0 after a message is added"

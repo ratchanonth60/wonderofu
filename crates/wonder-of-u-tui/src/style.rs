@@ -96,6 +96,18 @@ impl TextStyle {
         self.bg = Some(color);
         self
     }
+    /// Returns `self` with `fallback`'s background colour applied when `self`
+    /// does not already carry an explicit `bg`.
+    ///
+    /// Used to compose section/line styles onto a solid panel fill (e.g. the
+    /// sidebar) without clobbering colours callers set intentionally.
+    #[must_use]
+    pub const fn bg_or(mut self, fallback: Self) -> Self {
+        if self.bg.is_none() {
+            self.bg = fallback.bg;
+        }
+        self
+    }
     /// Constant fn
     #[must_use]
     pub const fn bold(mut self) -> Self {
@@ -144,6 +156,12 @@ pub struct Theme {
     pub status: TextStyle,
     /// Stores the footer
     pub footer: TextStyle,
+    /// Background style for solid elevated panels (e.g. the right sidebar).
+    ///
+    /// Unlike [`Theme::background`], this carries an explicit `bg` colour so
+    /// the panel reads as a distinct surface against the transparent main
+    /// background — matching opencode's solid sidebar fill.
+    pub panel: TextStyle,
 }
 
 impl Default for Theme {
@@ -151,13 +169,15 @@ impl Default for Theme {
         Self {
             // No explicit background colour: let the terminal emulator's own
             // background show through (Ink/Claude Code visual parity).
-            background: TextStyle::default().fg(Color::Grey),
-            border: TextStyle::default().fg(Color::DarkBlue),
-            title: TextStyle::default().fg(Color::Blue).bold(),
-            messages: TextStyle::default().fg(Color::White),
+            background: TextStyle::default(),
+            border: TextStyle::default().fg(Color::DarkGrey),
+            title: TextStyle::default().fg(Color::Magenta).bold(),
+            messages: TextStyle::default(),
             prompt: TextStyle::default().fg(Color::Cyan),
-            status: TextStyle::default().fg(Color::Yellow).bold(),
+            status: TextStyle::default().fg(Color::Cyan).bold(),
             footer: TextStyle::default().fg(Color::DarkGrey),
+            // Subtle elevated surface so the sidebar reads as a distinct panel.
+            panel: TextStyle::default().bg(Color::Rgb(20, 20, 24)),
         }
     }
 }

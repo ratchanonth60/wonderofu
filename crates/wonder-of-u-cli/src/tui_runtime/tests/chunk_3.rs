@@ -1143,16 +1143,16 @@ fn history_search_cursor_wide_terminal_stays_inside_main_area() {
     );
 }
 
-/// Verify that a narrow terminal (width=119, one below the sidebar threshold=120)
+/// Verify that a narrow terminal (width=89, one below the sidebar threshold=90)
 /// is unaffected by the sidebar logic even when sidebar_active=true.  The
 /// prompt layout still spans the full terminal width.
 #[test]
 fn prompt_cursor_position_just_below_sidebar_threshold_uses_full_width() {
-    // At width=119 shell_main_area_width returns 119 regardless of sidebar_active.
+    // At width=89 shell_main_area_width returns 89 regardless of sidebar_active.
     // 10-char prompt, cursor at end → line=0, col=10, x_offset=2.
-    // effective_width=119; CHROME_HEIGHT=1: available=19, messages=15, prompt at y=15.
+    // effective_width=89; CHROME_HEIGHT=1: available=19, messages=15, prompt at y=15.
     // content_y=16, x=1+2+10=13.
-    let (x, y) = prompt_cursor_position(119, 20, &"a".repeat(10), 10, true, false);
+    let (x, y) = prompt_cursor_position(89, 20, &"a".repeat(10), 10, true, false);
     assert_eq!(
         (x, y),
         (13, 16),
@@ -1206,7 +1206,8 @@ fn sidebar_default_visible() {
 }
 
 /// Calling `toggle_sidebar()` twice must return to the original visible state.
-/// The first call sets status_note to "sidebar off"; the second sets it to "sidebar on".
+/// The first call sets status_note to "sidebar off"; the second sets it to
+/// "sidebar on (push)" when in Push mode (the default).
 #[test]
 fn sidebar_toggle_method_flips_and_restores() {
     let dir = unique_test_dir("tui-sidebar-toggle-method");
@@ -1239,8 +1240,8 @@ fn sidebar_toggle_method_flips_and_restores() {
     );
     assert_eq!(
         controller.status_note.as_deref(),
-        Some("sidebar on"),
-        "status note must read 'sidebar on' after restoring"
+        Some("sidebar on (push)"),
+        "status note must read 'sidebar on (push)' after restoring"
     );
 }
 
@@ -1475,6 +1476,7 @@ fn controller_provider_failure_appends_error_message_and_clears_prompt() {
 
     controller.prompt.insert_text("trigger provider failure");
     block_on(controller.submit_prompt()).expect("submit_prompt itself must not propagate the provider error");
+    pump_active_turn(&mut controller);
 
     // The prompt must be cleared — error is visible in history.
     assert_eq!(

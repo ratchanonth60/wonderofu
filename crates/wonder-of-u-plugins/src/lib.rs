@@ -17,5 +17,6 @@ pub use config::{
 /// Re-exports items from `manifest`
 pub use manifest::{
     PLUGIN_MANIFEST_SCHEMA_VERSION, PluginCommandDefinition, PluginCommandRegistration,
-    PluginManifest, PluginSkillDefinition, PluginSkillSource, normalize_plugin_id,
+    PluginManifest, PluginSidebarSection, PluginSkillDefinition, PluginSkillSource,
+    normalize_plugin_id,
 };

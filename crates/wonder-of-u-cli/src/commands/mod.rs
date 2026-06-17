@@ -27,6 +27,7 @@ mod fleet;
 mod fleet_plan;
 mod help;
 pub(crate) mod hook_commands;
+pub(crate) mod hook_trust;
 pub(crate) mod hooks;
 pub(crate) mod import;
 pub(crate) mod keybinding_commands;
@@ -57,24 +58,19 @@ mod tui;
 pub mod vim;
 pub(crate) mod workflow;
 
-use advanced::{BridgeCommand, DebugCommand, DiagnosticsCommand, VoiceCommand};
+use advanced::{DebugCommand, DiagnosticsCommand};
 use auth::{ConfigCommand, LoginCommand, LogoutCommand, ModelCommand};
 use doctor::DoctorCommand;
 use extras::{
-    AdvisorCommand, AntTraceCommand, AutofixPrCommand, BackfillSessionsCommand, BreakCacheCommand,
-    BridgeKickCommand, BtwCommand, BughunterCommand, CreateMovedToPluginCommand, CtxVizCommand,
-    DebugToolCallCommand, EnvCommand, ExtraUsageCommand, GoodClaudeCommand, HeapdumpCommand,
-    InitVerifiersCommand, InstallCommand, InstallGithubAppCommand, InstallSlackAppCommand,
-    IssueCommand, MockLimitsCommand, OauthRefreshCommand, OnboardingCommand, PassesCommand,
-    PerfIssueCommand, PrCommentsCommand, RateLimitOptionsCommand, RemoteEnvCommand,
-    RemoteSetupCommand, ResetLimitsCommand, SandboxToggleCommand, ShareCommand, StickersCommand,
-    TeleportCommand, ThinkbackCommand, ThinkbackPlayCommand, UltraplanCommand, X402Command,
+    AdvisorCommand, AutofixPrCommand, BtwCommand, CreateMovedToPluginCommand, EnvCommand,
+    PrCommentsCommand, SandboxToggleCommand,
 };
 pub(crate) use extras::{
     execute_help_command, execute_settings_command, execute_stats_command, execute_thinking_command,
 };
 use features::FeaturesCommand;
 use fleet::FleetCommand;
+pub(crate) use fleet::dispatch_ready_members;
 use help::HelpCommand;
 use hook_commands::HooksCommand;
 use keybinding_commands::KeybindingsCommand;
@@ -101,9 +97,7 @@ use session::{
 use setup::SetupCommand;
 use skills::SkillsCommand;
 use status::{
-    ChromeCommand, CostCommand, DesktopCommand, FeedbackCommand, IdeCommand, InsightsCommand,
-    MobileCommand, OutputStyleCommand, ReleaseNotesCommand, StatsCommand, StatusCommand,
-    UpgradeCommand, UsageCommand, VersionCommand,
+    CostCommand, InsightsCommand, OutputStyleCommand, StatsCommand, StatusCommand, VersionCommand,
 };
 use summary::SummaryCommand;
 use tag::TagCommand;
@@ -120,28 +114,9 @@ pub fn registry(storage_dir: Option<PathBuf>) -> Result<CommandRegistry> {
         DoctorCommand::command_spec(),
         StatusCommand::command_spec(),
         VersionCommand::command_spec(),
-        ReleaseNotesCommand::command_spec(),
-        FeedbackCommand::command_spec(),
         DiagnosticsCommand::command_spec(),
-        BridgeCommand::command_spec(),
-        VoiceCommand::command_spec(),
         DebugCommand::command_spec(),
-        HeapdumpCommand::command_spec(),
-        AntTraceCommand::command_spec(),
-        CtxVizCommand::command_spec(),
-        DebugToolCallCommand::command_spec(),
-        GoodClaudeCommand::command_spec(),
-        BreakCacheCommand::command_spec(),
-        BackfillSessionsCommand::command_spec(),
-        PerfIssueCommand::command_spec(),
-        BughunterCommand::command_spec(),
-        UpgradeCommand::command_spec(),
-        DesktopCommand::command_spec(),
-        MobileCommand::command_spec(),
-        ChromeCommand::command_spec(),
-        IdeCommand::command_spec(),
         InsightsCommand::command_spec(),
-        UsageCommand::command_spec(),
         CostCommand::command_spec(),
         StatsCommand::command_spec(),
         ConfigCommand::command_spec(),
@@ -194,34 +169,12 @@ pub fn registry(storage_dir: Option<PathBuf>) -> Result<CommandRegistry> {
         OutputStyleCommand::command_spec(),
         BtwCommand::command_spec(),
         AdvisorCommand::command_spec(),
-        StickersCommand::command_spec(),
-        X402Command::command_spec(),
         RewindCommand::command_spec(),
-        InitVerifiersCommand::command_spec(),
-        ExtraUsageCommand::command_spec(),
-        PassesCommand::command_spec(),
-        RateLimitOptionsCommand::command_spec(),
-        MockLimitsCommand::command_spec(),
-        ResetLimitsCommand::command_spec(),
-        OnboardingCommand::command_spec(),
-        TeleportCommand::command_spec(),
-        RemoteEnvCommand::command_spec(),
-        RemoteSetupCommand::command_spec(),
-        BridgeKickCommand::command_spec(),
         SandboxToggleCommand::command_spec(),
-        UltraplanCommand::command_spec(),
-        ThinkbackCommand::command_spec(),
-        ThinkbackPlayCommand::command_spec(),
         AutofixPrCommand::command_spec(),
         PrCommentsCommand::command_spec(),
         SummaryCommand::command_spec(),
         EnvCommand::command_spec(),
-        OauthRefreshCommand::command_spec(),
-        IssueCommand::command_spec(),
-        ShareCommand::command_spec(),
-        InstallCommand::command_spec(),
-        InstallGithubAppCommand::command_spec(),
-        InstallSlackAppCommand::command_spec(),
         CreateMovedToPluginCommand::command_spec(),
         TuiCommand::command_spec(),
         SetupCommand::command_spec(),
@@ -241,28 +194,9 @@ pub fn registry(storage_dir: Option<PathBuf>) -> Result<CommandRegistry> {
     )))?;
     registry.register(Arc::new(StatusCommand::new(storage_dir.clone())))?;
     registry.register(Arc::new(VersionCommand::new()))?;
-    registry.register(Arc::new(ReleaseNotesCommand::new()))?;
-    registry.register(Arc::new(FeedbackCommand::new()))?;
     registry.register(Arc::new(DiagnosticsCommand::new()))?;
-    registry.register(Arc::new(BridgeCommand::new(storage_dir.clone())))?;
-    registry.register(Arc::new(VoiceCommand::new()))?;
     registry.register(Arc::new(DebugCommand::new(storage_dir.clone())))?;
-    registry.register(Arc::new(HeapdumpCommand::new()))?;
-    registry.register(Arc::new(AntTraceCommand::new()))?;
-    registry.register(Arc::new(CtxVizCommand::new()))?;
-    registry.register(Arc::new(DebugToolCallCommand::new()))?;
-    registry.register(Arc::new(GoodClaudeCommand::new()))?;
-    registry.register(Arc::new(BreakCacheCommand::new()))?;
-    registry.register(Arc::new(BackfillSessionsCommand::new(storage_dir.clone())))?;
-    registry.register(Arc::new(PerfIssueCommand::new()))?;
-    registry.register(Arc::new(BughunterCommand::new()))?;
-    registry.register(Arc::new(UpgradeCommand::new()))?;
-    registry.register(Arc::new(DesktopCommand::new()))?;
-    registry.register(Arc::new(MobileCommand::new()))?;
-    registry.register(Arc::new(ChromeCommand::new()))?;
-    registry.register(Arc::new(IdeCommand::new()))?;
     registry.register(Arc::new(InsightsCommand::new(storage_dir.clone())))?;
-    registry.register(Arc::new(UsageCommand::new(storage_dir.clone())))?;
     registry.register(Arc::new(CostCommand::new(storage_dir.clone())))?;
     registry.register(Arc::new(StatsCommand::new(storage_dir.clone())))?;
     registry.register(Arc::new(ConfigCommand::new(storage_dir.clone())))?;
@@ -318,34 +252,12 @@ pub fn registry(storage_dir: Option<PathBuf>) -> Result<CommandRegistry> {
     registry.register(Arc::new(OutputStyleCommand::new()))?;
     registry.register(Arc::new(BtwCommand::new()))?;
     registry.register(Arc::new(AdvisorCommand::new(storage_dir.clone())))?;
-    registry.register(Arc::new(StickersCommand::new()))?;
-    registry.register(Arc::new(X402Command::new()))?;
     registry.register(Arc::new(RewindCommand::new(storage_dir.clone())))?;
-    registry.register(Arc::new(InitVerifiersCommand::new(Arc::clone(&tool_specs))))?;
-    registry.register(Arc::new(ExtraUsageCommand::new()))?;
-    registry.register(Arc::new(PassesCommand::new()))?;
-    registry.register(Arc::new(RateLimitOptionsCommand::new()))?;
-    registry.register(Arc::new(MockLimitsCommand::new()))?;
-    registry.register(Arc::new(ResetLimitsCommand::new()))?;
-    registry.register(Arc::new(OnboardingCommand::new()))?;
-    registry.register(Arc::new(TeleportCommand::new()))?;
-    registry.register(Arc::new(RemoteEnvCommand::new(storage_dir.clone())))?;
-    registry.register(Arc::new(RemoteSetupCommand::new(storage_dir.clone())))?;
-    registry.register(Arc::new(BridgeKickCommand::new()))?;
     registry.register(Arc::new(SandboxToggleCommand::new(storage_dir.clone())))?;
-    registry.register(Arc::new(UltraplanCommand::new(storage_dir.clone())))?;
-    registry.register(Arc::new(ThinkbackCommand::new()))?;
-    registry.register(Arc::new(ThinkbackPlayCommand::new()))?;
     registry.register(Arc::new(AutofixPrCommand::new()))?;
     registry.register(Arc::new(PrCommentsCommand::new()))?;
     registry.register(Arc::new(SummaryCommand::new(storage_dir.clone())))?;
     registry.register(Arc::new(EnvCommand::new()))?;
-    registry.register(Arc::new(OauthRefreshCommand::new(storage_dir.clone())))?;
-    registry.register(Arc::new(IssueCommand::new()))?;
-    registry.register(Arc::new(ShareCommand::new()))?;
-    registry.register(Arc::new(InstallCommand::new()))?;
-    registry.register(Arc::new(InstallGithubAppCommand::new()))?;
-    registry.register(Arc::new(InstallSlackAppCommand::new()))?;
     registry.register(Arc::new(CreateMovedToPluginCommand::new()))?;
     registry.register(Arc::new(TuiCommand::new()))?;
     registry.register(Arc::new(SetupCommand::new(storage_dir.clone())))?;

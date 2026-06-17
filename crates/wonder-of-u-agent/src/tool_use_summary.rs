@@ -129,6 +129,7 @@ fn try_generate(
         max_output_tokens: Some(SUMMARY_MAX_TOKENS),
         temperature: None,
         effort_level: None,
+        images: Vec::new(),
     };
 
     let response = runtime.complete(&resolved, &request).ok()?;

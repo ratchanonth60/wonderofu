@@ -16,8 +16,8 @@ use std::{
 use futures::executor::block_on;
 use serde_json::Value;
 use wonder_of_u_agent::{
-    ProviderRuntime, ProviderToolResultMessage, ProviderToolSpec, ResolvedProviderExecution,
-    ToolConversationRound, ToolUseRequest, ToolUseResponse,
+    ProviderToolResultMessage, ProviderToolSpec, ResolvedProviderExecution, ToolConversationRound,
+    ToolUseRequest, ToolUseResponse,
 };
 use wonder_of_u_core::{
     FeatureSet, MessageEnvelope, MessagePayload, PermissionMode, Result, SessionId, ToolContext,
@@ -61,6 +61,11 @@ impl ExtractionHandle {
     pub(super) fn should_run(&self, current_count: usize) -> bool {
         !self.active.load(Ordering::Relaxed) && current_count >= self.last_count + MIN_NEW_MESSAGES
     }
+
+    /// Returns `true` when a background extraction thread is currently running.
+    pub(super) fn is_active(&self) -> bool {
+        self.active.load(Ordering::Relaxed)
+    }
 }
 
 // ─── Entry point ─────────────────────────────────────────────────────────────
@@ -81,10 +86,11 @@ pub(super) fn maybe_spawn_extract_memories(
     if !handle.should_run(count) {
         return;
     }
+
+    let new_msgs = count.saturating_sub(handle.last_count);
     handle.last_count = count;
 
     let conversation = build_conversation_text(messages);
-    let new_msgs = count.saturating_sub(handle.last_count.saturating_sub(count));
     let mem_dir = memdir::auto_mem_dir(cwd, storage_dir);
 
     // Ensure memory dir exists — create silently if not.
@@ -141,9 +147,10 @@ fn run_extraction(
             tools: provider_tools.clone(),
             rounds: rounds.clone(),
             effort_level: None,
+            images: Vec::new(),
         };
 
-        match ProviderRuntime::new().complete_with_tool_use(resolved, &request)? {
+        match crate::provider_runtime(storage_dir).complete_with_tool_use(resolved, &request)? {
             ToolUseResponse::Final(_) => break,
             ToolUseResponse::ToolCalls(batch) => {
                 let mut results = Vec::new();
@@ -302,6 +309,8 @@ fn build_extraction_context(mem_dir: &Path) -> ToolContext {
         progress_tx: None,
         interaction_rx: None,
         fork_context: None,
+        file_checkpointer: None,
+        network_policy: None,
     }
 }
 

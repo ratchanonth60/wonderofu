@@ -13,6 +13,18 @@
 /// Provides memdir support
 pub mod memdir;
 
+/// Two-phase memory pipeline for cross-session knowledge extraction.
+pub mod memory_pipeline;
+pub use memory_pipeline::{
+    ExtractedMemory, ExtractionJob, ExtractionStatus, MemoryPipelineConfig, MemoryPipelineStore,
+};
+
+/// Pre-modification file checkpoints for rewind restore.
+pub mod checkpoint;
+pub use checkpoint::{
+    FileCheckpointEntry, FileCheckpointStore, RestoredFile, SessionFileCheckpointer,
+};
+
 /// Storage schema migration framework
 pub mod migrations;
 pub use migrations::{Migration, MigrationRunner, StorageVersionFile, default_migration_runner};
@@ -39,6 +51,14 @@ pub use mailbox::MailboxStore;
 /// Persistent history for the contextual tips system.
 pub mod tips;
 pub use tips::{TIPS_HISTORY_SCHEMA_VERSION, TipsHistory, TipsStore};
+
+/// Cross-session thread management store.
+pub mod thread_store;
+pub use thread_store::{THREAD_SCHEMA_VERSION, Thread, ThreadStatus, ThreadStore};
+
+/// Persistent TUI preferences (sidebar mode, visibility, etc.).
+pub mod tui_prefs;
+pub use tui_prefs::{TUI_PREFS_SCHEMA_VERSION, TuiPrefs, TuiPrefsStore};
 
 use std::{
     collections::BTreeMap,

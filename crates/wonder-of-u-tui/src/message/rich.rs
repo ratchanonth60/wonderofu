@@ -1,5 +1,4 @@
-use std::collections::HashMap;
-use std::sync::LazyLock;
+use std::{collections::HashMap, path::PathBuf, sync::LazyLock};
 
 use ratatui::{
     style::{Color as RatatuiColor, Modifier, Style as RatatuiStyle},
@@ -23,9 +22,9 @@ use crate::{
     style::{Color, TextStyle},
 };
 
+use super::markdown_render;
 use super::{MessageLineView, MessageRole, MessageSpanView, render_message};
 
-const MAX_PARAGRAPH_LINES: usize = 6;
 const MAX_THINKING_LINES: usize = 4;
 const MAX_DETAIL_LINES: usize = 3;
 
@@ -63,6 +62,8 @@ pub enum RichMessageView {
     Thinking(ThinkingBlockView),
     /// Represents tool group
     ToolGroup(GroupedToolCallView),
+    /// Represents collapsed read/search group
+    CollapsedReadSearch(CollapsedReadSearchGroupView),
     /// Represents file edit reference
     FileEditReference(FileEditReferenceView),
     /// Represents attachment
@@ -83,6 +84,7 @@ impl RichMessageView {
             Self::Markdown(view) => view.display_lines(max_width),
             Self::Thinking(view) => view.display_lines(max_width),
             Self::ToolGroup(view) => view.display_lines(max_width, expand_output),
+            Self::CollapsedReadSearch(view) => view.display_lines(max_width),
             Self::FileEditReference(view) => view.display_lines(max_width),
             Self::Attachment(view) => view.display_lines(max_width),
             Self::SystemError(view) => view.display_lines(max_width),
@@ -96,38 +98,149 @@ impl RichMessageView {
 #[must_use]
 pub fn rich_message_views(
     messages: &[MessageEnvelope],
-    _expand_output: bool,
+    expand_output: bool,
 ) -> Vec<RichMessageView> {
+    rich_message_views_indexed(messages, expand_output, None)
+        .into_iter()
+        .map(|(v, _)| v)
+        .collect()
+}
+
+pub(super) fn rich_message_views_indexed(
+    messages: &[MessageEnvelope],
+    expand_output: bool,
+    streaming_override: Option<&(usize, Vec<MessageLineView>)>,
+) -> Vec<(RichMessageView, usize)> {
     let mut views = Vec::new();
     let mut index = 0usize;
 
     while index < messages.len() {
+        if let Some((override_index, lines)) = streaming_override {
+            if index == *override_index {
+                views.push((RichMessageView::Fallback(lines.clone()), 1));
+                index = index.saturating_add(1);
+                continue;
+            }
+        }
+
         if let Some((group, consumed)) = grouped_tool_call_view(&messages[index..]) {
-            views.push(RichMessageView::ToolGroup(group));
+            views.push((RichMessageView::ToolGroup(group), consumed));
             index = index.saturating_add(consumed);
             continue;
         }
 
-        views.push(single_message_view(&messages[index]));
+        views.push((single_message_view(&messages[index]), 1));
         index = index.saturating_add(1);
     }
 
-    views
+    if expand_output {
+        return views;
+    }
+
+    collapse_consecutive_tool_groups(views)
+}
+
+fn is_collapsible_tool(tool: &str) -> bool {
+    let lower = tool.to_ascii_lowercase();
+    lower == "file_read"
+        || lower == "glob"
+        || lower == "grep"
+        || lower == "rg"
+        || lower == "search"
+        || lower == "find"
+}
+
+fn merge_tool_group_into_collapsed(
+    group: &GroupedToolCallView,
+    collapsed: &mut CollapsedReadSearchGroupView,
+) {
+    let lower = group.tool.to_ascii_lowercase();
+    if lower == "file_read" {
+        collapsed.read_count += group.calls.len();
+        for call in &group.calls {
+            if let Some(input) = &call.input {
+                if let Some(path) = input.get("path").and_then(|v| v.as_str()) {
+                    collapsed.file_paths.push(path.to_string());
+                }
+            }
+        }
+    } else {
+        collapsed.search_count += group.calls.len();
+        for call in &group.calls {
+            if let Some(input) = &call.input {
+                let pattern = input
+                    .get("pattern")
+                    .or_else(|| input.get("query"))
+                    .or_else(|| input.get("prompt"))
+                    .and_then(|v| v.as_str());
+                if let Some(p) = pattern {
+                    collapsed.search_patterns.push(p.to_string());
+                }
+            }
+        }
+    }
+}
+
+fn collapse_consecutive_tool_groups(
+    views: Vec<(RichMessageView, usize)>,
+) -> Vec<(RichMessageView, usize)> {
+    let mut result: Vec<(RichMessageView, usize)> = Vec::new();
+    let mut i = 0;
+
+    while i < views.len() {
+        let current = &views[i];
+        if let RichMessageView::ToolGroup(group) = &current.0 {
+            if is_collapsible_tool(&group.tool) {
+                let mut collapsed = CollapsedReadSearchGroupView::default();
+                let mut total_consumed = 0usize;
+                let mut group_count = 0usize;
+
+                while i < views.len() {
+                    match &views[i].0 {
+                        RichMessageView::ToolGroup(next) if is_collapsible_tool(&next.tool) => {
+                            merge_tool_group_into_collapsed(next, &mut collapsed);
+                            total_consumed += views[i].1;
+                            group_count += 1;
+                            i += 1;
+                        }
+                        _ => break,
+                    }
+                }
+
+                if group_count > 1
+                    || (group_count == 1 && collapsed.read_count + collapsed.search_count > 1)
+                {
+                    result.push((
+                        RichMessageView::CollapsedReadSearch(collapsed),
+                        total_consumed,
+                    ));
+                } else {
+                    result.push((RichMessageView::ToolGroup(group.clone()), total_consumed));
+                }
+                continue;
+            }
+        }
+        result.push(views[i].clone());
+        i += 1;
+    }
+
+    result
 }
 
 fn single_message_view(message: &MessageEnvelope) -> RichMessageView {
     match &message.payload {
-        MessagePayload::UserText { content } => {
-            RichMessageView::Markdown(MarkdownSummaryView::new(MessageRole::User, content))
-        }
+        MessagePayload::UserText { content } => RichMessageView::Markdown(
+            MarkdownSummaryView::new_with_cwd(MessageRole::User, content, message.cwd.clone()),
+        ),
         MessagePayload::AssistantText { content } => {
             if let Some(view) = SystemErrorView::detect(MessageRole::Assistant, content) {
                 RichMessageView::SystemError(view)
             } else {
-                RichMessageView::Markdown(MarkdownSummaryView::with_timestamp(
+                RichMessageView::Markdown(MarkdownSummaryView::with_timestamp_and_cwd(
                     MessageRole::Assistant,
                     content,
                     Some(message.timestamp),
+                    message.cwd.clone(),
                 ))
             }
         }
@@ -135,7 +248,11 @@ fn single_message_view(message: &MessageEnvelope) -> RichMessageView {
             if let Some(view) = SystemErrorView::detect(MessageRole::System, content) {
                 RichMessageView::SystemError(view)
             } else {
-                RichMessageView::Markdown(MarkdownSummaryView::new(MessageRole::System, content))
+                RichMessageView::Markdown(MarkdownSummaryView::new_with_cwd(
+                    MessageRole::System,
+                    content,
+                    message.cwd.clone(),
+                ))
             }
         }
         MessagePayload::AssistantThinking { content, collapsed } => {
@@ -218,6 +335,10 @@ pub struct MarkdownSummaryView {
     pub role: MessageRole,
     /// Stores the optional timestamp shown after the first assistant line.
     pub timestamp: Option<OffsetDateTime>,
+    /// Stores the normalized markdown source used by the renderer.
+    pub source: String,
+    /// Stores the working directory used to shorten local file links.
+    pub cwd: Option<PathBuf>,
     /// Stores the blocks
     pub blocks: Vec<MarkdownBlockView>,
 }
@@ -230,97 +351,43 @@ impl MarkdownSummaryView {
     }
 
     #[must_use]
+    fn new_with_cwd(role: MessageRole, text: &str, cwd: Option<PathBuf>) -> Self {
+        Self::with_timestamp_and_cwd(role, text, None, cwd)
+    }
+
+    #[must_use]
     fn with_timestamp(role: MessageRole, text: &str, timestamp: Option<OffsetDateTime>) -> Self {
+        Self::with_timestamp_and_cwd(role, text, timestamp, None)
+    }
+
+    #[must_use]
+    fn with_timestamp_and_cwd(
+        role: MessageRole,
+        text: &str,
+        timestamp: Option<OffsetDateTime>,
+        cwd: Option<PathBuf>,
+    ) -> Self {
+        let source = normalized_markdown_source(role, text);
         Self {
             role,
             timestamp,
-            blocks: parse_markdown_blocks(text),
+            blocks: parse_markdown_blocks(&source),
+            source,
+            cwd,
         }
     }
+
     /// Handles display lines
     #[must_use]
     pub fn display_lines(&self, max_width: usize) -> Vec<MessageLineView> {
         let prefix = role_prefix(self.role);
-        let mut lines = Vec::new();
-        let mut first_block = true;
-
-        for block in &self.blocks {
-            match block {
-                MarkdownBlockView::Heading { level, text } => {
-                    // Headings render as standalone bold+colored lines.
-                    // They don't consume first_block so the next paragraph still
-                    // gets the role prefix ("▶ "/"◆ ").
-                    let style = match level {
-                        1 => TextStyle::default().fg(Color::Cyan).bold(),
-                        2 => TextStyle::default().fg(Color::Blue).bold(),
-                        _ => TextStyle::default().bold(),
-                    };
-                    lines.push(MessageLineView::with_spans(
-                        self.role,
-                        vec![MessageSpanView::new(text.clone(), Some(style))],
-                    ));
-                    continue; // skip first_block = false
-                }
-                MarkdownBlockView::Blockquote(text) => {
-                    let block_lines = wrap_summary_lines(
-                        text,
-                        max_width.saturating_sub(2).max(1),
-                        MAX_PARAGRAPH_LINES,
-                        false,
-                    );
-                    for line_text in &block_lines {
-                        lines.push(MessageLineView::with_spans(
-                            self.role,
-                            vec![
-                                MessageSpanView::new(
-                                    "│ ".to_string(),
-                                    Some(TextStyle::default().fg(Color::DarkGrey)),
-                                ),
-                                MessageSpanView::new(line_text.clone(), None),
-                            ],
-                        ));
-                    }
-                }
-                MarkdownBlockView::Paragraph(text) => {
-                    let block_lines =
-                        wrap_summary_lines(text, max_width, MAX_PARAGRAPH_LINES, false);
-                    let display_prefix = if first_block { prefix } else { "" };
-                    if display_prefix.is_empty() {
-                        // Continuation blocks (second paragraph onward) and Tool-role
-                        // messages stay flush-left; only the first block of a
-                        // User/Assistant message carries the role prefix.
-                        push_unprefixed_block(&mut lines, &block_lines, self.role, max_width);
-                    } else {
-                        push_wrapped_block(
-                            &mut lines,
-                            display_prefix,
-                            &block_lines,
-                            self.role,
-                            max_width,
-                        );
-                    }
-                }
-                MarkdownBlockView::Code(code) => {
-                    if self.role == MessageRole::Assistant {
-                        lines.extend(highlighted_code_lines(code, self.role, max_width));
-                    } else {
-                        let label = code.label();
-                        let preview = code.preview_text();
-                        let mut code_lines = vec![preview];
-                        if code.line_count > 1 {
-                            let hidden = code.line_count.saturating_sub(1);
-                            let noun = if hidden == 1 { "line" } else { "lines" };
-                            code_lines.push(format!("+{hidden} more {noun}"));
-                        }
-                        push_wrapped_block(&mut lines, &label, &code_lines, self.role, max_width);
-                    }
-                }
-                MarkdownBlockView::Table(table) => {
-                    lines.extend(table.display_lines(max_width, MessageRole::Assistant));
-                }
-            }
-            first_block = false;
-        }
+        let mut lines = markdown_render::render_markdown_text_with_width_and_cwd(
+            &self.source,
+            max_width,
+            self.cwd.as_deref(),
+            self.role,
+            prefix,
+        );
 
         if lines.is_empty() {
             lines.push(MessageLineView::new(prefix.to_string(), self.role));
@@ -336,6 +403,14 @@ impl MarkdownSummaryView {
         }
 
         lines
+    }
+}
+
+fn normalized_markdown_source(role: MessageRole, text: &str) -> String {
+    if role == MessageRole::Assistant {
+        markdown_render::normalize_agent_markdown_source(text, false)
+    } else {
+        text.to_string()
     }
 }
 
@@ -379,23 +454,6 @@ pub struct MarkdownTableView {
     pub rows: Vec<Vec<String>>,
 }
 
-impl MarkdownCodeBlockView {
-    fn label(&self) -> String {
-        match self.language.as_deref() {
-            Some(language) if !language.is_empty() => format!("code[{language}]> "),
-            _ => "code> ".into(),
-        }
-    }
-
-    fn preview_text(&self) -> String {
-        self.code
-            .lines()
-            .map(str::trim)
-            .find(|line| !line.is_empty())
-            .map_or_else(|| "(empty)".into(), |line| truncate_visible_end(line, 48))
-    }
-}
-
 const MIN_TABLE_COLUMN_WIDTH: usize = 3;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -411,13 +469,27 @@ struct TableLayout {
 }
 
 impl MarkdownTableView {
-    fn display_lines(&self, max_width: usize, role: MessageRole) -> Vec<MessageLineView> {
+    pub(super) fn display_lines(
+        &self,
+        max_width: usize,
+        role: MessageRole,
+    ) -> Vec<MessageLineView> {
         let column_count = self
             .headers
             .len()
             .max(self.rows.iter().map(Vec::len).max().unwrap_or(0));
         if column_count == 0 {
             return Vec::new();
+        }
+
+        if !self.rows.is_empty()
+            && (table_min_width(self, TableRenderStyle::Simple) > max_width
+                || (column_count > 2 && table_min_width(self, TableRenderStyle::Box) > max_width))
+        {
+            return render_key_value_table(self, max_width)
+                .into_iter()
+                .map(|line| MessageLineView::new(line, role))
+                .collect();
         }
 
         let style = if table_min_width(self, TableRenderStyle::Box) <= max_width {
@@ -436,6 +508,36 @@ impl MarkdownTableView {
             .map(|line| MessageLineView::new(line, role))
             .collect()
     }
+}
+
+fn render_key_value_table(table: &MarkdownTableView, max_width: usize) -> Vec<String> {
+    let width = max_width.max(1);
+    let mut lines = Vec::new();
+    for (row_index, row) in table.rows.iter().enumerate() {
+        if row_index > 0 {
+            lines.push("─".repeat(width.min(24)));
+        }
+        let column_count = table.headers.len().max(row.len());
+        for column_index in 0..column_count {
+            let header = table
+                .headers
+                .get(column_index)
+                .map_or_else(|| format!("Column {}", column_index + 1), Clone::clone);
+            let value = row.get(column_index).map_or("", String::as_str);
+            let text = if header.trim().is_empty() {
+                value.to_string()
+            } else {
+                format!("{}: {}", header.trim(), value.trim())
+            };
+            let mut wrapped = wrap_text_hard(&text, width);
+            if wrapped.is_empty() {
+                wrapped.push(String::new());
+            }
+            lines.extend(wrapped);
+        }
+    }
+
+    lines
 }
 
 fn table_min_width(table: &MarkdownTableView, style: TableRenderStyle) -> usize {
@@ -770,7 +872,7 @@ fn syntect_style_to_ratatui(style: syntect::highlighting::Style) -> RatatuiStyle
     out
 }
 
-fn highlighted_code_lines(
+pub(super) fn highlighted_code_lines(
     code: &MarkdownCodeBlockView,
     role: MessageRole,
     max_width: usize,
@@ -1039,6 +1141,49 @@ fn tool_group_summary_verb(tool: &str, calls: &[ToolCallView]) -> String {
             if reads == 1 { "file" } else { "files" },
             if searches == 1 { "path" } else { "paths" }
         ),
+    }
+}
+
+/// Collapses consecutive file read and search tool calls into a single compact summary.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct CollapsedReadSearchGroupView {
+    /// Number of file read operations in this group.
+    pub read_count: usize,
+    /// Number of search/grep/glob/find operations in this group.
+    pub search_count: usize,
+    /// Paths of files that were read.
+    pub file_paths: Vec<String>,
+    /// Patterns that were searched for.
+    pub search_patterns: Vec<String>,
+}
+
+impl CollapsedReadSearchGroupView {
+    /// Renders the collapsed summary as display lines.
+    pub fn display_lines(&self, _max_width: usize) -> Vec<MessageLineView> {
+        let mut parts = Vec::new();
+        if self.read_count > 0 {
+            let noun = if self.read_count == 1 {
+                "file"
+            } else {
+                "files"
+            };
+            parts.push(format!("Read {} {}", self.read_count, noun));
+        }
+        if self.search_count > 0 {
+            let noun = if self.search_count == 1 {
+                "pattern"
+            } else {
+                "patterns"
+            };
+            parts.push(format!("searched for {} {}", self.search_count, noun));
+        }
+        if parts.is_empty() {
+            return Vec::new();
+        }
+        vec![MessageLineView::new(
+            format!("\u{293f}  {}", parts.join(", ")),
+            MessageRole::Tool,
+        )]
     }
 }
 
@@ -2128,6 +2273,7 @@ fn parse_markdown_blocks(text: &str) -> Vec<MarkdownBlockView> {
     }
 
     flush_paragraph(&mut blocks, &mut paragraph);
+
     if in_code_block || code_language.is_some() || !code_lines.is_empty() {
         blocks.push(MarkdownBlockView::Code(MarkdownCodeBlockView {
             language: code_language,
@@ -2405,29 +2551,6 @@ fn push_wrapped_block(
     }
 }
 
-fn push_unprefixed_block(
-    output: &mut Vec<MessageLineView>,
-    source_lines: &[String],
-    role: MessageRole,
-    max_width: usize,
-) {
-    for source in source_lines {
-        let wrapped = wrap_text_hard(source, max_width.max(1));
-        if wrapped.is_empty() {
-            output.push(MessageLineView::new(String::new(), role));
-        } else {
-            for segment in wrapped {
-                let spans = parse_inline_spans(&segment);
-                if spans_have_markup(&spans) {
-                    output.push(MessageLineView::with_spans(role, spans));
-                } else {
-                    output.push(MessageLineView::new(segment, role));
-                }
-            }
-        }
-    }
-}
-
 fn push_line(text: impl Into<String>, role: MessageRole, max_width: usize) -> Vec<MessageLineView> {
     vec![MessageLineView::new(
         truncate_visible_end(&text.into(), max_width.max(1)),
@@ -2439,6 +2562,11 @@ fn truncate_existing_lines(lines: &[MessageLineView], max_width: usize) -> Vec<M
     let width = max_width.max(1);
     let mut out = Vec::new();
     for line in lines {
+        if line_width(&line.text) <= width {
+            out.push(line.clone());
+            continue;
+        }
+
         if let Some((prefix_head, body)) = line.text.split_once("> ") {
             push_wrapped_block(
                 &mut out,
@@ -2449,15 +2577,38 @@ fn truncate_existing_lines(lines: &[MessageLineView], max_width: usize) -> Vec<M
             );
             continue;
         }
-        let wrapped = wrap_text_hard(&line.text, width);
-        if wrapped.is_empty() {
-            out.push(MessageLineView::new(String::new(), line.role));
+
+        if line.spans.is_empty() {
+            out.push(MessageLineView::new(
+                truncate_visible_end(&line.text, width),
+                line.role,
+            ));
         } else {
-            out.extend(
-                wrapped
-                    .into_iter()
-                    .map(|segment| MessageLineView::new(segment, line.role)),
-            );
+            out.push(MessageLineView::with_spans(
+                line.role,
+                truncate_spans_to_width(&line.spans, width),
+            ));
+        }
+    }
+    out
+}
+
+fn truncate_spans_to_width(spans: &[MessageSpanView], max_width: usize) -> Vec<MessageSpanView> {
+    let mut out = Vec::new();
+    let mut remaining = max_width;
+    for span in spans {
+        let span_width = line_width(&span.text);
+        if span_width <= remaining {
+            out.push(span.clone());
+            remaining = remaining.saturating_sub(span_width);
+        } else if remaining > 0 {
+            let truncated = truncate_visible_end(&span.text, remaining);
+            if !truncated.is_empty() {
+                out.push(MessageSpanView::new(truncated, span.style));
+            }
+            break;
+        } else {
+            break;
         }
     }
     out
@@ -2702,6 +2853,44 @@ mod tests {
     }
 
     #[test]
+    fn markdown_paragraph_wraps_once_without_orphan_fragments() {
+        let max_width = 20;
+        // 30 'a's: wraps at the prefix-adjusted width (18), not at the full
+        // width first. Double-wrapping used to leave 1-2 char orphan lines.
+        let view = MarkdownSummaryView::new(MessageRole::Assistant, &"a".repeat(30));
+
+        let lines = view.display_lines(max_width);
+        assert_eq!(lines[0].text, format!("◆ {}", "a".repeat(18)));
+        assert_eq!(lines[1].text, format!("  {}", "a".repeat(12)));
+        assert_eq!(lines.len(), 2);
+        assert!(
+            lines.iter().all(|line| line_width(&line.text) <= max_width),
+            "no line may exceed max_width: {lines:?}"
+        );
+    }
+
+    #[test]
+    fn markdown_heading_wraps_at_max_width() {
+        let max_width = 10;
+        let view =
+            MarkdownSummaryView::new(MessageRole::Assistant, &format!("# {}", "h".repeat(25)));
+
+        let lines = view.display_lines(max_width);
+        assert!(lines.len() >= 3, "long heading must wrap: {lines:?}");
+        for line in &lines {
+            assert!(
+                line_width(&line.text) <= max_width,
+                "heading line overflows: {:?}",
+                line.text
+            );
+            assert!(
+                line.spans.iter().any(|span| span.style.is_some()),
+                "wrapped heading segments keep their style"
+            );
+        }
+    }
+
+    #[test]
     fn markdown_table_renders_simple_two_column_table() {
         let view = MarkdownSummaryView::new(
             MessageRole::Assistant,
@@ -2727,6 +2916,115 @@ mod tests {
         assert!(lines.iter().any(|line| line.text.contains("val 1")));
         assert!(!lines.iter().any(|line| line.text.contains(":------")));
         assert!(!lines.iter().any(|line| line.text.contains("------:")));
+    }
+
+    #[test]
+    fn markdown_fenced_markdown_table_is_unwrapped_for_agent_messages() {
+        let view = MarkdownSummaryView::new(
+            MessageRole::Assistant,
+            "```markdown\n| Name | Role |\n| --- | --- |\n| Ada | Engineer |\n```",
+        );
+
+        assert!(
+            view.blocks
+                .iter()
+                .any(|block| matches!(block, MarkdownBlockView::Table(_))),
+            "markdown table fence should become a table block: {:?}",
+            view.blocks
+        );
+        let lines = view.display_lines(80);
+        assert!(lines.iter().any(|line| line.text.contains("Ada")));
+        assert!(!lines.iter().any(|line| line.text.contains("```markdown")));
+    }
+
+    #[test]
+    fn non_markdown_fenced_code_stays_code() {
+        let view = MarkdownSummaryView::new(MessageRole::Assistant, "```rust\nfn main() {}\n```");
+
+        assert!(
+            view.blocks
+                .iter()
+                .any(|block| matches!(block, MarkdownBlockView::Code(_))),
+            "rust fence should stay as code: {:?}",
+            view.blocks
+        );
+        let lines = view.display_lines(80);
+        assert_eq!(lines[0].text, "fn main() {}");
+    }
+
+    #[test]
+    fn markdown_inline_styles_and_web_links_are_styled() {
+        let view = MarkdownSummaryView::new(
+            MessageRole::Assistant,
+            "Use **bold**, *italic*, `code`, and https://example.com.",
+        );
+
+        let lines = view.display_lines(120);
+        let spans = &lines[0].spans;
+        assert!(
+            spans
+                .iter()
+                .any(|span| span.text == "bold" && span.style.is_some_and(|style| style.bold)),
+            "bold span missing: {spans:?}"
+        );
+        assert!(
+            spans
+                .iter()
+                .any(|span| span.text == "italic" && span.style.is_some_and(|style| style.italic)),
+            "italic span missing: {spans:?}"
+        );
+        assert!(
+            spans.iter().any(|span| span.text == "code"
+                && span
+                    .style
+                    .is_some_and(|style| style.fg == Some(Color::Cyan))),
+            "inline code span missing: {spans:?}"
+        );
+        assert!(
+            spans.iter().any(|span| span.text == "https://example.com"
+                && span
+                    .style
+                    .is_some_and(|style| style.fg == Some(Color::Cyan) && style.underlined)),
+            "web link span missing: {spans:?}"
+        );
+    }
+
+    #[test]
+    fn local_markdown_links_render_relative_to_cwd() {
+        let view = MarkdownSummaryView::new_with_cwd(
+            MessageRole::Assistant,
+            "See [entry](/workspace/src/main.rs:42).",
+            Some(std::path::PathBuf::from("/workspace")),
+        );
+
+        let lines = view.display_lines(80);
+        assert_eq!(lines[0].text, "◆ See src/main.rs:42.");
+        assert!(
+            lines[0]
+                .spans
+                .iter()
+                .any(|span| span.text == "src/main.rs:42"
+                    && span.style.is_some_and(|style| style.underlined)),
+            "local link span missing: {:?}",
+            lines[0].spans
+        );
+    }
+
+    #[test]
+    fn wide_tables_fall_back_to_key_value_rows_when_narrow() {
+        let view = MarkdownSummaryView::new(
+            MessageRole::Assistant,
+            "| File | Status | Notes |\n| --- | --- | --- |\n| src/message/rich.rs | changed | renderer path |\n",
+        );
+
+        let lines = view.display_lines(24);
+        assert!(lines.iter().any(|line| line.text.starts_with("File:")));
+        assert!(lines.iter().any(|line| line.text.starts_with("Status:")));
+        assert!(lines.iter().any(|line| line.text.starts_with("Notes:")));
+        assert!(
+            lines.iter().all(|line| line_width(&line.text) <= 24),
+            "narrow table fallback overflowed: {lines:?}"
+        );
     }
 
     #[test]
@@ -3750,6 +4048,82 @@ mod tests {
         assert!(
             lines.iter().all(|l| !l.text.contains('└')),
             "Old └ must not appear in any grouped tool line; lines: {lines:?}"
+        );
+    }
+
+    #[test]
+    fn completed_table_renders_normally() {
+        let view = MarkdownSummaryView::new(
+            MessageRole::Assistant,
+            "| Name | Age |\n|------|-----|\n| Alice | 30 |",
+        );
+        let has_table = view
+            .blocks
+            .iter()
+            .any(|b| matches!(b, MarkdownBlockView::Table(_)));
+        assert!(
+            has_table,
+            "Table with body row must render as Table: {:?}",
+            view.blocks
+        );
+    }
+
+    #[test]
+    fn non_streaming_code_block_renders_as_code() {
+        let view =
+            MarkdownSummaryView::new(MessageRole::Assistant, "before\n```rust\nfn main() {}");
+        let has_code_block = view
+            .blocks
+            .iter()
+            .any(|b| matches!(b, MarkdownBlockView::Code(_)));
+        assert!(
+            has_code_block,
+            "Non-streaming path must still render partial code fence as Code block: {:?}",
+            view.blocks
+        );
+    }
+
+    #[test]
+    fn truncate_existing_lines_clips_wide_table_without_garbling() {
+        let wide_source = "| Column A | Column B | Column C | Column D | Column E | Column F |\n\
+                           |----------|----------|----------|----------|----------|----------|\n\
+                           | value 1  | value 2  | value 3  | value 4  | value 5  | value 6  |";
+        let view = MarkdownSummaryView::new(MessageRole::Assistant, wide_source);
+        let lines = view.display_lines(40);
+
+        let truncated = truncate_existing_lines(&lines, 40);
+        assert!(
+            truncated.iter().all(|line| line_width(&line.text) <= 40),
+            "every truncated line must fit within width: {truncated:?}"
+        );
+        assert!(
+            lines.iter().all(|line| line_width(&line.text) <= 40),
+            "every non-streaming line must fit within width: {lines:?}"
+        );
+        assert_eq!(truncated.len(), lines.len());
+    }
+
+    #[test]
+    fn truncate_existing_lines_clips_styled_line_without_splitting() {
+        let styled = vec![MessageLineView::with_spans(
+            MessageRole::Assistant,
+            vec![
+                MessageSpanView::new("pre ", None),
+                MessageSpanView::new("styled bold text here", Some(TextStyle::default().bold())),
+                MessageSpanView::new(" suffix longer", None),
+            ],
+        )];
+        let truncated = truncate_existing_lines(&styled, 20);
+        assert_eq!(truncated.len(), 1, "styled wide line is clipped, not split");
+        assert!(
+            line_width(&truncated[0].text) <= 20,
+            "clipped line must fit: {:?}",
+            truncated[0].text
+        );
+        assert!(
+            truncated[0].spans.iter().any(|s| s.style.is_some()),
+            "styled spans are preserved in clip: {:?}",
+            truncated[0].spans
         );
     }
 }

@@ -61,6 +61,12 @@ fn build_openai_request_with_mode(
         .expect("openai request body should be an object");
     if stream {
         body_map.insert("stream".into(), Value::Bool(true));
+        body_map.insert(
+            "stream_options".into(),
+            json!({
+                "include_usage": true,
+            }),
+        );
     }
     if let Some(temperature) = request.temperature {
         body_map.insert("temperature".into(), json!(temperature));
@@ -441,7 +447,13 @@ fn truncate_tool_result(content: &str) -> std::borrow::Cow<'_, str> {
     if content.len() <= MAX_TOOL_RESULT_CHARS {
         return std::borrow::Cow::Borrowed(content);
     }
-    let kept = &content[..MAX_TOOL_RESULT_CHARS];
+    let byte_end = content
+        .char_indices()
+        .map(|(i, _)| i)
+        .take_while(|&i| i <= MAX_TOOL_RESULT_CHARS)
+        .last()
+        .unwrap_or(0);
+    let kept = &content[..byte_end];
     let truncated_chars = content.len() - MAX_TOOL_RESULT_CHARS;
     std::borrow::Cow::Owned(format!(
         "{kept}\n\n[…output truncated: {truncated_chars} additional characters not shown]"

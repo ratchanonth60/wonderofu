@@ -1,0 +1,26 @@
+[package]
+name = "wonder-of-u-protocol"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "Submission Queue / Event Queue wire contract for wonder-of-u (codex-rs port, Phase 0)"
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[features]
+default = []
+# Toggle on for the new async tokio runtime path; the legacy blocking path stays
+# the default until Phase 6 stabilizes the port. See CLAUDE.md pitfall #1.
+wonder-of-u-async = []
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+uuid = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }

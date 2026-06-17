@@ -392,6 +392,8 @@ fn tool_sidebar_lines_produces_summary() {
         progress_tx: None,
         interaction_rx: None,
         fork_context: None,
+            file_checkpointer: None,
+            network_policy: None,
     };
     let lines = tool_sidebar_lines(&context, None);
     // Must not be empty and must not be an error line.
@@ -413,7 +415,7 @@ fn tool_sidebar_lines_produces_summary() {
 fn lsp_sidebar_lines_never_panics() {
     // Just ensure it runs without panicking; actual binary presence is env-dependent.
     let dir = wonder_of_u_test_support::unique_test_dir("lsp-check");
-    let lines = lsp_sidebar_lines(&dir);
+    let lines = lsp_sidebar_lines(&dir, None);
     assert_eq!(
         lines.len(),
         LSP_SERVERS.len(),
@@ -445,14 +447,12 @@ fn controller_toggles_optimize_token_mode_from_command() {
 
     assert!(controller.state.optimize_token_mode);
     assert_eq!(controller.status_note.as_deref(), Some("optimize token on"));
-    assert!(matches!(
-        controller.state.messages.last().map(|message| &message.payload),
-        Some(MessagePayload::Command { input, output })
-            if input == "/optimize-tonken"
-                && output
-                    .as_deref()
-                    .is_some_and(|text| text.contains("optimize_token_mode=true"))
-    ));
+    assert!(
+        !controller.state.messages.iter().any(|message| {
+            matches!(&message.payload, MessagePayload::Command { .. })
+        }),
+        "/optimize-tonken must not record to transcript"
+    );
 }
 
 #[test]
@@ -492,14 +492,12 @@ fn controller_shows_optimize_token_notice_dialog() {
         controller.dialog.as_ref(),
         Some(dialog) if dialog.title == "Optimize Token"
     ));
-    assert!(matches!(
-        controller.state.messages.last().map(|message| &message.payload),
-        Some(MessagePayload::Command { input, output })
-            if input == "/optimize-tonken show"
-                && output
-                    .as_deref()
-                    .is_some_and(|text| text.contains("## Optimize Token"))
-    ));
+    assert!(
+        !controller.state.messages.iter().any(|message| {
+            matches!(&message.payload, MessagePayload::Command { .. })
+        }),
+        "/optimize-tonken show must not record to transcript"
+    );
 }
 
 #[test]
@@ -724,17 +722,11 @@ fn doctor_output_includes_all_provider_env_hints() {
 
     block_on(controller.execute_slash_command("/doctor")).expect("run doctor");
 
-    // The last message should contain the doctor output.
-    let output = controller
-        .state
-        .messages
-        .iter()
-        .rev()
-        .find_map(|m| match &m.payload {
-            MessagePayload::Command { output, .. } => output.as_deref(),
-            _ => None,
-        })
-        .expect("doctor command output");
+    // Doctor output goes to a dialog, not the transcript.
+    let dialog = controller.dialog.as_ref().expect("doctor dialog");
+    assert_eq!(dialog.title, "/doctor");
+    let output = dialog.body.join("\n");
+    let output = output.as_str();
 
     assert!(
         output.contains("providers_registered="),
@@ -1450,5 +1442,241 @@ fn injected_task_id_tracked_in_state_set() {
             .injected_task_notifications
             .contains(&task_id),
         "task id {task_id} must be in injected_task_notifications set"
+    );
+}
+
+// --- token management: hybrid estimation, warning threshold, microcompact ---
+
+fn make_plain_controller<'a>(
+    dir: &std::path::Path,
+    registry: &'a wonder_of_u_core::CommandRegistry,
+) -> TuiController<'a> {
+    TuiController::new(
+        test_context(dir),
+        registry,
+        Some(dir),
+        TuiLaunchOptions { session_id: None },
+    )
+    .expect("controller")
+}
+
+#[test]
+fn estimated_context_tokens_anchors_on_api_usage() {
+    let dir = unique_test_dir("tui-ctx-hybrid");
+    let registry = commands::registry(Some(dir.clone())).expect("registry");
+    let mut controller = make_plain_controller(&dir, &registry);
+    let session_id = controller.state.session.id;
+
+    controller
+        .state
+        .messages
+        .push(MessageEnvelope::user_text(session_id, "a".repeat(400)));
+    controller.note_context_usage(TokenUsage {
+        input_tokens: 1_000,
+        output_tokens: 200,
+        cache_creation_tokens: 0,
+        cache_read_tokens: 0,
+    });
+
+    // Message covered by the anchor must not be re-estimated.
+    assert_eq!(controller.estimated_context_tokens(), 1_200);
+
+    // A message appended after the anchor is estimated at ~4 chars/token.
+    controller
+        .state
+        .messages
+        .push(MessageEnvelope::user_text(session_id, "b".repeat(400)));
+    assert_eq!(controller.estimated_context_tokens(), 1_300);
+}
+
+#[test]
+fn estimated_context_tokens_falls_back_when_anchor_is_stale() {
+    let dir = unique_test_dir("tui-ctx-stale-anchor");
+    let registry = commands::registry(Some(dir.clone())).expect("registry");
+    let mut controller = make_plain_controller(&dir, &registry);
+    let session_id = controller.state.session.id;
+
+    controller
+        .state
+        .messages
+        .push(MessageEnvelope::user_text(session_id, "a".repeat(400)));
+    controller
+        .state
+        .messages
+        .push(MessageEnvelope::user_text(session_id, "b".repeat(400)));
+    controller.note_context_usage(TokenUsage {
+        input_tokens: 50_000,
+        output_tokens: 0,
+        cache_creation_tokens: 0,
+        cache_read_tokens: 0,
+    });
+
+    // Simulate a transcript rewrite that shrinks messages below the anchor.
+    controller.state.messages.clear();
+    controller
+        .state
+        .messages
+        .push(MessageEnvelope::user_text(session_id, "c".repeat(40)));
+    assert_eq!(
+        controller.estimated_context_tokens(),
+        10,
+        "stale anchor must fall back to the full character estimate"
+    );
+
+    controller.reset_context_usage_tracking();
+    assert_eq!(controller.last_context_usage, None);
+}
+
+#[test]
+fn context_warning_uses_absolute_token_threshold() {
+    let dir = unique_test_dir("tui-ctx-warning");
+    let registry = commands::registry(Some(dir.clone())).expect("registry");
+    let mut controller = make_plain_controller(&dir, &registry);
+    // Raw window 200k → effective 180k → autocompact threshold 167k →
+    // warning threshold 147k.
+    controller.state.context_window_size = Some(200_000);
+    controller.context_usage_anchor = 0;
+
+    controller.last_context_usage = Some(140_000);
+    assert!(!controller.context_warning_active());
+
+    controller.last_context_usage = Some(150_000);
+    assert!(controller.context_warning_active());
+
+    // With autocompact disabled the threshold is the full effective window
+    // (180k) so the warning moves to 160k.
+    controller.state.auto_compact_enabled = false;
+    assert!(!controller.context_warning_active());
+    controller.last_context_usage = Some(165_000);
+    assert!(controller.context_warning_active());
+}
+
+#[test]
+fn maybe_autocompact_respects_disabled_toggle() {
+    let dir = unique_test_dir("tui-autocompact-toggle");
+    let registry = commands::registry(Some(dir.clone())).expect("registry");
+    let mut controller = make_plain_controller(&dir, &registry);
+    controller.state.context_window_size = Some(200_000);
+    controller.last_context_usage = Some(190_000);
+    controller.context_usage_anchor = 0;
+
+    controller.state.auto_compact_enabled = false;
+    controller.maybe_autocompact();
+    assert!(
+        controller.state.queued_commands.is_empty(),
+        "disabled autocompact must not queue /compact"
+    );
+
+    controller.state.auto_compact_enabled = true;
+    controller.maybe_autocompact();
+    assert!(
+        controller
+            .state
+            .queued_commands
+            .iter()
+            .any(|cmd| cmd.command == "/compact"),
+        "enabled autocompact must queue /compact above the threshold"
+    );
+}
+
+#[test]
+fn autocompact_slash_command_toggles_state() {
+    let dir = unique_test_dir("tui-autocompact-cmd");
+    let registry = commands::registry(Some(dir.clone())).expect("registry");
+    let mut controller = make_plain_controller(&dir, &registry);
+    assert!(controller.state.auto_compact_enabled);
+
+    block_on(controller.execute_slash_command("/autocompact off")).expect("toggle off");
+    assert!(!controller.state.auto_compact_enabled);
+    assert_eq!(controller.status_note.as_deref(), Some("autocompact off"));
+
+    block_on(controller.execute_slash_command("/autocompact on")).expect("toggle on");
+    assert!(controller.state.auto_compact_enabled);
+}
+
+fn push_tool_round(
+    controller: &mut TuiController<'_>,
+    tool: &str,
+    content: &str,
+    age: time::Duration,
+) -> wonder_of_u_core::ToolUseId {
+    let session_id = controller.state.session.id;
+    let use_id = wonder_of_u_core::ToolUseId::new();
+    let stamp = time::OffsetDateTime::now_utc() - age;
+    let mut tool_use = MessageEnvelope::new(
+        session_id,
+        MessagePayload::AssistantToolUse {
+            tool: tool.into(),
+            use_id,
+            input: serde_json::json!({}),
+        },
+    );
+    tool_use.timestamp = stamp;
+    let mut result = MessageEnvelope::new(
+        session_id,
+        MessagePayload::ToolResult {
+            tool: tool.into(),
+            use_id,
+            success: true,
+            content: content.into(),
+        },
+    );
+    result.timestamp = stamp;
+    controller.state.messages.push(tool_use);
+    controller.state.messages.push(result);
+    use_id
+}
+
+#[test]
+fn time_based_microcompact_clears_old_tool_results() {
+    let dir = unique_test_dir("tui-microcompact-clear");
+    let registry = commands::registry(Some(dir.clone())).expect("registry");
+    let mut controller = make_plain_controller(&dir, &registry);
+
+    // 7 compactable rounds, all older than the 60-minute gap threshold.
+    let ids: Vec<_> = (0..7)
+        .map(|_| push_tool_round(&mut controller, "bash", &"x".repeat(400), time::Duration::hours(2)))
+        .collect();
+    controller.last_context_usage = Some(10_000);
+    controller.context_usage_anchor = controller.state.messages.len();
+
+    controller.maybe_time_based_microcompact();
+
+    let cleared: Vec<_> = controller
+        .state
+        .messages
+        .iter()
+        .filter_map(|msg| match &msg.payload {
+            MessagePayload::ToolResult {
+                use_id, content, ..
+            } if content == "[Old tool result content cleared]" => Some(*use_id),
+            _ => None,
+        })
+        .collect();
+    // Keep the newest 5, clear the oldest 2.
+    assert_eq!(cleared, ids[..2].to_vec());
+    // The anchored usage must drop by the freed estimate (2 × 400 chars / 4).
+    assert_eq!(controller.last_context_usage, Some(10_000 - 200));
+}
+
+#[test]
+fn time_based_microcompact_skips_recent_sessions() {
+    let dir = unique_test_dir("tui-microcompact-recent");
+    let registry = commands::registry(Some(dir.clone())).expect("registry");
+    let mut controller = make_plain_controller(&dir, &registry);
+
+    for _ in 0..7 {
+        push_tool_round(&mut controller, "bash", &"x".repeat(400), time::Duration::minutes(5));
+    }
+
+    controller.maybe_time_based_microcompact();
+
+    assert!(
+        controller.state.messages.iter().all(|msg| !matches!(
+            &msg.payload,
+            MessagePayload::ToolResult { content, .. }
+                if content == "[Old tool result content cleared]"
+        )),
+        "a recent assistant message must suppress the time-based microcompact"
     );
 }

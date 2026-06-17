@@ -8,25 +8,6 @@ fn footer_badges(text: &str) -> String {
     badges.join("·")
 }
 
-fn status_line_text(view: &ShellView) -> String {
-    let indicator = if view.loading { '●' } else { '○' };
-    let base = if view.status.is_empty() {
-        indicator.to_string()
-    } else {
-        format!("{indicator} {}", view.status)
-    };
-
-    // Append a compact scroll indicator when the user has scrolled up from tail.
-    if !view.scroll.is_following_tail() {
-        format!(
-            "{}  ↑ {} lines · Ctrl+End bottom",
-            base, view.scroll.offset_from_bottom
-        )
-    } else {
-        base
-    }
-}
-
 /// Builds the single compact footer row displayed at the bottom of the shell.
 ///
 /// Combines the caller-supplied hint text from [`ShellView::footer`] with a
@@ -199,7 +180,10 @@ fn message_lines_to_styled(lines: &[MessageLineView], theme: &Theme) -> Vec<Styl
     lines
         .iter()
         .map(|line| {
-            let base_style = style_for_message(theme, line.role);
+            let mut base_style = style_for_message(theme, line.role);
+            if line.highlight {
+                base_style.bg = Some(theme.status.fg.unwrap_or(Color::Cyan));
+            }
             let spans = line
                 .spans
                 .iter()
@@ -470,7 +454,12 @@ fn style_for_message(theme: &Theme, role: MessageRole) -> TextStyle {
     match role {
         MessageRole::User => theme.prompt,
         MessageRole::Assistant => theme.messages,
-        MessageRole::System => theme.footer,
+        MessageRole::System => {
+            let mut style = theme.footer;
+            style.dim = true;
+            style.italic = true;
+            style
+        }
         MessageRole::Tool => {
             let mut style = theme.status.fg(Color::Green);
             style.bold = true;

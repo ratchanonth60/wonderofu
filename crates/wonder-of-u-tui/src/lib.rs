@@ -138,15 +138,17 @@ pub use measure::{
 };
 /// Re-exports items from `message`
 pub use message::{
-    AttachmentKind, AttachmentSummaryView, FileEditReferenceView, GroupedToolCallView,
-    HistorySearchView, MarkdownBlockView, MarkdownCodeBlockView, MarkdownSummaryView,
-    McpCatalogItemView, McpCatalogKind, McpCatalogSummaryView, MessageLineView, MessageRole,
-    NotebookEditMode, NotebookRejectionSummaryView, PickerListEntry, PickerListView, PickerView,
-    RejectedPermissionSummaryView, RejectedToolMessageKind, RejectedToolMessageView,
-    RichMessageView, SystemErrorKind, SystemErrorView, TaskActivityKind, TaskActivitySummaryView,
-    TaskPanelView, ThinkingBlockView, ToolCallView, ToolResultCounts, ToolResultStatus,
-    TranscriptBoundaryView, UnknownToolOutputView, footer_text, message_lines,
-    message_lines_for_width, queued_panel_view, rich_message_views, status_text, task_panel_view,
+    AttachmentKind, AttachmentSummaryView, CollapsedReadSearchGroupView, FileEditReferenceView,
+    GroupedToolCallView, HistorySearchView, MarkdownBlockView, MarkdownCodeBlockView,
+    MarkdownSummaryView, McpCatalogItemView, McpCatalogKind, McpCatalogSummaryView,
+    MessageLineView, MessageRole, NotebookEditMode, NotebookRejectionSummaryView, PickerListEntry,
+    PickerListView, PickerView, REVEAL_LINES_PER_TICK, RejectedPermissionSummaryView,
+    RejectedToolMessageKind, RichMessageView, StreamMarkdownCollector, StreamRender,
+    SystemErrorKind, SystemErrorView, TaskActivityKind, TaskActivitySummaryView, TaskPanelView,
+    ThinkingBlockView, ToolCallView, ToolResultCounts, ToolResultStatus, TranscriptBoundaryView,
+    UnknownToolOutputView, footer_text, message_lines, message_lines_for_width,
+    message_lines_for_width_with_cursor, queued_panel_view, rich_message_views, status_text,
+    task_panel_view,
 };
 /// Re-exports items from `notification`
 pub use notification::{
@@ -160,13 +162,15 @@ pub use permission::{PermissionAccessKind, PermissionDetailView, PermissionSumma
 pub use prompt::{
     PromptAttachmentIndicator, PromptFooterHint, PromptFooterModel, PromptInputModel, PromptLayout,
     PromptModeIndicator, PromptQueueView, PromptQueuedCommandView, PromptSuggestion,
-    PromptSuggestionState,
+    PromptSuggestionState, find_match_chars,
 };
 /// Re-exports items from `render`
 pub use render::{
-    ContextSuggestion, ContextSuggestionsView, GlobalSearchOverlayView, MIN_SIDEBAR_WIDTH,
-    SIDEBAR_WIDTH, ShellView, SidebarView, SlashSuggestionEntry, SlashSuggestionsOverlay,
-    SuggestionSeverity, TranscriptScrollView, render_shell, render_snapshot, shell_main_area_width,
+    ContextSuggestion, ContextSuggestionsView, FleetPanelOverlay, GlobalSearchOverlayView,
+    MIN_SIDEBAR_WIDTH, PromptWarningSeverity, PromptWarningView, SIDEBAR_WIDTH, ShellView,
+    SidebarMode, SidebarSlot, SidebarView, SlashSuggestionEntry, SlashSuggestionsOverlay,
+    SuggestionSeverity, TRANSCRIPT_HPAD, TranscriptScrollView, render_shell, render_snapshot,
+    shell_main_area_width, sidebar_scroll_geometry, transcript_wrap_width,
 };
 /// Re-exports items from `security`
 pub use security::{

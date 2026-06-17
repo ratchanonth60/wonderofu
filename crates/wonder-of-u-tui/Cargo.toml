@@ -9,6 +9,7 @@ publish = false
 async-trait.workspace = true
 crossterm = { workspace = true, features = ["event-stream"] }
 futures.workspace = true
+pulldown-cmark = "0.13"
 ratatui.workspace = true
 tokio.workspace = true
 serde_json.workspace = true

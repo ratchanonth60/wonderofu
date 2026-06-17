@@ -30,6 +30,7 @@ serde_json.workspace = true
 shell-words.workspace = true
 time.workspace = true
 unicode-segmentation.workspace = true
+lsp-types.workspace = true
 libc.workspace = true
 walkdir.workspace = true
 wonder-of-u-agent.workspace = true
@@ -40,6 +41,7 @@ wonder-of-u-skills.workspace = true
 wonder-of-u-storage.workspace = true
 wonder-of-u-tools.workspace = true
 wonder-of-u-tui.workspace = true
+wonder-of-u-lsp.workspace = true
 
 [dev-dependencies]
 tempfile = "3"

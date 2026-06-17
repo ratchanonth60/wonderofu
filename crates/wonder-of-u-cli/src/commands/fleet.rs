@@ -64,7 +64,9 @@ use wonder_of_u_core::{
     Result, SteeringSource, TaskId, TaskStatus, WonderError, WorktreeIsolation,
     WorktreeIsolationMode, get_git_root,
 };
-use wonder_of_u_storage::{FleetInspector, FleetStore, MemberObservationClass};
+use wonder_of_u_storage::{
+    FleetInspector, FleetStore, MemberObservationClass, Thread, ThreadStore,
+};
 use wonder_of_u_tools::{
     create_agent_worktree_info, fleet_agent_worktree_slug, validate_worktree_branch_name,
 };
@@ -468,6 +470,17 @@ impl FleetCommand {
             Some(context.cwd.clone()),
         );
 
+        // Create a thread to group this fleet run with its member sessions.
+        if let Some(storage_dir) = &self.storage_dir {
+            let thread_store = ThreadStore::new(storage_dir);
+            let mut thread = Thread::new(run.id.to_string());
+            thread.title = Some(args.description.clone());
+            thread.cwd = Some(context.cwd.clone());
+            if let Ok(()) = thread_store.create_thread(&thread) {
+                run.thread_id = Some(thread.id);
+            }
+        }
+
         // If --prompt is given, launch an immediate agent task.
         if let Some(prompt) = &args.prompt {
             let report = ProviderResolver::builtin().load_report(self.storage_dir.as_deref())?;
@@ -575,6 +588,18 @@ impl FleetCommand {
         );
         run.max_concurrency = max_concurrency;
         store.write_run(&run)?;
+
+        // Create a thread to group this fleet run with its member sessions.
+        if let Some(storage_dir) = &self.storage_dir {
+            let thread_store = wonder_of_u_storage::ThreadStore::new(storage_dir);
+            let mut thread = wonder_of_u_storage::Thread::new(run.id.to_string());
+            thread.title = Some(description.to_string());
+            thread.cwd = Some(context.cwd.clone());
+            if let Ok(()) = thread_store.create_thread(&thread) {
+                run.thread_id = Some(thread.id);
+                store.write_run(&run)?;
+            }
+        }
 
         // Queue all members as pending requests in topological order.
         for spec in &specs {
@@ -896,144 +921,24 @@ impl FleetCommand {
         };
 
         let fleet_id = parse_fleet_id(&args.fleet_id)?;
-        let mut run = store.read_run(fleet_id)?;
-
-        // Load all pending requests that belong to this fleet.
-        let all_pending = store.list_pending_requests()?;
-        let pending: Vec<_> = all_pending
-            .iter()
-            .filter(|r| r.fleet_id == Some(fleet_id))
-            .collect();
-
-        // Count active (non-terminal) member tasks for concurrency cap.
-        let active_count = run
-            .member_task_ids
-            .iter()
-            .filter(|&&tid| {
-                manager
-                    .get_task(tid)
-                    .map(|t| !t.status.is_terminal())
-                    .unwrap_or(false)
-            })
-            .count();
-
+        let _ = store.read_run(fleet_id)?;
         let report = ProviderResolver::builtin().load_report(self.storage_dir.as_deref())?;
-
-        let mut newly_launched = 0usize;
-        let mut ready_count = 0usize;
-        let mut waiting_count = 0usize;
-        let mut blocked_count = 0usize;
-        let mut launch_errors: Vec<String> = Vec::new();
-
-        // Compute remaining concurrency slots (None = unbounded).
-        let mut slots_remaining: Option<usize> = run
-            .max_concurrency
-            .map(|cap| cap.saturating_sub(active_count));
-
-        for req in &pending {
-            // Skip already-dispatched (idempotency guard).
-            if run.dispatched_requests.contains_key(&req.id) {
-                continue;
-            }
-
-            // Classify the request based on its dependency statuses.
-            let classification = classify_request(req, &run, &manager);
-
-            match classification {
-                DepClassification::Ready => {
-                    ready_count += 1;
-                    // Honour max_concurrency cap.
-                    if slots_remaining == Some(0) {
-                        // No slots left this pass; leave as ready for next call.
-                        continue;
-                    }
-
-                    match dispatch_one(&manager, &store, &context, req, &report) {
-                        Ok(task_id) => {
-                            newly_launched += 1;
-                            run.record_dispatch(req.id.clone(), task_id);
-                            if run.status == FleetRunStatus::Pending {
-                                run.status = FleetRunStatus::Running;
-                            }
-                            if let Some(ref mut slots) = slots_remaining {
-                                *slots = slots.saturating_sub(1);
-                            }
-                        }
-                        Err(err) => {
-                            launch_errors.push(format!(
-                                "launch_error[{}]: {}",
-                                req.id,
-                                sanitize_line(&err.to_string())
-                            ));
-                        }
-                    }
-                }
-                DepClassification::Waiting => waiting_count += 1,
-                DepClassification::Blocked => blocked_count += 1,
-            }
-        }
-
-        // Recompute completed/failed counts from member tasks.
-        let mut completed_count = 0usize;
-        let mut failed_count = 0usize;
-        let mut active_after = 0usize;
-        let mut member_statuses: Vec<TaskStatus> = Vec::new();
-        for &tid in &run.member_task_ids {
-            match manager.get_task(tid) {
-                Ok(t) => {
-                    member_statuses.push(t.status);
-                    if t.status.is_terminal() {
-                        if t.status == TaskStatus::Completed {
-                            completed_count += 1;
-                        } else {
-                            failed_count += 1;
-                        }
-                    } else {
-                        active_after += 1;
-                    }
-                }
-                Err(_) => member_statuses.push(TaskStatus::Pending),
-            }
-        }
-
-        // Determine new fleet status.
-        //
-        // Pending-queue items that are still waiting/ready/unblocked count as
-        // "work remaining" and keep the fleet Running rather than prematurely
-        // marking it terminal.
-        let remaining_work = pending
-            .iter()
-            .filter(|r| !run.dispatched_requests.contains_key(&r.id))
-            .count();
-
-        if blocked_count > 0 && active_after == 0 && remaining_work == blocked_count {
-            // All remaining work is blocked and nothing is active → Failed.
-            run.status = FleetRunStatus::Failed;
-            if run.finished_at.is_none() {
-                run.finished_at = Some(OffsetDateTime::now_utc());
-            }
-        } else if active_after > 0 || remaining_work > 0 {
-            run.status = FleetRunStatus::Running;
-        } else if !member_statuses.is_empty() {
-            // All dispatched, all terminal.
-            run.reconcile_status(&member_statuses);
-        }
-
-        store.write_run(&run)?;
+        let result = dispatch_ready_members(&manager, &store, &context, fleet_id, &report)?;
+        let run = store.read_run(fleet_id)?;
 
         let mut lines = vec![
-            format!("fleet_id={}", run.id),
+            format!("fleet_id={fleet_id}"),
             format!("fleet_status={}", run.status.label()),
-            format!("active={active_after}"),
-            format!("completed={completed_count}"),
-            format!("failed={failed_count}"),
-            format!("ready={ready_count}"),
-            format!("waiting={waiting_count}"),
-            format!("blocked={blocked_count}"),
-            format!("newly_launched={newly_launched}"),
-            format!("launch_errors={}", launch_errors.len()),
+            format!("active={}", result.active_after),
+            format!("completed={}", result.completed_count),
+            format!("failed={}", result.failed_count),
+            format!("ready={}", result.ready_count),
+            format!("waiting={}", result.waiting_count),
+            format!("blocked={}", result.blocked_count),
+            format!("newly_launched={}", result.newly_launched),
+            format!("launch_errors={}", result.launch_errors.len()),
         ];
-        lines.extend(launch_errors);
+        lines.extend(result.launch_errors);
         Ok(CommandOutput::Text(lines.join("\n")))
     }
 
@@ -1443,7 +1348,40 @@ fn dispatch_one(
     report: &ProviderStatusReport,
 ) -> Result<TaskId> {
     let cwd = req.cwd.clone().unwrap_or_else(|| context.cwd.clone());
-    let launch = request_to_agent_launch(req, &cwd, report)?;
+    let mut launch = request_to_agent_launch(req, &cwd, report)?;
+
+    // Auto-apply unapplied steering messages for this fleet member.
+    if let Some(fleet_id) = req.fleet_id {
+        if let Ok(msgs) = store.list_steering_messages(fleet_id) {
+            let unapplied: Vec<_> = msgs
+                .iter()
+                .filter(|m| m.applied_at.is_none())
+                .filter(|m| {
+                    m.recipient
+                        .as_deref()
+                        .is_none_or(|r| r == "*" || Some(r) == req.name.as_deref())
+                })
+                .collect();
+            if !unapplied.is_empty() {
+                let steering_context: String = unapplied
+                    .iter()
+                    .map(|m| {
+                        let source = match m.source {
+                            wonder_of_u_core::SteeringSource::Operator => "operator",
+                            wonder_of_u_core::SteeringSource::Agent => "agent",
+                        };
+                        format!("[Steering from {source}]: {prompt}", prompt = m.prompt)
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n\n");
+                let prefix = format!(
+                    "The orchestrator has sent you the following steering message(s). Apply these instructions:\n\n{steering_context}\n\n---\n\nYour task:\n\n"
+                );
+                launch.prompt = format!("{prefix}{}", launch.prompt);
+            }
+        }
+    }
+
     let task = manager.start_agent_task(launch)?;
     store.delete_pending_request_for(req)?;
     Ok(task.id)
@@ -1663,23 +1601,18 @@ fn classify_request(
     for dep_id in &req.depends_on {
         match run.dispatched_requests.get(dep_id) {
             None => {
-                // Dependency not yet dispatched → waiting (can't be blocked).
                 return DepClassification::Waiting;
             }
             Some(&dep_task_id) => match manager.get_task(dep_task_id) {
                 Ok(task) => {
                     if task.status == TaskStatus::Completed {
-                        // This dep is done; continue checking the rest.
                     } else if task.status.is_terminal() {
-                        // Terminal but not Completed → blocked.
                         return DepClassification::Blocked;
                     } else {
-                        // Still running/pending → waiting.
                         all_completed = false;
                     }
                 }
                 Err(_) => {
-                    // Can't read the task; treat conservatively as waiting.
                     all_completed = false;
                 }
             },
@@ -1691,6 +1624,143 @@ fn classify_request(
     } else {
         DepClassification::Waiting
     }
+}
+
+pub(crate) struct DispatchReadyResult {
+    pub newly_launched: usize,
+    pub ready_count: usize,
+    pub waiting_count: usize,
+    pub blocked_count: usize,
+    pub active_after: usize,
+    pub completed_count: usize,
+    pub failed_count: usize,
+    pub launch_errors: Vec<String>,
+}
+
+pub(crate) fn dispatch_ready_members(
+    manager: &TaskManager,
+    store: &FleetStore,
+    context: &CommandContext,
+    fleet_id: FleetId,
+    report: &ProviderStatusReport,
+) -> Result<DispatchReadyResult> {
+    let mut run = store.read_run(fleet_id)?;
+    let all_pending = store.list_pending_requests()?;
+    let pending: Vec<_> = all_pending
+        .iter()
+        .filter(|r| r.fleet_id == Some(fleet_id))
+        .collect();
+
+    let active_count = run
+        .member_task_ids
+        .iter()
+        .filter(|&&tid| {
+            manager
+                .get_task(tid)
+                .map(|t| !t.status.is_terminal())
+                .unwrap_or(false)
+        })
+        .count();
+
+    let mut newly_launched = 0usize;
+    let mut ready_count = 0usize;
+    let mut waiting_count = 0usize;
+    let mut blocked_count = 0usize;
+    let mut launch_errors: Vec<String> = Vec::new();
+
+    let mut slots_remaining: Option<usize> = run
+        .max_concurrency
+        .map(|cap| cap.saturating_sub(active_count));
+
+    for req in &pending {
+        if run.dispatched_requests.contains_key(&req.id) {
+            continue;
+        }
+
+        let classification = classify_request(req, &run, manager);
+
+        match classification {
+            DepClassification::Ready => {
+                ready_count += 1;
+                if slots_remaining == Some(0) {
+                    continue;
+                }
+
+                match dispatch_one(manager, store, context, req, report) {
+                    Ok(task_id) => {
+                        newly_launched += 1;
+                        run.record_dispatch(req.id.clone(), task_id);
+                        if run.status == FleetRunStatus::Pending {
+                            run.status = FleetRunStatus::Running;
+                        }
+                        if let Some(ref mut slots) = slots_remaining {
+                            *slots = slots.saturating_sub(1);
+                        }
+                    }
+                    Err(err) => {
+                        launch_errors.push(format!(
+                            "launch_error[{}]: {}",
+                            req.id,
+                            sanitize_line(&err.to_string())
+                        ));
+                    }
+                }
+            }
+            DepClassification::Waiting => waiting_count += 1,
+            DepClassification::Blocked => blocked_count += 1,
+        }
+    }
+
+    let mut completed_count = 0usize;
+    let mut failed_count = 0usize;
+    let mut active_after = 0usize;
+    let mut member_statuses: Vec<TaskStatus> = Vec::new();
+    for &tid in &run.member_task_ids {
+        match manager.get_task(tid) {
+            Ok(t) => {
+                member_statuses.push(t.status);
+                if t.status.is_terminal() {
+                    if t.status == TaskStatus::Completed {
+                        completed_count += 1;
+                    } else {
+                        failed_count += 1;
+                    }
+                } else {
+                    active_after += 1;
+                }
+            }
+            Err(_) => member_statuses.push(TaskStatus::Pending),
+        }
+    }
+
+    let remaining_work = pending
+        .iter()
+        .filter(|r| !run.dispatched_requests.contains_key(&r.id))
+        .count();
+
+    if blocked_count > 0 && active_after == 0 && remaining_work == blocked_count {
+        run.status = FleetRunStatus::Failed;
+        if run.finished_at.is_none() {
+            run.finished_at = Some(OffsetDateTime::now_utc());
+        }
+    } else if active_after > 0 || remaining_work > 0 {
+        run.status = FleetRunStatus::Running;
+    } else if !member_statuses.is_empty() {
+        run.reconcile_status(&member_statuses);
+    }
+
+    store.write_run(&run)?;
+
+    Ok(DispatchReadyResult {
+        newly_launched,
+        ready_count,
+        waiting_count,
+        blocked_count,
+        active_after,
+        completed_count,
+        failed_count,
+        launch_errors,
+    })
 }
 
 fn task_status_label(status: TaskStatus) -> &'static str {

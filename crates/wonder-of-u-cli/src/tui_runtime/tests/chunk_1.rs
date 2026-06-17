@@ -276,14 +276,18 @@ fn controller_cancels_memory_picker() {
         controller.status_note.as_deref(),
         Some("memory picker cancelled")
     );
-    assert!(matches!(
-        controller.state.messages.last().map(|message| &message.payload),
-        Some(MessagePayload::Command { input, output })
-            if input == "/memory"
-                && output
-                    .as_deref()
-                    .is_some_and(|text| text.contains("status=memory picker cancelled"))
-    ));
+    // Cancellation goes to notification, not transcript.
+    assert!(
+        !matches!(
+            controller.state.messages.last().map(|m| &m.payload),
+            Some(MessagePayload::Command { input, .. }) if input == "/memory"
+        ),
+        "cancel must not record to transcript"
+    );
+    assert!(
+        controller.notifications.dismiss("memory-picker-cancelled").is_some(),
+        "cancel must push a notification"
+    );
 }
 
 #[test]
@@ -378,14 +382,14 @@ fn controller_shows_context_notice_dialog() {
         controller.dialog.as_ref(),
         Some(dialog) if dialog.title == "Context Usage"
     ));
-    assert!(matches!(
-        controller.state.messages.last().map(|message| &message.payload),
-        Some(MessagePayload::Command { input, output })
-            if input == "/context"
-                && output
-                    .as_deref()
-                    .is_some_and(|text| text.contains("## Context Usage"))
-    ));
+    // /context output goes to dialog, not transcript.
+    assert!(
+        !matches!(
+            controller.state.messages.last().map(|m| &m.payload),
+            Some(MessagePayload::Command { input, .. }) if input == "/context"
+        ),
+        "/context must not record to transcript"
+    );
 }
 
 #[test]
@@ -415,19 +419,19 @@ fn controller_records_session_stats_in_transcript() {
     block_on(controller.execute_slash_command("/stats")).expect("show stats");
 
     assert_eq!(controller.status_note.as_deref(), Some("session stats"));
-    assert!(controller.dialog.is_none());
-    assert!(matches!(
-        controller.state.messages.last().map(|message| &message.payload),
-        Some(MessagePayload::Command { input, output })
-            if input == "/stats"
-                && output
-                    .as_deref()
-                    .is_some_and(|text| {
-                        text.contains("Session Statistics")
-                            && text.contains("Provider:  openai")
-                            && text.contains("Estimated cost:      $0.4200")
-                    })
-    ));
+    // /stats output goes to dialog, not transcript.
+    assert!(
+        matches!(controller.dialog.as_ref(), Some(dialog) if dialog.title == "/stats"),
+        "dialog must open for /stats; got: {:?}",
+        controller.dialog
+    );
+    assert!(
+        !matches!(
+            controller.state.messages.last().map(|m| &m.payload),
+            Some(MessagePayload::Command { input, .. }) if input == "/stats"
+        ),
+        "/stats must not record to transcript"
+    );
 }
 
 #[test]
@@ -445,24 +449,19 @@ fn controller_records_help_with_system_styled_rows() {
     block_on(controller.execute_slash_command("/help")).expect("show help");
 
     assert_eq!(controller.status_note.as_deref(), Some("help"));
-    assert!(matches!(
-        controller.state.messages.last().map(|message| &message.payload),
-        Some(MessagePayload::Command { input, output })
-            if input == "/help"
-                && output
-                    .as_deref()
-                    .is_some_and(|text| text.contains("Slash Commands") && text.contains("/search"))
-    ));
-
-    let lines = wonder_of_u_tui::message_lines(&controller.state.messages, false);
-    assert!(lines.iter().any(|line| {
-        line.text == "Slash Commands" && line.role == wonder_of_u_tui::MessageRole::System
-    }));
-    assert!(lines.iter().any(|line| {
-        line.text.contains("/search")
-            && line.text.contains("Search workspace files")
-            && line.role == wonder_of_u_tui::MessageRole::System
-    }));
+    // /help output goes to dialog, not transcript.
+    assert!(
+        matches!(controller.dialog.as_ref(), Some(dialog) if dialog.title == "/help"),
+        "dialog must open for /help; got: {:?}",
+        controller.dialog
+    );
+    assert!(
+        !matches!(
+            controller.state.messages.last().map(|m| &m.payload),
+            Some(MessagePayload::Command { input, .. }) if input == "/help"
+        ),
+        "/help must not record to transcript"
+    );
 }
 
 #[test]
@@ -487,14 +486,11 @@ fn thinking_slash_command_toggles_and_reports_state() {
         "expected status to start with 'thinking off', got {:?}",
         controller.status_note
     );
-    assert!(matches!(
-        controller.state.messages.last().map(|message| &message.payload),
-        Some(MessagePayload::Command { input, output })
-            if input == "/thinking"
-                && output
-                    .as_deref()
-                    .is_some_and(|text| text.contains("Thinking is currently disabled"))
-    ));
+    // /thinking is a toggle — output goes to status_note only, not transcript.
+    assert!(
+        controller.state.messages.is_empty(),
+        "/thinking must not record to transcript"
+    );
 
     block_on(controller.execute_slash_command("/thinking on")).expect("enable thinking");
     assert!(controller.state.thinking_enabled);
@@ -506,14 +502,6 @@ fn thinking_slash_command_toggles_and_reports_state() {
         "expected status to start with 'thinking on', got {:?}",
         controller.status_note
     );
-    assert!(matches!(
-        controller.state.messages.last().map(|message| &message.payload),
-        Some(MessagePayload::Command { input, output })
-            if input == "/thinking on"
-                && output
-                    .as_deref()
-                    .is_some_and(|text| text.contains("Thinking enabled"))
-    ));
 
     block_on(controller.execute_slash_command("/thinking off")).expect("disable thinking");
     assert!(!controller.state.thinking_enabled);
@@ -544,10 +532,8 @@ fn controller_meta_t_toggles_thinking_mode() {
     send_prompt_key(&mut controller, alt_key('t'));
     assert!(controller.state.thinking_enabled);
     assert_eq!(controller.status_note.as_deref(), Some("thinking on"));
-    assert!(matches!(
-        controller.state.messages.last().map(|message| &message.payload),
-        Some(MessagePayload::Command { input, .. }) if input == "/thinking on"
-    ));
+    // /thinking toggle goes to status_note only, not transcript.
+    assert!(controller.state.messages.is_empty(), "/thinking must not record to transcript");
 
     send_prompt_key(&mut controller, alt_key('t'));
     assert!(!controller.state.thinking_enabled);
@@ -571,10 +557,12 @@ fn controller_meta_o_toggles_fast_mode() {
     send_prompt_key(&mut controller, alt_key('o'));
     assert!(controller.state.fast_mode);
     assert_eq!(controller.status_note.as_deref(), Some("fast on"));
-    assert!(matches!(
-        controller.state.messages.last().map(|message| &message.payload),
-        Some(MessagePayload::Command { input, .. }) if input == "/fast on"
-    ));
+    // /fast output is machine hints only; no dialog and no transcript entry.
+    assert!(controller.dialog.is_none(), "/fast must not open dialog");
+    assert!(
+        controller.state.messages.is_empty(),
+        "/fast must not record to transcript"
+    );
 
     send_prompt_key(&mut controller, alt_key('o'));
     assert!(!controller.state.fast_mode);
@@ -634,35 +622,6 @@ fn controller_meta_e_toggles_tool_output_expansion() {
 }
 
 #[test]
-fn controller_shows_usage_notice_dialog() {
-    let dir = unique_test_dir("tui-usage-notice");
-    let registry = commands::registry(Some(dir.clone())).expect("registry");
-    let mut controller = TuiController::new(
-        test_context(&dir),
-        &registry,
-        Some(dir.as_path()),
-        TuiLaunchOptions { session_id: None },
-    )
-    .expect("controller");
-
-    block_on(controller.execute_slash_command("/usage")).expect("show usage");
-
-    assert_eq!(controller.status_note.as_deref(), Some("usage"));
-    assert!(matches!(
-        controller.dialog.as_ref(),
-        Some(dialog) if dialog.title == "Usage"
-    ));
-    assert!(matches!(
-        controller.state.messages.last().map(|message| &message.payload),
-        Some(MessagePayload::Command { input, output })
-            if input == "/usage"
-                && output
-                    .as_deref()
-                    .is_some_and(|text| text.contains("## Usage"))
-    ));
-}
-
-#[test]
 fn controller_shows_keybindings_notice_dialog() {
     let dir = unique_test_dir("tui-keybindings-notice");
     let registry = commands::registry(Some(dir.clone())).expect("registry");
@@ -681,14 +640,12 @@ fn controller_shows_keybindings_notice_dialog() {
         controller.dialog.as_ref(),
         Some(dialog) if dialog.title == "Keybindings"
     ));
-    assert!(matches!(
-        controller.state.messages.last().map(|message| &message.payload),
-        Some(MessagePayload::Command { input, output })
-            if input == "/keybindings"
-                && output
-                    .as_deref()
-                    .is_some_and(|text| text.contains("## Keybindings"))
-    ));
+    assert!(
+        !controller.state.messages.iter().any(|message| {
+            matches!(&message.payload, MessagePayload::Command { .. })
+        }),
+        "/keybindings must not record to transcript"
+    );
 }
 
 #[test]
@@ -710,14 +667,12 @@ fn controller_shows_hooks_notice_dialog() {
         controller.dialog.as_ref(),
         Some(dialog) if dialog.title == "Hooks"
     ));
-    assert!(matches!(
-        controller.state.messages.last().map(|message| &message.payload),
-        Some(MessagePayload::Command { input, output })
-            if input == "/hooks"
-                && output
-                    .as_deref()
-                    .is_some_and(|text| text.contains("## Hooks"))
-    ));
+    assert!(
+        !controller.state.messages.iter().any(|message| {
+            matches!(&message.payload, MessagePayload::Command { .. })
+        }),
+        "/hooks must not record to transcript"
+    );
 }
 
 #[test]
@@ -739,14 +694,12 @@ fn controller_shows_privacy_settings_notice_dialog() {
         controller.dialog.as_ref(),
         Some(dialog) if dialog.title == "Privacy Settings"
     ));
-    assert!(matches!(
-        controller.state.messages.last().map(|message| &message.payload),
-        Some(MessagePayload::Command { input, output })
-            if input == "/privacy-settings"
-                && output
-                    .as_deref()
-                    .is_some_and(|text| text.contains("## Privacy Settings"))
-    ));
+    assert!(
+        !controller.state.messages.iter().any(|message| {
+            matches!(&message.payload, MessagePayload::Command { .. })
+        }),
+        "/privacy-settings must not record to transcript"
+    );
 }
 
 #[test]
@@ -781,18 +734,20 @@ fn settings_slash_command_records_configuration_and_usage() {
     block_on(controller.execute_slash_command("/settings")).expect("show settings");
 
     assert_eq!(controller.status_note.as_deref(), Some("settings"));
-    assert!(controller.dialog.is_none());
-    assert!(matches!(
-        controller.state.messages.last().map(|message| &message.payload),
-        Some(MessagePayload::Command { input, output })
-            if input == "/settings"
-                && output.as_deref().is_some_and(|text| {
-                    text.contains("Configuration")
-                        && text.contains("Session Usage")
-                        && text.contains("Provider Status")
-                        && text.contains("$0.0412")
-                })
-    ));
+    // /settings output goes to a dialog, not the transcript.
+    let dialog = controller.dialog.as_ref().expect("settings dialog");
+    assert_eq!(dialog.title, "/settings");
+    let body = dialog.body.join("\n");
+    assert!(body.contains("Configuration"));
+    assert!(body.contains("Session Usage"));
+    assert!(body.contains("Provider Status"));
+    assert!(body.contains("$0.0412"));
+    assert!(
+        !controller.state.messages.iter().any(|message| {
+            matches!(&message.payload, MessagePayload::Command { .. })
+        }),
+        "/settings must not record to transcript"
+    );
 }
 
 #[test]
@@ -814,14 +769,12 @@ fn controller_shows_terminal_setup_notice_dialog() {
         controller.dialog.as_ref(),
         Some(dialog) if dialog.title == "Terminal Setup"
     ));
-    assert!(matches!(
-        controller.state.messages.last().map(|message| &message.payload),
-        Some(MessagePayload::Command { input, output })
-            if input == "/terminal-setup"
-                && output
-                    .as_deref()
-                    .is_some_and(|text| text.contains("## Terminal Setup"))
-    ));
+    assert!(
+        !controller.state.messages.iter().any(|message| {
+            matches!(&message.payload, MessagePayload::Command { .. })
+        }),
+        "/terminal-setup must not record to transcript"
+    );
 }
 
 #[test]
@@ -977,33 +930,25 @@ fn controller_routes_plan_mode_slash_commands() {
 
     block_on(controller.execute_slash_command("/plan")).expect("enter plan mode");
     assert_eq!(controller.state.permission_mode, PermissionMode::Plan);
-    assert!(matches!(
-        controller.state.messages.last().map(|message| &message.payload),
-        Some(MessagePayload::Command { input, output })
-            if input == "/plan"
-                && output.as_deref().is_some_and(|text| text.contains("status=plan mode enabled"))
-    ));
+    // Pure machine-hint output: no dialog, no transcript record.
+    assert!(controller.dialog.is_none());
 
     block_on(controller.execute_slash_command("/plan")).expect("show current plan");
-    assert!(matches!(
-        controller.state.messages.last().map(|message| &message.payload),
-        Some(MessagePayload::Command { input, output })
-            if input == "/plan"
-                && output.as_deref().is_some_and(|text| {
-                    text.contains("plan_exists=true")
-                        && text.contains("Current Plan")
-                        && text.contains("- keep parity")
-                })
-    ));
+    // Human-readable plan content opens a dialog.
+    let dialog = controller.dialog.as_ref().expect("plan dialog");
+    assert_eq!(dialog.title, "/plan");
+    let body = dialog.body.join("\n");
+    assert!(body.contains("Current Plan"));
+    assert!(body.contains("- keep parity"));
 
     block_on(controller.execute_slash_command("/plan exit")).expect("exit plan mode");
     assert_eq!(controller.state.permission_mode, PermissionMode::Default);
-    assert!(matches!(
-        controller.state.messages.last().map(|message| &message.payload),
-        Some(MessagePayload::Command { input, output })
-            if input == "/plan exit"
-                && output.as_deref().is_some_and(|text| text.contains("status=plan mode disabled"))
-    ));
+    assert!(
+        !controller.state.messages.iter().any(|message| {
+            matches!(&message.payload, MessagePayload::Command { .. })
+        }),
+        "/plan must not record to transcript"
+    );
 }
 
 #[test]
@@ -1181,20 +1126,18 @@ fn controller_executes_queued_plan_prompt() {
     let render_calls = 0usize;
     block_on(controller.execute_slash_command_with("/plan draft the migration plan"))
         .expect("execute plan prompt");
+    pump_active_turn(&mut controller);
 
     handle.join().expect("server join");
 
     assert_eq!(controller.state.permission_mode, PermissionMode::Plan);
     let _ = render_calls;
-    assert!(controller.state.messages.iter().any(|message| {
+    // Slash-command output is machine hints — it must not be recorded to the
+    // transcript; only the queued prompt conversation appears.
+    assert!(!controller.state.messages.iter().any(|message| {
         matches!(
             &message.payload,
-            MessagePayload::Command { input, output }
-                if input == "/plan draft the migration plan"
-                    && output.as_deref().is_some_and(|text| {
-                        text.contains("status=plan mode enabled")
-                            && text.contains("enqueue_prompt=draft the migration plan")
-                    })
+            MessagePayload::Command { input, .. } if input == "/plan draft the migration plan"
         )
     }));
     assert!(controller.state.messages.iter().any(|message| {
@@ -1276,7 +1219,7 @@ fn queued_commands_view_updates_as_prompts_drain() {
         wonder_of_u_core::QueuePlacement::Later,
     );
 
-    block_on(controller.drain_queued_commands()).expect("drain queued prompts");
+    drain_and_pump(&mut controller);
 
     handle.join().expect("server join");
 
@@ -1356,6 +1299,43 @@ fn controller_queues_external_editor_for_memory_open() {
             MessagePayload::Command { input, .. } if input == "/memory open project"
         )
     }));
+}
+
+#[test]
+fn memory_file_selector_confirm_sets_external_editor() {
+    let dir = unique_test_dir("tui-memory-file-selector");
+    let _editor = EnvVarGuard::set("EDITOR", "vi");
+    let registry = commands::registry(Some(dir.clone())).expect("registry");
+    let mut controller = TuiController::new(
+        test_context(&dir),
+        &registry,
+        Some(dir.as_path()),
+        TuiLaunchOptions { session_id: None },
+    )
+    .expect("controller");
+
+    controller.open_memory_file_selector();
+    assert!(controller.pending_memory_file_selector.is_some());
+
+    // Confirm (Enter) selects first entry (project CLAUDE.md)
+    block_on(controller.handle_key_event(wonder_of_u_tui::KeyEvent {
+        code: wonder_of_u_tui::KeyCode::Enter,
+        modifiers: wonder_of_u_tui::KeyModifiers::default(),
+    }))
+    .expect("confirm");
+
+    assert!(controller.pending_memory_file_selector.is_none());
+    assert_eq!(
+        controller.pending_external_editor.as_ref(),
+        Some(&ExternalEditorRequest {
+            cwd: dir.clone(),
+            path: dir.join("CLAUDE.md"),
+        })
+    );
+    assert_eq!(
+        controller.status_note.as_deref(),
+        Some("opening file in editor")
+    );
 }
 
 #[test]
@@ -1531,6 +1511,7 @@ fn controller_submits_prompt_and_persists_session() {
     controller.prompt.insert_text("hello from tui");
     let render_calls = 0usize;
     block_on(controller.submit_prompt()).expect("submit prompt");
+    pump_active_turn(&mut controller);
 
     handle.join().expect("server join");
 
@@ -1644,6 +1625,7 @@ fn controller_executes_tool_loop_and_persists_tool_messages() {
     controller.prompt.insert_text("read the note");
     let render_calls = 0usize;
     block_on(controller.submit_prompt()).expect("submit prompt");
+    pump_active_turn(&mut controller);
 
     handle.join().expect("server join");
 
@@ -1769,6 +1751,7 @@ fn controller_approves_permission_and_resumes_tool_loop() {
     controller.prompt.insert_text("write the note");
     let render_calls = 0usize;
     block_on(controller.submit_prompt()).expect("submit prompt");
+    pump_active_turn(&mut controller);
 
     assert_eq!(controller.turn_state, TurnState::ToolPermissionPending);
     assert_eq!(controller.state.input_mode, InputMode::PermissionPending);
@@ -1797,6 +1780,7 @@ fn controller_approves_permission_and_resumes_tool_loop() {
         modifiers: wonder_of_u_tui::KeyModifiers::default(),
     }))
     .expect("approve permission");
+    pump_active_turn(&mut controller);
 
     handle.join().expect("server join");
 
@@ -1906,6 +1890,7 @@ fn controller_denies_permission_and_resumes_tool_loop() {
 
     controller.prompt.insert_text("write the note");
     block_on(controller.submit_prompt()).expect("submit prompt");
+    pump_active_turn(&mut controller);
 
     let dialog = controller.view().dialog.expect("permission dialog");
     assert_eq!(dialog.title, "Permission: Write file");
@@ -1919,6 +1904,7 @@ fn controller_denies_permission_and_resumes_tool_loop() {
         modifiers: wonder_of_u_tui::KeyModifiers::default(),
     }))
     .expect("deny permission");
+    pump_active_turn(&mut controller);
 
     handle.join().expect("server join");
 
@@ -2021,6 +2007,7 @@ fn controller_restores_pending_permission_and_resumes_tool_loop() {
 
     controller.prompt.insert_text("write the note");
     block_on(controller.submit_prompt()).expect("submit prompt");
+    pump_active_turn(&mut controller);
     assert!(controller.state.pending_tool_approval.is_some());
     let session_id = controller.state.session.id.to_string();
     drop(controller);

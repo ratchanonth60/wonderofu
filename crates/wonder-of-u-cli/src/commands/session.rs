@@ -541,6 +541,31 @@ fn persist_view_state(
     let restored = store.restore_session(session_id)?;
     let compacted_messages = restored.transcript.messages.len().saturating_sub(keep_last);
     let mut state = restored.state;
+
+    // `/compact` prefers a model-generated summary; `/clear` stays mechanical
+    // so it remains instant. Any provider failure (no credentials, network,
+    // empty response) falls back to the mechanical summary below.
+    let split_index = restored
+        .transcript
+        .messages
+        .len()
+        .saturating_sub(keep_last.min(restored.transcript.messages.len()));
+    let (llm_summary, llm_summary_error) = if action == ViewAction::Compact && split_index > 0 {
+        match wonder_of_u_agent::generate_compact_summary(
+            storage_dir.as_deref(),
+            state.provider.clone(),
+            state.model.clone(),
+            &restored.transcript.messages[..split_index],
+            custom_instructions,
+        ) {
+            Ok(summary) => (Some(summary), None),
+            Err(error) => (None, Some(error.to_string())),
+        }
+    } else {
+        (None, None)
+    };
+    let summary_source = llm_summary.as_ref().map(|_| "model");
+
     state.messages = compacted_view_messages(
         &restored.transcript,
         session_id,
@@ -548,6 +573,7 @@ fn persist_view_state(
         action,
         &state,
         custom_instructions,
+        llm_summary,
     );
     state.input_mode = InputMode::Prompt;
     state.session.updated_at = time::OffsetDateTime::now_utc();
@@ -573,8 +599,23 @@ fn persist_view_state(
     if let Some(instructions) = custom_instructions {
         lines.push(format!("custom_instructions={instructions}"));
     }
+    if action == ViewAction::Compact && split_index > 0 {
+        lines.push(format!(
+            "summary_source={}",
+            summary_source.unwrap_or("mechanical")
+        ));
+    }
+    if let Some(error) = llm_summary_error {
+        lines.push(format!(
+            "summary_fallback_reason={}",
+            single_line_excerpt(&error, 200)
+        ));
+    }
     if let Some(summary) = state.messages.first().and_then(boundary_summary) {
-        lines.push(format!("boundary_summary={summary}"));
+        lines.push(format!(
+            "boundary_summary={}",
+            single_line_excerpt(summary, 240)
+        ));
     }
     lines.push(
         "note=this updates the persisted resume view; live TUI sessions reload the new snapshot after the slash command completes"
@@ -763,6 +804,7 @@ fn compacted_view_messages(
     action: ViewAction,
     state: &AppState,
     custom_instructions: Option<&str>,
+    llm_summary: Option<String>,
 ) -> Vec<MessageEnvelope> {
     if transcript.messages.is_empty() {
         return Vec::new();
@@ -774,21 +816,19 @@ fn compacted_view_messages(
     let mut visible = Vec::new();
 
     if !summarized.is_empty() {
+        let summary = llm_summary.unwrap_or_else(|| {
+            summarized_messages_summary(summarized, action, custom_instructions)
+        });
         visible.push(
-            MessageEnvelope::new(
-                session_id,
-                MessagePayload::CompactBoundary {
-                    summary: summarized_messages_summary(summarized, action, custom_instructions),
-                },
-            )
-            .with_context(
-                Some(state.session.cwd.clone()),
-                state.session.git_branch.clone(),
-            )
-            .with_runtime(
-                state.session.entrypoint.clone(),
-                state.session.app_version.clone(),
-            ),
+            MessageEnvelope::new(session_id, MessagePayload::CompactBoundary { summary })
+                .with_context(
+                    Some(state.session.cwd.clone()),
+                    state.session.git_branch.clone(),
+                )
+                .with_runtime(
+                    state.session.entrypoint.clone(),
+                    state.session.app_version.clone(),
+                ),
         );
     }
 
@@ -881,6 +921,17 @@ fn payload_distribution(messages: &[MessageEnvelope]) -> String {
     .map(|(label, count)| format!("{label}={count}"))
     .collect::<Vec<_>>()
     .join(",")
+}
+
+/// Collapses whitespace/newlines and truncates so multi-line model summaries
+/// fit the single-line `key=value` command output format.
+fn single_line_excerpt(text: &str, max_chars: usize) -> String {
+    let flattened = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    if flattened.chars().count() <= max_chars {
+        return flattened;
+    }
+    let truncated: String = flattened.chars().take(max_chars).collect();
+    format!("{truncated}…")
 }
 
 fn boundary_summary(message: &MessageEnvelope) -> Option<&str> {

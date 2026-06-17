@@ -310,6 +310,7 @@ impl Tool for NotebookEditTool {
                 WonderError::validation(format!("notebook cell {index} not found"))
             })?;
             if let Some(source) = input.source {
+                context.checkpoint_file_before_write(&path);
                 cell["source"] = Value::Array(
                     source
                         .lines()
@@ -476,6 +477,8 @@ mod tests {
             progress_tx: None,
             interaction_rx: None,
             fork_context: None,
+            file_checkpointer: None,
+            network_policy: None,
         }
     }
 

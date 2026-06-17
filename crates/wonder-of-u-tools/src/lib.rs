@@ -6,9 +6,11 @@
 mod agent_tool;
 mod ask_user_tool;
 mod bash;
+mod classify_result;
 mod communication_tools;
 mod cron_remote;
 mod extended;
+mod file_watcher;
 mod files;
 mod fleet_tools;
 mod orchestration;
@@ -43,6 +45,8 @@ pub use agent_tool::{
 pub use ask_user_tool::{AskUserInput, AskUserTool};
 /// Re-exports items from `bash`
 pub use bash::{BashInput, BashTool};
+/// Re-exports items from `classify_result`
+pub use classify_result::ClassifyResultTool;
 /// Re-exports items from `communication_tools`
 pub use communication_tools::{
     ListPeersInput, ListPeersTool, SendMessageInput, SendMessageTool, TeamCreateInput,
@@ -58,6 +62,8 @@ pub use extended::{
     CronListTool, NotebookEditInput, NotebookEditTool, PowerShellInput, PowerShellTool,
     TerminalCaptureTool, WorktreeListTool,
 };
+/// Re-exports items from `file_watcher`
+pub use file_watcher::{FileChangeEvent, FileChangeKind, FileWatcher};
 /// Re-exports items from `files`
 pub use files::{
     FileEditInput, FileEditTool, FileReadInput, FileReadTool, FileWriteInput, FileWriteMode,
@@ -81,7 +87,7 @@ pub use plan_tool::{
     PlanReadTool, PlanWriteInput, PlanWriteTool,
 };
 /// Re-exports items from `search`
-pub use search::{GlobEntryType, GlobInput, GlobTool, GrepInput, GrepTool};
+pub use search::{GlobEntryType, GlobInput, GlobTool, GrepInput, GrepTool, list_project_files};
 /// Re-exports items from `shell`
 pub use shell::{ShellInput, ShellTool};
 /// Re-exports items from `shell_stall_watchdog`
@@ -191,6 +197,7 @@ pub fn builtin_tools() -> Vec<Arc<dyn Tool>> {
         Arc::new(SubscribePrTool),
         Arc::new(SnipTool),
         Arc::new(TungstenTool),
+        Arc::new(ClassifyResultTool),
     ]
 }
 
@@ -397,7 +404,8 @@ mod tests {
                 "monitor",
                 "subscribe_pr",
                 "snip",
-                "tungsten"
+                "tungsten",
+                "classify_result"
             ]
         );
     }

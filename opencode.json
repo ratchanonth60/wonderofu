@@ -11,5 +11,6 @@
     "webfetch": "ask",
     "task": "allow",
     "external_directory": "allow"
-  }
+  },
+   "plugin": ["./.opencode/plugins/ponytail.mjs"]
 }

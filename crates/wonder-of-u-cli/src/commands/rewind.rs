@@ -15,7 +15,7 @@ use wonder_of_u_core::{
     FeatureFlag, MESSAGE_SCHEMA_VERSION, MessageEnvelope, MessagePayload, Result, SessionId,
     WonderError,
 };
-use wonder_of_u_storage::{SessionMemoryIndexStore, TranscriptStore};
+use wonder_of_u_storage::{FileCheckpointStore, SessionMemoryIndexStore, TranscriptStore};
 
 use super::{parse_command_args, parse_session_id};
 
@@ -107,13 +107,22 @@ pub fn rewind(
         return Ok(format!("Aborted rewind for session {session_id}."));
     }
 
+    let restored_files =
+        FileCheckpointStore::new(storage_dir).restore_after(session_id, cutoff_idx)?;
+
     write_transcript(&transcript_path, &messages[..cutoff_idx])?;
     update_metadata(&store, session_id, cutoff_idx)?;
     invalidate_snapshot(&store, session_id)?;
     rebuild_session_memory_index(storage_dir, session_id, &messages[..cutoff_idx])?;
 
+    let restored_suffix = match restored_files.len() {
+        0 => String::new(),
+        1 => "; restored 1 file".to_owned(),
+        count => format!("; restored {count} files"),
+    };
+
     Ok(format!(
-        "Rewound session {session_id} by {removed_exchanges} exchanges ({removed_messages} messages removed)"
+        "Rewound session {session_id} by {removed_exchanges} exchanges ({removed_messages} messages removed){restored_suffix}"
     ))
 }
 
@@ -267,7 +276,7 @@ mod tests {
     use std::{fs, path::PathBuf};
 
     use wonder_of_u_core::{AppState, MessageEnvelope, MessagePayload, SessionId};
-    use wonder_of_u_storage::{SessionSnapshot, TranscriptStore};
+    use wonder_of_u_storage::{FileCheckpointStore, SessionSnapshot, TranscriptStore};
     use wonder_of_u_test_support::unique_test_dir;
 
     use super::rewind;
@@ -315,6 +324,43 @@ mod tests {
                 .expect("read memory index")
                 .transcript_message_count,
             4
+        );
+    }
+
+    #[test]
+    fn rewind_restores_files_checkpointed_after_cutoff() {
+        let dir = unique_test_dir("cli-rewind-restores-files");
+        let store = TranscriptStore::new(&dir);
+        let session_id = seed_session(
+            &store,
+            &[
+                ("one", true),
+                ("reply one", false),
+                ("two", true),
+                ("reply two", false),
+                ("three", true),
+                ("reply three", false),
+            ],
+        );
+        let target = dir.join("notes.txt");
+        fs::write(&target, "original").expect("seed file");
+        FileCheckpointStore::new(&dir)
+            .record(session_id, 4, &target)
+            .expect("record checkpoint");
+        fs::write(&target, "modified").expect("modify file");
+
+        let output = rewind(&dir, Some(session_id.to_string()), 1, true).expect("rewind session");
+
+        assert!(output.contains("restored 1 file"));
+        assert_eq!(
+            fs::read_to_string(&target).expect("read restored file"),
+            "original"
+        );
+        assert!(
+            FileCheckpointStore::new(&dir)
+                .entries(session_id)
+                .expect("checkpoint entries")
+                .is_empty()
         );
     }
 

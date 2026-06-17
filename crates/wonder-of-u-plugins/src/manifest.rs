@@ -35,6 +35,19 @@ pub struct PluginManifest {
     /// Stores the skills
     #[serde(default)]
     pub skills: Vec<PluginSkillDefinition>,
+    /// Sidebar content sections injected by this plugin.
+    #[serde(default)]
+    pub sidebar_sections: Vec<PluginSidebarSection>,
+}
+
+/// A sidebar section registered by a plugin manifest.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct PluginSidebarSection {
+    /// Section title, rendered as `"─ {title} ─"`.
+    pub title: String,
+    /// Body lines shown under the header.
+    #[serde(default)]
+    pub lines: Vec<String>,
 }
 
 impl PluginManifest {
@@ -443,6 +456,7 @@ mod tests {
             skills: vec![PluginSkillDefinition {
                 path: PathBuf::from("skills/demo"),
             }],
+            sidebar_sections: Vec::new(),
         };
 
         let commands = manifest
@@ -481,6 +495,7 @@ mod tests {
                 interactive_only: false,
             }],
             skills: Vec::new(),
+            sidebar_sections: Vec::new(),
         };
 
         let registration = manifest

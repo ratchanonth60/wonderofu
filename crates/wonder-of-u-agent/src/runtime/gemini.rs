@@ -162,6 +162,7 @@ pub(super) fn build_gemini_tool_use_body(request: &ToolUseRequest) -> Value {
         max_output_tokens: request.max_output_tokens,
         temperature: request.temperature,
         effort_level: request.effort_level.clone(),
+        images: Vec::new(),
     };
     let mut body = build_generate_content_body(&completion, &mut contents);
     let body_map = body

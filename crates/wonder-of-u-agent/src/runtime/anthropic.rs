@@ -36,6 +36,26 @@ fn build_anthropic_request_with_mode(
     request: &CompletionRequest,
     stream: bool,
 ) -> Result<HttpRequest> {
+    let user_content: Value = if request.images.is_empty() {
+        json!(request.prompt)
+    } else {
+        let mut blocks: Vec<Value> = request
+            .images
+            .iter()
+            .map(|img| {
+                json!({
+                    "type": "image",
+                    "source": {
+                        "type": "base64",
+                        "media_type": img.media_type,
+                        "data": img.data,
+                    }
+                })
+            })
+            .collect();
+        blocks.push(json!({"type": "text", "text": request.prompt}));
+        json!(blocks)
+    };
     let mut body = json!({
         "model": resolved.model(),
         "max_tokens": request
@@ -43,7 +63,7 @@ fn build_anthropic_request_with_mode(
             .unwrap_or(DEFAULT_ANTHROPIC_MAX_OUTPUT_TOKENS),
         "messages": [{
             "role": "user",
-            "content": request.prompt,
+            "content": user_content,
         }],
     });
     let body_map = body
@@ -413,7 +433,7 @@ fn truncate_tool_result(content: &str) -> std::borrow::Cow<'_, str> {
     let byte_end = content
         .char_indices()
         .map(|(i, _)| i)
-        .take_while(|&i| i < MAX_TOOL_RESULT_CHARS)
+        .take_while(|&i| i <= MAX_TOOL_RESULT_CHARS)
         .last()
         .unwrap_or(0);
     let kept = &content[..byte_end];
@@ -424,13 +444,22 @@ fn truncate_tool_result(content: &str) -> std::borrow::Cow<'_, str> {
 }
 
 fn build_anthropic_messages(request: &ToolUseRequest) -> Vec<Value> {
-    let mut messages = vec![json!({
-        "role": "user",
-        "content": [{
-            "type": "text",
-            "text": request.prompt.as_str(),
-        }],
-    })];
+    let mut user_content: Vec<Value> = request
+        .images
+        .iter()
+        .map(|img| {
+            json!({
+                "type": "image",
+                "source": {
+                    "type": "base64",
+                    "media_type": img.media_type,
+                    "data": img.data,
+                }
+            })
+        })
+        .collect();
+    user_content.push(json!({"type": "text", "text": request.prompt.as_str()}));
+    let mut messages = vec![json!({"role": "user", "content": user_content})];
     for round in &request.rounds {
         append_anthropic_round(&mut messages, round);
     }

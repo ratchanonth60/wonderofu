@@ -1,0 +1,16 @@
+[package]
+name = "wonder-of-u-lsp"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+lsp-types.workspace = true
+lsp-server.workspace = true
+serde_json.workspace = true
+which.workspace = true
+wonder-of-u-core.workspace = true
+
+[dev-dependencies]
+tempfile = "3"

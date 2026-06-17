@@ -9,11 +9,11 @@ mod tests {
     use super::*;
     use crate::{dialog::DialogView, message::MessageLineView};
 
-    /// Guard against accidentally lowering `MIN_SIDEBAR_WIDTH` back to 100.
+    /// Guard against accidentally changing `MIN_SIDEBAR_WIDTH` away from 120.
     ///
-    /// The threshold was raised to 120 so that common 100-column terminals keep
-    /// the full main area.  A regression here would reintroduce the narrow-render
-    /// issue reported in the visual parity audit.
+    /// 120 cols is the opencode-parity minimum that gives a usable main area
+    /// alongside the wider 42-col sidebar.  Lowering this further would make
+    /// the transcript area too narrow on standard terminals.
     #[test]
     fn sidebar_threshold_is_120_columns() {
         assert_eq!(
@@ -84,10 +84,13 @@ mod tests {
             notifications: Vec::new(),
             slash_suggestions: None,
             global_search: None,
+            fleet_panel: None,
             scroll: TranscriptScrollView::default(),
             sidebar: None,
+            sidebar_mode: SidebarMode::default(),
             prompt_warning: None,
             tool_progress: Vec::new(),
+            message_cursor_index: None,
         };
 
         let frame = render_snapshot(30, 9, &view, &Theme::default());
@@ -95,10 +98,10 @@ mod tests {
         assert_eq!(
             frame.to_plain_text(),
             [
-                "▸ wonder-of-u  Empty",
+                " ▸ wonder-of-u  Empty",
                 "",
-                "   ██╗    ██╗  ██████╗  ██╗",
-                "   ██║    ██║ ██╔═══██╗ ██║",
+                "    ██╗    ██╗  ██████╗  ██╗",
+                "    ██║    ██║ ██╔═══██╗ ██║",
                 "╭─ prompt ───────────────────╮",
                 "│›                           │",
                 "│prompt · 0 messages · Enter │",
@@ -140,10 +143,13 @@ mod tests {
             notifications: Vec::new(),
             slash_suggestions: None,
             global_search: None,
+            fleet_panel: None,
             scroll: TranscriptScrollView::default(),
             sidebar: None,
+            sidebar_mode: SidebarMode::default(),
             prompt_warning: None,
             tool_progress: Vec::new(),
+            message_cursor_index: None,
         };
 
         let frame = render_snapshot(48, 10, &view, &Theme::default());
@@ -151,11 +157,11 @@ mod tests {
         assert_eq!(
             frame.to_plain_text(),
             [
-                "system> ready",
-                "hello",
+                " system> ready",
+                " hello",
                 "",
-                "Tasks",
-                "[running] shell: index workspace",
+                " Tasks",
+                " [running] shell: index workspace",
                 "╭─ prompt ─────────────────────────────────────╮",
                 "│› /status                                     │",
                 "│prompt · 2 messages · Enter send · Shift+Enter│",
@@ -240,10 +246,13 @@ mod tests {
             notifications: Vec::new(),
             slash_suggestions: None,
             global_search: None,
+            fleet_panel: None,
             scroll: TranscriptScrollView::default(),
             sidebar: None,
+            sidebar_mode: SidebarMode::default(),
             prompt_warning: None,
             tool_progress: Vec::new(),
+            message_cursor_index: None,
         };
 
         let frame = render_snapshot(42, 12, &view, &Theme::default());
@@ -251,13 +260,13 @@ mod tests {
         assert_eq!(
             frame.to_plain_text(),
             [
-                "ready",
+                " ready",
                 "",
                 "",
-                "Queued",
-                "1. /status",
-                "2. draft migration plan",
-                "+2 more queued",
+                " Queued",
+                " 1. /status",
+                " 2. draft migration plan",
+                " +2 more queued",
                 "╭─ prompt ───────────────────────────────╮",
                 "│› /plan                                 │",
                 "│prompt · 1 messages · Enter send · Shift│",
@@ -293,10 +302,13 @@ mod tests {
             notifications: Vec::new(),
             slash_suggestions: None,
             global_search: None,
+            fleet_panel: None,
             scroll: TranscriptScrollView::default(),
             sidebar: None,
+            sidebar_mode: SidebarMode::default(),
             prompt_warning: None,
             tool_progress: Vec::new(),
+            message_cursor_index: None,
         };
 
         let frame = render_snapshot(42, 12, &view, &Theme::default());
@@ -348,10 +360,13 @@ mod tests {
             notifications: Vec::new(),
             slash_suggestions: None,
             global_search: None,
+            fleet_panel: None,
             scroll: TranscriptScrollView::default(),
             sidebar: None,
+            sidebar_mode: SidebarMode::default(),
             prompt_warning: None,
             tool_progress: Vec::new(),
+            message_cursor_index: None,
         };
 
         let frame = render_snapshot(42, 16, &view, &Theme::default());
@@ -359,7 +374,7 @@ mod tests {
         assert_eq!(
             frame.to_plain_text(),
             [
-                "ready",
+                " ready",
                 "",
                 "",
                 "",
@@ -406,19 +421,24 @@ mod tests {
                         display: "/status".into(),
                         description: "show session stats".into(),
                         selected: true,
+                        match_ranges: Vec::new(),
                     },
                     SlashSuggestionEntry {
                         display: "/theme".into(),
                         description: "pick theme".into(),
                         selected: false,
+                        match_ranges: Vec::new(),
                     },
                 ],
             }),
             global_search: None,
+            fleet_panel: None,
             scroll: TranscriptScrollView::default(),
             sidebar: None,
+            sidebar_mode: SidebarMode::default(),
             prompt_warning: None,
             tool_progress: Vec::new(),
+            message_cursor_index: None,
         };
 
         let frame = render_snapshot(48, 12, &view, &Theme::default());
@@ -426,7 +446,7 @@ mod tests {
         assert_eq!(
             frame.to_plain_text(),
             [
-                "ready",
+                " ready",
                 "",
                 "",
                 "╭─commands─────────────────────╮",
@@ -471,19 +491,24 @@ mod tests {
                         display: "/fast [on|off]".into(),
                         description: "fast-mode model remapping".into(),
                         selected: true,
+                        match_ranges: Vec::new(),
                     },
                     SlashSuggestionEntry {
                         display: "/effort [low|medium|high|max|auto]".into(),
                         description: "active effort level".into(),
                         selected: false,
+                        match_ranges: Vec::new(),
                     },
                 ],
             }),
             global_search: None,
+            fleet_panel: None,
             scroll: TranscriptScrollView::default(),
             sidebar: None,
+            sidebar_mode: SidebarMode::default(),
             prompt_warning: None,
             tool_progress: Vec::new(),
+            message_cursor_index: None,
         };
 
         let frame = render_snapshot(64, 12, &view, &Theme::default());
@@ -527,10 +552,13 @@ mod tests {
             notifications: Vec::new(),
             slash_suggestions: None,
             global_search: None,
+            fleet_panel: None,
             scroll: TranscriptScrollView::default(),
             sidebar: None,
+            sidebar_mode: SidebarMode::default(),
             prompt_warning: None,
             tool_progress: Vec::new(),
+            message_cursor_index: None,
         };
 
         let frame = render_snapshot(32, 9, &view, &Theme::default());
@@ -565,10 +593,13 @@ mod tests {
             notifications: Vec::new(),
             slash_suggestions: None,
             global_search: None,
+            fleet_panel: None,
             scroll: TranscriptScrollView::default(),
             sidebar: None,
+            sidebar_mode: SidebarMode::default(),
             prompt_warning: None,
             tool_progress: Vec::new(),
+            message_cursor_index: None,
         };
 
         let frame = render_snapshot(48, 10, &view, &Theme::default());
@@ -576,9 +607,9 @@ mod tests {
         assert_eq!(
             frame.to_plain_text(),
             [
-                "● Run(Tests)",
-                "  └ cargo test -p wonder-of-u-tui",
-                "  └ tests passed",
+                " ● Run(Tests)",
+                "   └ cargo test -p wonder-of-u-tui",
+                "   └ tests passed",
                 "",
                 "",
                 "╭─ prompt ─────────────────────────────────────╮",
@@ -628,10 +659,13 @@ mod tests {
             ],
             slash_suggestions: None,
             global_search: None,
+            fleet_panel: None,
             scroll: TranscriptScrollView::default(),
             sidebar: None,
+            sidebar_mode: SidebarMode::default(),
             prompt_warning: None,
             tool_progress: Vec::new(),
+            message_cursor_index: None,
         };
 
         let frame = render_snapshot(48, 12, &view, &Theme::default());
@@ -639,7 +673,7 @@ mod tests {
         assert_eq!(
             frame.to_plain_text(),
             [
-                "ready",
+                " ready",
                 "                   ╭─info Source status────────╮",
                 "                   │workspace index refreshed  │",
                 "                   ╰───────────────────────────╯",
@@ -698,10 +732,13 @@ mod tests {
             notifications: Vec::new(),
             slash_suggestions: None,
             global_search: None,
+            fleet_panel: None,
             scroll: TranscriptScrollView::default(),
             sidebar: None,
+            sidebar_mode: SidebarMode::default(),
             prompt_warning: None,
             tool_progress: Vec::new(),
+            message_cursor_index: None,
         };
 
         let frame = render_snapshot(60, 16, &view, &Theme::default());
@@ -781,10 +818,13 @@ mod tests {
             notifications: Vec::new(),
             slash_suggestions: None,
             global_search: None,
+            fleet_panel: None,
             scroll: TranscriptScrollView::default(),
             sidebar: None,
+            sidebar_mode: SidebarMode::default(),
             prompt_warning: None,
             tool_progress: Vec::new(),
+            message_cursor_index: None,
         };
 
         let frame = render_snapshot(60, 16, &view, &Theme::default());
@@ -844,10 +884,13 @@ mod tests {
             notifications: Vec::new(),
             slash_suggestions: None,
             global_search: None,
+            fleet_panel: None,
             scroll: TranscriptScrollView::default(),
             sidebar: None,
+            sidebar_mode: SidebarMode::default(),
             prompt_warning: None,
             tool_progress: Vec::new(),
+            message_cursor_index: None,
         };
 
         let frame = render_snapshot(32, 8, &view, &Theme::default());
@@ -881,10 +924,13 @@ mod tests {
             notifications: Vec::new(),
             slash_suggestions: None,
             global_search: None,
+            fleet_panel: None,
             scroll: TranscriptScrollView::default(),
             sidebar: None,
+            sidebar_mode: SidebarMode::default(),
             prompt_warning: None,
             tool_progress: Vec::new(),
+            message_cursor_index: None,
         };
 
         let frame = render_snapshot(60, 10, &view, &Theme::default());
@@ -1371,14 +1417,15 @@ mod tests {
                 provider_lines: vec!["◈ copilot · gpt-4".into()],
                 control_lines: vec!["↵ send  ⇧↵ newline".into(), "⎋ cancel  ? help".into()],
                 status_lines: vec!["✓ ready".into()],
+                footer_brand: "wonder-of-u v0.1.3".into(),
                 ..SidebarView::default()
             }),
             ..ShellView::default()
         };
 
-        // Use a taller terminal so the rounded-border box has enough inner rows
-        // to show all three sidebar sections (Providers, Status, Controls).
-        // The rounded border takes 2 rows (top + bottom), leaving 12 inner rows.
+        // Use a taller terminal so the borderless panel has enough inner rows
+        // to show all three sidebar sections (Providers, Status, Controls)
+        // plus the pinned branded footer row.
         let frame = render_snapshot(120, 14, &view, &Theme::default());
         let text = frame.to_plain_text();
 
@@ -1398,10 +1445,27 @@ mod tests {
             text.contains("ready"),
             "auth-ok label must appear; rendered:\n{text}"
         );
-        // Sidebar rounded border corners must be visible.
+        // The solid panel fill replaces the rounded border entirely — no
+        // border glyphs should appear at the sidebar's fixed column span
+        // (the rightmost SIDEBAR_WIDTH columns).  Use the untrimmed per-cell
+        // rows (`frame.lines()`) rather than `to_plain_text()` so short rows
+        // don't get padded-away, which would otherwise alias the *prompt*
+        // box's border into this column range.
+        let sidebar_start = usize::from(120u16.saturating_sub(SIDEBAR_WIDTH));
+        let sidebar_column_has_border_glyphs = frame.lines().iter().any(|line| {
+            line.chars()
+                .skip(sidebar_start)
+                .any(|c| matches!(c, '╭' | '╮' | '╰' | '╯' | '│'))
+        });
         assert!(
-            text.contains('╭') && text.contains('╰'),
-            "rounded border corners must appear; rendered:\n{text}"
+            !sidebar_column_has_border_glyphs,
+            "borderless panel must not draw rounded border glyphs; rendered:\n{text}"
+        );
+        // The branded footer (`●` + version) must be pinned to the bottom row.
+        let last_row = text.lines().last().unwrap_or("");
+        assert!(
+            last_row.contains('●') && last_row.contains("wonder-of-u v0.1.3"),
+            "branded footer must render on the bottom row; got: {last_row:?}\nrendered:\n{text}"
         );
         // Prompt content must still be visible in the main (left) column.
         assert!(
@@ -1668,7 +1732,7 @@ mod tests {
             ..ShellView::default()
         };
 
-        // width=120 → main_w=83, sidebar=36, sep=1.
+        // width=120 → main_w=77, sidebar=42, sep=1.
         // height=16 keeps the multiline prompt plus the integrated footer visible.
         let frame = render_snapshot(120, 16, &view, &Theme::default());
         let text = frame.to_plain_text();
@@ -2394,10 +2458,12 @@ mod tests {
 
     /// Verify the full render order: sections must appear in the documented
     /// sequence (Session → Status → Context → Tools → MCP → LSP → Todo →
-    /// Suggestions → Providers → Workspace → Controls → Tasks).
+    /// Suggestions → Providers → Workspace → Controls → Tasks → footer).
     ///
-    /// Status is promoted to slot 2 so the live turn-state indicator is always
-    /// visible at the top of the sidebar without scrolling.
+    /// Session is pinned in the top title band; Status through Tasks live in
+    /// the scrollable middle band (Status first, so the live turn-state
+    /// indicator is visible without scrolling); the branded footer is pinned
+    /// to the bottom band.
     ///
     /// We populate every section and assert that each header appears *after* its
     /// predecessor in the rendered output, using byte-offset positions.
@@ -2422,6 +2488,9 @@ mod tests {
                 status_lines: vec!["● idle".into()],
                 control_lines: vec!["↵ send".into()],
                 task_lines: vec!["⚙  1 task".into()],
+                slots: Vec::new(),
+                scroll_offset: 0,
+                footer_brand: "wonder-of-u v0.1.3".into(),
             }),
             ..ShellView::default()
         };
@@ -2470,6 +2539,14 @@ mod tests {
             "Workspace must precede Controls"
         );
         assert!(controls_pos < tasks_pos, "Controls must precede Tasks");
+
+        // The pinned branded footer must render after every scrollable section
+        // (it lives in the fixed bottom band, drawn last).
+        let footer_pos = pos("wonder-of-u v0.1.3");
+        assert!(
+            tasks_pos < footer_pos,
+            "branded footer must render after Tasks (pinned bottom band)"
+        );
     }
 
     /// Status is the first section after Session so the turn-state indicator is
@@ -2506,6 +2583,66 @@ mod tests {
         assert!(
             text.contains("streaming"),
             "turn-state label must be visible; rendered:\n{text}"
+        );
+    }
+
+    /// The three-zone layout must keep the Session title pinned to the top
+    /// band and the branded footer pinned to the bottom row even when the
+    /// scrollable middle band is scrolled away from its own top.
+    #[test]
+    fn sidebar_title_and_footer_stay_pinned_while_middle_band_scrolls() {
+        let view = ShellView {
+            prompt: "hi".into(),
+            sidebar: Some(SidebarView {
+                session_lines: vec!["◈ pinned-session".into()],
+                // Enough body lines to overflow a short terminal's middle band.
+                status_lines: vec!["● idle".into()],
+                tool_lines: vec!["✓ Bash".into(), "✓ FileRead".into(), "✓ FileWrite".into()],
+                mcp_lines: vec!["✓ filesystem".into(), "✓ github".into()],
+                lsp_lines: vec!["✓ rust-analyzer".into()],
+                todo_lines: vec!["◈ Fix lint".into(), "✓ Write tests".into()],
+                workspace_lines: vec!["⎇  main".into()],
+                control_lines: vec!["↵ send".into()],
+                task_lines: vec!["⚙  2 tasks".into()],
+                scroll_offset: 4,
+                footer_brand: "wonder-of-u v0.1.3".into(),
+                ..SidebarView::default()
+            }),
+            ..ShellView::default()
+        };
+
+        // Short terminal so the populated body overflows the middle band,
+        // forcing the scroll_offset above to take effect.
+        let frame = render_snapshot(120, 12, &view, &Theme::default());
+        let text = frame.to_plain_text();
+        let lines: Vec<&str> = text.lines().collect();
+
+        // The pinned title band: the first non-blank row (row 0 is a 1-row
+        // top margin reserved for the shell chrome) must still show Session,
+        // regardless of the middle-band scroll offset.
+        let first_content_row = lines
+            .iter()
+            .find(|l| !l.trim().is_empty())
+            .expect("frame must have at least one non-blank row");
+        assert!(
+            first_content_row.contains("─ Session ─"),
+            "Session title must stay pinned to the top row when scrolled; rendered:\n{text}"
+        );
+
+        // The pinned branded footer: the very last row must carry the `●` dot
+        // and version string.
+        let last_row = lines.last().copied().unwrap_or("");
+        assert!(
+            last_row.contains('●') && last_row.contains("wonder-of-u v0.1.3"),
+            "branded footer must stay pinned to the bottom row when scrolled; got: {last_row:?}\nrendered:\n{text}"
+        );
+
+        // Scrolling forward must have moved the visible window away from the
+        // first middle-band section header (Status), proving the offset
+        // actually windowed the middle band rather than being ignored.
+        assert!(
+            !text.contains("─ Status ─"),
+            "Status header (first middle-band section) must scroll out of view; rendered:\n{text}"
         );
     }
 
@@ -2597,8 +2734,9 @@ mod tests {
 
     /// Each section header must appear exactly once even when all sections are
     /// populated.  A previous merge accidentally inserted duplicate render calls
-    /// for Tools/MCP/LSP/Todo at the end of `sidebar_section_lines`; this test
-    /// is the regression guard.
+    /// for Tools/MCP/LSP/Todo at the end of `sidebar_body_lines`; this test
+    /// is the regression guard.  Also covers the Session header, which now
+    /// lives in `sidebar_title_lines` (the pinned top band).
     #[test]
     fn sidebar_section_headers_appear_exactly_once() {
         let view = ShellView {
