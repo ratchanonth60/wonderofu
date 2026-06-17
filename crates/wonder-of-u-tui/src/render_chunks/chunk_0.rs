@@ -11,9 +11,9 @@ pub fn render_shell(frame: &mut FrameBuffer, view: &ShellView, theme: &Theme) {
         if area.width >= MIN_SIDEBAR_WIDTH {
             match view.sidebar_mode {
                 SidebarMode::Push => {
-                    // The sidebar box itself provides the left border, replacing the
-                    // old bare │ separator.  Give it SIDEBAR_WIDTH + 1 columns so the
-                    // left ╭/│/╰ aligns exactly where the separator used to be.
+                    // Solid-panel sidebar with a 1-column left gutter for visual
+                    // separation from the main transcript area.  SIDEBAR_WIDTH + 1
+                    // columns total: the gutter plus the panel fill.
                     let main_w = area.width.saturating_sub(SIDEBAR_WIDTH + 1);
                     let sep_x = area.x.saturating_add(main_w);
                     let sidebar_area = Rect::new(sep_x, area.y, SIDEBAR_WIDTH + 1, area.height);
@@ -23,6 +23,7 @@ pub fn render_shell(frame: &mut FrameBuffer, view: &ShellView, theme: &Theme) {
                 SidebarMode::Overlay => {
                     // Full-width main area; the sidebar will be drawn as an overlay
                     // *after* the transcript and prompt, painting over the right edge.
+                    // The +1 reserves a 1-column left gutter matching push mode.
                     let main_w = area.width;
                     let sidebar_area =
                         Rect::new(
@@ -114,9 +115,6 @@ pub fn render_shell(frame: &mut FrameBuffer, view: &ShellView, theme: &Theme) {
         layout.prompt
     };
     draw_prompt_view(frame, prompt_area, view, theme);
-    // layout.status is a zero-height placeholder (CHROME_HEIGHT = 1); this is a
-    // no-op but kept so callers that still pass status data are unaffected.
-    draw_status_line(frame, layout.status, &status_line_text(view), theme.status);
     // Compact footer: combine the caller-supplied hint with a scroll indicator
     // when the user has scrolled up from tail.
     let footer_display = compact_footer_text(view);
@@ -340,19 +338,20 @@ fn draw_prompt_warning(
 
 /// Minimum total terminal width required to activate the shell-level sidebar.
 ///
-/// 90 cols = 52-col main area + 1 separator + SIDEBAR_WIDTH (36) + 1 pad.
+/// 120 cols = 77-col main area + 1 gutter + SIDEBAR_WIDTH (42) + 0 pad.
 /// Below this threshold all content occupies the full terminal width.
-pub const MIN_SIDEBAR_WIDTH: u16 = 90;
+pub const MIN_SIDEBAR_WIDTH: u16 = 120;
 
-/// Column width of the sidebar panel (excluding the `│` separator).
-pub const SIDEBAR_WIDTH: u16 = 36;
+/// Column width of the sidebar panel (excluding the 1-column left gutter).
+pub const SIDEBAR_WIDTH: u16 = 42;
 
 /// Returns the effective main-column width used by [`render_shell`].
 ///
 /// When `has_sidebar` is `true` and `terminal_width` meets the
-/// [`MIN_SIDEBAR_WIDTH`] threshold, the sidebar column (and the `│` separator)
-/// are subtracted exactly as the renderer does.  Pass this result as the layout
-/// width to cursor-position helpers so they stay in sync with the renderer.
+/// [`MIN_SIDEBAR_WIDTH`] threshold, the sidebar column (and the 1-column
+/// left gutter) are subtracted exactly as the renderer does.  Pass this
+/// result as the layout width to cursor-position helpers so they stay in
+/// sync with the renderer.
 ///
 /// # Examples
 ///
@@ -362,11 +361,11 @@ pub const SIDEBAR_WIDTH: u16 = 36;
 /// // Narrow terminal: no deduction regardless of sidebar flag.
 /// assert_eq!(shell_main_area_width(80, true), 80);
 ///
-/// // Wide terminal with sidebar: subtracts sidebar + separator.
-/// assert_eq!(shell_main_area_width(120, true), 120 - SIDEBAR_WIDTH - 1);
+/// // Wide terminal with sidebar: subtracts sidebar + gutter.
+/// assert_eq!(shell_main_area_width(MIN_SIDEBAR_WIDTH, true), MIN_SIDEBAR_WIDTH - SIDEBAR_WIDTH - 1);
 ///
 /// // Wide terminal without sidebar: no deduction.
-/// assert_eq!(shell_main_area_width(120, false), 120);
+/// assert_eq!(shell_main_area_width(MIN_SIDEBAR_WIDTH, false), MIN_SIDEBAR_WIDTH);
 /// ```
 pub fn shell_main_area_width(terminal_width: u16, has_sidebar: bool) -> u16 {
     if has_sidebar && terminal_width >= MIN_SIDEBAR_WIDTH {
@@ -378,7 +377,7 @@ pub fn shell_main_area_width(terminal_width: u16, has_sidebar: bool) -> u16 {
 
 /// Horizontal padding (in cells) between the main-pane edges and transcript
 /// content, so message text never touches the terminal border or the sidebar
-/// separator.
+/// gutter.
 pub const TRANSCRIPT_HPAD: u16 = 1;
 
 /// Width available for wrapping transcript message lines inside a main pane of
@@ -414,74 +413,218 @@ fn transcript_padded(area: Rect) -> Rect {
 
 /// Draws the right-side sidebar showing keybinding hints and session metadata.
 ///
-/// The sidebar is drawn inside a rounded-corner box (matching the prompt input
-/// style) so it blends naturally with the rest of the chrome.  Content is
-/// rendered inside the inner area (inset 1 on all sides).  When the total line
-/// count exceeds the visible height, content is windowed by `sidebar.scroll_offset`
-/// and a scroll indicator is drawn on the bottom border.
+/// Matches opencode's solid-panel sidebar: no border, just a flat fill in
+/// `theme.panel`.  The inner area is split into three fixed vertical bands:
+///
+/// - **Top** — the Session title ([`sidebar_title_lines`]), pinned, never scrolls.
+/// - **Middle** — every other section ([`sidebar_body_lines`]), windowed by
+///   `sidebar.scroll_offset` with an overflow indicator when content exceeds
+///   the visible height.
+/// - **Bottom** — a single-row branded footer (`● {footer_brand}`), pinned.
+///
+/// Inner padding follows opencode: 1 row top/bottom, 2 columns left/right.
 fn draw_shell_sidebar(frame: &mut FrameBuffer, area: Rect, sidebar: &SidebarView, theme: &Theme) {
     if area.is_empty() {
         return;
     }
 
-    // Rounded border — same style as the prompt box.
-    draw_rounded_border(frame, area, theme.border);
+    // Solid panel fill — no border, matching opencode's flat sidebar surface.
+    frame.fill_rect(area, ' ', theme.panel);
 
-    // Content inside the border (inset 1 on all sides).
-    let inner = area.inset(1);
+    // Opencode-style inner padding: 1 row top/bottom, 2 cols left/right.
+    let inner = sidebar_inner_area(area);
     if inner.is_empty() {
         return;
     }
 
-    let all_lines = sidebar_section_lines(sidebar, theme);
-    let visible = usize::from(inner.height);
-    let total = all_lines.len();
+    const FOOTER_HEIGHT: u16 = 1;
+
+    let title_lines = with_panel_bg(sidebar_title_lines(sidebar, theme), theme);
+    let title_height = u16::try_from(title_lines.len())
+        .unwrap_or(u16::MAX)
+        .min(inner.height);
+
+    let remaining_after_title = inner.height.saturating_sub(title_height);
+    let footer_height = FOOTER_HEIGHT.min(remaining_after_title);
+    let middle_height = remaining_after_title.saturating_sub(footer_height);
+
+    let title_area = Rect::new(inner.x, inner.y, inner.width, title_height);
+    let middle_area = Rect::new(
+        inner.x,
+        inner.y.saturating_add(title_height),
+        inner.width,
+        middle_height,
+    );
+    let footer_area = Rect::new(
+        inner.x,
+        inner.bottom().saturating_sub(footer_height),
+        inner.width,
+        footer_height,
+    );
+
+    // Top band — Session title, always pinned, never windowed.
+    draw_lines(frame, title_area, &title_lines);
+
+    // Middle band — every other section, windowed by scroll_offset.
+    let body_lines = with_panel_bg(sidebar_body_lines(sidebar, theme), theme);
+    let visible = usize::from(middle_area.height);
+    let total = body_lines.len();
     let max_offset = total.saturating_sub(visible);
     let offset = sidebar.scroll_offset.min(max_offset);
-    let slice = if offset < all_lines.len() {
-        &all_lines[offset..(offset + visible).min(all_lines.len())]
+    let slice = if offset < body_lines.len() {
+        &body_lines[offset..(offset + visible).min(body_lines.len())]
     } else {
         &[]
     };
-    draw_lines(frame, inner, slice);
+    draw_lines(frame, middle_area, slice);
 
-    // Scroll indicator: show on the bottom border when content overflows.
-    if total > visible {
+    // Scroll indicator: overlay the last row of the middle band when content
+    // overflows (kept inside the middle band, not the panel border — there is
+    // no border in the solid-panel style).
+    if total > visible && middle_area.height > 0 {
         let indicator = if offset > 0 && offset < max_offset {
-            format!(" ▲▼ {}/{} ", offset + visible, total)
+            format!("▲▼ {}/{}", offset + visible, total)
         } else if offset > 0 {
-            format!(" ▼ {}/{} ", offset + visible, total)
+            format!("▼ {}/{}", offset + visible, total)
         } else {
-            format!(" ▲ {}/{} ", offset + visible, total)
+            format!("▲ {}/{}", offset + visible, total)
         };
-        let indicator_x = area
-            .x
-            .saturating_add(2)
-            .min(area.x.saturating_add(area.width).saturating_sub(2));
-        let indicator_y = area.y.saturating_add(area.height).saturating_sub(1);
-        frame.write_str(indicator_x, indicator_y, &indicator, theme.footer, area.width);
+        let indicator_y = middle_area.bottom().saturating_sub(1);
+        frame.write_str(
+            middle_area.x,
+            indicator_y,
+            &indicator,
+            theme.footer.bg_or(theme.panel),
+            middle_area.width,
+        );
+    }
+
+    // Bottom band — pinned branded footer: "● {footer_brand}".
+    if footer_area.height > 0 {
+        draw_sidebar_footer(frame, footer_area, &sidebar.footer_brand, theme);
     }
 }
 
-/// Builds the ordered list of styled lines for the sidebar panel.
+/// Computes the scrollable middle-band geometry of the solid-panel sidebar,
+/// mirroring the band split in [`draw_shell_sidebar`].
+///
+/// Returns `(visible_rows, total_body_lines)` for a sidebar panel occupying the
+/// full `terminal_height`.  The controller's scroll-key and clamp logic must use
+/// this so the offset range stays in lock-step with what the renderer windows —
+/// only the middle band scrolls; the Session title and branded footer are pinned.
+///
+/// Line counts are independent of the concrete [`Theme`], so a default theme is
+/// used internally.
+#[must_use]
+pub fn sidebar_scroll_geometry(terminal_height: u16, sidebar: &SidebarView) -> (usize, usize) {
+    let theme = Theme::default();
+    // inner height = panel height minus the 1-row top/bottom padding.
+    let inner_h = terminal_height.saturating_sub(2);
+    let title_h = u16::try_from(sidebar_title_lines(sidebar, &theme).len())
+        .unwrap_or(u16::MAX)
+        .min(inner_h);
+    let remaining = inner_h.saturating_sub(title_h);
+    let footer_h = 1u16.min(remaining);
+    let middle = remaining.saturating_sub(footer_h);
+    let total = sidebar_body_lines(sidebar, &theme).len();
+    (usize::from(middle), total)
+}
+
+/// Insets `area` with opencode-style sidebar padding: 1 row top/bottom and
+/// 2 columns left/right.
+fn sidebar_inner_area(area: Rect) -> Rect {
+    const HPAD: u16 = 2;
+    const VPAD: u16 = 1;
+    Rect::new(
+        area.x.saturating_add(HPAD),
+        area.y.saturating_add(VPAD),
+        area.width.saturating_sub(HPAD.saturating_mul(2)),
+        area.height.saturating_sub(VPAD.saturating_mul(2)),
+    )
+}
+
+/// Draws the pinned bottom footer row: a green `●` dot followed by the dim
+/// branded version string, e.g. `"● wonder-of-u v0.1.3"`.
+fn draw_sidebar_footer(frame: &mut FrameBuffer, area: Rect, footer_brand: &str, theme: &Theme) {
+    let line = StyledLine {
+        text: String::new(),
+        style: theme.panel,
+        spans: vec![
+            StyledSpan {
+                text: "● ".to_owned(),
+                style: TextStyle::default()
+                    .fg(Color::Green)
+                    .bg_or(theme.panel),
+            },
+            StyledSpan {
+                text: footer_brand.to_owned(),
+                style: theme.footer.bg_or(theme.panel),
+            },
+        ],
+    };
+    draw_styled_line(frame, area.x, area.y, &line, area.width);
+}
+
+/// Merges `theme.panel`'s background colour into every line/span style that
+/// does not already carry an explicit `bg`, so sidebar text composes onto the
+/// solid panel fill instead of leaving the cell's background unset.
+fn with_panel_bg(lines: Vec<StyledLine>, theme: &Theme) -> Vec<StyledLine> {
+    lines
+        .into_iter()
+        .map(|line| StyledLine {
+            text: line.text,
+            style: line.style.bg_or(theme.panel),
+            spans: line
+                .spans
+                .into_iter()
+                .map(|span| StyledSpan {
+                    text: span.text,
+                    style: span.style.bg_or(theme.panel),
+                })
+                .collect(),
+        })
+        .collect()
+}
+
+/// Builds the pinned title band: the Session section only.
+///
+/// Unlike [`sidebar_body_lines`], this never includes a leading blank
+/// separator — it is always the first thing drawn in the panel.
+fn sidebar_title_lines(sidebar: &SidebarView, theme: &Theme) -> Vec<StyledLine> {
+    let dim = theme.footer;
+    let accent = theme.prompt;
+
+    let mut out: Vec<StyledLine> = Vec::new();
+    push_sidebar_text_section(
+        &mut out,
+        "─ Session ─",
+        &sidebar.session_lines,
+        dim,
+        accent,
+        theme,
+    );
+    out
+}
+
+/// Builds the ordered list of styled lines for the sidebar's scrollable
+/// middle band (everything except the Session title and the branded footer).
 ///
 /// Renders sections in the OpenCode-style integration-panel order.
-/// Status is promoted to position 2 so the live turn-state indicator
-/// is always visible at the top without scrolling:
+/// Status is promoted to position 1 (of this band) so the live turn-state
+/// indicator is always visible at the top of the scroll region:
 ///
 /// ```text
-/// 1. Session      – session id / title
-/// 2. Status       – turn state / loading verb  (promoted)
-/// 3. Context      – token usage bar
-/// 4. Tools        – active tool names / call counts
-/// 5. MCP          – connected MCP server states
-/// 6. LSP          – language-server diagnostics summary
-/// 7. Todo         – in-session checklist items
-/// 8. Suggestions  – proactive context-saving hints
-/// 9. Providers    – model + provider
-/// 10. Workspace   – git branch, cwd
-/// 11. Controls    – compact keybinding reference
-/// 12. Tasks       – background task count
+/// 1. Status       – turn state / loading verb  (promoted)
+/// 2. Context      – token usage bar
+/// 3. Tools        – active tool names / call counts
+/// 4. MCP          – connected MCP server states
+/// 5. LSP          – language-server diagnostics summary
+/// 6. Todo         – in-session checklist items
+/// 7. Suggestions  – proactive context-saving hints
+/// 8. Providers    – model + provider
+/// 9. Workspace    – git branch, cwd
+/// 10. Controls    – compact keybinding reference
+/// 11. Tasks       – background task count
 /// ```
 ///
 /// Each non-empty section is prefixed by a dim section-header row and followed
@@ -493,22 +636,13 @@ fn draw_shell_sidebar(frame: &mut FrameBuffer, area: Rect, sidebar: &SidebarView
 /// | `✓`    | `Color::Green` |
 /// | `⚠`    | `Color::Yellow` |
 /// | `◈`    | `theme.prompt` |
-fn sidebar_section_lines(sidebar: &SidebarView, theme: &Theme) -> Vec<StyledLine> {
+fn sidebar_body_lines(sidebar: &SidebarView, theme: &Theme) -> Vec<StyledLine> {
     let dim = theme.footer;
     let accent = theme.prompt;
 
     let mut out: Vec<StyledLine> = Vec::new();
 
-    // 1 – Session
-    push_sidebar_text_section(
-        &mut out,
-        "─ Session ─",
-        &sidebar.session_lines,
-        dim,
-        accent,
-        theme,
-    );
-    // 2 – Status (promoted: turn-state is the most urgent real-time signal)
+    // 1 – Status (promoted: turn-state is the most urgent real-time signal)
     push_sidebar_text_section(
         &mut out,
         "─ Status ─",
@@ -517,7 +651,7 @@ fn sidebar_section_lines(sidebar: &SidebarView, theme: &Theme) -> Vec<StyledLine
         accent,
         theme,
     );
-    // 3 – Context
+    // 2 – Context
     push_sidebar_text_section(
         &mut out,
         "─ Context ─",
@@ -526,7 +660,7 @@ fn sidebar_section_lines(sidebar: &SidebarView, theme: &Theme) -> Vec<StyledLine
         accent,
         theme,
     );
-    // 4 – Tools
+    // 3 – Tools
     push_sidebar_text_section(
         &mut out,
         "─ Tools ─",
@@ -535,11 +669,11 @@ fn sidebar_section_lines(sidebar: &SidebarView, theme: &Theme) -> Vec<StyledLine
         accent,
         theme,
     );
-    // 5 – MCP
+    // 4 – MCP
     push_sidebar_text_section(&mut out, "─ MCP ─", &sidebar.mcp_lines, dim, accent, theme);
-    // 6 – LSP
+    // 5 – LSP
     push_sidebar_text_section(&mut out, "─ LSP ─", &sidebar.lsp_lines, dim, accent, theme);
-    // 7 – Todo
+    // 6 – Todo
     push_sidebar_text_section(
         &mut out,
         "─ Todo ─",
@@ -548,9 +682,9 @@ fn sidebar_section_lines(sidebar: &SidebarView, theme: &Theme) -> Vec<StyledLine
         accent,
         theme,
     );
-    // 8 – Suggestions (span-coloured; handled by its own helper)
+    // 7 – Suggestions (span-coloured; handled by its own helper)
     push_sidebar_suggestions_section(&mut out, &sidebar.suggestions, theme);
-    // 9 – Providers
+    // 8 – Providers
     push_sidebar_text_section(
         &mut out,
         "─ Providers ─",
@@ -559,7 +693,7 @@ fn sidebar_section_lines(sidebar: &SidebarView, theme: &Theme) -> Vec<StyledLine
         accent,
         theme,
     );
-    // 10 – Workspace
+    // 9 – Workspace
     push_sidebar_text_section(
         &mut out,
         "─ Workspace ─",
@@ -568,7 +702,7 @@ fn sidebar_section_lines(sidebar: &SidebarView, theme: &Theme) -> Vec<StyledLine
         accent,
         theme,
     );
-    // 11 – Controls
+    // 10 – Controls
     push_sidebar_text_section(
         &mut out,
         "─ Controls ─",
@@ -577,7 +711,7 @@ fn sidebar_section_lines(sidebar: &SidebarView, theme: &Theme) -> Vec<StyledLine
         accent,
         theme,
     );
-    // 12 – Tasks
+    // 11 – Tasks
     push_sidebar_text_section(
         &mut out,
         "─ Tasks ─",

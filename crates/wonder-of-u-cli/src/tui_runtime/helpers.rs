@@ -216,6 +216,9 @@ pub(super) fn theme_for_state(name: Option<&str>, session_color: Option<&str>) -
                 .fg(wonder_of_u_tui::Color::Yellow)
                 .bold(),
             footer: wonder_of_u_tui::TextStyle::default().fg(wonder_of_u_tui::Color::DarkCyan),
+            // Slightly elevated shade of the midnight background.
+            panel: wonder_of_u_tui::TextStyle::default()
+                .bg(wonder_of_u_tui::Color::Rgb(24, 20, 32)),
         },
         Some("light") => Theme {
             // No explicit background for light theme either: the terminal
@@ -233,6 +236,9 @@ pub(super) fn theme_for_state(name: Option<&str>, session_color: Option<&str>) -
                 .fg(wonder_of_u_tui::Color::DarkBlue)
                 .bold(),
             footer: wonder_of_u_tui::TextStyle::default().fg(wonder_of_u_tui::Color::DarkGrey),
+            // Slightly elevated (darker) shade for contrast against the light background.
+            panel: wonder_of_u_tui::TextStyle::default()
+                .bg(wonder_of_u_tui::Color::Rgb(225, 225, 230)),
         },
         _ => Theme::default(),
     };

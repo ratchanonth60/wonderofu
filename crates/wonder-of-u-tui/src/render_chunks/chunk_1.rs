@@ -193,6 +193,7 @@ fn draw_notification(
         prompt: theme.prompt,
         status: theme.status,
         footer: theme.footer,
+        panel: theme.panel,
     };
     draw_panel(frame, area, Some(title), lines, &panel_theme);
 }
@@ -736,15 +737,6 @@ fn draw_modal_shadow(frame: &mut FrameBuffer, rect: Rect, viewport: Rect, theme:
         frame.fill_rect(shadow, ' ', shadow_style);
     }
     frame.fill_rect(rect, ' ', theme.background);
-}
-
-fn draw_status_line(frame: &mut FrameBuffer, area: Rect, text: &str, style: TextStyle) {
-    if area.is_empty() {
-        return;
-    }
-
-    frame.fill_rect(area, ' ', style);
-    frame.write_str(area.x, area.y, text, style, area.width);
 }
 
 fn draw_footer_line(frame: &mut FrameBuffer, area: Rect, text: &str, theme: &Theme) {

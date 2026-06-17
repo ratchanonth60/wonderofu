@@ -9,15 +9,16 @@ mod tests {
     use super::*;
     use crate::{dialog::DialogView, message::MessageLineView};
 
-    /// Guard against accidentally lowering `MIN_SIDEBAR_WIDTH` below 90.
+    /// Guard against accidentally changing `MIN_SIDEBAR_WIDTH` away from 120.
     ///
-    /// 90 cols is the minimum that gives a usable main area alongside the sidebar.
-    /// Lowering this further would make the transcript area too narrow on standard terminals.
+    /// 120 cols is the opencode-parity minimum that gives a usable main area
+    /// alongside the wider 42-col sidebar.  Lowering this further would make
+    /// the transcript area too narrow on standard terminals.
     #[test]
-    fn sidebar_threshold_is_90_columns() {
+    fn sidebar_threshold_is_120_columns() {
         assert_eq!(
-            MIN_SIDEBAR_WIDTH, 90,
-            "MIN_SIDEBAR_WIDTH must be 90; raising or lowering this changes sidebar activation"
+            MIN_SIDEBAR_WIDTH, 120,
+            "MIN_SIDEBAR_WIDTH must be 120; raising or lowering this changes sidebar activation"
         );
     }
 
@@ -1383,7 +1384,7 @@ mod tests {
 
     #[test]
     fn sidebar_absent_on_narrow_terminal_below_min_width() {
-        // Width 89 is one below the MIN_SIDEBAR_WIDTH threshold — the sidebar
+        // Width 119 is one below the MIN_SIDEBAR_WIDTH threshold — the sidebar
         // must not appear even when `view.sidebar` is Some.
         let view = ShellView {
             prompt: "hello".into(),
@@ -1395,7 +1396,7 @@ mod tests {
             ..ShellView::default()
         };
 
-        let frame = render_snapshot(89, 8, &view, &Theme::default());
+        let frame = render_snapshot(119, 8, &view, &Theme::default());
         let text = frame.to_plain_text();
 
         // Sidebar section headers must not appear on a narrow terminal.
@@ -1416,14 +1417,15 @@ mod tests {
                 provider_lines: vec!["◈ copilot · gpt-4".into()],
                 control_lines: vec!["↵ send  ⇧↵ newline".into(), "⎋ cancel  ? help".into()],
                 status_lines: vec!["✓ ready".into()],
+                footer_brand: "wonder-of-u v0.1.3".into(),
                 ..SidebarView::default()
             }),
             ..ShellView::default()
         };
 
-        // Use a taller terminal so the rounded-border box has enough inner rows
-        // to show all three sidebar sections (Providers, Status, Controls).
-        // The rounded border takes 2 rows (top + bottom), leaving 12 inner rows.
+        // Use a taller terminal so the borderless panel has enough inner rows
+        // to show all three sidebar sections (Providers, Status, Controls)
+        // plus the pinned branded footer row.
         let frame = render_snapshot(120, 14, &view, &Theme::default());
         let text = frame.to_plain_text();
 
@@ -1443,10 +1445,27 @@ mod tests {
             text.contains("ready"),
             "auth-ok label must appear; rendered:\n{text}"
         );
-        // Sidebar rounded border corners must be visible.
+        // The solid panel fill replaces the rounded border entirely — no
+        // border glyphs should appear at the sidebar's fixed column span
+        // (the rightmost SIDEBAR_WIDTH columns).  Use the untrimmed per-cell
+        // rows (`frame.lines()`) rather than `to_plain_text()` so short rows
+        // don't get padded-away, which would otherwise alias the *prompt*
+        // box's border into this column range.
+        let sidebar_start = usize::from(120u16.saturating_sub(SIDEBAR_WIDTH));
+        let sidebar_column_has_border_glyphs = frame.lines().iter().any(|line| {
+            line.chars()
+                .skip(sidebar_start)
+                .any(|c| matches!(c, '╭' | '╮' | '╰' | '╯' | '│'))
+        });
         assert!(
-            text.contains('╭') && text.contains('╰'),
-            "rounded border corners must appear; rendered:\n{text}"
+            !sidebar_column_has_border_glyphs,
+            "borderless panel must not draw rounded border glyphs; rendered:\n{text}"
+        );
+        // The branded footer (`●` + version) must be pinned to the bottom row.
+        let last_row = text.lines().last().unwrap_or("");
+        assert!(
+            last_row.contains('●') && last_row.contains("wonder-of-u v0.1.3"),
+            "branded footer must render on the bottom row; got: {last_row:?}\nrendered:\n{text}"
         );
         // Prompt content must still be visible in the main (left) column.
         assert!(
@@ -1713,7 +1732,7 @@ mod tests {
             ..ShellView::default()
         };
 
-        // width=120 → main_w=83, sidebar=36, sep=1.
+        // width=120 → main_w=77, sidebar=42, sep=1.
         // height=16 keeps the multiline prompt plus the integrated footer visible.
         let frame = render_snapshot(120, 16, &view, &Theme::default());
         let text = frame.to_plain_text();
@@ -1734,8 +1753,8 @@ mod tests {
 
     #[test]
     fn prompt_spans_full_terminal_width_on_narrow_terminal() {
-        // Width 89 is one below MIN_SIDEBAR_WIDTH=90.  Even when `sidebar` is Some,
-        // no column is carved out — the prompt must use the full 89 columns.
+        // Width 119 is one below MIN_SIDEBAR_WIDTH=120.  Even when `sidebar` is Some,
+        // no column is carved out — the prompt must use the full 119 columns.
         let view = ShellView {
             prompt: "hello".into(),
             sidebar: Some(SidebarView {
@@ -1745,7 +1764,7 @@ mod tests {
             ..ShellView::default()
         };
 
-        let frame = render_snapshot(89, 6, &view, &Theme::default());
+        let frame = render_snapshot(119, 6, &view, &Theme::default());
         let text = frame.to_plain_text();
 
         // Prompt marker must appear inside the rounded box with no sidebar offset.
@@ -1842,8 +1861,8 @@ mod tests {
     }
 
     #[test]
-    fn sidebar_absent_on_narrow_terminal_below_90_cols() {
-        // Narrow terminal (width < MIN_SIDEBAR_WIDTH = 90): sidebar must be
+    fn sidebar_absent_on_narrow_terminal_below_120_cols() {
+        // Narrow terminal (width < MIN_SIDEBAR_WIDTH = 120): sidebar must be
         // completely suppressed even when `sidebar` field is `Some`.
         let view = ShellView {
             prompt: "narrow".into(),
@@ -1855,12 +1874,12 @@ mod tests {
             ..ShellView::default()
         };
 
-        let frame = render_snapshot(89, 8, &view, &Theme::default());
+        let frame = render_snapshot(119, 8, &view, &Theme::default());
         let text = frame.to_plain_text();
 
         assert!(
             !text.contains("─ Providers ─"),
-            "Providers header must NOT appear on narrow (89-col) terminal; rendered:\n{text}"
+            "Providers header must NOT appear on narrow (119-col) terminal; rendered:\n{text}"
         );
         assert!(
             !text.contains("─ Controls ─"),
@@ -2439,10 +2458,12 @@ mod tests {
 
     /// Verify the full render order: sections must appear in the documented
     /// sequence (Session → Status → Context → Tools → MCP → LSP → Todo →
-    /// Suggestions → Providers → Workspace → Controls → Tasks).
+    /// Suggestions → Providers → Workspace → Controls → Tasks → footer).
     ///
-    /// Status is promoted to slot 2 so the live turn-state indicator is always
-    /// visible at the top of the sidebar without scrolling.
+    /// Session is pinned in the top title band; Status through Tasks live in
+    /// the scrollable middle band (Status first, so the live turn-state
+    /// indicator is visible without scrolling); the branded footer is pinned
+    /// to the bottom band.
     ///
     /// We populate every section and assert that each header appears *after* its
     /// predecessor in the rendered output, using byte-offset positions.
@@ -2469,6 +2490,7 @@ mod tests {
                 task_lines: vec!["⚙  1 task".into()],
                 slots: Vec::new(),
                 scroll_offset: 0,
+                footer_brand: "wonder-of-u v0.1.3".into(),
             }),
             ..ShellView::default()
         };
@@ -2517,6 +2539,14 @@ mod tests {
             "Workspace must precede Controls"
         );
         assert!(controls_pos < tasks_pos, "Controls must precede Tasks");
+
+        // The pinned branded footer must render after every scrollable section
+        // (it lives in the fixed bottom band, drawn last).
+        let footer_pos = pos("wonder-of-u v0.1.3");
+        assert!(
+            tasks_pos < footer_pos,
+            "branded footer must render after Tasks (pinned bottom band)"
+        );
     }
 
     /// Status is the first section after Session so the turn-state indicator is
@@ -2553,6 +2583,66 @@ mod tests {
         assert!(
             text.contains("streaming"),
             "turn-state label must be visible; rendered:\n{text}"
+        );
+    }
+
+    /// The three-zone layout must keep the Session title pinned to the top
+    /// band and the branded footer pinned to the bottom row even when the
+    /// scrollable middle band is scrolled away from its own top.
+    #[test]
+    fn sidebar_title_and_footer_stay_pinned_while_middle_band_scrolls() {
+        let view = ShellView {
+            prompt: "hi".into(),
+            sidebar: Some(SidebarView {
+                session_lines: vec!["◈ pinned-session".into()],
+                // Enough body lines to overflow a short terminal's middle band.
+                status_lines: vec!["● idle".into()],
+                tool_lines: vec!["✓ Bash".into(), "✓ FileRead".into(), "✓ FileWrite".into()],
+                mcp_lines: vec!["✓ filesystem".into(), "✓ github".into()],
+                lsp_lines: vec!["✓ rust-analyzer".into()],
+                todo_lines: vec!["◈ Fix lint".into(), "✓ Write tests".into()],
+                workspace_lines: vec!["⎇  main".into()],
+                control_lines: vec!["↵ send".into()],
+                task_lines: vec!["⚙  2 tasks".into()],
+                scroll_offset: 4,
+                footer_brand: "wonder-of-u v0.1.3".into(),
+                ..SidebarView::default()
+            }),
+            ..ShellView::default()
+        };
+
+        // Short terminal so the populated body overflows the middle band,
+        // forcing the scroll_offset above to take effect.
+        let frame = render_snapshot(120, 12, &view, &Theme::default());
+        let text = frame.to_plain_text();
+        let lines: Vec<&str> = text.lines().collect();
+
+        // The pinned title band: the first non-blank row (row 0 is a 1-row
+        // top margin reserved for the shell chrome) must still show Session,
+        // regardless of the middle-band scroll offset.
+        let first_content_row = lines
+            .iter()
+            .find(|l| !l.trim().is_empty())
+            .expect("frame must have at least one non-blank row");
+        assert!(
+            first_content_row.contains("─ Session ─"),
+            "Session title must stay pinned to the top row when scrolled; rendered:\n{text}"
+        );
+
+        // The pinned branded footer: the very last row must carry the `●` dot
+        // and version string.
+        let last_row = lines.last().copied().unwrap_or("");
+        assert!(
+            last_row.contains('●') && last_row.contains("wonder-of-u v0.1.3"),
+            "branded footer must stay pinned to the bottom row when scrolled; got: {last_row:?}\nrendered:\n{text}"
+        );
+
+        // Scrolling forward must have moved the visible window away from the
+        // first middle-band section header (Status), proving the offset
+        // actually windowed the middle band rather than being ignored.
+        assert!(
+            !text.contains("─ Status ─"),
+            "Status header (first middle-band section) must scroll out of view; rendered:\n{text}"
         );
     }
 
@@ -2630,8 +2720,8 @@ mod tests {
             ..ShellView::default()
         };
 
-        // Width 89 is one below MIN_SIDEBAR_WIDTH=90 – sidebar is fully suppressed.
-        let frame = render_snapshot(89, 20, &view, &Theme::default());
+        // Width 119 is one below MIN_SIDEBAR_WIDTH=120 – sidebar is fully suppressed.
+        let frame = render_snapshot(119, 20, &view, &Theme::default());
         let text = frame.to_plain_text();
 
         for absent in &["─ Tools ─", "─ MCP ─", "─ LSP ─", "─ Todo ─"] {
@@ -2644,8 +2734,9 @@ mod tests {
 
     /// Each section header must appear exactly once even when all sections are
     /// populated.  A previous merge accidentally inserted duplicate render calls
-    /// for Tools/MCP/LSP/Todo at the end of `sidebar_section_lines`; this test
-    /// is the regression guard.
+    /// for Tools/MCP/LSP/Todo at the end of `sidebar_body_lines`; this test
+    /// is the regression guard.  Also covers the Session header, which now
+    /// lives in `sidebar_title_lines` (the pinned top band).
     #[test]
     fn sidebar_section_headers_appear_exactly_once() {
         let view = ShellView {

@@ -2016,11 +2016,10 @@ impl<'a> TuiController<'a> {
     }
     /// Handles arrow/PgUp/PgDn/j/k keys when the sidebar panel is focused.
     fn handle_sidebar_scroll_key(&mut self, key: KeyEvent) -> Result<()> {
-        let visible = self.sidebar_visible_height();
+        let (visible, total) = self.sidebar_scroll_geometry();
         if visible == 0 {
             return Ok(());
         }
-        let total = self.sidebar_total_lines();
         let max_offset = total.saturating_sub(visible);
         match key.code {
             KeyCode::Up | KeyCode::Char('k') => {
@@ -2067,58 +2066,19 @@ impl<'a> TuiController<'a> {
         }
         Ok(())
     }
-    /// Returns the visible inner height (in rows) of the sidebar panel.
-    fn sidebar_visible_height(&self) -> usize {
+    /// Returns `(visible_rows, total_body_lines)` for the sidebar's scrollable
+    /// middle band, in lock-step with the renderer's band split (the Session
+    /// title and branded footer are pinned and excluded). `(0, 0)` when hidden.
+    fn sidebar_scroll_geometry(&self) -> (usize, usize) {
         let (terminal_w, terminal_h) = self.last_terminal_size;
         if terminal_w < MIN_SIDEBAR_WIDTH || !self.sidebar_visible {
-            return 0;
+            return (0, 0);
         }
-        // Sidebar box height matches terminal height; inner height = terminal_h - 2 (borders).
-        terminal_h.saturating_sub(2) as usize
-    }
-    /// Approximates total sidebar content lines for scroll clamping.
-    fn sidebar_total_lines(&self) -> usize {
         let view = self.view();
-        if let Some(sb) = &view.sidebar {
-            let mut count = 0usize;
-            let non_empty = |v: &[String]| !v.is_empty();
-            let sections: &[&[String]] = &[
-                &sb.session_lines,
-                &sb.status_lines,
-                &sb.context_lines,
-                &sb.tool_lines,
-                &sb.mcp_lines,
-                &sb.lsp_lines,
-                &sb.todo_lines,
-                &sb.provider_lines,
-                &sb.workspace_lines,
-                &sb.control_lines,
-                &sb.task_lines,
-            ];
-            for section in sections {
-                if non_empty(section) {
-                    count += 1; // header
-                    count += section.len();
-                    count += 1; // blank separator after section
-                }
-            }
-            // Suggestions section: header + 2 lines per suggestion
-            if !sb.suggestions.is_empty() {
-                count += 1; // header
-                count += sb.suggestions.len() * 2;
-                count += 1; // separator
-            }
-            // Plugin slots
-            for slot in &sb.slots {
-                if !slot.lines.is_empty() {
-                    count += 1; // header
-                    count += slot.lines.len();
-                    count += 1; // separator
-                }
-            }
-            return count.max(1).saturating_sub(1); // trailing separator removed
+        match &view.sidebar {
+            Some(sb) => wonder_of_u_tui::sidebar_scroll_geometry(terminal_h, sb),
+            None => (0, 0),
         }
-        0
     }
     /// Flips inline tool output expansion and sets a transient status note.
     pub(super) fn toggle_expand_tool_output(&mut self) {
@@ -2202,8 +2162,7 @@ impl<'a> TuiController<'a> {
     }
     /// Clamps sidebar_scroll_offset to the current visible height and content.
     fn clamp_sidebar_scroll(&mut self) {
-        let visible = self.sidebar_visible_height();
-        let total = self.sidebar_total_lines();
+        let (visible, total) = self.sidebar_scroll_geometry();
         let max_offset = total.saturating_sub(visible);
         self.sidebar_scroll_offset = self.sidebar_scroll_offset.min(max_offset);
     }
