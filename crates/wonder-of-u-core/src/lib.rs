@@ -235,7 +235,7 @@ pub use tool::{
 pub use treeify::render_path_tree;
 /// Re-exports items from `turn` (async path only).
 #[cfg(feature = "wonder-of-u-async")]
-pub use turn::{spawn_turn_driver, turn_driver};
+pub use turn::{PendingApproval, TurnDriverState, spawn_turn_driver, turn_driver};
 /// Re-exports items from `xdg`
 pub use xdg::{
     XdgError, xdg_cache_home, xdg_cache_home_from, xdg_config_home, xdg_config_home_from,

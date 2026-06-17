@@ -24,7 +24,7 @@ use wonder_of_u_protocol::{
 };
 
 use crate::provider_async::ModelProvider;
-use crate::turn::spawn_turn_driver;
+use crate::turn::{TurnDriverState, spawn_turn_driver};
 
 /// Initial configuration for a conversation thread.
 ///
@@ -98,7 +98,8 @@ pub struct ConversationHandle {
 pub struct ConversationManager<P: ModelProvider + 'static> {
     config: ConversationConfig,
     provider: Arc<P>,
-    task: Option<JoinHandle<()>>,
+    state: TurnDriverState,
+    task: Option<JoinHandle<TurnDriverState>>,
 }
 
 impl<P: ModelProvider + 'static> ConversationManager<P> {
@@ -107,6 +108,7 @@ impl<P: ModelProvider + 'static> ConversationManager<P> {
         Self {
             config,
             provider,
+            state: TurnDriverState::new(),
             task: None,
         }
     }
@@ -114,6 +116,12 @@ impl<P: ModelProvider + 'static> ConversationManager<P> {
     /// Borrow the active config.
     pub fn config(&self) -> &ConversationConfig {
         &self.config
+    }
+
+    /// Borrow the pending-approval state. Useful for tests and for tooling
+    /// that needs to introspect / clear pending approvals.
+    pub fn state(&self) -> &TurnDriverState {
+        &self.state
     }
 
     /// Channel buffer size used by [`spawn`] when none is provided.
@@ -133,7 +141,8 @@ impl<P: ModelProvider + 'static> ConversationManager<P> {
         let (event_tx, events) = mpsc::channel(buffer);
         let config = self.config.clone();
         let provider = Arc::clone(&self.provider);
-        let handle = spawn_turn_driver(config, provider, sub_rx, event_tx);
+        let state = std::mem::take(&mut self.state);
+        let handle = spawn_turn_driver(config, provider, state, sub_rx, event_tx);
         self.task = Some(handle);
         ConversationHandle {
             submissions,
