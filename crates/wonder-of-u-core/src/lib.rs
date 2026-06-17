@@ -17,6 +17,10 @@ pub mod app;
 pub mod command;
 /// Context fragment assembly for token-limited prompt construction.
 pub mod context_fragments;
+/// Async SQ/EQ conversation host (Phase 1+ of the codex-rs port). Gated
+/// behind the `wonder-of-u-async` cargo feature — see CLAUDE.md pitfall #1.
+#[cfg(feature = "wonder-of-u-async")]
+pub mod conversation;
 /// Provides coordinator support
 pub mod coordinator;
 /// Provides cwd support
@@ -113,6 +117,9 @@ pub use command::{
     Command, CommandContext, CommandInvocation, CommandKind, CommandOutput, CommandQuery,
     CommandRegistry, CommandSource, CommandSpec, parse_slash_command,
 };
+/// Re-exports items from `conversation` (async path only).
+#[cfg(feature = "wonder-of-u-async")]
+pub use conversation::{ConversationConfig, ConversationHandle, ConversationManager};
 /// Re-exports items from `coordinator`
 pub use coordinator::{
     CoordinatorMode, CoordinatorState, CoordinatorSupport, CoordinatorSurfaceStatus,

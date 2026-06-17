@@ -5,6 +5,12 @@ edition.workspace = true
 rust-version.workspace = true
 publish = false
 
+[features]
+# Opt-in async path (Phase 1+ of the codex-rs port). Default is OFF so the
+# legacy blocking build keeps passing until Phase 6 stabilizes the port.
+# See CLAUDE.md pitfall #1 + docs/codex-port.md.
+wonder-of-u-async = ["dep:wonder-of-u-protocol", "dep:tokio"]
+
 [dependencies]
 async-trait.workspace = true
 futures.workspace = true
@@ -16,6 +22,10 @@ sha2.workspace = true
 thiserror.workspace = true
 time.workspace = true
 uuid.workspace = true
+
+# Async-path-only dependencies (gated behind `wonder-of-u-async`).
+tokio = { workspace = true, optional = true }
+wonder-of-u-protocol = { workspace = true, optional = true }
 
 [dev-dependencies]
 serde_json.workspace = true
